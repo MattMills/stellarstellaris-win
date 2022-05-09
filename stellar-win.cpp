@@ -12,7 +12,6 @@ using namespace std;
 
 #ifdef _WIN32
 #include "hooking_windows.h"
-#include "hooking_weird.h"
 #endif
 
 
