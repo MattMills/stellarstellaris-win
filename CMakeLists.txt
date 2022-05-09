@@ -2,13 +2,38 @@
 # project specific logic here.
 #
 cmake_minimum_required (VERSION 3.8)
-include(Z:/dev/vcpkg/scripts/buildsystems/vcpkg.cmake)
-set(CURL_DIR "Z:/dev/vcpkg/installed/x64-windows/share/curl")
 
 project ("stellar-win")
 
-find_package(luajit CONFIG REQUIRED)
-# Add source to this project's executable.
-add_executable (stellar-win "stellar-win.cpp" "stellar-win.h")
+set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+set(LUAJIT_BIN ${CMAKE_CURRENT_BINARY_DIR})
 
-# TODO: Add tests and install targets if needed.
+
+set(THIS_LUA_SRC ${CMAKE_BINARY_DIR}/lib/luajit/luajit-2.1/src)
+set(LUA_INCLUDE_DIR ${THIS_LUA_SRC})
+#TODO check osx
+if(WIN32)
+	if(MSVC)
+		set(LUA_LIBRARY ${THIS_LUA_SRC}/lua51.lib)
+	else() #mingw
+		set(LUA_LIBRARY ${THIS_LUA_SRC}/lua51.dll)
+	endif()
+elseif(Darwin)
+	set(LUA_LIBRARY ${THIS_LUA_SRC}/libluajit.dylib)
+else() 
+	set(LUA_LIBRARY  ${THIS_LUA_SRC}/libluajit.so)
+endif()
+
+add_subdirectory(lib/luajit)
+
+
+set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+include (InstallRequiredSystemLibraries)
+INSTALL(FILES ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} DESTINATION ${LUAJIT_BIN})
+
+
+
+
+# Add source to this project's executable.
+add_executable (stellar-win "stellar-win.cpp" "stellar-win.h" "hooking_windows.h" "hooking_windows.cpp" "hooking_weird.h")
+target_link_libraries(stellar-win ${LUA_LIBRARY})
