@@ -14,6 +14,7 @@ using namespace std;
 #include "hooking_windows.h"
 #endif
 
+#include "stellaris-CApplication.h"
 
 int main() {
     std::cout << std::endl;
@@ -38,11 +39,11 @@ int main() {
     std::cout << "-------------------------------------------------------------------------------------" << std::endl;
     std::cout << std::endl;
 
-    
+
     //Find process ID of running Stellaris Process   
     DWORD processid = 0;
 
-    while(processid == 0){
+    while (processid == 0) {
         processid = FindPidByName("stellaris.exe");
         if (processid == 0) {
             std::cout << "Stellaris process not found, start it and I will check again in 1s, control+c to cancel" << std::endl;
@@ -58,17 +59,38 @@ int main() {
     //TODO: Probably use less privs
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processid);
 
-    
-    
+    //GetClassInfoExA()
+
+    HMODULE hModule = GetBaseModuleForProcess(hProcess);
+
+    std::cout << "Base module: " << hModule << std::endl;
 
     const char* search_value = "augustus";
-    std::cout << "Memory search for: " << search_value << std::endl;
-    unsigned char * augustus_ptr = searchMemory(hProcess, search_value);
-    long long version_offset = -0x13D0; 
-    
-    std::cout << "Memory search completed?: " << search_value << std::endl;
-    // readprocessmemory -> alloc and virtual protect -> hook -> restore protection 
+    unsigned char* augustus_ptr = 0x0;
 
+    std::cout << "Searching memory for location of CApplication struct" << std::endl;
+
+    augustus_ptr = searchMemory(hProcess, search_value, MEM_PRIVATE);
+    void * p_application =  (augustus_ptr) - 56;
+
+    if (augustus_ptr == NULL) {
+        std::cout << "Error: Unable to find search value in memory" << std::endl;
+        exit(-1);
+    }
+    std::cout << "CApplication struct suspected location: 0x" << static_cast<void*>(p_application) << std::endl;
+    CApplication * buffer = new CApplication;
+    SIZE_T bytesRead;
+    ReadProcessMemory(hProcess, p_application, buffer, sizeof(CApplication), &bytesRead);
+    std::cout << "[DBG] bytesRead: " << bytesRead << std::endl;
+    
+    
+    if(buffer->_GameVersion._szName._str == "Libra v3.3.4"){
+        std::cout << "Detected supported Stellaris version: " << buffer->_GameVersion._szName._str << std::endl;
+    }else {
+        std::cout << "Note: if the version text below this line shows gibberish, or the program crashes after this line, things went really wrongly" << std::endl;
+        std::cout << "Detected unsupported Stellaris version: " << buffer->_GameVersion._szName._str << std::endl;
+    }
+    
     
 }
 int lua_testing(){

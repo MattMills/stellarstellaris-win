@@ -35,5 +35,5 @@ INSTALL(FILES ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} DESTINATION ${LUAJIT_BIN})
 
 
 # Add source to this project's executable.
-add_executable (stellar-win "stellar-win.cpp" "stellar-win.h" "hooking_windows.h" "hooking_windows.cpp" )
+add_executable (stellar-win "stellar-win.cpp" "stellar-win.h" "hooking_windows.h" "hooking_windows.cpp"  )
 target_link_libraries(stellar-win ${LUA_LIBRARY})

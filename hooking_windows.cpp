@@ -4,16 +4,26 @@ using namespace std;
 
 #include "hooking_windows.h"
 
-unsigned char* searchMemory(HANDLE hProcess, const char search_value[]) {
+unsigned char* searchMemory(HANDLE hProcess, const char search_value[], DWORD bufferType) {
 
     MEMORY_BASIC_INFORMATION lpBuffer;
     unsigned char* p = NULL;
+	int p_nulls = 0;
 
 
-    for (p = NULL; VirtualQueryEx(hProcess, p, &lpBuffer, sizeof(lpBuffer)) == sizeof(lpBuffer); p += lpBuffer.RegionSize) {
+	for (p = NULL; VirtualQueryEx(hProcess, p, &lpBuffer, sizeof(lpBuffer)) == sizeof(lpBuffer); p += lpBuffer.RegionSize) {
+		//VirtualQueryEx seems to loop back to 0x0, so this makes it increment through only once.
+		if (p == NULL) {
+			if(p_nulls > 0){
+				return 0;
+			}else {
+				p_nulls++;
+			}
+		}
         //std::cout << "[DBG] Memory addr: 0x" << static_cast<void*>(p) << "  State: " << lpBuffer.State << "  Protect: " << lpBuffer.Protect << "  BaseAddr: " << lpBuffer.BaseAddress << "  RegionSize: " << lpBuffer.RegionSize << std::endl;
 
-        if (lpBuffer.State == MEM_COMMIT && (lpBuffer.Type == MEM_MAPPED || lpBuffer.Type == MEM_PRIVATE)) {
+        if (lpBuffer.State == MEM_COMMIT && (lpBuffer.Type == bufferType)) {
+
             unsigned char* buffer = new unsigned char[lpBuffer.RegionSize];
 
             SIZE_T bytesRead;
@@ -23,12 +33,14 @@ unsigned char* searchMemory(HANDLE hProcess, const char search_value[]) {
             for (int j = 0; j < bytesRead; j++) {
                 if (memcmp(&buffer[j], search_value, sizeof(search_value) + 1) == 0) {
                     std::cout << "searchMemory(" << search_value << ") found at addr 0x" << (static_cast<void*>(p + j)) << std::endl;
-                    return reinterpret_cast<unsigned char*> (&(lpBuffer.BaseAddress) + j);
+
+                    return reinterpret_cast<unsigned char*> (p + j);
                 }
             }
             delete[] buffer;
         }
     }
+	return 0;
 }
 
 

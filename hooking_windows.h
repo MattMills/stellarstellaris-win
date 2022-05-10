@@ -43,8 +43,7 @@ typedef uint32_t addr_t;
 #endif
 
 
-NTSTATUS GetProcessIdByName(PUNICODE_STRING ImageName, HANDLE& UniqueProcessId);
-unsigned char* searchMemory(HANDLE hProcess, const char search_value[]);
+unsigned char* searchMemory(HANDLE hProcess, const char search_value[], DWORD bufferType);
 
 void PrintModulesForProcess(HANDLE process);
 void PrintErrorMessageToConsole(DWORD errorCode);
