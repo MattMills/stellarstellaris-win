@@ -7,11 +7,22 @@ This is in a very early alpha stage, it currently doesn't do much of anything.
 
 ## Goals:
 
-1. Hook a DLL Payload into Stellaris
+1. ~~Hook a DLL Payload into Stellaris~~
 2. Identify locations of useful memory structures
-3. Hook a LUA interpreter into a console command
-4. ???
-5. Replace CGalaxyGenerator with LUA code
+  a. ~~CApplication~~
+  b. CIdler
+  c. CGameState
+4. Hook a LUA interpreter into a console command
+5. ???
+6. Replace CGalaxyGenerator with LUA code
+
+## Support discord:
+
+https://discord.gg/Mtm5nURDSC
+
+[![Join Support discord link](https://discordapp.com/api/guilds/960348408990793838/widget.png?style=banner3)](https://discord.gg/Mtm5nURDSC)
+
+
 
 ### References / Thanks / Borrowed code:
 https://github.com/khalladay/hooking-by-example
