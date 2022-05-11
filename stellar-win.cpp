@@ -7,8 +7,6 @@ using namespace std;
 
 
 #include "stellar-win.h"
-#include "lib/luajit/src/lua.hpp"
-
 
 #ifdef _WIN32
 #include "hooking_windows.h"
@@ -48,21 +46,20 @@ int main() {
         if (processid == 0) {
             std::cout << "Stellaris process not found, start it and I will check again in 1s, control+c to cancel" << std::endl;
             Sleep(1000);
-        }
-        else {
+        } else {
             std::cout << "Identified running stellaris.exe processID: " << std::dec << processid << std::endl;
         }
     }
 
+    check(processid);
 
     //Open a handle to the process with ALL_ACCESS privs
     //TODO: Probably use less privs
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processid);
 
-    //GetClassInfoExA()
+    check(hProcess);
 
     HMODULE hModule = GetBaseModuleForProcess(hProcess);
-
     std::cout << "Base module: " << hModule << std::endl;
 
     const char* search_value = "augustus";
@@ -70,13 +67,15 @@ int main() {
 
     std::cout << "Searching memory for location of CApplication struct" << std::endl;
 
+    
     augustus_ptr = searchMemory(hProcess, search_value, MEM_PRIVATE);
-    void * p_application =  (augustus_ptr) - 56;
 
-    if (augustus_ptr == NULL) {
-        std::cout << "Error: Unable to find search value in memory" << std::endl;
-        exit(-1);
+    while (augustus_ptr == NULL) {
+        std::cout << "Error: Unable to find search value in memory yet, waiting 1s, control+c to cancel" << std::endl;
+        Sleep(1000);
+        augustus_ptr = searchMemory(hProcess, search_value, MEM_PRIVATE);
     }
+    void* p_application = (augustus_ptr)-56;
     std::cout << "CApplication struct suspected location: 0x" << static_cast<void*>(p_application) << std::endl;
     CApplication * buffer = new CApplication;
     SIZE_T bytesRead;
@@ -89,28 +88,13 @@ int main() {
     }else {
         std::cout << "Note: if the version text below this line shows gibberish, or the program crashes after this line, things went really wrongly" << std::endl;
         std::cout << "Detected unsupported Stellaris version: " << buffer->_GameVersion._szName._str << std::endl;
+        exit(-2);
     }
     
-    
-}
-int lua_testing(){
-	lua_State* L = luaL_newstate();
-	std::string cmd = "print('[LUA] hello world!')";
-    
-	int r = luaL_dostring(L, cmd.c_str());
-	if (r == LUA_OK) {
-		lua_getglobal(L, "a");
-		if (lua_isnumber(L, -1)) {
-			float a_in_cpp = (float)lua_tonumber(L, -1);
+    char fullPath[1024];
+    GetPathToPayloadDLL(fullPath);
+    InjectPayload(hProcess, fullPath, &p_application);
 
-			std::cout << "a = " << a_in_cpp << std::endl;
-		}
-	} else {
-		std::string errormsg = lua_tostring(L, -1);
-		std::cout << errormsg << std::endl;
-	}
-	cout << "Hello CMake." << endl;
-
-	lua_close(L);
-	return 0;
+    std::cout << "Successfully injected payload? Probably?" << std::endl;
+    
 }
