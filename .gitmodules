@@ -1,3 +1,6 @@
 [submodule "luajit"]
 	path = lib/luajit
 	url = https://luajit.org/git/luajit.git
+[submodule "lib/eigen"]
+	path = lib/eigen
+	url = https://gitlab.com/libeigen/eigen.git
