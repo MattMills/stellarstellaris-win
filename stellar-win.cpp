@@ -8,11 +8,13 @@ using namespace std;
 
 #include "stellar-win.h"
 
+#include "stellaris-CApplication.h"
+
 #ifdef _WIN32
 #include "hooking_windows.h"
 #endif
 
-#include "stellaris-CApplication.h"
+
 
 int main() {
     std::cout << std::endl;
@@ -87,7 +89,7 @@ int main() {
         std::cout << "Detected supported Stellaris version: " << buffer->_GameVersion._szName._str << std::endl;
     }else {
         std::cout << "Note: if the version text below this line shows gibberish, or the program crashes after this line, things went really wrongly" << std::endl;
-        std::cout << "Detected unsupported Stellaris version: " << buffer->_GameVersion._szName._str << std::endl;
+        std::cout << "Detected unsupported Stellaris version: " << buffer->_GameVersion._szName._str<< std::endl;
         exit(-2);
     }
     

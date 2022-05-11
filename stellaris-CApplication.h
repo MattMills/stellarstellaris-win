@@ -2,111 +2,58 @@
 
 
 using namespace std;
-#include <string>
+
+
+
+#include "stellaris-generic.h"
 
 
 
 
 
-typedef unsigned char   undefined;
-
-typedef unsigned int    ImageBaseOffset32;
-typedef unsigned char    byte;
-typedef unsigned int    dword;
-typedef long double    longdouble;
-typedef long long    longlong;
-typedef unsigned long long    qword;
-typedef char    sbyte;
-typedef unsigned char    uchar;
-typedef unsigned int    uint;
-typedef unsigned long    ulong;
-typedef unsigned long long    ulonglong;
-typedef unsigned char    undefined1;
-typedef unsigned short    undefined2;
-typedef unsigned int    undefined4;
-typedef unsigned long long    undefined8;
-typedef unsigned short    ushort;
-typedef unsigned short    word;
 typedef struct CApplication CApplication, *PCApplication;
-
-
-
 typedef struct tagWNDCLASSEXA tagWNDCLASSEXA, *PtagWNDCLASSEXA;
-
-typedef ulonglong __uint64;
-
 typedef struct CClausewitzChecksumProvider CClausewitzChecksumProvider, *PCClausewitzChecksumProvider;
 
 //typedef struct CPdxArray<CString,int> CPdxArray<CString,int>, *PCPdxArray<CString,int>;
-
+//typedef struct CPdxArray<CPdxGameController*, int> CPdxArray<CPdxGameController*, int>, * PCPdxArray<CPdxGameController*, int>;
+//typedef struct CPdxArray<SVibration,int> CPdxArray<SVibration,int>, *PCPdxArray<SVibration,int>;
 typedef struct CChecksum CChecksum, *PCChecksum;
-
 typedef struct CContextOwner CContextOwner, *PCContextOwner;
-
 typedef struct CIdler CIdler, *PCIdler;
-
-
 typedef struct CFixedPoint CFixedPoint, *PCFixedPoint;
-
 typedef struct MD5 MD5, *PMD5;
-
 typedef struct AudioContextAUDIO AudioContextAUDIO, *PAudioContextAUDIO;
-
 typedef struct AnimationContextANIM AnimationContextANIM, *PAnimationContextANIM;
-
 typedef enum EMatchmakingInterface {
     MATCHMAKING_INTERFACE_NONE=0,
     MATCHMAKING_INTERFACE_STEAM=1,
     MATCHMAKING_INTERFACE_RAIL=2,
     MATCHMAKING_INTERFACE_NAKAMA=3
 } EMatchmakingInterface;
-
 typedef struct MatchmakingContextMATCHMAKING MatchmakingContextMATCHMAKING, *PMatchmakingContextMATCHMAKING;
-
 typedef struct ParticleContextPARTICLE ParticleContextPARTICLE, *PParticleContextPARTICLE;
-
 typedef struct LightContextLIGHT LightContextLIGHT, *PLightContextLIGHT;
-
 typedef struct EntityContextENTITY EntityContextENTITY, *PEntityContextENTITY;
-
 typedef struct AchievementsContextACHIEVEMENTS AchievementsContextACHIEVEMENTS, *PAchievementsContextACHIEVEMENTS;
-
 typedef struct CloudStorageContextCLOUDSTORAGE CloudStorageContextCLOUDSTORAGE, *PCloudStorageContextCLOUDSTORAGE;
-
 typedef struct StoreContextSTORE StoreContextSTORE, *PStoreContextSTORE;
-
 typedef struct UGCContextUGC UGCContextUGC, *PUGCContextUGC;
-
 typedef struct BrowserContextBROWSER BrowserContextBROWSER, *PBrowserContextBROWSER;
-
 typedef struct FontContextFONT FontContextFONT, *PFontContextFONT;
-
 typedef struct ContextPOPS_HANDLE ContextPOPS_HANDLE, *PContextPOPS_HANDLE;
-
 typedef struct CPdxGameControllerGroup CPdxGameControllerGroup, *PCPdxGameControllerGroup;
-
 //typedef struct _Compressed_pair<std::allocator<char>,std::_String_val<std::_Simple_types<char>>,1> _Compressed_pair<std::allocator<char>,std::_String_val<std::_Simple_types<char>>,1>, *P_Compressed_pair<std::allocator<char>,std::_String_val<std::_Simple_types<char>>,1>;
 
 typedef struct fixed_int64 fixed_int64, *Pfixed_int64;
-
-//typedef struct CPdxArray<CPdxGameController*,int> CPdxArray<CPdxGameController*,int>, *PCPdxArray<CPdxGameController*,int>;
-
 typedef struct GamepadGamepadContext GamepadGamepadContext, *PGamepadGamepadContext;
-
 //typedef struct _String_val<std::_Simple_types<char>> _String_val<std::_Simple_types<char>>, *P_String_val<std::_Simple_types<char>>;
-
 typedef struct CPdxGameController CPdxGameController, *PCPdxGameController;
-
 typedef union _Bxty _Bxty, *P_Bxty;
-
 typedef struct SGamepadState SGamepadState, *PSGamepadState;
 
-//typedef struct CPdxArray<SVibration,int> CPdxArray<SVibration,int>, *PCPdxArray<SVibration,int>;
 
 typedef struct SVibration SVibration, *PSVibration;
-struct CString {
-    basic_string<char, std::char_traits<char>, std::allocator<char>> _str;
-};
 
 struct ParticleContextPARTICLE {
 };
@@ -117,22 +64,6 @@ union _Bxty {
     char _Alias[16];
 };
 
-
-struct CPdxArray_CPdxGameController_int {
-    undefined field0_0x0;
-    undefined field1_0x1;
-    undefined field2_0x2;
-    undefined field3_0x3;
-    undefined field4_0x4;
-    undefined field5_0x5;
-    undefined field6_0x6;
-    undefined field7_0x7;
-    struct CPdxGameController * * _pData;
-    int _nCapacity;
-    int _nSize;
-};
-
-
 struct CPdxGameControllerGroup {
     undefined field0_0x0;
     undefined field1_0x1;
@@ -142,7 +73,7 @@ struct CPdxGameControllerGroup {
     undefined field5_0x5;
     undefined field6_0x6;
     undefined field7_0x7;
-    struct CPdxArray_CPdxGameController_int _GameControllers;
+    class CPdxArray<CPdxGameController, int> _GameControllers;
     int _nMainController;
     undefined field10_0x24;
     undefined field11_0x25;
@@ -196,20 +127,6 @@ struct CChecksum {
 };*/
 
 
-struct CPdxArray_CString_int {
-    undefined field0_0x0;
-    undefined field1_0x1;
-    undefined field2_0x2;
-    undefined field3_0x3;
-    undefined field4_0x4;
-    undefined field5_0x5;
-    undefined field6_0x6;
-    undefined field7_0x7;
-    struct CString * _pData;
-    int _nCapacity;
-    int _nSize;
-};
-
 struct CApplication {
     undefined field0_0x0;
     undefined field1_0x1;
@@ -262,7 +179,7 @@ struct CApplication {
     undefined field48_0x19d;
     undefined field49_0x19e;
     undefined field50_0x19f;
-    struct CPdxArray_CString_int _Filter;
+    class CPdxArray<CString,int> _Filter;
     bool _bChecksumCalculated;
     undefined field53_0x1b9;
     undefined field54_0x1ba;
@@ -313,19 +230,6 @@ struct CIdler {
     undefined field7_0x7;
 };
 
-struct CPdxArray_SVibration_int {
-    undefined field0_0x0;
-    undefined field1_0x1;
-    undefined field2_0x2;
-    undefined field3_0x3;
-    undefined field4_0x4;
-    undefined field5_0x5;
-    undefined field6_0x6;
-    undefined field7_0x7;
-    struct SVibration * _pData;
-    int _nCapacity;
-    int _nSize;
-};
 
 struct BrowserContextBROWSER {
 };
@@ -358,7 +262,7 @@ struct CPdxGameController {
     undefined field12_0x16;
     undefined field13_0x17;
     struct SGamepadState * _pState;
-    struct CPdxArray_SVibration_int _Pattern;
+    class CPdxArray<SVibration, int> _Pattern;
     int _nPatternIndex;
     float _vPatternTime;
 };
