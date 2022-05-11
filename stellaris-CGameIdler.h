@@ -6,19 +6,19 @@ using namespace Eigen;
 
 
 
-typedef enum IdlerType {
+typedef enum class IdlerType {
     _IDLERTYPE_INGAME_ = 0,
     _IDLERTYPE_FRONTEND_ = 1,
     _IDLERTYPE_COMBAT_DEBUG_ = 2
 } IdlerType;
 
-typedef enum FontFormatting {
+typedef enum class FontFormatting {
     _FF_LEFT_ALIGNED_ = 0,
     _FF_RIGHT_ALIGNED_ = 1,
     _FF_CENTRE_ = 2
 } FontFormatting;
 
-typedef enum EGuiOrientation {
+typedef enum class EGuiOrientation {
     UPPER_LEFT = 0,
     UPPER_RIGHT = 1,
     LOWER_LEFT = 2,
@@ -28,18 +28,18 @@ typedef enum EGuiOrientation {
     CENTER_DOWN = 6
 } EGuiOrientation;
 
-typedef enum ESelectionState {
+typedef enum class ESelectionState {
     SELECTION_STATE_NONE = 0,
     SELECTION_STATE_TRIGGERED = 1
 } ESelectionState;
 
-typedef enum EGuiVersion {
+typedef enum class EGuiVersion {
     GUI_VERSION_MOUSE = 0,
     GUI_VERSION_GAMEPAD = 1,
     GUI_VERSION_INVALID = 2
 } EGuiVersion;
 
-typedef enum MOUSE_CURSOR {
+typedef enum class MOUSE_CURSOR {
     CURSOR_0 = 0,
     CURSOR_NORMAL = 0,
     CURSOR_1 = 1,
@@ -75,49 +75,49 @@ typedef enum MOUSE_CURSOR {
     NUM_CURSORS = 28
 } MOUSE_CURSOR;
 
-typedef enum ECursorMode {
+typedef enum class ECursorMode {
     CURSOR_MODE_SYSTEM = 0,
     CURSOR_MODE_VIRTUAL = 1,
     CURSOR_MODE_DISABLED = 2
 } ECursorMode;
 
-typedef enum SCISSOR_BEHAVIOUR {
+typedef enum class SCISSOR_BEHAVIOUR {
     _SCISSOR_DEFAULT_ = 0,
     _SCISSOR_PROPAGATE_ = 1,
     _SCISSOR_IGNORE_ = 2
 } SCISSOR_BEHAVIOUR;
 
-typedef enum EDragHandler {
+typedef enum class EDragHandler {
     DRAGHANDLER_UNKNOWN = 0,
     DRAGHANDLER_MOUSE = 1,
     DRAGHANDLER_TOUCH = 2
 } EDragHandler;
 
-typedef enum checkBoxState {
+typedef enum class checkBoxState {
     CBOX_UP = 0,
     CBOX_DOWN = 1,
     CBOX_OVER = 2
 } checkBoxState;
 
-typedef enum EActionNavigationMode {
+typedef enum class EActionNavigationMode {
     ACTION_NAVIGATION_MODE_STEP = 0,
     ACTION_NAVIGATION_MODE_SCROLL_FIRST_ORDER = 1,
     ACTION_NAVIGATION_MODE_SCROLL_SECOND_ORDER = 2
 } EActionNavigationMode;
 
-typedef enum EFontVerticalAlignment {
+typedef enum class EFontVerticalAlignment {
     FONT_TOP_ALIGNED = 0,
     FONT_CENTER_ALIGNED = 1,
     FONT_BOTTOM_ALIGNED = 2
 } EFontVerticalAlignment;
 
-typedef enum EFadingState {
+typedef enum class EFadingState {
     NOFADE = 0,
     FADEIN = 1,
     FADEOUT = 2
 } EFadingState;
 
-typedef enum EGameGuiAnimationType {
+typedef enum class EGameGuiAnimationType {
     ANIMATION_NONE = 0,
     ANIMATION_ACCELERATED = 1,
     ANIMATION_DECELERATED = 2,
@@ -125,13 +125,13 @@ typedef enum EGameGuiAnimationType {
     ANIMATION_LINEAR = 4
 } EGameGuiAnimationType;
 
-typedef enum EAnimationState {
+typedef enum class EAnimationState {
     NONE = 0,
     SHOW = 1,
     HIDE = 2
 } EAnimationState;
 
-typedef enum EGameGuiOrientationType {
+typedef enum class EGameGuiOrientationType {
     ORIENTATION_UPPERLEFT = 0,
     ORIENTATION_UPPERRIGHT = 1,
     ORIENTATION_LOWERLEFT = 2,
@@ -143,13 +143,13 @@ typedef enum EGameGuiOrientationType {
     ORIENTATION_CENTERDOWN = 8
 } EGameGuiOrientationType;
 
-typedef enum EPeekState {
+typedef enum class EPeekState {
     PEEK_OPEN = 0,
     PEEK_CLOSED = 1,
     PEEK_PEEK = 2
 } EPeekState;
 
-typedef enum ESessionState {
+typedef enum class ESessionState {
     DISCONNECTED = 0,
     CONNECTING = 1,
     RECONNECTING = 2,
@@ -173,14 +173,14 @@ typedef enum ESessionState {
     SESSION_STATE_INVALID_PRIVILEGES = 20
 } ESessionState;
 
-typedef enum ESessionBasicType {
+typedef enum class ESessionBasicType {
     CLIENT_SESSION = 0,
     SERVER_SESSION = 1,
     DUMMY_SESSION = 2,
     META_SERVER_SESSION = 3
 } ESessionBasicType;
 
-typedef enum ESessionType {
+typedef enum class ESessionType {
     NO_SESSION = 0,
     DUMMY_SESSION_TYPE = 1,
     DIPLOMACY_NETWORK_CLIENT = 2,
@@ -193,7 +193,7 @@ typedef enum ESessionType {
     EU3_NETWORK_SERVER_STARTING = 9
 } ESessionType;
 
-typedef enum EHotjoinDeclineReasons {
+typedef enum class EHotjoinDeclineReasons {
     HOTJOINREASON_DECLINE = 0,
     HOTJOINREASON_BUSY = 1,
     HOTJOINREASON_NAMECONFLICT = 2,
@@ -204,7 +204,7 @@ typedef enum EHotjoinDeclineReasons {
     HOTJOINREASON_NUMOF = 7
 } EHotjoinDeclineReasons;
 
-typedef enum ENetServerAddressType {
+typedef enum class ENetServerAddressType {
     NET_ADDRESS_TYPE_NULL = 0,
     NET_ADDRESS_TYPE_IP_PORT = 1,
     NET_ADDRESS_TYPE_UINT64 = 2,
@@ -213,7 +213,7 @@ typedef enum ENetServerAddressType {
     NET_ADDRESS_TYPE_NAKAMA_MATCH_ID = 5
 } ENetServerAddressType;
 
-typedef enum EState {
+typedef enum class EState {
     Waiting = 0,
     Shapes = 1,
     Blobs = 2,
@@ -223,21 +223,21 @@ typedef enum EState {
     Pins = 6
 } EState;
 
-typedef enum EAnimationType {
+typedef enum class EAnimationType {
     ACCELERATED = 0,
     DECELERATED = 1,
     SMOOTHSTEP = 2,
     LINEAR = 3
 } EAnimationType;
 
-typedef enum LOAD_TYPE {
+typedef enum class LOAD_TYPE {
     ALWAYS = 0,
     FRONTEND = 1,
     BACKEND = 2,
     INGAME = 3
 } LOAD_TYPE;
 
-typedef enum EModKey {
+typedef enum class EModKey {
     MODKEY_ANY = -1,
     MODKEY_NONE = 0,
     MODKEY_CTRL = 1,
@@ -246,12 +246,12 @@ typedef enum EModKey {
     MODKEY_OS = 8
 } EModKey;
 
-typedef enum EKeyEventType {
+typedef enum class EKeyEventType {
     KEYDOWN = 0,
     KEYUP = 1
 } EKeyEventType;
 
-typedef enum EEventType {
+typedef enum class EEventType {
     MOUSEEVENT = 0,
     KEYEVENT = 1,
     TEXTINPUTEVENT = 2,
@@ -262,36 +262,36 @@ typedef enum EEventType {
     INVALID = 7
 } EEventType;
 
-typedef enum EGameStatus {
+typedef enum class EGameStatus {
     INVALID_STATUS = 0,
     LOBBY = 1,
     RUNNING = 2,
     CUSTOM = 3
 } EGameStatus;
 
-typedef enum EHotjoinAvailability {
+typedef enum class EHotjoinAvailability {
     HOTJOINAVAILABILITY_AVAILABLE = 0,
     HOTJOINAVAILABILITY_GENERATING = 1,
     HOTJOINAVAILABILITY_LOADING = 2,
     HOTJOINAVAILABILITY_HOTJOIN = 3
 } EHotjoinAvailability;
 
-typedef enum EGalacticObjectType {
+typedef enum class EGalacticObjectType {
     _GALOBJ_STAR_ = 0
 } EGalacticObjectType;
 
-typedef enum EMappingValueType {
+typedef enum class EMappingValueType {
     MAPPING_VALUE_TYPE_BUTTON = 0,
     MAPPING_VALUE_TYPE_ANALOG = 1
 } EMappingValueType;
 
-typedef enum EFormat {
+typedef enum class EFormat {
     FORMAT_CENTER = 0,
     FORMAT_RIGHT = 1,
     FORMAT_LEFT = 2
 } EFormat;
 
-typedef enum EMouseEventType {
+typedef enum class EMouseEventType {
     INVALID = 0,
     MOVED = 1,
     KEYCHANGE = 2,
@@ -300,7 +300,7 @@ typedef enum EMouseEventType {
     KEYDBLKLICK = 5
 } EMouseEventType;
 
-typedef enum EMouseButton {
+typedef enum class EMouseButton {
     NONE = 0,
     LEFT = 1,
     RIGHT = 2,
@@ -308,7 +308,7 @@ typedef enum EMouseButton {
     SCROLL_WHEEL = 4
 } EMouseButton;
 
-typedef enum ETouchType {
+typedef enum class ETouchType {
     TOUCH_DOWN = 0,
     TOUCH_UP = 1,
     TOUCH_MOVED = 2,
@@ -317,7 +317,7 @@ typedef enum ETouchType {
     TOUCH_INVALID = 5
 } ETouchType;
 
-typedef enum EGamepadEventType {
+typedef enum class EGamepadEventType {
     CONNECTED = 1,
     DISCONNECTED = 2,
     BUTTON_DOWN = 4,
@@ -327,7 +327,7 @@ typedef enum EGamepadEventType {
     INVALID = 64
 } EGamepadEventType;
 
-typedef enum EGamepadButton {
+typedef enum class EGamepadButton {
     BUTTON_A = 0,
     BUTTON_B = 1,
     BUTTON_X = 2,
@@ -346,7 +346,7 @@ typedef enum EGamepadButton {
     INVALID_GAMEPAD_BUTTON = 15
 } EGamepadButton;
 
-typedef enum EGamepadAnalog {
+typedef enum class EGamepadAnalog {
     ANALOG_LEFT_X = 0,
     ANALOG_LEFT_Y = 1,
     ANALOG_RIGHT_X = 2,
@@ -359,7 +359,7 @@ typedef enum EGamepadAnalog {
     ANALOG_RIGHT_STICK = 9
 } EGamepadAnalog;
 
-typedef enum EShipGraphicsEntityStateType {
+typedef enum class EShipGraphicsEntityStateType {
     None = 0,
     Idle = 1,
     Moving = 2,
@@ -370,7 +370,7 @@ typedef enum EShipGraphicsEntityStateType {
 } EShipGraphicsEntityStateType;
 
 
-typedef enum EStarClass {
+typedef enum class EStarClass {
     _STAR_CLASS_GENERAL_ = 0,
     _STAR_CLASS_B_ = 1,
     _STAR_CLASS_A_ = 2,
@@ -387,7 +387,7 @@ typedef enum EStarClass {
 } EStarClass;
 
 
-typedef enum EArrowGfxType {
+typedef enum class EArrowGfxType {
     SYSTEM_MOVE_ARROW = 0,
     SYSTEM_ATTACK_ARROW = 1,
     SYSTEM_TASK_ARROW = 2,
@@ -402,7 +402,7 @@ typedef enum EArrowGfxType {
     ARROW_GFX_TYPE_numof = 11
 } EArrowGfxType;
 
-typedef enum EMiaType {
+typedef enum class EMiaType {
     MIA_EMERGENCY_FTL = 0,
     MIA_RETURN_HOME = 1,
     MIA_REINFORCE = 2,
@@ -411,7 +411,7 @@ typedef enum EMiaType {
 } EMiaType;
 
 
-typedef enum EShipClass {
+typedef enum class EShipClass {
     _SHIPCLASS_MILITARY_ = 0,
     _SHIPCLASS_CONSTRUCTOR_ = 1,
     _SHIPCLASS_COLONIZER_ = 2,
@@ -428,7 +428,7 @@ typedef enum EShipClass {
 } EShipClass;
 
 
-typedef enum EBeamState {
+typedef enum class EBeamState {
     WINDUP = 0,
     STARTING = 1,
     IN_PROGRESS = 2,
@@ -436,7 +436,7 @@ typedef enum EBeamState {
     BEAM_STATES_numof = 4
 } EBeamState;
 
-typedef enum EPlanetDestructionGraphicsEntityStateType {
+typedef enum class EPlanetDestructionGraphicsEntityStateType {
     None = 0,
     Windup = 1,
     Firing = 2,
@@ -444,7 +444,7 @@ typedef enum EPlanetDestructionGraphicsEntityStateType {
 } EPlanetDestructionGraphicsEntityStateType;
 
 
-typedef enum EGFXPrimitive {
+typedef enum class EGFXPrimitive {
     PRIMITIVE_POINTLIST = 0,
     PRIMITIVE_LINELIST = 1,
     PRIMITIVE_LINESTRIP = 2,
@@ -457,25 +457,25 @@ typedef enum EGFXPrimitive {
     PRIMITIVE_COUNT = 9
 } EGFXPrimitive;
 
-typedef enum ERangeCacheType {
+typedef enum class ERangeCacheType {
     WORMHOLE_RANGE = 0,
     FTL_JUMP_RANGE = 1,
     INTEL_LEVEL_HIGH = 2
 } ERangeCacheType;
 
-typedef enum EProjectileGfxType {
+typedef enum class EProjectileGfxType {
     PROJECTILE_GFX_BEAM = 0,
     PROJECTILE_GFX_BALLISTIC = 1,
     PROJECTILE_GFX_MISSILE = 2,
     PROJECTILE_GFX_numof = 3
 } EProjectileGfxType;
 
-typedef enum EScrollbarSide {
+typedef enum class EScrollbarSide {
     SCROLLBAR_LEFT = 0,
     SCROLLBAR_RIGHT = 1
 } EScrollbarSide;
 
-typedef enum e_state {
+typedef enum class e_state {
     INCCLICKED = 0,
     DECCLICKED = 1,
     INCDOWN = 2,
@@ -490,21 +490,21 @@ typedef enum e_state {
 } e_state;
 
 
-typedef enum EFleetStance {
+typedef enum class EFleetStance {
     _FLEETSTANCE_PASSIVE_ = 0,
     _FLEETSTANCE_AGGRESSIVE_ = 1,
     _FLEETSTANCE_EVASIVE_ = 2,
     _NUM_FLEETSTANCES_ = 3
 } EFleetStance;
 
-typedef enum EAggressiveStanceRangeMeasureFrom {
+typedef enum class EAggressiveStanceRangeMeasureFrom {
     MEASURE_FROM_SELF = 0,
     MEASURE_FROM_RETURN_POINT = 1,
     MEASURE_FROM_NOT_SET = 2
 } EAggressiveStanceRangeMeasureFrom;
 
 
-typedef enum EFleetFlags {
+typedef enum class EFleetFlags {
     ToBeKilled = -2147483648,
     None = 0,
     CustomName = 1,
@@ -521,19 +521,19 @@ typedef enum EFleetFlags {
 } EFleetFlags;
 
 
-typedef enum EHitEntityPositioning {
+typedef enum class EHitEntityPositioning {
     BeamIntersection = 0,
     EntityCenter = 1
 } EHitEntityPositioning;
 
 
-typedef enum ETriggerType {
+typedef enum class ETriggerType {
     TRIGGER_TYPE_GAMEPAD_BUTTON = 0,
     TRIGGER_TYPE_GAMEPAD_ANALOG = 1
 } ETriggerType;
 
 
-typedef enum EGFXFormat {
+typedef enum class EGFXFormat {
     GFXFORMAT_FLOAT = 0,
     GFXFORMAT_HALF = 1,
     GFXFORMAT_INT = 2,
@@ -544,7 +544,7 @@ typedef enum EGFXFormat {
     GFXFORMAT_COUNT = 7
 } EGFXFormat;
 
-typedef enum EGFXSemantic {
+typedef enum class EGFXSemantic {
     SEMANTIC_POSITION = 0,
     SEMANTIC_COLOR = 1,
     SEMANTIC_TEXCOORD = 2,
@@ -556,14 +556,14 @@ typedef enum EGFXSemantic {
     SEMANTIC_COUNT = 8
 } EGFXSemantic;
 
-typedef enum EGFXInputType {
+typedef enum class EGFXInputType {
     INPUTTYPE_PER_VERTEX = 0,
     INPUTTYPE_PER_INSTANCE = 1,
     INPUTTYPE_COUNT = 2
 } EGFXInputType;
 
 
-typedef enum ENodeType {
+typedef enum class ENodeType {
     NODE_TYPE_NOT_SET = 0,
     MESH_JOINT_NODE = 1,
     MESH_LOCATOR_NODE = 2,
@@ -571,7 +571,7 @@ typedef enum ENodeType {
 } ENodeType;
 
 
-typedef enum EHyperlaneSettingsType {
+typedef enum class EHyperlaneSettingsType {
     None = 0,
     SystemsBridge = 1,
     HiddenInGalaxy = 2,
@@ -581,7 +581,7 @@ typedef enum EHyperlaneSettingsType {
 } EHyperlaneSettingsType;
 
 
-typedef enum EShieldImpactSize {
+typedef enum class EShieldImpactSize {
     SHIELD_IMPACT_SMALL = 0,
     SHIELD_IMPACT_MEDIUM = 1,
     SHIELD_IMPACT_BIG = 2,
@@ -589,26 +589,26 @@ typedef enum EShieldImpactSize {
 } EShieldImpactSize;
 
 
-typedef enum EPathJumpMethod {
+typedef enum class EPathJumpMethod {
     JUMP_HYPERLANE = 0,
     JUMP_BYPASS = 1,
     JUMP_COUNT = 2
 } EPathJumpMethod;
 
 
-typedef enum EFleetFixedFormationType {
+typedef enum class EFleetFixedFormationType {
     Wedge = 0,
     Circle = 1
 } EFleetFixedFormationType;
 
-typedef enum EFleetAutoMoveType {
+typedef enum class EFleetAutoMoveType {
     AUTO_MOVE_NONE = 0,
     AUTO_MOVE_TO_PLANET = 1,
     AUTO_ATTACK_FLEET = 2,
     AUTO_FOLLOW_FLEET = 3
 } EFleetAutoMoveType;
 
-typedef enum ESpatialObjectType {
+typedef enum class ESpatialObjectType {
     SPATIAL_SHIP = 0,
     SPATIAL_AMBIENT_OBJECT = 1,
     SPATIAL_PLANET = 2,
@@ -621,13 +621,13 @@ typedef enum ESpatialObjectType {
 } ESpatialObjectType;
 
 
-typedef enum EUnionDataType {
+typedef enum class EUnionDataType {
     Button = 0,
     Analog = 1
 } EUnionDataType;
 
 
-typedef enum EGamepadAnalogDirection {
+typedef enum class EGamepadAnalogDirection {
     GAMEPAD_ANALOG_DIRECTION_RIGHT = 0,
     GAMEPAD_ANALOG_DIRECTION_UP = 1,
     GAMEPAD_ANALOG_DIRECTION_LEFT = 2,
@@ -639,7 +639,7 @@ typedef enum EGamepadAnalogDirection {
 } EGamepadAnalogDirection;
 
 
-typedef enum EEconomicCategorySettingType {
+typedef enum class EEconomicCategorySettingType {
     None = 0,
     Hidden = 1,
     UseForAIBudget = 2,
@@ -658,7 +658,7 @@ typedef enum EEconomicCategorySettingType {
 } EEconomicCategorySettingType;
 
 
-typedef enum EScopeType {
+typedef enum class EScopeType {
     SCOPE_NO_CHECK = 0,
     SCOPE_MEGASTRUCTURE = 1,
     SCOPE_PLANET = 2,
@@ -690,7 +690,7 @@ typedef enum EScopeType {
 } EScopeType;
 
 
-typedef enum ELeaderClassCategoryType {
+typedef enum class ELeaderClassCategoryType {
     Admiral = 0,
     General = 1,
     Scientist = 2,
@@ -701,7 +701,7 @@ typedef enum ELeaderClassCategoryType {
 } ELeaderClassCategoryType;
 
 
-typedef enum ModifierType {
+typedef enum class ModifierType {
     _MOD_BLANK_MODIFIER_ = 0,
     _MOD_POP_POLITICAL_POWER_ = 1,
     _MOD_POP_HAPPINESS_ = 2,
@@ -1023,7 +1023,7 @@ typedef enum ModifierType {
 } ModifierType;
 
 
-typedef enum ELeaderClassAbilitiesType {
+typedef enum class ELeaderClassAbilitiesType {
     None = 0,
     CanLeadNavy = 1,
     CanLeadArmy = 2,
@@ -1034,7 +1034,7 @@ typedef enum ELeaderClassAbilitiesType {
     CanHaveTraits = 64
 } ELeaderClassAbilitiesType;
 
-typedef enum EGender {
+typedef enum class EGender {
     _GENDER_MALE_ = 0,
     _GENDER_FEMALE_ = 1,
     _GENDER_INDETERMINABLE_ = 2,
@@ -1042,20 +1042,20 @@ typedef enum EGender {
 } EGender;
 
 
-typedef enum ETraitType {
+typedef enum class ETraitType {
     TRAIT_LEADER = 0,
     TRAIT_PLANET_PREFERENCE = 1,
     TRAIT_NORMAL = 2
 } ETraitType;
 
-typedef enum ESpawnType {
+typedef enum class ESpawnType {
     SPAWN_DISALLOWED = 0,
     SPAWN_ALLOWED = 1,
     SPAWN_ALWAYS = 2,
     SPAWN_TYPE_numof = 3
 } ESpawnType;
 
-typedef enum ETechArea {
+typedef enum class ETechArea {
     _TECHAREA_PHYSICS_ = 0,
     _TECHAREA_SOCIETY_ = 1,
     _TECHAREA_ENGINEERING_ = 2,
@@ -1064,18 +1064,18 @@ typedef enum ETechArea {
 } ETechArea;
 
 
-typedef enum EAIUpdateShipDesign {
+typedef enum class EAIUpdateShipDesign {
     UPDATE_MILITARY = 0,
     UPDATE_ALL = 1,
     NUM_TYPE_UPDATES = 2
 } EAIUpdateShipDesign;
 
-typedef enum EGovernmentRestrictionNodeType {
+typedef enum class EGovernmentRestrictionNodeType {
     And = 0,
     Or = 1
 } EGovernmentRestrictionNodeType;
 
-typedef enum EDLCSource {
+typedef enum class EDLCSource {
     NONE = 0,
     STEAM_DLC = 1,
     STEAM_UGC = 2,
@@ -1090,7 +1090,7 @@ typedef enum EDLCSource {
 } EDLCSource;
 
 
-typedef enum ETechUnlock {
+typedef enum class ETechUnlock {
     _TECH_UNLOCK_SHIP_ = 0,
     _TECH_UNLOCK_PLANET_ = 1,
     _TECH_UNLOCK_ARMY_ = 2,
@@ -1115,7 +1115,7 @@ typedef enum ETechUnlock {
     _TECH_UNLOCK_NONE_ = 20
 } ETechUnlock;
 
-typedef enum EElectionType {
+typedef enum class EElectionType {
     _ELECTION_NONE_ = 0,
     _ELECTION_OLIGARCHIC_ = 1,
     _ELECTION_DEMOCRATIC_ = 2,
@@ -1123,7 +1123,7 @@ typedef enum EElectionType {
 } EElectionType;
 
 
-typedef enum EComponentTemplateSettingsType {
+typedef enum class EComponentTemplateSettingsType {
     None = 0,
     ComponentIsHidden = 1,
     ComponentShoulAIUse = 2,
@@ -1137,7 +1137,7 @@ typedef enum EComponentTemplateSettingsType {
     UtilityIsJumpDrive = 512
 } EComponentTemplateSettingsType;
 
-typedef enum EComponentSlotSize {
+typedef enum class EComponentSlotSize {
     _CMPSLOTSIZE_PD_ = 0,
     _CMPSLOTSIZE_SMALL_ = 1,
     _CMPSLOTSIZE_MEDIUM_ = 2,
@@ -1150,7 +1150,7 @@ typedef enum EComponentSlotSize {
     _NUM_CMPSLOTSIZES_ = 9
 } EComponentSlotSize;
 
-typedef enum EComponentType {
+typedef enum class EComponentType {
     _CMPTYPE_WEAPON_ = 0,
     _CMPTYPE_UTILITY_ = 1,
     _CMPTYPE_STRIKE_CRAFT_ = 2,
@@ -1158,14 +1158,14 @@ typedef enum EComponentType {
 } EComponentType;
 
 
-typedef enum EShipConstructionType {
+typedef enum class EShipConstructionType {
     NONE = 0,
     STARBASE_DEFENSES = 1,
     STARBASE_SHIPYARD = 2
 } EShipConstructionType;
 
 
-typedef enum EShipSizeSettingsType {
+typedef enum class EShipSizeSettingsType {
     None = 0,
     IsListed = 1,
     Designable = 2,
@@ -1184,7 +1184,7 @@ typedef enum EShipSizeSettingsType {
 } EShipSizeSettingsType;
 
 
-typedef enum ECountryTypeFlags {
+typedef enum class ECountryTypeFlags {
     ShareSurveyData = -2147483648,
     AlwaysValidTargetAggressive = 0,
     CanHaveTheirCommShared = 0,
@@ -1234,7 +1234,7 @@ typedef enum ECountryTypeFlags {
 } ECountryTypeFlags;
 
 
-typedef enum ECountryModuleType {
+typedef enum class ECountryModuleType {
     COUNTRY_MODULE_EVENT = 0,
     COUNTRY_MODULE_ECONOMY = 1,
     COUNTRY_MODULE_LEADER = 2,
@@ -1248,7 +1248,7 @@ typedef enum ECountryModuleType {
 } ECountryModuleType;
 
 
-typedef enum ECountryAISettingsFlags {
+typedef enum class ECountryAISettingsFlags {
     None = 0,
     Enabled = 1,
     DeclareWars = 2,
@@ -1269,7 +1269,7 @@ typedef enum ECountryAISettingsFlags {
     AscensionPerks = 65536
 } ECountryAISettingsFlags;
 
-typedef enum ETechStatusFlags {
+typedef enum class ETechStatusFlags {
     None = 0,
     AutoResearchPhysics = 1,
     AutoResearchSociety = 2,
@@ -1277,7 +1277,7 @@ typedef enum ETechStatusFlags {
 } ETechStatusFlags;
 
 
-typedef enum EAICountryFlags {
+typedef enum class EAICountryFlags {
     None = 0,
     NeedsBuildings = 1,
     NeedsStations = 2,
@@ -1291,7 +1291,7 @@ typedef enum EAICountryFlags {
 } EAICountryFlags;
 
 
-typedef enum ERelationFlags {
+typedef enum class ERelationFlags {
     Default = 0,
     None = 0,
     IsHostile = 1,
@@ -1315,14 +1315,14 @@ typedef enum ERelationFlags {
     HasEmbassy = 262144
 } ERelationFlags;
 
-typedef enum EType {
+typedef enum class EType {
     Invalid = 0,
     Tradition = 1,
     AscensionPerk = 2
 } EType;
 
 
-typedef enum EMessageNotificationType {
+typedef enum class EMessageNotificationType {
     _MESSAGE_TYPE_ANOMALY_ = 0,
     _MESSAGE_TYPE_COMBAT_STATS_ = 1,
     _MESSAGE_TYPE_DEBRIS_ = 2,
@@ -1350,7 +1350,7 @@ typedef enum EMessageNotificationType {
 } EMessageNotificationType;
 
 
-typedef enum EConnection {
+typedef enum class EConnection {
     EAnyOther = 0,
     EOneToOne = 1,
     ScriptedConnection = 2,
@@ -1358,7 +1358,7 @@ typedef enum EConnection {
 } EConnection;
 
 
-typedef enum CLocationType {
+typedef enum class CLocationType {
     None = 0,
     Sector = 1,
     Planet = 2,
@@ -1373,7 +1373,7 @@ typedef enum CLocationType {
     FirstContactSystem = 11
 } CLocationType;
 
-typedef enum EEnvoyAssignment {
+typedef enum class EEnvoyAssignment {
     ImproveRelation = 0,
     HarmRelation = 1,
     GalacticCommunityDelegate = 2,
@@ -1387,7 +1387,7 @@ typedef enum EEnvoyAssignment {
 } EEnvoyAssignment;
 
 
-typedef enum EAIPriority {
+typedef enum class EAIPriority {
     PRIORITY_NONE = 0,
     PRIORITY_NEUTRALITY = 1,
     PRIORITY_MAKE_RIVAL = 2,
@@ -1395,7 +1395,7 @@ typedef enum EAIPriority {
 } EAIPriority;
 
 
-typedef enum SelectableType {
+typedef enum class SelectableType {
     _SELECTABLE_SHIP_ = 0,
     _SELECTABLE_FLEET_ = 1,
     _SELECTABLE_PLANET_ = 2,
@@ -1407,7 +1407,7 @@ typedef enum SelectableType {
     _SELECTABLE_none_ = 8
 } SelectableType;
 
-typedef enum EProjectStatus {
+typedef enum class EProjectStatus {
     _PROJECT_STATUS_AVAILABLE_ = 0,
     _PROJECT_STATUS_IN_PROGRESS_ = 1,
     _PROJECT_STATUS_COMPLETED_ = 2,
@@ -1416,7 +1416,7 @@ typedef enum EProjectStatus {
     _PROJECT_STATUS_TIMED_OUT_ = 5
 } EProjectStatus;
 
-typedef enum CAutoOpenSetting {
+typedef enum class CAutoOpenSetting {
     None = 0,
     Player = 1,
     Others = 2,
@@ -1424,7 +1424,7 @@ typedef enum CAutoOpenSetting {
 } CAutoOpenSetting;
 
 
-typedef enum EBuildingCategory {
+typedef enum class EBuildingCategory {
     CATEGORY_ALL = 0,
     CATEGORY_POP_ASSEMBLY = 1,
     CATEGORY_GOVERNMENT = 2,
@@ -1439,19 +1439,19 @@ typedef enum EBuildingCategory {
 } EBuildingCategory;
 
 
-typedef enum EVoteResolution {
+typedef enum class EVoteResolution {
     Yes = 0,
     No = 1,
     Neutral = 2
 } EVoteResolution;
 
-typedef enum ESituationCategory {
+typedef enum class ESituationCategory {
     PositiveSituation = 0,
     NegativeSituation = 1,
     NeutralSituation = 2
 } ESituationCategory;
 
-typedef enum EBuildingTypeProperties {
+typedef enum class EBuildingTypeProperties {
     None = 0,
     IsCapital = 1,
     HasFTLInhibitor = 2,
@@ -1464,7 +1464,7 @@ typedef enum EBuildingTypeProperties {
     IsEssential = 256
 } EBuildingTypeProperties;
 
-typedef enum EAIFleetGroupType {
+typedef enum class EAIFleetGroupType {
     AI_FLEET_INVADE = 0,
     AI_FLEET_ATTACK = 1,
     AI_FLEET_DEFENSE = 2,
@@ -1473,7 +1473,7 @@ typedef enum EAIFleetGroupType {
     AI_NUM_FLEET_TYPES = 5
 } EAIFleetGroupType;
 
-typedef enum EPathFindSettings {
+typedef enum class EPathFindSettings {
     None = 0,
     Evasive = 1,
     CheckAccess = 2,
@@ -1482,7 +1482,7 @@ typedef enum EPathFindSettings {
 } EPathFindSettings;
 
 
-typedef enum EIntelInfo {
+typedef enum class EIntelInfo {
     RelativeEconomy = -2147483648,
     None = 0,
     RelativeFleet = 0,
@@ -1533,7 +1533,7 @@ typedef enum EIntelInfo {
 } EIntelInfo;
 
 
-typedef enum ESpeciesPurgeType {
+typedef enum class ESpeciesPurgeType {
     _PURGE_MATRIX_ = 0,
     _PURGE_NORMAL_ = 1,
     _PURGE_NEUTERING_ = 2,
@@ -1544,7 +1544,7 @@ typedef enum ESpeciesPurgeType {
     _NUM_OF_PURGE_TYPES_ = 7
 } ESpeciesPurgeType;
 
-typedef enum EJobPossiblePreCalc {
+typedef enum class EJobPossiblePreCalc {
     None = 0,
     Drone = 1,
     Worker = 2,
@@ -1553,7 +1553,7 @@ typedef enum EJobPossiblePreCalc {
 } EJobPossiblePreCalc;
 
 
-typedef enum EResolutionFlags {
+typedef enum class EResolutionFlags {
     None = 0,
     Targeted = 1,
     Sanction = 2,
@@ -1562,7 +1562,7 @@ typedef enum EResolutionFlags {
 } EResolutionFlags;
 
 
-typedef enum EJobTypeSettingsType {
+typedef enum class EJobTypeSettingsType {
     None = 0,
     IsCappedByModifier = 1,
     CanSetPriority = 2,

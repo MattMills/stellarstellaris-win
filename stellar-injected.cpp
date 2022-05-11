@@ -81,11 +81,11 @@ void thread_idler_testing() {
 		fh << "stellarstellaris.dll heartbeat: frame(" << p_CApplication->_nCurrentFrame << ") pIdler(" << static_cast<qword>(p_CApplication->_pIdler) << ")";
 		if (p_CApplication->_pIdler != 0) {
 			CGameIdler* p_CGameIdler = (CGameIdler *) p_CApplication->_pIdler;
-			fh << " IdlerType(" << p_CGameIdler->_eType;
-			if (p_CGameIdler->_eType == _IDLERTYPE_FRONTEND_) {
+			fh << " IdlerType(" << (int) p_CGameIdler->_eType;
+			if (p_CGameIdler->_eType == IdlerType::_IDLERTYPE_FRONTEND_) {
 				fh << " FRONTEND ";
 			}
-			else if (p_CGameIdler->_eType == _IDLERTYPE_INGAME_) {
+			else if (p_CGameIdler->_eType == IdlerType::_IDLERTYPE_INGAME_) {
 				fh << " INGAME ";
 			}
 			fh << ") ";
