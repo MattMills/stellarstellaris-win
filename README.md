@@ -10,7 +10,7 @@ This is in a very early alpha stage, it currently doesn't do much of anything.
 1. ~~Hook a DLL Payload into Stellaris~~
 2. Identify locations of useful memory structures
     1. ~~CApplication~~
-    2. CIdler
+    2. ~~CIdler, CFrontEndIdler, CInGameIdler~~
     3. CGameState
 4. Hook a LUA interpreter into a console command
 5. ???
