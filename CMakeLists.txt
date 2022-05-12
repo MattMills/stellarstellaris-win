@@ -35,9 +35,36 @@ include (InstallRequiredSystemLibraries)
 INSTALL(FILES ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} DESTINATION ${LUAJIT_BIN})
 
 
-
-
 # Add source to this project's executable.
-add_executable (stellar-win "stellar-win.cpp" "stellar-win.h" "hooking_windows.h" "hooking_windows.cpp"  "stellaris-generic.h")
-add_library (stellarstellaris SHARED "stellar-injected.cpp" "stellar-win.h" "hooking_windows.h" "hooking_windows.cpp" "stellar-injected.h" "stellaris-CGameIdler.h" "stellaris-generic.h" "lib/eigen/Eigen/core")
+add_executable	( stellar-win 
+					"src/stellar-win.cpp" 
+					"src/hooking_windows.cpp"   
+					"src/hooking_error.cpp" 
+					"src/hooking_shared.cpp"
+				)
+add_library		( stellarstellaris SHARED 
+					"src/stellar-injected.cpp" 
+					"src/hooking_windows.cpp"  
+					"src/hooking_asm.cpp"
+					"src/hooking_error.cpp" 
+					"src/hooking_shared.cpp"
+				)
+
+
+				
+target_include_directories(stellar-win PUBLIC 
+										"${CMAKE_CURRENT_SOURCE_DIR}"
+										"${CMAKE_CURRENT_SOURCE_DIR}/include/"
+										"lib/eigen/Eigen/"
+										"lib/eigen/"
+										)
+
+										target_include_directories(stellarstellaris PUBLIC 
+										"${CMAKE_CURRENT_SOURCE_DIR}"
+										"${CMAKE_CURRENT_SOURCE_DIR}/include/"
+										"lib/eigen/Eigen/"
+										"lib/eigen/"
+										)
+
+
 target_link_libraries(stellarstellaris ${LUA_LIBRARY})

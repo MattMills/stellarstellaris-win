@@ -7720,14 +7720,7 @@ struct CFixedWindow {
 };
 
 struct CGameIdler {
-    undefined field0_0x0;
-    undefined field1_0x1;
-    undefined field2_0x2;
-    undefined field3_0x3;
-    undefined field4_0x4;
-    undefined field5_0x5;
-    undefined field6_0x6;
-    undefined field7_0x7;
+    void* _vftable;
     struct CTextBox* _pToolTip;
     struct CString _LastToolTipText;
     float _vLastUpdateTime;
