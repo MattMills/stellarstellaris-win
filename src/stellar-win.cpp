@@ -85,7 +85,7 @@ int main() {
     std::cout << "[DBG] bytesRead: " << bytesRead << std::endl;
     
     
-    if(buffer->_GameVersion._szName._str == "Libra v3.3.4"){
+    if(buffer->_GameVersion._szName._str == "Cepheus v3.4.2"){ // Libra v3.3.4
         std::cout << "Detected supported Stellaris version: " << buffer->_GameVersion._szName._str << std::endl;
     }else {
         std::cout << "Note: if the version text below this line shows gibberish, or the program crashes after this line, things went really wrongly" << std::endl;
