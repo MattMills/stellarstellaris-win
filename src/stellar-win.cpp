@@ -54,6 +54,7 @@ int main() {
     }
 
     check(processid);
+    Sleep(1000);
 
     //Open a handle to the process with ALL_ACCESS privs
     //TODO: Probably use less privs
