@@ -2,6 +2,14 @@
 
 #include <string>
 #include <cstring>
+#include <vector>
+#include <unordered_map>
+#include <atomic>
+#include <deque>
+#include <queue>
+#include <map>
+#include <mutex>
+
 #include "lib/eigen/Eigen/core"
 #include "hooking_windows.h"
 
@@ -18,26 +26,71 @@
 //#include <atltempl.h>
 
 
-typedef unsigned char   undefined;
-typedef unsigned int    ImageBaseOffset32;
-typedef unsigned char    byte;
-typedef unsigned int    dword;
-typedef long double    longdouble;
-typedef long long    longlong;
-typedef unsigned long long    qword;
-typedef char    sbyte;
-typedef unsigned char    uchar;
-typedef unsigned int    uint;
-typedef unsigned long    ulong;
-typedef unsigned long long    ulonglong;
-typedef unsigned char    undefined1;
-typedef unsigned short    undefined2;
-typedef unsigned int    undefined4;
-typedef unsigned long long    undefined8;
-typedef unsigned short    ushort;
-typedef unsigned short    word;
-typedef ulonglong __uint64;
+typedef unsigned int        ImageBaseOffset32;
+typedef unsigned char       byte;
+typedef char                sbyte;
+typedef char                signedchar;
+typedef unsigned char       uchar;
+typedef unsigned char       unsignedchar;
 
+typedef unsigned int        dword;
+typedef unsigned long long  qword;
+
+typedef unsigned short      ushort;
+typedef unsigned short      word;
+
+typedef long double         longdouble;
+typedef long long           longlong;
+
+
+typedef unsigned int        uint;
+typedef unsigned int        unsignedint;
+typedef unsigned long       ulong;
+typedef unsigned long long  ulonglong;
+typedef unsigned long long  __uint64;
+
+typedef unsigned char       undefined;
+typedef unsigned char       undefined1;
+typedef unsigned short      undefined2;
+typedef unsigned int        undefined4;
+typedef unsigned long long  undefined8;
+
+typedef struct CStringconst {
+    char val[64]; // ???
+} CStringconst;
+
+template <typename T> struct CPdxAtomic {
+    struct atomic<T> _Value;
+};
+
+
+template <typename T, uint size, typename T2> struct CPdxHybridArray {
+    undefined field0_0x0;
+    undefined field1_0x1;
+    undefined field2_0x2;
+    undefined field3_0x3;
+    undefined field4_0x4;
+    undefined field5_0x5;
+    undefined field6_0x6;
+    undefined field7_0x7;
+    undefined field8_0x8;
+    undefined field9_0x9;
+    undefined field10_0xa;
+    undefined field11_0xb;
+    undefined field12_0xc;
+    undefined field13_0xd;
+    undefined field14_0xe;
+    undefined field15_0xf;
+    undefined field16_0x10;
+    undefined field17_0x11;
+    undefined field18_0x12;
+    undefined field19_0x13;
+    undefined field20_0x14;
+    undefined field21_0x15;
+    undefined field22_0x16;
+    undefined field23_0x17;
+    union _Align_type<double, sizeof(T)> _StaticData[size];
+};
 //template <typename T> using  CList = CList<T>;
 
 
@@ -124,9 +177,29 @@ template <typename T, typename T2> class CValueAssociativeArray {
     };
 
     class CPdxArray<CValueAssociativeArray<T, T2>::CPair, int> _Pairs;
-
 };
-template <typename T> struct CScrollbarObserverGlue {
+
+template <typename T, int N> class CPdxScopedPtrImpl {
+    T* _pPtr;
+};
+
+template <typename T> struct CPdxPtr {
+    T* _pPtr;
+};
+
+template <typename T> struct CPdxRect {
+    T _Left;
+    T _Top;
+    T _Width;
+    T _Height;
+};
+
+template <typename T> class CRect {
+    CPoint<T> _Origin;
+    CPoint<T> _Extension;
+};
+
+template <typename T> class CScrollbarObserverGlue {
     undefined field0_0x0;
     undefined field1_0x1;
     undefined field2_0x2;
@@ -193,6 +266,25 @@ struct LockData {
     bool _isUsed;
 };
 
+template <typename T, typename T2, typename T3> struct CHashTable {
+    //<CString, CBitmapFont, ClassicHashKeyTraits<CString, CBitmapFont>>
+    uint _nSize;
+    uint _nCapacity;
+    struct Node** _pArray;
+};
+
+template <typename T, typename T2> struct ClassicHashKeyTraits {
+    unsigned char _invalid;
+};
+
+template <typename T, typename T2> struct NoRefHashKeyTraits {
+    unsigned char _invalid;
+};
+
+template <typename T, int default_value> struct TPdxDefVal {
+    T _Value = static_recast<T>(default_value);
+};
+
 template <typename T, typename T2> class CTernary {
 
     undefined field0_0x0;
@@ -231,7 +323,7 @@ template <typename T, typename T2> class CTernary {
 
 
 
-template <typename T> struct CButtonObserverGlue {
+template <typename T> class CButtonObserverGlue {
     undefined field0_0x0;
     undefined field1_0x1;
     undefined field2_0x2;

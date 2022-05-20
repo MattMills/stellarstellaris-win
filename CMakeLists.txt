@@ -27,6 +27,11 @@ endif()
 add_subdirectory(lib/luajit)
 
 
+execute_process(
+	COMMAND git rev-parse --short HEAD
+	RESULT_VARIABLE GIT_SHORT_HASH_RESULT
+	OUTPUT_VARIABLE	GIT_SHORT_HASH
+)
 
 
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)

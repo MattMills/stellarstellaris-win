@@ -4,6 +4,7 @@ using namespace std;
 
 #include "stellaris-CApplication.h"
 #include "stellaris-CGameIdler.h"
+#include "stellaris-CGameApplication.h"
 #include "stellar-injected.h"
 
 #include <fstream>
@@ -79,17 +80,23 @@ void thread_idler_testing() {
 
 		fh << "[" << time_buffer_with_ms << "] (" << GetCurrentProcessId() << ") ";
 		fh << "stellarstellaris.dll heartbeat: frame(" << p_CApplication->_nCurrentFrame << ") pIdler(" << static_cast<qword>(p_CApplication->_pIdler) << ")";
-		if (p_CApplication->_pIdler != 0) {
+		if (p_CApplication->_pIdler != NULL) {
 			CGameIdler* p_CGameIdler = (CGameIdler *) p_CApplication->_pIdler;
+			
 			fh << " IdlerType(" << (int) p_CGameIdler->_eType;
 			if (p_CGameIdler->_eType == IdlerType::_IDLERTYPE_FRONTEND_) {
-				fh << " FRONTEND ";
+				fh << " FRONTEND )";
 			}
 			else if (p_CGameIdler->_eType == IdlerType::_IDLERTYPE_INGAME_) {
-				fh << " INGAME ";
+				fh << " INGAME )";
 			}
-			fh << ") ";
-			CConsole* p_Console = p_CGameIdler->_pConsole;
+			else {
+				fh << ") ";
+			}
+
+			
+			
+			//CConsole* p_Console = p_CGameIdler->_pConsole;
 			
 			
 		}

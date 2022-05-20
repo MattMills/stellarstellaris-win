@@ -193,7 +193,7 @@ typedef enum class ESessionType {
     EU3_NETWORK_SERVER_STARTING = 9
 } ESessionType;
 
-typedef enum class EHotjoinDeclineReasons {
+typedef enum class enumEHotjoinDeclineReasons {
     HOTJOINREASON_DECLINE = 0,
     HOTJOINREASON_BUSY = 1,
     HOTJOINREASON_NAMECONFLICT = 2,
@@ -274,7 +274,7 @@ typedef enum class EHotjoinAvailability {
     HOTJOINAVAILABILITY_GENERATING = 1,
     HOTJOINAVAILABILITY_LOADING = 2,
     HOTJOINAVAILABILITY_HOTJOIN = 3
-} EHotjoinAvailability;
+} enumEHotjoinAvailability;
 
 typedef enum class EGalacticObjectType {
     _GALOBJ_STAR_ = 0
@@ -3837,8 +3837,8 @@ struct CDropDownBox {
     undefined field173_0xad;
     undefined field174_0xae;
     undefined field175_0xaf;
-    struct CButtonObserverGlue<CDropDownBox> _ToggleExpand;
-    struct CButtonObserverGlue<CDropDownBox> _ContractOnLeave;
+    class CButtonObserverGlue<CDropDownBox> _ToggleExpand;
+    class CButtonObserverGlue<CDropDownBox> _ContractOnLeave;
     struct SScissorRectangle _ScissorRect;
     struct CGuiPosition _Position;
     struct CGuiGraphics* _Graphics;
@@ -4059,7 +4059,7 @@ struct CInstantTextBox {
     undefined field195_0x14e;
     undefined field196_0x14f;
     struct CScrollbar* _pScrollbar;
-    struct CScrollbarObserverGlue<CInstantTextBox> _ScrollbarValueChanged;
+    class CScrollbarObserverGlue<CInstantTextBox> _ScrollbarValueChanged;
     bool _bHideScrollbar;
     undefined field200_0x191;
     undefined field201_0x192;
@@ -5634,7 +5634,7 @@ struct CSmoothListbox {
     undefined field357_0x165;
     undefined field358_0x166;
     undefined field359_0x167;
-    struct CScrollbarObserverGlue<CSmoothListbox> _ScrollbarValueChanged;
+    class CScrollbarObserverGlue<CSmoothListbox> _ScrollbarValueChanged;
     class CList<TListboxItem*> _HiddenItemsList;
     struct SScissorRectangle _ScissorRect;
     int _nMaxNumberOfElements;
@@ -6178,9 +6178,9 @@ struct CSpinner {
     class CVector2<int> _decButtonPosition;
     class CVector2<int> _incButtonPosition;
     struct CButtonStandard* _decButton;
-    struct CButtonObserverGlue<CSpinner> _IncClicked;
+    class CButtonObserverGlue<CSpinner> _IncClicked;
     struct CButtonStandard* _incButton;
-    struct CButtonObserverGlue<CSpinner> _DecClicked;
+    class CButtonObserverGlue<CSpinner> _DecClicked;
     int _nValue;
     int _nMaxValue;
     int _nShiftSpeed;
@@ -7346,12 +7346,12 @@ struct CScrollbar {
     class CVector2<float> _sliderPos;
     struct CButtonDrag* _slider;
     struct CButtonObjectGlue<CScrollbar> _TrackClicked;
-    struct CButtonObserverGlue<CScrollbar> _SliderMoved;
+    class CButtonObserverGlue<CScrollbar> _SliderMoved;
     struct CTrack* _track;
     struct CButtonStandard* _decButton;
-    struct CButtonObserverGlue<CScrollbar> _IncClicked;
+    class CButtonObserverGlue<CScrollbar> _IncClicked;
     struct CButtonStandard* _incButton;
-    struct CButtonObserverGlue<CScrollbar> _DecClicked;
+    class CButtonObserverGlue<CScrollbar> _DecClicked;
     struct CIcon* _pLimitMinIcon;
     struct CIcon* _pLimitMaxIcon;
     struct CClock* _pClock;
@@ -7643,11 +7643,11 @@ struct CFixedWindow {
     struct CGuiGraphics* _Graphics;
     struct CWindowType* _creator;
     struct CString _background;
-    struct CButtonObserverGlue<CFixedWindow> _WindowMoved;
-    struct CButtonObserverGlue<CFixedWindow> _WindowDown;
-    struct CButtonObserverGlue<CFixedWindow> _MinimizedClicked;
-    struct CButtonObserverGlue<CFixedWindow> _HelpClicked;
-    struct CButtonObserverGlue<CFixedWindow> _ClickToFront;
+    class CButtonObserverGlue<CFixedWindow> _WindowMoved;
+    class CButtonObserverGlue<CFixedWindow> _WindowDown;
+    class CButtonObserverGlue<CFixedWindow> _MinimizedClicked;
+    class CButtonObserverGlue<CFixedWindow> _HelpClicked;
+    class CButtonObserverGlue<CFixedWindow> _ClickToFront;
     struct CButtonDrag* _backGround;
     bool _bInPosition;
     bool _bHideWhenInPosition;
