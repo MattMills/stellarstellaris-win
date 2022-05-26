@@ -11,7 +11,7 @@
       "variables": [
         {
           "name": "CMAKE_CXX_FLAGS",
-          "value": "/DWIN32 /D_WINDOWS /W3 /GR /EHsc",
+          "value": "/DWIN32 /D_WINDOWS /W3 /GR /EHsc /DZMQ_STATIC",
           "type": "STRING"
         }
       ]
