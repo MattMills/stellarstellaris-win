@@ -53,6 +53,8 @@ add_library		( stellarstellaris SHARED
 					"src/hooking_asm.cpp"
 					"src/hooking_error.cpp" 
 					"src/hooking_shared.cpp"
+				    "src/logging.cpp"
+					"include/logging.h"
 				)
 
 
@@ -64,11 +66,12 @@ target_include_directories(stellar-win PUBLIC
 										"lib/eigen/"
 										)
 
-										target_include_directories(stellarstellaris PUBLIC 
+target_include_directories(stellarstellaris PUBLIC 
 										"${CMAKE_CURRENT_SOURCE_DIR}"
 										"${CMAKE_CURRENT_SOURCE_DIR}/include/"
 										"lib/eigen/Eigen/"
 										"lib/eigen/"
+										"lib/libzmq/include/"
 										)
 
 
