@@ -24,6 +24,9 @@ using namespace std;
 const char* log_filename = "Z:/stellarstellaris.log";
 
 
+void* p_CApplication_Base;
+HANDLE hProcess;
+HMODULE hModule;
 CApplication * p_CApplication;
 CLog logger;
 
@@ -33,7 +36,12 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPVOID lpvRese
 		logger = CLog(log_filename);
 		logger << "DLL_PROCESS_ATTACH";
 		logger.endl();
-		
+
+		hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, GetCurrentProcessId());
+		hModule = GetBaseModuleForProcess(hProcess);
+
+		logger << "Base module: " << hModule;
+		logger.endl();
 	}
 	return true;
 }
@@ -67,9 +75,10 @@ void thread_idler_testing() {
 }
 
 
-extern "C" _declspec(dllexport) void PushCApplicationPtr(void** ptr) {
-	p_CApplication = (CApplication *) malloc(sizeof(void*));
+extern "C" _declspec(dllexport) void PushCApplicationPtr(void** ptr, void** ptr_Base) {
 	p_CApplication = static_cast<CApplication *>(*ptr);
+	p_CApplication_Base = (*ptr_Base);
+
 
 	std::thread init_thread(thread_idler_testing);
 	init_thread.detach();

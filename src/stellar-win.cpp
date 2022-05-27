@@ -79,7 +79,14 @@ int main() {
         augustus_ptr = searchMemory(hProcess, search_value, MEM_PRIVATE);
     }
     void* p_application = (augustus_ptr)-56;
+
     std::cout << "CApplication struct suspected location: 0x" << static_cast<void*>(p_application) << std::endl;
+
+    augustus_ptr = searchMemory(hProcess, search_value, MEM_IMAGE);
+    void* p_application_base = (augustus_ptr); // Location of string in executable code address space
+
+    std::cout << "CApplication Base struct suspected location: 0x" << static_cast<void*>(p_application_base) << std::endl;
+    
     CApplication * buffer = new CApplication;
     SIZE_T bytesRead;
     ReadProcessMemory(hProcess, p_application, buffer, sizeof(CApplication), &bytesRead);
@@ -96,7 +103,7 @@ int main() {
     
     char fullPath[1024];
     GetPathToPayloadDLL(fullPath);
-    InjectPayload(hProcess, fullPath, &p_application);
+    InjectPayload(hProcess, fullPath, &p_application, &p_application_base);
 
     std::cout << "Successfully injected payload? Probably?" << std::endl;
     

@@ -56,5 +56,5 @@ HMODULE FindModuleBaseAddress(HANDLE process, const char* targetModule);
 void* FindAddressOfRemoteDLLFunction(HANDLE process, const char* dllName, const char* funcName);
 void SetOtherThreadsSuspended(bool suspend);
 
-void InjectPayload(HANDLE process, const char* pathToPayloadDLL, void* ptr);
+void InjectPayload(HANDLE process, const char* pathToPayloadDLL, void* ptr, void* ptr2);
 void GetPathToPayloadDLL(char* outBuff);

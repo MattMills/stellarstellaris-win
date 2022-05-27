@@ -368,7 +368,7 @@ void SetOtherThreadsSuspended(bool suspend) {
 }
 
 
-void InjectPayload(HANDLE process, const char* pathToPayloadDLL, void* ptr) {
+void InjectPayload(HANDLE process, const char* pathToPayloadDLL, void* ptr, void* ptr2) {
 	//write the name of our dll to the target process' memory
 	size_t dllPathLen = strlen(pathToPayloadDLL);
 	void* dllPathRemote = VirtualAllocEx(
@@ -407,14 +407,18 @@ void InjectPayload(HANDLE process, const char* pathToPayloadDLL, void* ptr) {
 	// Wait for the remote thread to terminate
 	WaitForSingleObject(remoteThread, INFINITE);
 
+	unsigned char buf[sizeof(void*) * 2];
+	memcpy(&buf, ptr, sizeof(void*));
+	memcpy(&buf + sizeof(void*), ptr2, sizeof(void*));
+
+
 	//Write our pointer into remote memory so we don't need to find it again.
 	writeSucceeded = WriteProcessMemory(
 		process,
 		dllPathRemote,
-		ptr,
-		sizeof(void *),
+		buf,
+		sizeof(void *)*2,
 		NULL);
-
 	check(writeSucceeded);
 
 	PTHREAD_START_ROUTINE pushCApplicationPtr = (PTHREAD_START_ROUTINE)FindAddressOfRemoteDLLFunction(process, TEXT("stellarstellaris.dll"), TEXT("PushCApplicationPtr"));

@@ -16,4 +16,4 @@
 
 
 
-extern "C" __declspec(dllexport) void PushCApplicationPtr(void** ptr);
+extern "C" _declspec(dllexport) void PushCApplicationPtr(void** ptr, void** ptr_Base);
