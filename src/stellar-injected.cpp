@@ -34,14 +34,14 @@ CLog logger;
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPVOID lpvReserved) {
 	if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
 		logger = CLog(log_filename);
-		logger << "DLL_PROCESS_ATTACH";
-		logger.endl();
+		logger << "DLL_PROCESS_ATTACH" << std::endl;
+		
 
 		hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, GetCurrentProcessId());
 		hModule = GetBaseModuleForProcess(hProcess);
 
-		logger << "Base module: " << hModule;
-		logger.endl();
+		logger << "Base module: " << hModule << std::endl;
+		
 	}
 	return true;
 }
@@ -65,7 +65,7 @@ void thread_idler_testing() {
 			}
 
 		}
-		logger.endl();
+		logger << std::endl;
 
 		Sleep(1000);
 	}

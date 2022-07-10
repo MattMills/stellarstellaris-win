@@ -48,7 +48,7 @@ class CLog : public CLogStream {
 		void endl(){ this->log("", true, false); };
 		void close(){ this->fh.close(); };
 		//template <typename T> inline CLog& operator << (T output);
-		inline CLog& operator << (std::ostream& (*p_manip)(std::ostream&));
+		//inline CLog& operator << (std::ostream& (*p_manip)(std::ostream&));
 
 		template <typename T> inline CLog& operator << (T output) {
 			if (char_count == 0) {
@@ -60,6 +60,13 @@ class CLog : public CLogStream {
 
 
 
+			return *this;
+		};
+
+		inline CLog& CLog::operator << (std::ostream& (*p_manip)(std::ostream&)) {
+			if (p_manip == static_cast<std::ostream & (*)(std::ostream&)> (&std::endl<char, std::char_traits<char> >)) {
+				char_count = 0;
+			}
 			return *this;
 		};
 		

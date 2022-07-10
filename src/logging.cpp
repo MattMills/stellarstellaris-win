@@ -68,9 +68,3 @@ void CLog::log(const char* log_statement, bool do_newline, bool do_timestamp) {
 }
 
 
-inline CLog& CLog::operator << (std::ostream& (*p_manip)(std::ostream&)) {
-	if (p_manip == static_cast<std::ostream & (*)(std::ostream&)> (&std::endl<char, std::char_traits<char> >)) {
-		char_count = 0;
-	}
-	return *this;
-};

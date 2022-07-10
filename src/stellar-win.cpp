@@ -54,15 +54,20 @@ int main() {
     }
 
     check(processid);
-    Sleep(1000);
+
 
     //Open a handle to the process with ALL_ACCESS privs
     //TODO: Probably use less privs
-    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processid);
-
+    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processid);    
     check(hProcess);
 
-    HMODULE hModule = GetBaseModuleForProcess(hProcess);
+
+    HMODULE hModule = NULL;
+    while (hModule == NULL) {
+        hModule = GetBaseModuleForProcess(hProcess);
+        std::cout << "Error getting base module address for process " << std::dec << processid << " sleeping for 1s, control+c to cancel" << std::endl;
+        Sleep(1000);
+    }
     std::cout << "Base module: " << hModule << std::endl;
 
     const char* search_value = "augustus";

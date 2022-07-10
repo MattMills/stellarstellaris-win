@@ -232,7 +232,8 @@ HMODULE GetBaseModuleForProcess(HANDLE process) {
 
 	if (!success) {
 		fprintf(stderr, "Error enumerating modules on target process. Error Code %lu \n", GetLastError());
-		DebugBreak();
+		//DebugBreak();
+		return NULL;
 	}
 
 	DWORD numRemoteModules = numBytesWrittenInModuleArray / sizeof(HMODULE);
