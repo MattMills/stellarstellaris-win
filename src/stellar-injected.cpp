@@ -19,6 +19,10 @@ using namespace std;
 #include <zmq.h>
 
 
+#ifndef DBG_PTR
+#define DBG_PTR 0
+#endif
+
 #define DLL_NAME "stellarstellaris.dll"
 
 const char* log_filename = "Z:/stellarstellaris.log";
@@ -68,7 +72,10 @@ void(*crandominlisteffect_executeactual_trampoline)(void* ptr1, void* ptr2);
 void(*ceffect_executeactual_trampoline)(void * ptr1, void* ptr2);
 
 __declspec(noinline) void ceffect_executeactual_payload( void * ptr1, void* ptr2){
-	logger << "CEffect::ExecuteActual ptr1(" << ptr1 << " ) ptr2 (" << ptr2 << ") ";
+	logger << "CEffect::ExecuteActual - ";
+#if DBG_PTR == 1
+	logger << "ptr1(" << ptr1 << ") ptr2(" << ptr2 << ") ";
+#endif
 	
 	uint8_t buf[0x20+1]; // CString size
 	memset(buf, 0x00, sizeof(buf));
@@ -77,8 +84,9 @@ __declspec(noinline) void ceffect_executeactual_payload( void * ptr1, void* ptr2
 	charbuf[0x20] = 0;
 	for (uint j = 0; j < 0x10; j++)
 		sprintf(&charbuf[2 * j], "%02X", buf[j]);
-	
+#if DBG_PTR == 1
 	logger << "ptr1 charbuf(" << charbuf << ") - ";
+#endif
 
 	void * file_location_desc = nullptr;
 	void * id = nullptr;
@@ -87,7 +95,9 @@ __declspec(noinline) void ceffect_executeactual_payload( void * ptr1, void* ptr2
 	memcpy(&strptr, &buf, 0x8);
 
 	if(strptr != nullptr){
-		logger << (void *) strptr;
+#if DBG_PTR == 1
+		logger << "strptr(" << (void*)strptr << ")";
+#endif
 		logger << " " << strptr;
 	}
 	
@@ -104,7 +114,10 @@ __declspec(noinline) void ceffect_executeactual_payload( void * ptr1, void* ptr2
 }
 
 __declspec(noinline) void crandominlisteffect_executeactual_payload(void* ptr1, void* ptr2) {
-	logger << "CRandomInListEffect::ExecuteActual ptr1(" << ptr1 << " ) ptr2 (" << ptr2 << ") ";
+	logger << "CRandomInListEffect::ExecuteActual - ";
+#if DBG_PTR == 1
+	logger << "ptr1(" << ptr1 << ") ptr2(" << ptr2 << ") ";
+#endif
 	
 	uint8_t buf[0x20 + 1]; // CString size
 	memset(buf, 0x00, sizeof(buf));
@@ -113,8 +126,9 @@ __declspec(noinline) void crandominlisteffect_executeactual_payload(void* ptr1, 
 	charbuf[0x20] = 0;
 	for (uint j = 0; j < 0x10; j++)
 		sprintf(&charbuf[2 * j], "%02X", buf[j]);
-
+#if DBG_PTR == 1
 	logger << "ptr1 charbuf(" << charbuf << ") - ";
+#endif
 	
 	void* file_location_desc = nullptr;
 	void* id = nullptr;
@@ -123,7 +137,9 @@ __declspec(noinline) void crandominlisteffect_executeactual_payload(void* ptr1, 
 	memcpy(&strptr, &buf, 0x8);
 
 	if (strptr != nullptr) {
-		logger << (void*)strptr;
+#if DBG_PTR == 1
+		logger << "strptr(" << (void*)strptr << ")";
+#endif
 		logger << " " << strptr;
 		
 	}
@@ -143,13 +159,13 @@ void*  installHook(void* func2hook, void* funcTrampoline, void* funcPayload) {
 	SetOtherThreadsSuspended(true);
 	DWORD oldProtect;
 	bool err = VirtualProtect(func2hook, 1024, PAGE_EXECUTE_READWRITE, &oldProtect);
-	logger << "VirtualProtect(" << func2hook << ") status: " << err;
-	logger.endl();
 
 	//check(err);
 	if (err == 0) {
 		dword last_err = GetLastError();
-		logger << last_err << " " << HRESULT_FROM_WIN32(last_err);
+
+		logger << "VirtualProtect(" << func2hook << ") status: " << err << " GetLastError(";
+		logger << last_err << ") HRESULT(" << HRESULT_FROM_WIN32(last_err) << ")";
 		logger.endl();
 	}
 
@@ -182,14 +198,14 @@ void*  installHook(void* func2hook, void* funcTrampoline, void* funcPayload) {
 
 	SetOtherThreadsSuspended(false);
 
-
+#if DBG_PTR == 1
 	logger << "memory: ";
 	logger << "func2hook(" << func2hook << ") ";
 	logger << "payloadFunc(" << funcPayload << ") ";
 	logger << "trampolineFunc(" << funcTrampoline << ") ";
 	logger << "stolenBytes(" << sizeof(stolenBytes) << ")";
 	logger.endl();
-
+#endif
 	return funcTrampoline;
 }
 
@@ -232,18 +248,16 @@ void thread_idler_testing() {
 
 	intptr_t this_ceffect_executeactual_ptr = (intptr_t)p_CApplication_Base + (base_ceffect_executeactual_ptr - base_augustus_ptr);
 	intptr_t this_crandominlisteffect_executeactual_ptr = (intptr_t)p_CApplication_Base + (base_crandominlisteffect_executeactual_ptr - base_augustus_ptr);
-	logger << "CEffect::ExecuteActual ptr: " << (void *) this_ceffect_executeactual_ptr;
-	logger.endl();
-
-	logger << "CRandomInListEffect::ExecuteActual ptr: " << (void*)this_crandominlisteffect_executeactual_ptr;
-	logger.endl();
 		
 	ceffect_executeactual_trampoline = (void(*)(void* ptr1, void* ptr2)) installHook((void*) this_ceffect_executeactual_ptr, &ceffect_executeactual_trampoline, ceffect_executeactual_payload);
 	crandominlisteffect_executeactual_trampoline = (void(*)(void* ptr1, void* ptr2)) installHook((void*) this_crandominlisteffect_executeactual_ptr, &crandominlisteffect_executeactual_trampoline, crandominlisteffect_executeactual_payload);
 		
-	/*
+	
 	while (1) {
-		logger << "stellarstellaris.dll heartbeat: frame(" << p_CApplication->_nCurrentFrame << ") pIdler(" << static_cast<qword>(p_CApplication->_pIdler) << ")";
+		logger << "stellarstellaris.dll heartbeat: frame(" << p_CApplication->_nCurrentFrame << ") ";
+#if DBG_PTR == 1
+		logger << "pIdler(" << static_cast<qword>(p_CApplication->_pIdler) << ") ";
+#endif
 		if (p_CApplication->_pIdler != NULL) {
 			CGameIdler* p_CGameIdler = (CGameIdler *) p_CApplication->_pIdler;
 			
@@ -259,13 +273,13 @@ void thread_idler_testing() {
 			}
 
 		}
-		logger << std::endl;
+		
 		logger.endl();
 
 		Sleep(1000);
 	}
-	*/
-	//logger.close();
+	
+	logger.close();
 	return;
 }
 
@@ -275,9 +289,8 @@ extern "C" _declspec(dllexport) void PushCApplicationPtr(void** ptr, void** ptr_
 	p_CApplication = static_cast<CApplication*>(*ptr);
 	memcpy(&p_CApplication_Base, (ptr) + 1, sizeof(void*));
 
-	thread_idler_testing();
-	//std::thread init_thread(thread_idler_testing);
-	//init_thread.detach();
+	std::thread init_thread(thread_idler_testing);
+	init_thread.detach();
 
 	return;
 }
