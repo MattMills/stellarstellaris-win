@@ -68,9 +68,8 @@ void(*crandominlisteffect_executeactual_trampoline)(void* ptr1, void* ptr2);
 void(*ceffect_executeactual_trampoline)(void * ptr1, void* ptr2);
 
 __declspec(noinline) void ceffect_executeactual_payload( void * ptr1, void* ptr2){
-	logger << "CEffect::ExecuteActual ptr1(" << ptr1 << " ) ptr2 (" << ptr2 << ")";
-	logger.endl();
-
+	logger << "CEffect::ExecuteActual ptr1(" << ptr1 << " ) ptr2 (" << ptr2 << ") ";
+	
 	uint8_t buf[0x20+1]; // CString size
 	memset(buf, 0x00, sizeof(buf));
 	memcpy(&buf, (void*)(((intptr_t)ptr1) + 0x20), sizeof(buf));
@@ -79,8 +78,7 @@ __declspec(noinline) void ceffect_executeactual_payload( void * ptr1, void* ptr2
 	for (uint j = 0; j < 0x10; j++)
 		sprintf(&charbuf[2 * j], "%02X", buf[j]);
 	
-	logger << "ptr1 charbuf(" << charbuf << ")";
-	logger.endl();
+	logger << "ptr1 charbuf(" << charbuf << ") - ";
 
 	void * file_location_desc = nullptr;
 	void * id = nullptr;
@@ -91,9 +89,9 @@ __declspec(noinline) void ceffect_executeactual_payload( void * ptr1, void* ptr2
 	if(strptr != nullptr){
 		logger << (void *) strptr;
 		logger << " " << strptr;
-		logger.endl();
 	}
 	
+	logger.endl();
 	/*memset(&buf, 0x00, sizeof(buf));
 	memcpy(&buf, ptr2, 136);
 	logger << buf;
@@ -106,9 +104,8 @@ __declspec(noinline) void ceffect_executeactual_payload( void * ptr1, void* ptr2
 }
 
 __declspec(noinline) void crandominlisteffect_executeactual_payload(void* ptr1, void* ptr2) {
-	logger << "CRandomInListEffect::ExecuteActual ptr1(" << ptr1 << " ) ptr2 (" << ptr2 << ")";
-	logger.endl();
-
+	logger << "CRandomInListEffect::ExecuteActual ptr1(" << ptr1 << " ) ptr2 (" << ptr2 << ") ";
+	
 	uint8_t buf[0x20 + 1]; // CString size
 	memset(buf, 0x00, sizeof(buf));
 	memcpy(&buf, (void*)(((intptr_t)ptr1) + 0x20), sizeof(buf));
@@ -117,9 +114,8 @@ __declspec(noinline) void crandominlisteffect_executeactual_payload(void* ptr1, 
 	for (uint j = 0; j < 0x10; j++)
 		sprintf(&charbuf[2 * j], "%02X", buf[j]);
 
-	logger << "ptr1 charbuf(" << charbuf << ")";
-	logger.endl();
-
+	logger << "ptr1 charbuf(" << charbuf << ") - ";
+	
 	void* file_location_desc = nullptr;
 	void* id = nullptr;
 
@@ -129,9 +125,9 @@ __declspec(noinline) void crandominlisteffect_executeactual_payload(void* ptr1, 
 	if (strptr != nullptr) {
 		logger << (void*)strptr;
 		logger << " " << strptr;
-		logger.endl();
+		
 	}
-
+	logger.endl();
 	/*memset(&buf, 0x00, sizeof(buf));
 	memcpy(&buf, ptr2, 136);
 	logger << buf;
