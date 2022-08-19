@@ -7,3 +7,6 @@
 [submodule "lib/libzmq"]
 	path = lib/libzmq
 	url = https://github.com/zeromq/libzmq.git
+[submodule "lib/capstone"]
+	path = lib/capstone
+	url = https://github.com/capstone-engine/capstone.git
