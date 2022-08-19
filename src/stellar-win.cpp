@@ -97,8 +97,9 @@ int main() {
     ReadProcessMemory(hProcess, p_application, buffer, sizeof(CApplication), &bytesRead);
     std::cout << "[DBG] bytesRead: " << bytesRead << std::endl;
     
-    
-    if(buffer->_GameVersion._szName._str == "Cepheus v3.4.3"){ // Libra v3.3.4
+    // Libra v3.3.4
+    // Cepheus v3.4.3
+    if(buffer->_GameVersion._szName._str == "Cepheus v3.4.5"){ 
         std::cout << "Detected supported Stellaris version: " << buffer->_GameVersion._szName._str << std::endl;
     }else {
         std::cout << "Note: if the version text below this line shows gibberish, or the program crashes after this line, things went really wrongly" << std::endl;
@@ -108,7 +109,7 @@ int main() {
     
     char fullPath[1024];
     GetPathToPayloadDLL(fullPath);
-    InjectPayload(hProcess, fullPath, &p_application, &p_application_base);
+    InjectPayload(hProcess, fullPath, &p_application, p_application_base);
 
     std::cout << "Successfully injected payload? Probably?" << std::endl;
     

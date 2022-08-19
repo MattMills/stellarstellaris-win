@@ -408,17 +408,21 @@ void InjectPayload(HANDLE process, const char* pathToPayloadDLL, void* ptr, void
 	// Wait for the remote thread to terminate
 	WaitForSingleObject(remoteThread, INFINITE);
 
-	unsigned char buf[sizeof(void*) * 2];
-	memcpy(&buf, ptr, sizeof(void*));
-	memcpy(&buf + sizeof(void*), ptr2, sizeof(void*));
+	void * buf = malloc(sizeof(void*) * 2);
+	
 
+	memset(buf, 0x00, sizeof(void*)*2);
+	memcpy( buf, ptr, sizeof(void*));
+	memcpy((void*)(((intptr_t)buf) + sizeof(void*)), &ptr2, sizeof(void*));
+	std::cout << "buf_ptr: " << &buf << std::endl;
+	std::cout << "buf_ptr2x: " << (void*)(((intptr_t)&buf) + sizeof(void*)) << std::endl;
 
 	//Write our pointer into remote memory so we don't need to find it again.
 	writeSucceeded = WriteProcessMemory(
 		process,
 		dllPathRemote,
 		buf,
-		sizeof(void *)*2,
+		(sizeof(void *)*2),
 		NULL);
 	check(writeSucceeded);
 
