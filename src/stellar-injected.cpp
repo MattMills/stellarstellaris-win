@@ -178,13 +178,37 @@ void thread_idler_testing() {
 	intptr_t base_offset = 0x140000000;
 	intptr_t augustus_ptr = (base_offset+(intptr_t)p_CApplication_Base - (intptr_t)hModule);
 	
-	intptr_t base_augustus_ptr = 0x1418f9b90;
-	intptr_t base_ceffect_executeactual_ptr = 0x140302b20;
-	intptr_t base_crandominlisteffect_executeactual_ptr = 0x140f01d40;
+	intptr_t base_augustus_ptr = 0x0;
+	intptr_t base_ceffect_executeactual_ptr = 0x0;
+	intptr_t base_crandominlisteffect_executeactual_ptr = 0x0;
 
-	if (augustus_ptr == base_augustus_ptr) {
+	intptr_t base_steam_augustus_ptr = 0x1418f9b90;
+	intptr_t base_steam_ceffect_executeactual_ptr = 0x140302b20;
+	intptr_t base_steam_crandominlisteffect_executeactual_ptr = 0x140f01d40;
+
+	intptr_t base_gog_augustus_ptr = 0x1418ed9f0;
+	intptr_t base_gog_ceffect_executeactual_ptr = 0x140300eb0;
+	intptr_t base_gog_crandominlisteffect_executeactual_ptr = 0x140f00720;
+
+	if (augustus_ptr == base_steam_augustus_ptr) {
 		logger << "Found correct augustus addr for steam 3.4.5";
 		logger.endl();
+		//TODO: less stupid
+		base_augustus_ptr = base_steam_augustus_ptr;
+		base_ceffect_executeactual_ptr = base_steam_ceffect_executeactual_ptr;
+		base_crandominlisteffect_executeactual_ptr = base_steam_crandominlisteffect_executeactual_ptr;
+	}
+	else if (augustus_ptr == base_gog_augustus_ptr) {
+		logger << "Found correct augustus addr for gog 3.4.5";
+		logger.endl();
+		base_augustus_ptr = base_gog_augustus_ptr;
+		base_ceffect_executeactual_ptr = base_gog_ceffect_executeactual_ptr;
+		base_crandominlisteffect_executeactual_ptr = base_gog_crandominlisteffect_executeactual_ptr;
+	}
+	else {
+		logger << "FATAL: augustus ptr is incorrect, bailing";
+		logger.endl();
+		return;
 	}
 
 	intptr_t this_ceffect_executeactual_ptr = (intptr_t)p_CApplication_Base + (base_ceffect_executeactual_ptr - base_augustus_ptr);
