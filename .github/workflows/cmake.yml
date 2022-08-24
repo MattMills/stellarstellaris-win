@@ -31,7 +31,7 @@ jobs:
       run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
       
 
-    - name: Archive production artifacts
+    - name: Archive build artifacts
       uses: actions/upload-artifact@v2
       with:
         name: StellarStellaris Executables
