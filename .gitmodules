@@ -1,6 +1,6 @@
 [submodule "luajit"]
 	path = lib/luajit
-	url = https://luajit.org/git/luajit.git
+	url = https://github.com/LuaJIT/LuaJIT.git
 [submodule "lib/eigen"]
 	path = lib/eigen
 	url = https://gitlab.com/libeigen/eigen.git
@@ -10,3 +10,5 @@
 [submodule "lib/capstone"]
 	path = lib/capstone
 	url = https://github.com/capstone-engine/capstone.git
+[submodule "lib/luajit"]
+	url = https://github.com/LuaJIT/LuaJIT.git
