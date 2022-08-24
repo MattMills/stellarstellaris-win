@@ -5,16 +5,15 @@ The goal of this project is to start building an enhanced version of StellarStel
 
 This is in a very early alpha stage, it currently doesn't do much of anything.
 
-## Goals:
+## Current State
 
-1. ~~Hook a DLL Payload into Stellaris~~
-2. Identify locations of useful memory structures
-    1. ~~CApplication~~
-    2. ~~CIdler, CFrontEndIdler, CInGameIdler~~
-    3. CGameState
-4. Hook a LUA interpreter into a console command
-5. ???
-6. Replace CGalaxyGenerator with LUA code
+Currently this hooks:
+ * CEvent::ExecuteActual
+ * CEffect::ExecuteActual
+ * CRandomInListEffect::ExecuteActual
+
+ in order to dump debug data to a new log file (stellarstellaris-debug.log in the normal directory [example file as of 8/24/2022 here](docs/example-stellarstellaris-debug.log.txt)).
+
 
 ## Support discord:
 
@@ -22,6 +21,10 @@ https://discord.gg/Mtm5nURDSC
 
 [![Join Support discord link](https://discordapp.com/api/guilds/960348408990793838/widget.png?style=banner3)](https://discord.gg/Mtm5nURDSC)
 
+## How to sponsor / support:
+https://github.com/sponsors/MattMills
+
+https://www.patreon.com/RadioCapture
 
 
 ### References / Thanks / Borrowed code:
