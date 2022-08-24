@@ -36,6 +36,9 @@ jobs:
       with:
         name: StellarStellaris Loader
         path: build/*.exe
+    - name: Archive production artifacts
+      uses: actions/upload-artifact@v2
+      with:
         name: StellarStellaris DLL
         path: build/*.dll
       
