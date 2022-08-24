@@ -7,6 +7,3 @@
 [submodule "lib/capstone"]
 	path = lib/capstone
 	url = https://github.com/capstone-engine/capstone.git
-[submodule "lib/luajit"]
-	path = lib/luajit
-	url = https://github.com/LuaJIT/LuaJIT.git
