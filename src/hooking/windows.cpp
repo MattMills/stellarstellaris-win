@@ -1,9 +1,9 @@
 
-
 using namespace std;
 
+#define WIN32_LEAN_AND_MEAN   
 #include "hooking/windows.h"
-#define PAYLOAD_DLL_NAME "stellarstellaris.dll"
+
 
 unsigned char* searchMemory(HANDLE hProcess, const char search_value[], DWORD bufferType) {
 
@@ -426,7 +426,7 @@ void InjectPayload(HANDLE process, const char* pathToPayloadDLL, void* ptr, void
 		NULL);
 	check(writeSucceeded);
 
-	PTHREAD_START_ROUTINE pushCApplicationPtr = (PTHREAD_START_ROUTINE)FindAddressOfRemoteDLLFunction(process, TEXT("stellarstellaris.dll"), TEXT("PushCApplicationPtr"));
+	PTHREAD_START_ROUTINE pushCApplicationPtr = (PTHREAD_START_ROUTINE)FindAddressOfRemoteDLLFunction(process, TEXT(PAYLOAD_DLL_NAME), TEXT("PushCApplicationPtr"));
 	std::cout << "Found remote ptr push func: " << pushCApplicationPtr << std::endl;
 	check(pushCApplicationPtr);
 

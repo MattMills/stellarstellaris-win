@@ -37,7 +37,7 @@ class CLog : public CLogStream {
 		int gettimeofday(struct local_timeval* tp, struct timezone* tzp);
 
 	public:
-		CLog() {};
+		CLog() {}
 		CLog(const char* filename);
 		void print_timestamp();
 		void log(const char* log_statement, bool do_newline, bool do_timestamp);

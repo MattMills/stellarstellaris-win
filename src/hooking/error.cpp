@@ -1,4 +1,9 @@
+#define WIN32_LEAN_AND_MEAN   
 #include "hooking/error.h"
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN   
+#include "hooking/windows_platform.h"
+#endif
 
 void PrintErrorMessageToConsole(DWORD errorCode) {
 	char errorBuf[1024];

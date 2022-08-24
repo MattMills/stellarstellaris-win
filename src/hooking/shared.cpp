@@ -1,6 +1,7 @@
 
 #include "hooking/shared.h"
 
+
 bool IsProcess64Bit(HANDLE process) {
 	BOOL isWow64 = false;
 	IsWow64Process(process, &isWow64);

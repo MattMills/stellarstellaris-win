@@ -14,13 +14,17 @@ using namespace std;
 #include "hooking/windows.h"
 #endif
 
+#ifndef GIT_SHORT_HASH
+#define GIT_SHORT_HASH "UNDEFINED"
+#endif
+
 
 
 int main() {
     std::cout << std::endl;
     std::cout << "-------------------------------------------------------------------------------------" << std::endl;
     std::cout << "|               Stellar Stellaris Windows in-memory game patcher                    |" << std::endl;
-    std::cout << "|                             Version 0.TODO (pre-alpha)                            |" << std::endl;
+    std::cout << "|                             Version " << GIT_SHORT_HASH << " (pre-alpha)                            |" << std::endl;
     std::cout << "-------------------------------------------------------------------------------------" << std::endl;
     std::cout << "                            THIS IS OPEN SOURCE SOFTWARE" << std::endl;
     std::cout << std::endl;

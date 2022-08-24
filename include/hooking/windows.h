@@ -6,7 +6,7 @@
 #include <iostream>
 
 //#include <subauth.h>
-
+#define WIN32_LEAN_AND_MEAN   
 #include "hooking/asm.h"
 
 #ifdef _WIN32
@@ -16,6 +16,7 @@
 #include "hooking/error.h"
 #include "hooking/shared.h"
 
+#define PAYLOAD_DLL_NAME "stellar-injected.dll"
 
 #define check(expr) if (!(expr)){PrintErrorMessageToConsole(GetLastError()); DebugBreak(); exit(-1); }
 

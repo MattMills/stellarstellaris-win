@@ -47,21 +47,28 @@ add_executable	( stellar-loader
 					"src/hooking/windows.cpp"   
 					"src/hooking/error.cpp" 
 					"src/hooking/shared.cpp"
-				)
+)
 add_library		( stellar-injected SHARED 
 					"src/dll/dllmain.cpp" 
-					"src/hooking/windows.cpp"  
+					"src/dll/hooking_common.cpp"
+					"src/dll/ceffect.cpp"
+					"src/dll/cevent.cpp"
+					"src/dll/crandominlisteffect.cpp"
+
 					"src/hooking/asm.cpp"
 					"src/hooking/error.cpp" 
 					"src/hooking/shared.cpp"
+					"src/hooking/windows.cpp"  
 				    "src/util/logging.cpp"
-				)
+)
 
 
 				
 target_include_directories(stellar-loader PUBLIC 
 										"${CMAKE_CURRENT_SOURCE_DIR}"
 										"${CMAKE_CURRENT_SOURCE_DIR}/include/"
+										#"${CMAKE_CURRENT_SOURCE_DIR}/include/dll/"
+										#"${CMAKE_CURRENT_SOURCE_DIR}/include/hooking/"
 										"lib/eigen/Eigen/"
 										"lib/eigen/"
 										)
@@ -69,6 +76,10 @@ target_include_directories(stellar-loader PUBLIC
 target_include_directories(stellar-injected PUBLIC 
 										"${CMAKE_CURRENT_SOURCE_DIR}"
 										"${CMAKE_CURRENT_SOURCE_DIR}/include/"
+										"${CMAKE_CURRENT_SOURCE_DIR}/include/dll/"
+										#"${CMAKE_CURRENT_SOURCE_DIR}/include/hooking/"
+										#"${CMAKE_CURRENT_SOURCE_DIR}/include/stellaris/"
+										#"${CMAKE_CURRENT_SOURCE_DIR}/include/util/"
 										"lib/eigen/Eigen/"
 										"lib/eigen/"
 										"lib/libzmq/include/"
