@@ -8,7 +8,7 @@ using namespace std;
 
 
 #include "dll/dllmain.h"
-
+#include "git_version.h"
 
 
 #include <thread>
@@ -36,6 +36,9 @@ intptr_t augustus_ptr = 0x0;
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPVOID lpvReserved) {
 	if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
 		CLog& logger = *getLogger();
+
+		logger << "StellarStellaris initialization git hash - " << kGitHash;
+		logger.endl();
 
 		logger << "DLL_PROCESS_ATTACH" << std::endl;
 		logger.endl();

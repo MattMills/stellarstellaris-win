@@ -28,16 +28,11 @@ set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 add_subdirectory(lib/capstone)
 
 
-execute_process(
-	COMMAND git rev-parse --short HEAD
-	RESULT_VARIABLE GIT_SHORT_HASH_RESULT
-	OUTPUT_VARIABLE	GIT_SHORT_HASH
-	OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-
-
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
 include (InstallRequiredSystemLibraries)
+include(cmake/CheckGit.cmake)
+CheckGitSetup()
+
 
 #INSTALL(FILES ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} DESTINATION ${LUAJIT_BIN})
 
@@ -90,3 +85,5 @@ target_include_directories(stellar-injected PUBLIC
 
 #target_link_libraries(stellar-injected ${LUA_LIBRARY})
 target_link_libraries(stellar-injected capstone-static)
+target_link_libraries(stellar-loader git_version)
+target_link_libraries(stellar-injected git_version)

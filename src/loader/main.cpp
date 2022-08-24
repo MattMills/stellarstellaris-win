@@ -13,10 +13,7 @@ using namespace std;
 #ifdef _WIN32
 #include "hooking/windows.h"
 #endif
-
-#ifndef GIT_SHORT_HASH
-#define GIT_SHORT_HASH "UNDEFINED"
-#endif
+#include "git_version.h"
 
 
 
@@ -24,7 +21,7 @@ int main() {
     std::cout << std::endl;
     std::cout << "-------------------------------------------------------------------------------------" << std::endl;
     std::cout << "|               Stellar Stellaris Windows in-memory game patcher                    |" << std::endl;
-    std::cout << "|                             Version " << GIT_SHORT_HASH << " (pre-alpha)                            |" << std::endl;
+    std::cout << "|                             Version GIT: " << kGitHash << " (pre-alpha)                      |" << std::endl;
     std::cout << "-------------------------------------------------------------------------------------" << std::endl;
     std::cout << "                            THIS IS OPEN SOURCE SOFTWARE" << std::endl;
     std::cout << std::endl;
