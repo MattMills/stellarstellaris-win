@@ -25,6 +25,7 @@ else()
 endif()
 
 add_subdirectory(lib/luajit)
+add_subdirectory(lib/capstone)
 
 
 execute_process(
@@ -72,7 +73,9 @@ target_include_directories(stellarstellaris PUBLIC
 										"lib/eigen/Eigen/"
 										"lib/eigen/"
 										"lib/libzmq/include/"
+										"lib/capstone/include/"
 										)
 
 
 target_link_libraries(stellarstellaris ${LUA_LIBRARY})
+target_link_libraries(stellarstellaris capstone-static)
