@@ -5,7 +5,7 @@ using namespace std;
 
 
 
-#include "stellaris-generic.h"
+#include "stellaris/generic.h"
 
 
 

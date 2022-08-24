@@ -1,4 +1,4 @@
-#include "hooking_error.h"
+#include "hooking/error.h"
 
 void PrintErrorMessageToConsole(DWORD errorCode) {
 	char errorBuf[1024];

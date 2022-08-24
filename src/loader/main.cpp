@@ -6,12 +6,12 @@
 using namespace std;
 
 
-#include "stellar-win.h"
+#include "loader/main.h"
 
-#include "stellaris-CApplication.h"
+#include "stellaris/CApplication.h"
 
 #ifdef _WIN32
-#include "hooking_windows.h"
+#include "hooking/windows.h"
 #endif
 
 

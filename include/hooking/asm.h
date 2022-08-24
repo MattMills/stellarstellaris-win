@@ -10,11 +10,11 @@
 #include <vector>
 
 #ifdef _WIN32
-#include "hooking_windows_platform.h"
+#include "hooking/windows_platform.h"
 #endif
 
-#include "hooking_error.h"
-#include "hooking_shared.h"
+#include "hooking/error.h"
+#include "hooking/shared.h"
 
 #if _WIN64
 typedef uint64_t addr_t;

@@ -1,9 +1,9 @@
 #pragma once
 
 
-#include "stellaris-generic.h"
-#include "stellaris-CApplication.h"
-#include "stellaris-CGameIdler.h"
+#include "stellaris/generic.h"
+#include "stellaris/CApplication.h"
+#include "stellaris/CGameIdler.h"
 
 
 typedef enum enumESessionType {

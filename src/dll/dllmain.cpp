@@ -2,11 +2,11 @@ using namespace std;
 
 #define _CRT_SECURE_NO_WARNINGS
 
-#include "stellaris-CApplication.h"
-#include "stellaris-CGameIdler.h"
-#include "stellaris-CGameApplication.h"
-#include "stellar-injected.h"
-#include "logging.h"
+#include "stellaris/CApplication.h"
+#include "stellaris/CGameIdler.h"
+#include "stellaris/CGameApplication.h"
+#include "dll/dllmain.h"
+#include "util/logging.h"
 
 
 

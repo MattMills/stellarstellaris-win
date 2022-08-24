@@ -3,7 +3,7 @@
 #
 cmake_minimum_required (VERSION 3.8)
 
-project ("stellar-win")
+project ("stellar-loader")
 
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 set(LUAJIT_BIN ${CMAKE_CURRENT_BINARY_DIR})
@@ -42,32 +42,31 @@ INSTALL(FILES ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} DESTINATION ${LUAJIT_BIN})
 
 
 # Add source to this project's executable.
-add_executable	( stellar-win 
-					"src/stellar-win.cpp" 
-					"src/hooking_windows.cpp"   
-					"src/hooking_error.cpp" 
-					"src/hooking_shared.cpp"
+add_executable	( stellar-loader
+					"src/loader/main.cpp" 
+					"src/hooking/windows.cpp"   
+					"src/hooking/error.cpp" 
+					"src/hooking/shared.cpp"
 				)
-add_library		( stellarstellaris SHARED 
-					"src/stellar-injected.cpp" 
-					"src/hooking_windows.cpp"  
-					"src/hooking_asm.cpp"
-					"src/hooking_error.cpp" 
-					"src/hooking_shared.cpp"
-				    "src/logging.cpp"
-					"include/logging.h"
+add_library		( stellar-injected SHARED 
+					"src/dll/dllmain.cpp" 
+					"src/hooking/windows.cpp"  
+					"src/hooking/asm.cpp"
+					"src/hooking/error.cpp" 
+					"src/hooking/shared.cpp"
+				    "src/util/logging.cpp"
 				)
 
 
 				
-target_include_directories(stellar-win PUBLIC 
+target_include_directories(stellar-loader PUBLIC 
 										"${CMAKE_CURRENT_SOURCE_DIR}"
 										"${CMAKE_CURRENT_SOURCE_DIR}/include/"
 										"lib/eigen/Eigen/"
 										"lib/eigen/"
 										)
 
-target_include_directories(stellarstellaris PUBLIC 
+target_include_directories(stellar-injected PUBLIC 
 										"${CMAKE_CURRENT_SOURCE_DIR}"
 										"${CMAKE_CURRENT_SOURCE_DIR}/include/"
 										"lib/eigen/Eigen/"
@@ -77,5 +76,5 @@ target_include_directories(stellarstellaris PUBLIC
 										)
 
 
-target_link_libraries(stellarstellaris ${LUA_LIBRARY})
-target_link_libraries(stellarstellaris capstone-static)
+target_link_libraries(stellar-injected ${LUA_LIBRARY})
+target_link_libraries(stellar-injected capstone-static)

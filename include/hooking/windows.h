@@ -7,14 +7,14 @@
 
 //#include <subauth.h>
 
-#include "hooking_asm.h"
+#include "hooking/asm.h"
 
 #ifdef _WIN32
-#include "hooking_windows_platform.h"
+#include "hooking/windows_platform.h"
 #endif
 
-#include "hooking_error.h"
-#include "hooking_shared.h"
+#include "hooking/error.h"
+#include "hooking/shared.h"
 
 
 #define check(expr) if (!(expr)){PrintErrorMessageToConsole(GetLastError()); DebugBreak(); exit(-1); }

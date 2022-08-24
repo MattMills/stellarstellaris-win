@@ -5,14 +5,13 @@ using namespace std;
 #include <string>
 #include <iostream>
 #include <stdio.h>
+#include <string>
 #include <fstream>
-
-
+#include <sstream>
 
 #ifdef _WIN32
-#include "hooking_windows.h"
+#include "hooking/windows_platform.h"
 #endif
-#include <include/stellaris-generic.h>
 
 class CLogStream {
 	public:
@@ -26,7 +25,7 @@ class CLog : public CLogStream {
 	private:
 		ofstream fh;
 		const char* log_filename;
-		uint char_count = 0;
+		unsigned int char_count = 0;
 
 		// MSVC defines this in winsock2.h!?
 		typedef struct local_timeval {
