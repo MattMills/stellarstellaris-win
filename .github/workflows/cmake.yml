@@ -36,7 +36,6 @@ jobs:
       with:
         name: StellarStellaris Loader
         path: build/*.exe
-      with:
         name: StellarStellaris DLL
         path: build/*.dll
       
