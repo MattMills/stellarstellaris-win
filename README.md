@@ -14,6 +14,7 @@ Currently this hooks:
 
  in order to dump debug data to a new log file (stellarstellaris-debug.log in the normal directory [example file as of 8/24/2022 here](docs/example-stellarstellaris-debug.log.txt)).
 
+ Compiled windows executables are available in Github workflows/actions as build artifacts, download the zip file, extract it somewhere, start Stellaris and run stellar-loader.exe
 
 ## Support discord:
 
