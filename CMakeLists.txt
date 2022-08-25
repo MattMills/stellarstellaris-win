@@ -50,6 +50,7 @@ add_library		( stellar-injected SHARED
 					"src/dll/ceffect.cpp"
 					"src/dll/cevent.cpp"
 					"src/dll/crandominlisteffect.cpp"
+					"src/dll/conactiondatabase.cpp"
 
 					"src/hooking/asm.cpp"
 					"src/hooking/error.cpp" 

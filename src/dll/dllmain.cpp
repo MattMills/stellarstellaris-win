@@ -13,15 +13,11 @@ using namespace std;
 
 #include <thread>
 #include <ctime>
+#include <chrono>
 #include <cstring>
 #include <cassert>
 
 #include <zmq.h>
-
-
-#ifndef DBG_PTR
-#define DBG_PTR 0
-#endif
 
 
 intptr_t base_augustus_ptr = 0x0;
@@ -88,7 +84,7 @@ void thread_idler_testing() {
 	ceffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
 	cevent_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
 	crandominlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-
+	conactiondatabase_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
 	SetOtherThreadsSuspended(false);
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	SetOtherThreadsSuspended(false);
@@ -96,7 +92,7 @@ void thread_idler_testing() {
 	SetOtherThreadsSuspended(false);
 	logger << "Hook init complete, unpausing threads";
 	logger.endl();
-	
+
 	while (1) {
 		logger << PAYLOAD_DLL_NAME << " heartbeat: frame(" << p_CApplication->_nCurrentFrame << ") ";
 #if DBG_PTR == 1
