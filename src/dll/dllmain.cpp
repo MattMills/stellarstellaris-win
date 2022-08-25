@@ -78,10 +78,24 @@ void thread_idler_testing() {
 		return;
 	}
 
+	//Try to delay so we don't deadlock all the threads...
+	std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+
+	//TODO: This is stupidly slow (4+ sec)
+	logger << "Pausing threads for hook init";
+	logger.endl();
+	SetOtherThreadsSuspended(true);
 	ceffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
 	cevent_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
 	crandominlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
 
+	SetOtherThreadsSuspended(false);
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	SetOtherThreadsSuspended(false);
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	SetOtherThreadsSuspended(false);
+	logger << "Hook init complete, unpausing threads";
+	logger.endl();
 	
 	while (1) {
 		logger << PAYLOAD_DLL_NAME << " heartbeat: frame(" << p_CApplication->_nCurrentFrame << ") ";

@@ -40,7 +40,7 @@ __declspec(noinline) void PopAddress(uint64_t trampolinePtr)
 
 
 void* installHook(void* func2hook, void* funcTrampoline, void* funcPayload) {
-	SetOtherThreadsSuspended(true);
+	//SetOtherThreadsSuspended(true);
 	DWORD oldProtect;
 	bool err = VirtualProtect(func2hook, 1024, PAGE_EXECUTE_READWRITE, &oldProtect);
 
@@ -80,7 +80,7 @@ void* installHook(void* func2hook, void* funcTrampoline, void* funcPayload) {
 	memcpy(jmpInstruction + 1, &relAddr, 4);
 	memcpy(func2hook, jmpInstruction, sizeof(jmpInstruction));
 
-	SetOtherThreadsSuspended(false);
+	//SetOtherThreadsSuspended(false);
 
 #if DBG_PTR == 1
 	logger << "memory: ";
