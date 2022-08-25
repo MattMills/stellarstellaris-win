@@ -1,6 +1,7 @@
 
 #include "dll/ceffect.h"
 #include "dll/hooking_common.h"
+#include "dll/ceventscope.h"
 
 extern CLog logger;
 
@@ -16,36 +17,33 @@ __declspec(noinline) void ceffect_executeactual_payload(void* ptr1, void* ptr2) 
 	logger << "ptr1(" << ptr1 << ") ptr2(" << ptr2 << ") ";
 #endif
 
-	uint8_t buf[0x20 + 1]; // CString size
-	memset(buf, 0x00, sizeof(buf));
-	memcpy(&buf, (void*)(((intptr_t)ptr1) + 0x20), sizeof(buf));
-	char charbuf[0x20 + 1];
-	charbuf[0x20] = 0;
-	for (unsigned int j = 0; j < 0x10; j++)
-		sprintf(&charbuf[2 * j], "%02X", buf[j]);
+	int32_t* escopetype = (int32_t*)(((intptr_t)ptr2) + 8);
+	uint32_t* objectid = (uint32_t*)(((intptr_t)ptr2) + 12);
+
+	logger << " " << enum_to_string_escopetype(*escopetype) << " ObjectID(" << *objectid << ")";
+
+	//0x20 = CEvent::_FileLocationDesc
+	//0x40 = CEvent::_ID
+	std::string* strFileLocationDesc = (std::string*)((intptr_t)ptr1 + 0x20);
+	std::string* strID = (std::string*)((intptr_t)ptr1 + 0x40);
+
+	
+	if (strFileLocationDesc != nullptr) {
 #if DBG_PTR == 1
-	logger << "ptr1 charbuf(" << charbuf << ") - ";
+		logger << "strptr(" << (void*)strFileLocationDesc << ")";
 #endif
+		logger << " Desc(" << *strFileLocationDesc << ")";
+	}
 
-	void* file_location_desc = nullptr;
-	void* id = nullptr;
-
-	char* strptr = nullptr;
-	memcpy(&strptr, &buf, 0x8);
-
-	if (strptr != nullptr) {
+	if (strID != nullptr) {
 #if DBG_PTR == 1
-		logger << "strptr(" << (void*)strptr << ")";
+		logger << "strptr(" << (void*)strID << ")";
 #endif
-		logger << " " << strptr;
+		logger << " ID(" << *strID << ")";
 	}
 
 	logger.endl();
-	/*memset(&buf, 0x00, sizeof(buf));
-	memcpy(&buf, ptr2, 136);
-	logger << buf;
-	logger.endl();
-	*/
+
 	void(*func_ptr)(void* ptr1, void* ptr2);;
 	PopAddress(uint64_t(&func_ptr));
 	return func_ptr(ptr1, ptr2);

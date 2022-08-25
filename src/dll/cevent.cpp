@@ -1,4 +1,5 @@
 #include "dll/cevent.h"
+#include "dll/ceventscope.h"
 
 extern CLog logger;
 
@@ -13,10 +14,17 @@ __declspec(noinline) void cevent_execute_payload(void* ptr1) {
 #if DBG_PTR == 1
 	logger << "ptr1(" << ptr1 << ") ";
 #endif
+
+
+	int32_t* escopetype = (int32_t*)(((intptr_t)ptr1) + 0x30);
+	uint32_t* objectid = (uint32_t*)(((intptr_t)ptr1) + 0x34);
+
+	logger << " " << enum_to_string_escopetype(*escopetype) << " ObjectID(" << *objectid << ")";
+
 	std::string* str_event_id = nullptr;
 	str_event_id = (std::string*)(((intptr_t)ptr1) + 0x10);
 
-	logger << "Event ID (" << str_event_id->c_str() << ")";
+	logger << " EventID(" << str_event_id->c_str() << ")";
 	logger.endl();
 
 	void(*func_ptr)(void* ptr1);;
