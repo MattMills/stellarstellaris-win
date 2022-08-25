@@ -51,6 +51,7 @@ add_library		( stellar-injected SHARED
 					"src/dll/cevent.cpp"
 					"src/dll/crandominlisteffect.cpp"
 					"src/dll/conactiondatabase.cpp"
+					"src/dll/ceventscope.cpp"
 
 					"src/hooking/asm.cpp"
 					"src/hooking/error.cpp" 

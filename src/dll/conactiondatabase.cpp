@@ -1,6 +1,7 @@
 
 #include "dll/conactiondatabase.h"
 #include "dll/hooking_common.h"
+#include "dll/ceventscope.h"
 
 extern CLog logger;
 
@@ -23,6 +24,12 @@ __declspec(noinline) void conactiondatabase_performevent_payload(void* ptr1, voi
 #endif
 		logger << " " << *strptr;
 	}
+
+	int32_t* escopetype = (int32_t *)(((intptr_t)ptr3) + 8);
+	uint32_t* objectid = (uint32_t*)(((intptr_t)ptr3) + 12);
+
+	logger << " " << enum_to_string_escopetype(*escopetype) << " ObjectID(" << *objectid << ")";
+
 	logger.endl();
 	void(*func_ptr)(void* ptr1, void* ptr2, void* ptr3, void* ptr4, void* ptr5);
 	PopAddress(uint64_t(&func_ptr));
