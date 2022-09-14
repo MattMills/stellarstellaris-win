@@ -81,11 +81,13 @@ void thread_idler_testing() {
 	logger << "Pausing threads for hook init";
 	logger.endl();
 	SetOtherThreadsSuspended(true);
+
 	ceffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
 	cevent_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
 	crandominlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
 	conactiondatabase_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
 	ceveryinlisteffect_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
+	cship_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
 	logger << "Hook init complete, unpausing threads";
 	SetOtherThreadsSuspended(false);
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));

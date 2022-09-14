@@ -54,6 +54,7 @@ add_library		( stellar-injected SHARED
 					"src/dll/conactiondatabase.cpp"
 					"src/dll/ceventscope.cpp"
 
+					"src/dll/cship.cpp"
 					"src/hooking/asm.cpp"
 					"src/hooking/error.cpp" 
 					"src/hooking/shared.cpp"

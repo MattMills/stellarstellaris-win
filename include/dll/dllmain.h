@@ -12,6 +12,8 @@
 #include "dll/crandominlisteffect.h"
 #include "dll/ceveryinlisteffect.h"
 #include "dll/conactiondatabase.h"
+#include "dll/cship.h"
+
 
 #include "dll/hooking_common.h"
 #include "dll/common.h"
