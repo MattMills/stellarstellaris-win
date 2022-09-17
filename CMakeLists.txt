@@ -55,6 +55,7 @@ add_library		( stellar-injected SHARED
 					"src/dll/ceventscope.cpp"
 
 					"src/dll/cship.cpp"
+					"src/dll/limit_once_in_x_seconds.cpp"
 					"src/hooking/asm.cpp"
 					"src/hooking/error.cpp" 
 					"src/hooking/shared.cpp"

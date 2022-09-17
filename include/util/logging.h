@@ -49,6 +49,10 @@ class CLog : public CLogStream {
 		//template <typename T> inline CLog& operator << (T output);
 		//inline CLog& operator << (std::ostream& (*p_manip)(std::ostream&));
 
+		uint64_t get_timestamp();
+		const uint64_t ONE_SECOND = 10000000;
+		const uint64_t ONE_MILLISECOND = 10000;
+
 		template <typename T> inline CLog& operator << (T output) {
 			if (char_count == 0) {
 				this->print_timestamp();
@@ -56,8 +60,6 @@ class CLog : public CLogStream {
 
 			this->fh << output;
 			char_count += sizeof(output);
-
-
 
 			return *this;
 		};

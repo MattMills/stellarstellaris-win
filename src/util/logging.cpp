@@ -53,6 +53,23 @@ void CLog::print_timestamp() {
 	this->fh << "[" << time_buffer_with_ms << "] (" << GetCurrentProcessId() << ") ";
 }
 
+uint64_t CLog::get_timestamp(){
+	//10,000,000 = 1sec
+	SYSTEMTIME  system_time;
+	FILETIME    file_time;
+	uint64_t    time;
+
+	GetSystemTime(&system_time);
+	SystemTimeToFileTime(&system_time, &file_time);
+	time = ((uint64_t)file_time.dwLowDateTime);
+	time += ((uint64_t)file_time.dwHighDateTime) << 32;
+	std::cout << time << std::endl;
+	return time;
+}
+
+
+
+
 
 
 void CLog::log(const char* log_statement, bool do_newline, bool do_timestamp) {

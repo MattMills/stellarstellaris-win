@@ -88,6 +88,8 @@ void thread_idler_testing() {
 	conactiondatabase_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
 	ceveryinlisteffect_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
 	cship_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
+	limit_once_in_x_seconds_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
+
 	logger << "Hook init complete, unpausing threads";
 	SetOtherThreadsSuspended(false);
 	std::this_thread::sleep_for(std::chrono::milliseconds(100));
