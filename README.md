@@ -5,7 +5,11 @@ The goal of this project is to start building an enhanced version of StellarStel
 
 This is in a very early alpha stage, it currently doesn't do much of anything.
 
+# NEED BETA TESTERS, JOIN DISCORD!
+
 ## Current State
+
+Currently works on WINDOWS, Steam or GOG. I will eventually add Linux support, I don't have any macs.
 
 Game bugs patched:
  * Hull/Shield/Armor Regen overflow - Replaced fixed point calculations with double based calculations to eliminate ship regen overflow
