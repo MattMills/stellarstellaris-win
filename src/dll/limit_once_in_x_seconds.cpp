@@ -9,9 +9,9 @@ intptr_t base_func_ptr = 0x0;// CPlanetView::UpdatePopulationTab(void * this)
 intptr_t base_steam_func_ptr = 0x140b19f80;
 intptr_t base_gog_func_ptr = 0x140B13190; 
 
-intptr_t base_func2_ptr = 0x0; // CCountryFleetsManager::CalcTotalShipsOfSize(void * this, class CShipSize const*, enum EDesignOwner)
+intptr_t base_func2_ptr = 0x0; // CFleetManagerView::Update(void * this)>
 intptr_t base_steam_func2_ptr = 0x0;
-intptr_t base_gog_func2_ptr = 0x140298750;
+intptr_t base_gog_func2_ptr = 0x140AFE490;
 
 intptr_t base_func3_ptr = 0x0; // CPlanetView::GetToolTip(void * this, class CGuiObject const *, class CToolTip &)
 intptr_t base_steam_func3_ptr = 0x140b25540;
@@ -74,7 +74,7 @@ std::map<func_identifier, std::string*, decltype(comparator)> tooltip_string_cac
 
 
 void(*loixs_trampoline_func)(void* ptr1);
-void(*loixs_trampoline_func2)(void* ptr1, void* ptr2, void* ptr3);
+void(*loixs_trampoline_func2)(void* ptr1);
 bool(*loixs_trampoline_func3)(void* ptr1, void* ptr2, void* ptr3);
 void(*loixs_trampoline_func4)(void* ptr1, void* ptr2, void* ptr3);
 void(*loixs_trampoline_func5)(void* ptr1, void* ptr2, void* ptr3);
@@ -192,7 +192,7 @@ __declspec(noinline) bool tooltip_payload(void* ptr1, void* ptr2, void* ptr3) {
 
 
 //.text:00007FF766B63190 stellaris.exe:$B13190 #B12590 <private: void __cdecl CPlanetView::UpdatePopulationTab(void)>
-//.text:00007FF7662E8750 stellaris.exe : $298750 #297B50 <public: int __cdecl CCountryFleetsManager::CalcTotalShipsOfSize(class CShipSize const*, enum EDesignOwner) const>
+//.text:00007FF766B4E490 stellaris.exe:$AFE490 #AFD890 <public: virtual void __cdecl CFleetManagerView::Update(void)>
 //.text:00007FF766B6E750 stellaris.exe:$B1E750 #B1DB50 <public: virtual bool __cdecl CPlanetView::GetToolTip(class CGuiObject const *, class CToolTip &) const>
 
 void limit_once_in_x_seconds_hook_init(enumPlatforms thisPlatform, intptr_t p_CApplication_Base, intptr_t base_augustus_ptr) {
@@ -219,7 +219,7 @@ void limit_once_in_x_seconds_hook_init(enumPlatforms thisPlatform, intptr_t p_CA
 	//intptr_t this_func5_ptr = (intptr_t)p_CApplication_Base + (base_func5_ptr - base_augustus_ptr);
 
 	installHook((void*)this_func_ptr,  &loixs_trampoline_func,  static_cast<void (*)(void *)>(limit_once_in_3_seconds_payload));
-	//installHook((void*)this_func2_ptr, &loixs_trampoline_func2, static_cast<void (*)(void*, void*, void*)>(limit_once_in_3_seconds_payload));
+	installHook((void*)this_func2_ptr, &loixs_trampoline_func2, static_cast<void (*)(void*)>(limit_once_in_3_seconds_payload));
 	installHook((void*)this_func3_ptr, &loixs_trampoline_func3, tooltip_payload);
 	//installHook((void*)this_func4_ptr, &loixs_trampoline_func4, limit_once_in_3_seconds_payload);
 	//installHook((void*)this_func5_ptr, &loixs_trampoline_func5, limit_once_in_3_seconds_payload);
