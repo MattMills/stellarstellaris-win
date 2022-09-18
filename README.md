@@ -8,7 +8,13 @@ This is in a very early alpha stage, it currently doesn't do much of anything.
 ## Current State
 
 Game bugs patched:
- * Hull/Shield/Armor Regen overflow
+ * Hull/Shield/Armor Regen overflow - Replaced fixed point calculations with double based calculations to eliminate ship regen overflow
+ * TODO: Disapearing army outliner group - Identified exact assembly patch to fix this, however need to write some tooling code to be able to apply the patch automatically.
+ 
+Performance issues patched:
+* Planet view with high pop count performance improvement - Causes the icons on the population tab to be a bit slow to initially update from their default state.
+* Planet view tooltips - Caching the tooltip data dramatically improves framerate for high population worlds.
+* Fleet Manager View - Limits the UI update rate to once every 3 seconds, which makes some pieces of the UI slow to respond, but with a lot of fleets dramatically improves frame rate (1 FPS -> 40 FPS); should be a fixable issue.
 
 Debug logging added:
  * CEvent::ExecuteActual
