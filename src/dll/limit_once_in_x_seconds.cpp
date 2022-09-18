@@ -10,7 +10,7 @@ intptr_t base_steam_func_ptr = 0x140b19f80;
 intptr_t base_gog_func_ptr = 0x140B13190; 
 
 intptr_t base_func2_ptr = 0x0; // CFleetManagerView::Update(void * this)>
-intptr_t base_steam_func2_ptr = 0x0;
+intptr_t base_steam_func2_ptr = 0x140b05280;
 intptr_t base_gog_func2_ptr = 0x140AFE490;
 
 intptr_t base_func3_ptr = 0x0; // CPlanetView::GetToolTip(void * this, class CGuiObject const *, class CToolTip &)
