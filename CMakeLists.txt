@@ -47,13 +47,14 @@ add_executable	( stellar-loader
 add_library		( stellar-injected SHARED 
 					"src/dll/dllmain.cpp" 
 					"src/dll/hooking_common.cpp"
+					"src/dll/address_helper.cpp"
 					"src/dll/ceffect.cpp"
 					"src/dll/cevent.cpp"
 					"src/dll/crandominlisteffect.cpp"
 					"src/dll/ceveryinlisteffect.cpp"
 					"src/dll/conactiondatabase.cpp"
 					"src/dll/ceventscope.cpp"
-
+					"src/dll/ctrigger.cpp"
 					"src/dll/cship.cpp"
 					"src/dll/limit_once_in_x_seconds.cpp"
 					"src/hooking/asm.cpp"

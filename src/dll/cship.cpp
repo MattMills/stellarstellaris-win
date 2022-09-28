@@ -2,13 +2,8 @@
 #include "dll/hooking_common.h"
 
 intptr_t base_cship_dailyupdaterepair_ptr = 0x0;
-intptr_t base_steam_cship_dailyupdaterepair_ptr = 0x1407bc4e0;
-intptr_t base_gog_cship_dailyupdaterepair_ptr = 0x1407ba2b0;
-
-
 intptr_t base_cship_calcregenamount_ptr = 0x0;
-intptr_t base_steam_cship_calcregenamount_ptr = 0x1407CFC20;
-intptr_t base_gog_cship_calcregenamount_ptr = 0x1407cd9f0;
+
 
 /*
 void __thiscall CShip::DailyUpdateRepair(CShip *this)
@@ -119,16 +114,13 @@ __declspec(noinline) int64_t* cship_calcregenamount_payload(void* ptr1, int64_t 
 void cship_hook_init(enumPlatforms thisPlatform, intptr_t p_CApplication_Base, intptr_t base_augustus_ptr) {
 	CLog& logger = *getLogger();
 
-	if (thisPlatform == STEAM) {
-		base_cship_dailyupdaterepair_ptr = base_steam_cship_dailyupdaterepair_ptr;
-		base_cship_calcregenamount_ptr = base_steam_cship_calcregenamount_ptr;
-	}
-	else if (thisPlatform == GOG) {
-		base_cship_dailyupdaterepair_ptr = base_gog_cship_dailyupdaterepair_ptr;
-		base_cship_calcregenamount_ptr = base_gog_cship_calcregenamount_ptr;
-	}
+	
+	base_cship_dailyupdaterepair_ptr = find_address_from_symbol("CShip::DailyUpdateRepair");
+	base_cship_calcregenamount_ptr = find_address_from_symbol("CShip::CalcRegenAmount");
+	
 	
 	//TODO: performance penalty, enable/disable
+	// This is just for logging info
 	//intptr_t this_cship_dailyupdaterepair_ptr = (intptr_t)p_CApplication_Base + (base_cship_dailyupdaterepair_ptr - base_augustus_ptr);
 	//cship_dailyupdaterepair_trampoline = (void(*)(void* ptr1)) installHook((void*)this_cship_dailyupdaterepair_ptr, &cship_dailyupdaterepair_trampoline, cship_dailyupdaterepair_payload);
 

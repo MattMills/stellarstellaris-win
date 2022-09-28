@@ -6,24 +6,8 @@
 extern CLog logger;
 
 intptr_t base_func_ptr = 0x0;// CPlanetView::UpdatePopulationTab(void * this)
-intptr_t base_steam_func_ptr = 0x140b19f80;
-intptr_t base_gog_func_ptr = 0x140B13190; 
-
 intptr_t base_func2_ptr = 0x0; // CFleetManagerView::Update(void * this)>
-intptr_t base_steam_func2_ptr = 0x140b05280;
-intptr_t base_gog_func2_ptr = 0x140AFE490;
-
 intptr_t base_func3_ptr = 0x0; // CPlanetView::GetToolTip(void * this, class CGuiObject const *, class CToolTip &)
-intptr_t base_steam_func3_ptr = 0x140b25540;
-intptr_t base_gog_func3_ptr = 0x140B1E750;
-
-intptr_t base_func4_ptr = 0x0;
-intptr_t base_steam_func4_ptr = 0x0;
-intptr_t base_gog_func4_ptr = 0x140298750;
-
-intptr_t base_func5_ptr = 0x0;
-intptr_t base_steam_func5_ptr = 0x0;
-intptr_t base_gog_func5_ptr = 0x140498310;
 
 
 struct func_identifier {
@@ -197,20 +181,12 @@ __declspec(noinline) bool tooltip_payload(void* ptr1, void* ptr2, void* ptr3) {
 
 void limit_once_in_x_seconds_hook_init(enumPlatforms thisPlatform, intptr_t p_CApplication_Base, intptr_t base_augustus_ptr) {
 	CLog& logger = *getLogger();
-	if (thisPlatform == STEAM) {
-		base_func_ptr = base_steam_func_ptr;
-		base_func2_ptr = base_steam_func2_ptr;
-		base_func3_ptr = base_steam_func3_ptr;
-		base_func4_ptr = base_steam_func4_ptr;
-		base_func5_ptr = base_steam_func5_ptr;
-	}
-	else if (thisPlatform == GOG) {
-		base_func_ptr = base_gog_func_ptr;
-		base_func2_ptr = base_gog_func2_ptr;
-		base_func3_ptr = base_gog_func3_ptr;
-		base_func4_ptr = base_gog_func4_ptr;
-		base_func5_ptr = base_gog_func5_ptr;
-	}
+
+	base_func_ptr = find_address_from_symbol("CPlanetView::UpdatePopulationTab");
+	base_func2_ptr = find_address_from_symbol("CFleetManagerView::Update");
+	base_func3_ptr = find_address_from_symbol("CPlanetView::GetToolTip");
+
+	
 
 	intptr_t this_func_ptr = (intptr_t)p_CApplication_Base + (base_func_ptr - base_augustus_ptr);
 	intptr_t this_func2_ptr = (intptr_t)p_CApplication_Base + (base_func2_ptr - base_augustus_ptr);

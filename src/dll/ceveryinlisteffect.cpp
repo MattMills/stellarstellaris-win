@@ -49,12 +49,8 @@ __declspec(noinline) void ceveryinlisteffect_executeactual_payload(void* ptr1, v
 void ceveryinlisteffect_hook_init(enumPlatforms thisPlatform, intptr_t p_CApplication_Base, intptr_t base_augustus_ptr) {
 	CLog& logger = *getLogger();
 
-	if (thisPlatform == STEAM) {
-		base_ceveryinlisteffect_executeactual_ptr = base_steam_ceveryinlisteffect_executeactual_ptr;
-	}
-	else if (thisPlatform == GOG) {
-		base_ceveryinlisteffect_executeactual_ptr = base_gog_ceveryinlisteffect_executeactual_ptr;
-	}
+	base_ceveryinlisteffect_executeactual_ptr = find_address_from_symbol("CEveryInListEffect::ExecuteActual");
+	
 	
 	intptr_t this_ceveryinlisteffect_executeactual_ptr = (intptr_t)p_CApplication_Base + (base_ceveryinlisteffect_executeactual_ptr - base_augustus_ptr);
 	ceveryinlisteffect_executeactual_trampoline = (void(*)(void* ptr1, void* ptr2)) installHook((void*)this_ceveryinlisteffect_executeactual_ptr, &ceveryinlisteffect_executeactual_trampoline, ceveryinlisteffect_executeactual_payload);

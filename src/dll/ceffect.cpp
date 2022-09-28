@@ -6,8 +6,6 @@
 extern CLog logger;
 
 intptr_t base_ceffect_executeactual_ptr = 0x0;
-intptr_t base_steam_ceffect_executeactual_ptr = 0x140302b20;
-intptr_t base_gog_ceffect_executeactual_ptr = 0x140300eb0;
 
 void(*ceffect_executeactual_trampoline)(void* ptr1, void* ptr2);
 __declspec(noinline) void ceffect_executeactual_payload(void* ptr1, void* ptr2) {
@@ -51,12 +49,8 @@ __declspec(noinline) void ceffect_executeactual_payload(void* ptr1, void* ptr2) 
 }
 
 void ceffect_hook_init(enumPlatforms thisPlatform, intptr_t p_CApplication_Base, intptr_t base_augustus_ptr) {
+	base_ceffect_executeactual_ptr = find_address_from_symbol("CEffect::ExecuteActual");
 	
-	if(thisPlatform == STEAM){
-		base_ceffect_executeactual_ptr = base_steam_ceffect_executeactual_ptr;
-	}else if (thisPlatform == GOG) {
-		base_ceffect_executeactual_ptr = base_gog_ceffect_executeactual_ptr;
-	}
 
 	intptr_t this_ceffect_executeactual_ptr = (intptr_t)p_CApplication_Base + (base_ceffect_executeactual_ptr - base_augustus_ptr);
 	ceffect_executeactual_trampoline = (void(*)(void* ptr1, void* ptr2)) installHook((void*)this_ceffect_executeactual_ptr, &ceffect_executeactual_trampoline, ceffect_executeactual_payload);

@@ -14,4 +14,20 @@ enum enumPlatforms {
 	GOG,
 };
 
+enum enumVersions {
+	VERSION_NULL,
+	VERSION_UNKNOWN,
+	VERSION_3_4_5,
+	VERSION_3_5_1,
+	VERSION_3_5_2,
+};
+
+enum enumOperatingSystems {
+	OS_NULL,
+	OS_UNKNOWN,
+	OS_WINDOWS,
+	OS_MACOS,
+	OS_LINUX,
+};
+
 extern CLog logger;

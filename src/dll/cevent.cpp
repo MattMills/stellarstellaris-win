@@ -4,12 +4,8 @@
 extern CLog logger;
 
 intptr_t base_cevent_execute_ptr = 0x0;
-intptr_t base_steam_cevent_execute_ptr = 0x1402df460;
-intptr_t base_gog_cevent_execute_ptr = 0x1402dd7f0;
-
 intptr_t base_cevent_performimmediate_ptr = 0x0;
-intptr_t base_steam_cevent_performimmediate_ptr = 0x1402df290;
-intptr_t base_gog_cevent_performimmediate_ptr = 0x1402dd620;
+
 
 
 void(*cevent_execute_trampoline)(void* ptr1, void* arg2, void* arg3, void* arg4, void* arg5);
@@ -77,15 +73,10 @@ __declspec(noinline) void cevent_performimmediate_payload(void* arg1, void* arg2
 
 void cevent_hook_init(enumPlatforms thisPlatform, intptr_t p_CApplication_Base, intptr_t base_augustus_ptr) {
 	CLog& logger = *getLogger();
-	if (thisPlatform == STEAM) {
-		base_cevent_execute_ptr = base_steam_cevent_execute_ptr;
-		base_cevent_performimmediate_ptr = base_steam_cevent_performimmediate_ptr;
-	}
-	else if (thisPlatform == GOG) {
-		base_cevent_execute_ptr = base_gog_cevent_execute_ptr;
-		base_cevent_performimmediate_ptr = base_gog_cevent_performimmediate_ptr;
-	}
-
+	
+	base_cevent_execute_ptr = find_address_from_symbol("CEvent::Execute");
+	base_cevent_performimmediate_ptr = find_address_from_symbol("CEvent::PerformImmediate");
+	
 	intptr_t this_cevent_execute_ptr = (intptr_t)p_CApplication_Base + (base_cevent_execute_ptr - base_augustus_ptr);
 	intptr_t this_cevent_performimmediate_ptr = (intptr_t)p_CApplication_Base + (base_cevent_performimmediate_ptr - base_augustus_ptr);
 	cevent_execute_trampoline = (void(*)(void* ptr1, void* arg2, void* arg3, void* arg4, void* arg5)) installHook((void*)this_cevent_execute_ptr, &cevent_execute_trampoline, cevent_execute_payload);

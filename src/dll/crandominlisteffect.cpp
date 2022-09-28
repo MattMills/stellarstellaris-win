@@ -2,8 +2,7 @@
 #include "dll/hooking_common.h"
 
 intptr_t base_crandominlisteffect_executeactual_ptr = 0x0;
-intptr_t base_steam_crandominlisteffect_executeactual_ptr = 0x140f01d40;
-intptr_t base_gog_crandominlisteffect_executeactual_ptr = 0x140f00720;
+
 
 void(*crandominlisteffect_executeactual_trampoline)(void* ptr1, void* ptr2);
 __declspec(noinline) void crandominlisteffect_executeactual_payload(void* ptr1, void* ptr2) {
@@ -52,12 +51,9 @@ __declspec(noinline) void crandominlisteffect_executeactual_payload(void* ptr1, 
 void crandominlisteffect_hook_init(enumPlatforms thisPlatform, intptr_t p_CApplication_Base, intptr_t base_augustus_ptr) {
 	CLog& logger = *getLogger();
 
-	if (thisPlatform == STEAM) {
-		base_crandominlisteffect_executeactual_ptr = base_steam_crandominlisteffect_executeactual_ptr;
-	}
-	else if (thisPlatform == GOG) {
-		base_crandominlisteffect_executeactual_ptr = base_gog_crandominlisteffect_executeactual_ptr;
-	}
+	
+	base_crandominlisteffect_executeactual_ptr = find_address_from_symbol("CRandomInListEffect::ExecuteActual");
+	
 	
 	intptr_t this_crandominlisteffect_executeactual_ptr = (intptr_t)p_CApplication_Base + (base_crandominlisteffect_executeactual_ptr - base_augustus_ptr);
 	crandominlisteffect_executeactual_trampoline = (void(*)(void* ptr1, void* ptr2)) installHook((void*)this_crandominlisteffect_executeactual_ptr, &crandominlisteffect_executeactual_trampoline, crandominlisteffect_executeactual_payload);
