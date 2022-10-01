@@ -28,7 +28,8 @@ Right below this is a memset to set the scratch buffer space with the length in 
 Patching out mov eax,r12d and imul eax,r12d with xor rax,rax and mov eax,r12d eliminates this bug entirely.
 
 
-Manually patching:
+# Manually patching:
+
 Well if you want to manually patch it in Windows you can do this:
 
 
