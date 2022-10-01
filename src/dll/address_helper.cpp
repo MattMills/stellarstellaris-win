@@ -1,5 +1,5 @@
 #include "address_helper.h"
-#include <map>;
+#include <map>
 
 enumVersions extern global_current_version;
 enumOperatingSystems extern global_current_os;
@@ -58,20 +58,21 @@ void init_address_map() {
 	addr_map[VERSION_3_4_5][OS_WINDOWS][GOG]["CFleetManagerView::Update"] = 0x140AFE490;
 	addr_map[VERSION_3_4_5][OS_WINDOWS][GOG]["CPlanetView::GetToolTip"] = 0x140B1E750;
 
-	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CTrigger::Evaluate_1"] = 0x0;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CTrigger::Evaluate_1"] = 0x1401d7700;
 	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CTrigger::Evaluate_2"] = 0x0;
 	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CTrigger::EvaluateExtended"] = 0x0;
-	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CEffect::ExecuteActual"] = 0x0;
-	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CEvent::ExecuteActual"] = 0x0;
-	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CEvent::PerformImmediate"] = 0x0;
-	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["COnActionDatabase::PerformEvent"] = 0x0;
-	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CEveryInListEffect::ExecuteActual"] = 0x0;
-	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CRandomInListEffect::ExecuteActual"] = 0x0;
-	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CShip::DailyUpdateRepair"] = 0x0;
-	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CShip::CalcRegenAmount"] = 0x0;
-	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CPlanetView::UpdatePopulationTab"] = 0x0;
-	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CFleetManagerView::Update"] = 0x0;
-	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CPlanetView::GetToolTip"] = 0x0;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CEffect::ExecuteActual"] = 0x1401f1cd0;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CEvent::Execute"] = 0x140513750;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CEvent::PerformImmediate"] = 0x1405131c0;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["COnActionDatabase::PerformEvent"] = 0x1402c02c0;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CEveryInListEffect::ExecuteActual"] = 0x140f95ba0;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CRandomInListEffect::ExecuteActual"] = 0x140f96160;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CShip::DailyUpdateRepair"] = 0x1407f6cd0;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CShip::CalcRegenAmount"] = 0x14080ab70;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CPlanetView::UpdatePopulationTab"] = 0x140b757b0;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CFleetManagerView::Update"] = 0x140b61260;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CPlanetView::GetToolTip"] = 0x140b811c0;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CFleetTemplateManager::CalcShipsToReinforceInternal"] = 0x14090b0d0;
 
 	addr_map[VERSION_3_5_2][OS_WINDOWS][GOG]["CTrigger::Evaluate_1"] = 0x1401d59a0;
 	addr_map[VERSION_3_5_2][OS_WINDOWS][GOG]["CTrigger::Evaluate_2"] = 0x1400ec3f0;
@@ -87,6 +88,7 @@ void init_address_map() {
 	addr_map[VERSION_3_5_2][OS_WINDOWS][GOG]["CPlanetView::UpdatePopulationTab"] = 0x140b728b0;
 	addr_map[VERSION_3_5_2][OS_WINDOWS][GOG]["CFleetManagerView::Update"] = 0x140b5e360;
 	addr_map[VERSION_3_5_2][OS_WINDOWS][GOG]["CPlanetView::GetToolTip"] = 0x140b7e2c0;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][GOG]["CFleetTemplateManager::CalcShipsToReinforceInternal"] = 0x140908e80;
 }
 
 intptr_t find_address_from_symbol(const char * symbol) {
