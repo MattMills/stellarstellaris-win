@@ -25,6 +25,7 @@
 //#include <atltypes.h>
 //#include <atltempl.h>
 
+using namespace std;
 
 typedef unsigned int        ImageBaseOffset32;
 typedef unsigned char       byte;
