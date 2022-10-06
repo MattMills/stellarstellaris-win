@@ -7,6 +7,7 @@ using namespace std;
 
 
 #include "loader/main.h"
+#include<conio.h>
 
 #include "stellaris/CApplication.h"
 
@@ -113,6 +114,13 @@ int main() {
     GetPathToPayloadDLL(fullPath);
     InjectPayload(hProcess, fullPath, &p_application, p_application_base);
 
-    std::cout << "Successfully injected payload? Probably?" << std::endl;
+    std::cout << "Successfully injected payload? Probably?" << std::endl << std::endl << std::endl;
+    std::cout << "Press any key to close this window." << std::endl;
+    while (true) {
+        if (_kbhit() || IsDebuggerPresent()) {
+            exit(0);
+        }
+        Sleep(10);
+    }
     
 }
