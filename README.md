@@ -15,12 +15,15 @@ Currently works on WINDOWS, Steam or GOG. I will eventually add Linux support, I
 
 Game bugs patched:
  * Hull/Shield/Armor Regen overflow - Replaced fixed point calculations with double based calculations to eliminate ship regen overflow
- * TODO: Disapearing army outliner group - Identified exact assembly patch to fix this, however need to write some tooling code to be able to apply the patch automatically.
+ * Disapearing army outliner group - Fixed Armies dissapearing from outliner menu
  
 Performance issues patched:
 * Planet view with high pop count performance improvement - Causes the icons on the population tab to be a bit slow to initially update from their default state.
 * Planet view tooltips - Caching the tooltip data dramatically improves framerate for high population worlds.
 * Fleet Manager View - Limits the UI update rate to once every 3 seconds, which makes some pieces of the UI slow to respond, but with a lot of fleets dramatically improves frame rate (1 FPS -> 40 FPS); should be a fixable issue.
+* Fleet View - Caches Fleet reinforcement calculations for selected fleets to reduce lag
+* Multiple places / Ship Design - Reduced frequency of Applying modifiers to ship design values (once every 3 seconds max)
+* Species-is-modifiable alert - Causes large lag spikes in late game with a lot of species/planets
 
 Debug logging added:
  * CEvent::ExecuteActual
@@ -28,6 +31,7 @@ Debug logging added:
  * CRandomInListEffect::ExecuteActual
  * CEveryInListEffect::ExecuteActual
  * COnActionDatabase::PerformEvent
+ * Implemented but disabled (way too noisy) - CTrigger::ExecuteActual
 
  in order to dump debug data to a new log file (stellarstellaris-debug.log in the normal directory [example file as of 9/14/2022 here](docs/example-stellarstellaris-debug.log.txt)).
 
