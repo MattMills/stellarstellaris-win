@@ -48,6 +48,7 @@ add_library		( stellar-injected SHARED
 					"src/dll/dllmain.cpp" 
 					"src/dll/hooking_common.cpp"
 					"src/dll/address_helper.cpp"
+					"src/dll/assembly_patches.cpp"
 					"src/dll/ceffect.cpp"
 					"src/dll/cevent.cpp"
 					"src/dll/crandominlisteffect.cpp"

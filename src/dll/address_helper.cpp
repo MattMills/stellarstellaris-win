@@ -75,7 +75,11 @@ void init_address_map() {
 	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CFleetTemplateManager::CalcShipsToReinforceInternal"] = 0x14090b0d0;
 	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["COutlinerGroupArmy::UpdateInternal_mid_asm"] = 0x140e280c6;
 	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CEconomicUnitBase<CShipDesignEconomicUnit,CEconomicUnitScope<CShipDesign,void> >::ApplyModifiersToValue<2,0>"] = 0x140366cf0;
-	addr_map[VERSION_3_5_2][OS_WINDOWS][GOG]["CCountry::GetLatestShipDesign"] = 0x14031a3f0;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CCountry::GetLatestShipDesign"] = 0x14031a3f0;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["CAlertManager::Update_asm_target_1"] = 0x140a7fc43;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][STEAM]["COutlinerGroupArmy::UpdateInternal_asm_target_1"] = 0x140e280c3;
+
+
 
 	addr_map[VERSION_3_5_2][OS_WINDOWS][GOG]["CTrigger::Evaluate_1"] = 0x1401d59a0;
 	addr_map[VERSION_3_5_2][OS_WINDOWS][GOG]["CTrigger::Evaluate_2"] = 0x1400ec3f0;
@@ -95,6 +99,8 @@ void init_address_map() {
 	addr_map[VERSION_3_5_2][OS_WINDOWS][GOG]["COutlinerGroupArmy::UpdateInternal_mid_asm"] = 0x140e26ad6;
 	addr_map[VERSION_3_5_2][OS_WINDOWS][GOG]["CEconomicUnitBase<CShipDesignEconomicUnit,CEconomicUnitScope<CShipDesign,void> >::ApplyModifiersToValue<2,0>"] = 0x140364FB0;
 	addr_map[VERSION_3_5_2][OS_WINDOWS][GOG]["CCountry::GetLatestShipDesign"] = 0x140318690;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][GOG]["CAlertManager::Update_asm_target_1"] = 0x140a7d033;
+	addr_map[VERSION_3_5_2][OS_WINDOWS][GOG]["COutlinerGroupArmy::UpdateInternal_asm_target_1"] = 0x140e26ad3;
 }
 
 intptr_t find_address_from_symbol(const char * symbol) {
