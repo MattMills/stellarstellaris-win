@@ -24,7 +24,7 @@ intptr_t base_augustus_ptr = 0x0;
 //intptr_t base_steam_augustus_ptr = 0x1418f9b90; // 3.4.5
 //intptr_t base_gog_augustus_ptr = 0x1418ed9f0; // 3.4.5
 
-intptr_t base_steam_augustus_ptr = 0x0;
+intptr_t base_steam_augustus_ptr = 0x14197d9d8;
 intptr_t base_gog_augustus_ptr = 0x141971838;
 
 intptr_t base_offset = 0x140000000;
