@@ -103,6 +103,8 @@ void thread_idler_testing() {
 	ctrigger_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
 	limit_once_in_x_seconds_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
 	assembly_patches_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	//Extremely verbose:
+	//ctoken_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
 
 	logger << "Hook init complete, unpausing threads";
 	SetOtherThreadsSuspended(false);

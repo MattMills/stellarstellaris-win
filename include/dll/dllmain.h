@@ -10,6 +10,7 @@
 #include "dll/ceffect.h"
 #include "dll/cevent.h"
 #include "dll/ctrigger.h"
+#include "dll/ctoken.h"
 #include "dll/crandominlisteffect.h"
 #include "dll/ceveryinlisteffect.h"
 #include "dll/conactiondatabase.h"

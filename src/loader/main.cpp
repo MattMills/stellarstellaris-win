@@ -82,7 +82,7 @@ int main() {
 
     while (augustus_ptr == NULL) {
         std::cout << "Error: Unable to find search value in memory yet, waiting 1s, control+c to cancel" << std::endl;
-        Sleep(1000);
+        Sleep(1);
         augustus_ptr = searchMemory(hProcess, search_value, MEM_PRIVATE);
     }
     void* p_application = (augustus_ptr)-56;
