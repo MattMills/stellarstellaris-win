@@ -7,6 +7,10 @@ The goal of this project is to start building an enhanced version of StellarStel
 
 This is in a very early alpha stage, it currently doesn't do much of anything.
 
+Currently supported in version v0.0.5-alpha:
+ * Windows Steam 3.6.1 
+ * Windows GOG 3.6.1
+
 # NEED BETA TESTERS, JOIN DISCORD!
 
 ## Current State
@@ -32,6 +36,7 @@ Debug logging added:
  * CEveryInListEffect::ExecuteActual
  * COnActionDatabase::PerformEvent
  * Implemented but disabled (way too noisy) - CTrigger::ExecuteActual
+ * Implemented but disabled (also too noisy) - CToken related code to investigate token init.
 
  in order to dump debug data to a new log file (stellarstellaris-debug.log in the normal directory [example file as of 9/14/2022 here](docs/example-stellarstellaris-debug.log.txt)).
 
