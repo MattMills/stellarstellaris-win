@@ -24,8 +24,11 @@ intptr_t base_augustus_ptr = 0x0;
 //intptr_t base_steam_augustus_ptr = 0x1418f9b90; // 3.4.5
 //intptr_t base_gog_augustus_ptr = 0x1418ed9f0; // 3.4.5
 
-intptr_t base_steam_augustus_ptr = 0x14197d9d8;
-intptr_t base_gog_augustus_ptr = 0x141971838;
+//intptr_t base_steam_augustus_ptr = 0x14197d9d8; // 3.5.2
+//intptr_t base_gog_augustus_ptr = 0x141971838; // 3.5.2
+
+intptr_t base_steam_augustus_ptr = 0x1419f0d20;
+intptr_t base_gog_augustus_ptr = 0x1419e4b60;
 
 intptr_t base_offset = 0x140000000;
 
@@ -57,23 +60,23 @@ void thread_idler_testing() {
 	augustus_ptr = (base_offset+(intptr_t)p_CApplication_Base - (intptr_t)hModule);
 	
 	if (augustus_ptr == base_steam_augustus_ptr) {
-		logger << "Found correct augustus addr for steam 3.5.2";
+		logger << "Found correct augustus addr for steam 3.6.1";
 		logger.endl();
 
 		//TODO: less stupid
 		base_augustus_ptr = base_steam_augustus_ptr;
 		thisPlatform = STEAM;
 		global_current_platform = STEAM;
-		global_current_version = VERSION_3_5_2;
+		global_current_version = VERSION_3_6_1;
 		global_current_os = OS_WINDOWS;
 	}
 	else if (augustus_ptr == base_gog_augustus_ptr) {
-		logger << "Found correct augustus addr for gog 3.5.2";
+		logger << "Found correct augustus addr for gog 3.6.1";
 		logger.endl();
 		base_augustus_ptr = base_gog_augustus_ptr;
 		thisPlatform = GOG;
 		global_current_platform = GOG;
-		global_current_version = VERSION_3_5_2;
+		global_current_version = VERSION_3_6_1;
 		global_current_os = OS_WINDOWS;
 	}
 	else {
