@@ -471,7 +471,7 @@ void limit_once_in_x_seconds_hook_init(enumPlatforms thisPlatform, intptr_t p_CA
 	intptr_t this_func6_ptr = (intptr_t)p_CApplication_Base + (base_func6_ptr - base_augustus_ptr);
 
 	installHook((void*)this_func_ptr,  &loixs_trampoline_func,  static_cast<void (*)(void *)>(limit_once_in_3_seconds_payload));
-	installHook((void*)this_func2_ptr, &loixs_trampoline_func2, static_cast<void (*)(void *)>(limit_once_in_3_seconds_payload));
+	//installHook((void*)this_func2_ptr, &loixs_trampoline_func2, static_cast<void (*)(void *)>(limit_once_in_3_seconds_payload));
 	installHook((void*)this_func3_ptr, &loixs_trampoline_func3, tooltip_payload);
 	installHook((void*)this_func4_ptr, &loixs_trampoline_func4, static_cast<void (*)(void*, void*, void*, void*, void*, void* , void*)>(limit_once_in_3_seconds_payload));
 	installHook((void*)this_func5_ptr, &loixs_trampoline_func5, loixs_calcshipstoreinforce);
