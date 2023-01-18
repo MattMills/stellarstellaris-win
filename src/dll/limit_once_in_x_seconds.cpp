@@ -10,6 +10,22 @@ extern CApplication* p_CApplication;
 const uint64_t expected_fps = 60;
 
 
+struct CTooltip {
+	CString _Instant;
+	CString _Delayed;
+	CString _Debug;
+	CString _Shortcut;
+	CVector2<int> _Anchor;
+	bool _Below;
+	bool _bLeft;
+};
+
+struct CTooltipCache {
+	CTooltip _Tooltip;
+	bool _ret;
+};
+
+
 intptr_t base_func_ptr = 0x0;// CPlanetView::UpdatePopulationTab(void * this)
 intptr_t base_func2_ptr = 0x0; // CFleetManagerView::Update(void * this)>
 intptr_t base_func3_ptr = 0x0; // CPlanetView::GetToolTip(void * this, class CGuiObject const *, class CToolTip &)
@@ -107,7 +123,7 @@ auto comparator = [](const func_identifier& left, const func_identifier& right) 
 };
 
 std::map<func_identifier, uint64_t, decltype(comparator)> last_frame_map(comparator);
-std::map<func_identifier, std::string*, decltype(comparator)> tooltip_string_cache(comparator);
+std::map<func_identifier, CTooltipCache*, decltype(comparator)> tooltip_cache(comparator);
 std::map<func_identifier, std::string*, decltype(comparator)> ship_reinforce_string_cache(comparator);
 std::map<func_identifier, SCalcShipsToReinforceResult*, decltype(comparator)> ship_reinforce_struct_cache(comparator);
 std::map<func_identifier, void*, decltype(comparator)> ccountry_getlatestshipdesign_ptr_cache(comparator);
@@ -409,7 +425,6 @@ __declspec(noinline) SCalcShipsToReinforceResult* loixs_calcshipstoreinforce(voi
 	return ret;
 }
 
-
 __declspec(noinline) bool tooltip_payload(void* ptr1, void* ptr2, void* ptr3) {
 	bool(*func_ptr)(void* ptr1, void* ptr2, void* ptr3);
 	PopAddress(uint64_t(&func_ptr));
@@ -419,29 +434,34 @@ __declspec(noinline) bool tooltip_payload(void* ptr1, void* ptr2, void* ptr3) {
 	const uint64_t limit_frames = limit_seconds * expected_fps;
 
 	func_identifier fid((void*)func_ptr, ptr1, ptr2, ptr3);
-	std::string* strTooltip = (std::string*)((intptr_t)ptr3);
+	CTooltip* ptrTooltip = (CTooltip*)((intptr_t)ptr3);
+	
 
-	if (p_CApplication->_nCurrentFrame - last_frame_map[fid] < limit_frames) {
-		std::string* strNew = new std::string(*tooltip_string_cache[fid]);
-		*strTooltip = *strNew;
+	if (p_CApplication->_nCurrentFrame - last_frame_map[fid] < limit_frames && tooltip_cache[fid] != nullptr) {
+		CTooltipCache* cachedTooltip = new CTooltipCache(*tooltip_cache[fid]);
+		//memcpy(cachedTooltip, ptrTooltip, sizeof(*ptrTooltip));
+		*ptrTooltip = cachedTooltip->_Tooltip;
 
-		return 1;
+		return cachedTooltip->_ret;
 	}
 
 	bool ret = func_ptr(ptr1, ptr2, ptr3);
 
 	last_frame_map[fid] = p_CApplication->_nCurrentFrame;
+	CGuiObject* ptrCGuiObject = (CGuiObject*)(intptr_t(ptr2));
 
 	logger << "Tooltip - limit(3 sec) - ";
-	
 	logger << fid;
+	logger << " CGuiObject(" << *(std::string*)&(ptrCGuiObject->_UserDataString) << ")";
 		
-	if (tooltip_string_cache[fid] != nullptr) {
-		free(tooltip_string_cache[fid]);
+	if (tooltip_cache[fid] != nullptr) {
+		free(tooltip_cache[fid]);
 	}
 
-	tooltip_string_cache[fid] = (std::string*) malloc(sizeof(*strTooltip));
-	memcpy(tooltip_string_cache[fid], strTooltip, sizeof(*strTooltip));
+	tooltip_cache[fid] = (CTooltipCache*) malloc(sizeof(CTooltipCache));
+	memset(tooltip_cache[fid], 0x0, sizeof(CTooltipCache));
+	memcpy(&tooltip_cache[fid]->_Tooltip, ptrTooltip, sizeof(*ptrTooltip));
+	tooltip_cache[fid]->_ret = ret;
 	
 	return ret;
 }
