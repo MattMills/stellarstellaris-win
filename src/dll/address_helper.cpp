@@ -149,6 +149,15 @@ void init_address_map() {
 	addr_map[VERSION_3_6_1][OS_WINDOWS][GOG]["CToken::Init_2"] = 0x1413bac20; //const char* // 48 89 5c 24 08 48 89 74 24 10 57 48 83 ec 20 49 8b f0 48 8b f9 48 c7 c3 ff ff ff ff 0f 1f 40 00
 	addr_map[VERSION_3_6_1][OS_WINDOWS][GOG]["CTextLexer::GetTok"] = 0x1413b90b0;
 
+	addr_map[VERSION_3_7_4][OS_WINDOWS][GOG]["CShip::DailyUpdateRepair"] = 0x140868b40; // 48 89 5c 24 08 48 89 6c 24 18 48 89 74 24 20 57 41 54 41 55 41 56 41 57 48 83 ec 70 48 8b e9 45 32 e4 48 8b 15 cf 11 f2 01 48 85 d2 74 2d 44 8b 89 a8 00 00 00
+	addr_map[VERSION_3_7_4][OS_WINDOWS][GOG]["CShip::CalcRegenAmount"] = 0x14087ed30; // unchanged
+	addr_map[VERSION_3_7_4][OS_WINDOWS][GOG]["CAlertManager::Update_asm_target_1"] = 0x140b17714; // e8 87 ff be ff 84 c0 74 68 48 8b 45 08 48 8b 14 18 48 8b 52 18 49 8b ce
+	addr_map[VERSION_3_7_4][OS_WINDOWS][GOG]["COutlinerGroupArmy::UpdateInternal_asm_target_1"] = 0x140ee2263;
+
+	addr_map[VERSION_3_7_4][OS_WINDOWS][STEAM]["CShip::DailyUpdateRepair"] = 0x14086ada0; // 48 89 5c 24 08 48 89 6c 24 18 48 89 74 24 20 57 41 54 41 55 41 56 41 57 48 83 ec 70 48 8b e9 45 32 e4 48 8b 15 cf 11 f2 01 48 85 d2 74 2d 44 8b 89 a8 00 00 00
+	addr_map[VERSION_3_7_4][OS_WINDOWS][STEAM]["CShip::CalcRegenAmount"] = 0x140880f90; // unchanged
+	addr_map[VERSION_3_7_4][OS_WINDOWS][STEAM]["CAlertManager::Update_asm_target_1"] = 0x140b1a334; // e8 87 ff be ff 84 c0 74 68 48 8b 45 08 48 8b 14 18 48 8b 52 18 49 8b ce
+	addr_map[VERSION_3_7_4][OS_WINDOWS][STEAM]["COutlinerGroupArmy::UpdateInternal_asm_target_1"] = 0x140ee3843; // 41 8b c4 41 0f af c4 8d 3c c5 00 00 00 00 8d 04 3b 03 c0 39 81 a0 03 00 00 0f 8c 18 04 00 00 85 c0 0f 88 10 04 00 00
 
 }
 

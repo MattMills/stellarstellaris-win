@@ -21,7 +21,10 @@ enum enumVersions {
 	VERSION_3_5_1,
 	VERSION_3_5_2,
 	VERSION_3_6_0,
-	VERSION_3_6_1
+	VERSION_3_6_1,
+	VERSION_3_7_2,
+	VERSION_3_7_3,
+	VERSION_3_7_4
 };
 
 enum enumOperatingSystems {

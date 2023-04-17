@@ -7,9 +7,9 @@ The goal of this project is to start building an enhanced version of StellarStel
 
 This is in a very early alpha stage, it currently doesn't do much of anything.
 
-Currently supported in version v0.0.5-alpha:
- * Windows Steam 3.6.1 
- * Windows GOG 3.6.1
+Currently supported in version v0.0.6-alpha:
+ * Windows Steam 3.7.4
+ * Windows GOG 3.7.4
 
 # NEED BETA TESTERS, JOIN DISCORD!
 
@@ -22,14 +22,9 @@ Game bugs patched:
  * Disapearing army outliner group - Fixed Armies dissapearing from outliner menu
  
 Performance issues patched:
-* Planet view with high pop count performance improvement - Causes the icons on the population tab to be a bit slow to initially update from their default state.
-* Planet view tooltips - Caching the tooltip data dramatically improves framerate for high population worlds.
-* Fleet Manager View - Limits the UI update rate to once every 3 seconds, which makes some pieces of the UI slow to respond, but with a lot of fleets dramatically improves frame rate (1 FPS -> 40 FPS); should be a fixable issue.
-* Fleet View - Caches Fleet reinforcement calculations for selected fleets to reduce lag
-* Multiple places / Ship Design - Reduced frequency of Applying modifiers to ship design values (once every 3 seconds max)
 * Species-is-modifiable alert - Causes large lag spikes in late game with a lot of species/planets
 
-Debug logging added:
+Debug logging added (all currently disabled, if you were using them let me know):
  * CEvent::ExecuteActual
  * CEffect::ExecuteActual
  * CRandomInListEffect::ExecuteActual

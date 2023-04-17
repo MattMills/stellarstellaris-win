@@ -27,8 +27,11 @@ intptr_t base_augustus_ptr = 0x0;
 //intptr_t base_steam_augustus_ptr = 0x14197d9d8; // 3.5.2
 //intptr_t base_gog_augustus_ptr = 0x141971838; // 3.5.2
 
-intptr_t base_steam_augustus_ptr = 0x1419f0d20;
-intptr_t base_gog_augustus_ptr = 0x1419e4b60;
+//intptr_t base_steam_augustus_ptr = 0x1419f0d20; // 3.6.1
+//intptr_t base_gog_augustus_ptr = 0x1419e4b60; // 3.6.1
+
+intptr_t base_steam_augustus_ptr = 0x141a58218; // 3.7.4
+intptr_t base_gog_augustus_ptr = 0x141a4c058; // 3.7.4
 
 intptr_t base_offset = 0x140000000;
 
@@ -60,23 +63,23 @@ void thread_idler_testing() {
 	augustus_ptr = (base_offset+(intptr_t)p_CApplication_Base - (intptr_t)hModule);
 	
 	if (augustus_ptr == base_steam_augustus_ptr) {
-		logger << "Found correct augustus addr for steam 3.6.1";
+		logger << "Found correct augustus addr for steam 3.7.4";
 		logger.endl();
 
 		//TODO: less stupid
 		base_augustus_ptr = base_steam_augustus_ptr;
 		thisPlatform = STEAM;
 		global_current_platform = STEAM;
-		global_current_version = VERSION_3_6_1;
+		global_current_version = VERSION_3_7_4;
 		global_current_os = OS_WINDOWS;
 	}
 	else if (augustus_ptr == base_gog_augustus_ptr) {
-		logger << "Found correct augustus addr for gog 3.6.1";
+		logger << "Found correct augustus addr for gog 3.7.4";
 		logger.endl();
 		base_augustus_ptr = base_gog_augustus_ptr;
 		thisPlatform = GOG;
 		global_current_platform = GOG;
-		global_current_version = VERSION_3_6_1;
+		global_current_version = VERSION_3_7_4;
 		global_current_os = OS_WINDOWS;
 	}
 	else {
@@ -94,17 +97,20 @@ void thread_idler_testing() {
 	SetOtherThreadsSuspended(true);
 	init_address_map();
 
-	ceffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	cevent_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	crandominlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	conactiondatabase_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	ceveryinlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	cship_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	ctrigger_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	limit_once_in_x_seconds_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	assembly_patches_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	//Extremely verbose:
+	// Logging Hooks:
+	//ceffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	//cevent_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	//crandominlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	//conactiondatabase_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	//ceveryinlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	//ctrigger_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	//Extremely verbose logging Hooks:
 	//ctoken_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
+
+	// Fixes things hooks:
+	//limit_once_in_x_seconds_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	cship_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
+	assembly_patches_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
 
 	logger << "Hook init complete, unpausing threads";
 	SetOtherThreadsSuspended(false);
