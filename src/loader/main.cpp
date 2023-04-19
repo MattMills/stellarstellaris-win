@@ -103,7 +103,9 @@ int main() {
     // Cepheus v3.4.3
     //Cepheus v3.4.5
     //"Fornax v3.5.2"
-    if(buffer->_GameVersion._szName._str == "Orion v3.6.1"){ 
+    // Orion v3.6.1
+    
+    if(buffer->_GameVersion._szName._str == "Canis Minor v3.7.4"){ 
         std::cout << "Detected supported Stellaris version: " << buffer->_GameVersion._szName._str << std::endl;
     }else {
         std::cout << "Note: if the version text below this line shows gibberish, or the program crashes after this line, things went really wrongly" << std::endl;
