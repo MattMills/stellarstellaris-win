@@ -105,11 +105,38 @@ int main() {
     //"Fornax v3.5.2"
     // Orion v3.6.1
     
-    if(buffer->_GameVersion._szName._str == "Canis Minor v3.7.4"){ 
-        std::cout << "Detected supported Stellaris version: " << buffer->_GameVersion._szName._str << std::endl;
+    std::cout << "[DBG] version string unchecked begin 0x" << static_cast<void*>(buffer->_GameVersion._szName._str._Unchecked_begin()) << std::endl;
+    size_t local_distance = abs((long long)(buffer->_GameVersion._szName._str._Unchecked_begin()) - (intptr_t)buffer);
+    size_t remote_distance = abs((long long)(buffer->_GameVersion._szName._str._Unchecked_begin()) - (intptr_t)p_application);
+
+    std::cout << "[DBG] version local distance " << local_distance << std::endl;
+    std::cout << "[DBG] version remote distance " << remote_distance << std::endl;
+
+    const std::string expected_version_string = "Canis Minor v3.7.4";
+
+    std::string version_string;
+
+    if (local_distance < remote_distance && local_distance < 1024*1024) {
+        //should be a local pointer, just access it.
+        version_string = buffer->_GameVersion._szName._str;
+    }else if( remote_distance < local_distance && remote_distance < (1024*1024*1024)){
+        //should be a remote pointer, need to use ReadProcessMemory... 
+        size_t version_string_size = buffer->_GameVersion._szName._str._Unchecked_end() - buffer->_GameVersion._szName._str._Unchecked_begin();
+        char* version_buf;
+        version_buf = (char*) malloc(version_string_size);
+
+        ReadProcessMemory(hProcess, buffer->_GameVersion._szName._str._Unchecked_begin(), version_buf, version_string_size, &bytesRead);
+        std::cout << "[DBG] bytesRead: " << bytesRead << std::endl;
+
+        version_string = version_buf;
     }else {
-        std::cout << "Note: if the version text below this line shows gibberish, or the program crashes after this line, things went really wrongly" << std::endl;
-        std::cout << "Detected unsupported Stellaris version: " << buffer->_GameVersion._szName._str<< std::endl;
+        version_string = "INVALID_NO_SANE_VALUE";
+    }
+
+    if(version_string == "Canis Minor v3.7.4"){ 
+        std::cout << "Detected supported Stellaris version: " << version_string << std::endl;
+    }else {
+        std::cout << "Detected unsupported Stellaris version: " << version_string  << std::endl;
         exit(-2);
     }
     
