@@ -12,16 +12,16 @@ endif ()
 set(pre_configure_file ${pre_configure_dir}/git_version.cpp.in)
 set(post_configure_file ${post_configure_dir}/git_version.cpp)
 
-function(CheckGitWrite git_hash)
-    file(WRITE ${CMAKE_BINARY_DIR}/git-state.txt ${git_hash})
+function(CheckGitWrite GIT_HASH)
+    file(WRITE ${CMAKE_BINARY_DIR}/git-state.txt ${GIT_HASH})
 endfunction()
 
-function(CheckGitRead git_hash)
+function(CheckGitRead GIT_HASH)
     if (EXISTS ${CMAKE_BINARY_DIR}/git-state.txt)
         file(STRINGS ${CMAKE_BINARY_DIR}/git-state.txt CONTENT)
         LIST(GET CONTENT 0 var)
 
-        set(${git_hash} ${var} PARENT_SCOPE)
+        set(${GIT_HASH} ${var} PARENT_SCOPE)
     endif ()
 endfunction()
 
@@ -51,7 +51,7 @@ function(CheckGitVersion)
 
     # Only update the git_version.cpp if the hash has changed. This will
     # prevent us from rebuilding the project more than we need to.
-    if (NOT ${GIT_HASH} STREQUAL ${GIT_HASH_CACHE} OR NOT EXISTS ${post_configure_file})
+    if (NOT EXISTS ${post_configure_file} OR NOT ${GIT_HASH} STREQUAL ${GIT_HASH_CACHE} )
         # Set che GIT_HASH_CACHE variable the next build won't have
         # to regenerate the source file.
         CheckGitWrite(${GIT_HASH})
