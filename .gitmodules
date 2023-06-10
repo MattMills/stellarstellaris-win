@@ -10,3 +10,6 @@
 [submodule "lib/luajit"]
 	path = lib/luajit
 	url = https://github.com/MattMills/LuaJIT.git
+[submodule "lib/sigmatch"]
+	path = lib/sigmatch
+	url = https://github.com/SpriteOvO/sigmatch.git
