@@ -54,7 +54,7 @@ function(CheckGitVersion)
     if (NOT EXISTS ${post_configure_file} OR NOT ${GIT_HASH} STREQUAL ${GIT_HASH_CACHE} )
         # Set che GIT_HASH_CACHE variable the next build won't have
         # to regenerate the source file.
-        CheckGitWrite(${GIT_HASH})
+        CheckGitWrite(GIT_HASH)
 
         configure_file(${pre_configure_file} ${post_configure_file} @ONLY)
     endif ()
