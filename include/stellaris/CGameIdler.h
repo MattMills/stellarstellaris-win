@@ -1,7 +1,7 @@
 #pragma once
 
 #include "stellaris/generic.h"
-using namespace std;
+//using namespace std;
 using namespace Eigen;
 
 

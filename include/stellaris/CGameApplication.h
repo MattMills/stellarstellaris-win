@@ -19,6 +19,7 @@ typedef enum enumESessionType {
     EU3_NETWORK_SERVER_STARTING=9
 } enumESessionType;
 
+using namespace std;
 
 typedef struct CGameApplication CGameApplication, *PCGameApplication;
 
@@ -842,7 +843,7 @@ struct C2dLineObject {
     undefined field300_0x13d;
     undefined field301_0x13e;
     undefined field302_0x13f;
-    class vector<int,std::allocator<int>> _Points;
+    class std::vector<int,std::allocator<int>> _Points;
     class CVector2<float> _VertexLists[500];
     int _nNumberOfElemets;
     struct CColor _Color;

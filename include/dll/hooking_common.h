@@ -1,6 +1,6 @@
 #pragma once
 
-using namespace std;
+
 #include "dll/common.h"
 #include "dll/address_helper.h"
 #include <stdint.h>
@@ -9,6 +9,8 @@ using namespace std;
 #ifdef _WIN32
 #include "hooking/windows.h"
 #endif
+
+//using namespace std;
 
 CLog* getLogger();
 void PushAddress(uint64_t addr);

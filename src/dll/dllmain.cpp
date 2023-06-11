@@ -1,4 +1,4 @@
-using namespace std;
+//using namespace std;
 
 #define _CRT_SECURE_NO_WARNINGS
 
@@ -20,7 +20,7 @@ using namespace std;
 #include <zmq.h>
 
 
-intptr_t base_augustus_ptr = 0x0;
+
 //intptr_t base_steam_augustus_ptr = 0x1418f9b90; // 3.4.5
 //intptr_t base_gog_augustus_ptr = 0x1418ed9f0; // 3.4.5
 
@@ -33,7 +33,7 @@ intptr_t base_augustus_ptr = 0x0;
 intptr_t base_steam_augustus_ptr = 0x141a58218; // 3.7.4
 intptr_t base_gog_augustus_ptr = 0x141a4c058; // 3.7.4
 
-intptr_t base_offset = 0x140000000;
+
 
 intptr_t augustus_ptr = 0x0;
 
@@ -62,31 +62,20 @@ void thread_idler_testing() {
 	CLog& logger = *getLogger();
 	augustus_ptr = (base_offset+(intptr_t)p_CApplication_Base - (intptr_t)hModule);
 	
-	if (augustus_ptr == base_steam_augustus_ptr) {
-		logger << "Found correct augustus addr for steam 3.7.4";
-		logger.endl();
+	
+	logger << "Found augustus ptr at " << augustus_ptr;
+	logger.endl();
+	logger << "IN MULTI_VERSION SIGMATCH MODE!";
+	logger.endl();
 
-		//TODO: less stupid
-		base_augustus_ptr = base_steam_augustus_ptr;
-		thisPlatform = STEAM;
-		global_current_platform = STEAM;
-		global_current_version = VERSION_3_7_4;
-		global_current_os = OS_WINDOWS;
-	}
-	else if (augustus_ptr == base_gog_augustus_ptr) {
-		logger << "Found correct augustus addr for gog 3.7.4";
-		logger.endl();
-		base_augustus_ptr = base_gog_augustus_ptr;
-		thisPlatform = GOG;
-		global_current_platform = GOG;
-		global_current_version = VERSION_3_7_4;
-		global_current_os = OS_WINDOWS;
-	}
-	else {
-		logger << "FATAL: augustus ptr is incorrect, bailing";
-		logger.endl();
-		return;
-	}
+	//TODO: less stupid
+	//TODO: assuming platform as steam because we dont have a way to identify it right now and I don't think it matters in sigmatch...
+	base_augustus_ptr = augustus_ptr;
+	thisPlatform = STEAM;
+	global_current_platform = STEAM;
+	global_current_version = VERSION_UNKNOWN;
+	global_current_os = OS_WINDOWS;
+	
 
 	//Try to delay so we don't deadlock all the threads...
 	std::this_thread::sleep_for(std::chrono::milliseconds(3000));

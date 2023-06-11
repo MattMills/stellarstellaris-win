@@ -3,7 +3,7 @@
 
 
 
-using namespace std;
+//using namespace std;
 
 
 #include "loader/main.h"
@@ -133,18 +133,16 @@ int main() {
         version_string = "INVALID_NO_SANE_VALUE";
     }
 
-    if(version_string == "Canis Minor v3.7.4"){ 
-        std::cout << "Detected supported Stellaris version: " << version_string << std::endl;
-    }else {
-        std::cout << "Detected unsupported Stellaris version: " << version_string  << std::endl;
-        exit(-2);
-    }
+
+    std::cout << "Detected Stellaris version: " << version_string << std::endl;
+
     
     char fullPath[1024];
     GetPathToPayloadDLL(fullPath);
     InjectPayload(hProcess, fullPath, &p_application, p_application_base);
 
-    std::cout << "Successfully injected payload? Probably?" << std::endl << std::endl << std::endl;
+    std::cout << "Successfully injected" << std::endl << std::endl << std::endl;
+    std::cout << "YOU SHOULD CHECK THE LOG FILE FOR EACH NEW STELLARIS VERSION!" << std::endl;
     std::cout << "Press any key to close this window." << std::endl;
     while (true) {
         if (_kbhit() || IsDebuggerPresent()) {

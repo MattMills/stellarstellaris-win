@@ -1,5 +1,5 @@
 
-using namespace std;
+//using namespace std;
 
 #define WIN32_LEAN_AND_MEAN   
 #include "hooking/windows.h"

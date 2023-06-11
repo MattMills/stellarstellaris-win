@@ -1,5 +1,6 @@
 #pragma once
 
+
 #include <string>
 #include <iostream>
 #include <stdio.h>
@@ -28,10 +29,14 @@ HANDLE hProcess;
 HMODULE hModule;
 CApplication* p_CApplication;
 void* p_CApplication_Base;
+intptr_t base_offset = 0x140000000;
+
 extern enumPlatforms thisPlatform = NULL_ERR;
 
 enumVersions global_current_version = VERSION_NULL;
 enumOperatingSystems global_current_os = OS_NULL;
 enumPlatforms global_current_platform = NULL_ERR;
+
+intptr_t base_augustus_ptr = 0x0;
 
 extern "C" _declspec(dllexport) void PushCApplicationPtr(void** ptr, void** ptr_Base);

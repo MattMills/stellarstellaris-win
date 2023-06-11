@@ -24,8 +24,11 @@ set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 #	set(LUA_LIBRARY  ${THIS_LUA_SRC}/libluajit.so)
 #endif()
 
+
+
 #add_subdirectory(lib/luajit)
 add_subdirectory(lib/capstone)
+add_subdirectory(lib/sigmatch)
 
 
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
@@ -88,10 +91,17 @@ target_include_directories(stellar-injected PUBLIC
 										"lib/eigen/"
 										"lib/libzmq/include/"
 										"lib/capstone/include/"
+										#"lib/sigmatch/include/"
+										#"lib/sigmatch/"
 										)
 
 
 #target_link_libraries(stellar-injected ${LUA_LIBRARY})
-target_link_libraries(stellar-injected capstone-static)
+
 target_link_libraries(stellar-loader git_version)
 target_link_libraries(stellar-injected git_version)
+target_link_libraries(stellar-injected capstone-static)
+target_link_libraries(stellar-injected sigmatch)
+
+target_compile_features(stellar-injected PRIVATE cxx_std_14)
+target_compile_features(stellar-loader PRIVATE cxx_std_14)

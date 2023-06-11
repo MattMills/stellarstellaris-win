@@ -1,5 +1,7 @@
 #pragma once
 
+#define _ENFORCE_MATCHING_ALLOCATORS 0
+
 #include <string>
 #include <cstring>
 #include <vector>
@@ -25,7 +27,7 @@
 //#include <atltypes.h>
 //#include <atltempl.h>
 
-using namespace std;
+//using namespace std;
 
 typedef unsigned int        ImageBaseOffset32;
 typedef unsigned char       byte;
@@ -61,7 +63,7 @@ typedef struct CStringconst {
 } CStringconst;
 
 template <typename T> struct CPdxAtomic {
-    struct atomic<T> _Value;
+    struct std::atomic<T> _Value;
 };
 
 
@@ -90,7 +92,7 @@ template <typename T, uint size, typename T2> struct CPdxHybridArray {
     undefined field21_0x15;
     undefined field22_0x16;
     undefined field23_0x17;
-    union _Align_type<double, sizeof(T)> _StaticData[size];
+    union std::_Align_type<double, sizeof(T)> _StaticData[size];
 };
 //template <typename T> using  CList = CList<T>;
 
@@ -99,7 +101,7 @@ template <typename T, uint size, typename T2> struct CPdxHybridArray {
 //typedef struct CString CString, * PCString;
 
 struct CString {
-    basic_string<char, std::char_traits<char>, std::allocator<char>> _str;
+    std::basic_string<char, std::char_traits<char>, std::allocator<char>> _str;
 };
 
 

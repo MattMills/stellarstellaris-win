@@ -1,9 +1,18 @@
 #include "address_helper.h"
 #include <map>
+#include <sigmatch/sigmatch.hpp>
+
+
+
+
 
 enumVersions extern global_current_version;
 enumOperatingSystems extern global_current_os;
 enumPlatforms extern global_current_platform;
+intptr_t extern base_augustus_ptr;
+HMODULE extern hModule;
+intptr_t extern base_offset;
+
 
 
 typedef std::map<
@@ -23,12 +32,64 @@ typedef std::map<
 AddressMap addr_map{};
 
 
+// search the memory of the loaded executable for a single address that represents the signature bytestring
+
+// return value should be single intptr_t address representing start of signature match or 
+// 0x0 if no match or if multiple matches.
+
+
+intptr_t signature_search(std::string module_name, sigmatch::signature sig) {
+	CLog& logger = *getLogger();
+
+	sigmatch::this_process_target target;
+	sigmatch::search_result result = target.in_module(module_name).search(sig);
+
+	//TODO: check if we have more than 1 match and fail
+	for (const std::byte* address : result.matches()) {
+		logger << "[DBG-sigmatch] matched: " << address;
+		logger.endl();
+		return (intptr_t) address;
+	}
+
+	return 0x0;
+}
+
 //TODO: Refactor this more so it's more automatic from the fnaddr DB / built using instruction search
-//addr_map[VERSION_3_4_5][OS_WINDOWS][STEAM];
-//["CTrigger::Evaluate_1"] = 0x140104ab0;
+// (INPROGRESS)
+
 
 
 void init_address_map() {
+	CLog& logger = *getLogger();
+	using namespace sigmatch_literals;
+	//CShip::DailyUpdateRepair
+
+	logger << "[DBG-sigmatch] CShip::DailyUpdateRepair";
+	logger.endl();
+	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CShip::DailyUpdateRepair"] = signature_search("stellaris.exe", "48 89 5c 24 08 48 89 6c 24 18 48 89 74 24 20 57 41 54 41 55 41 56 41 57 48 83 ec 70 48 8b ?? 45 32 ?? ?? 8b ?? ?? ?? ?? ?? ?? 85 ?? 74 ?? ?? 8b ?? ?? ?? ?? ??"_sig);
+
+	/*[01001...] 89 5c [..100100] 08 [01001...] 89 6c [..100100] 18 [01001...] 89 74 
+	[..100100] 20 57 [01000...] 54 [01000...] 55 [01000...] 56 [01000...] 57 [01001...] 83 ec 70 
+	[01001...] 8b [11......] [01000...] 32 [11......] [01001...] 8b [00...101] [........] [........] [........] [........] [01001...] 85 [11......] 74 [........] [01000...] 8b [10......] [........] [........] [........] [........] */
+	
+	//CShip::CalcRegenAmount
+	logger << "[DBG-sigmatch] CShip::CalcRegenAmount";
+	logger.endl();
+	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CShip::CalcRegenAmount"] = signature_search("stellaris.exe", "49 0f af d0 48 b8 09 e1 d1 c6 11 6b f1 29 4c 8b d1 48 f7 ea 48 c1 fa 0e 48 8b c2 48 c1 e8 3f 48 03 d0 48 b8 fe ff ff ff ff ff ff 7f"_sig);
+	
+	//CAlertManager::Update_asm_target_1
+	logger << "[DBG-sigmatch] CAlertManager::Update_asm_target_1";
+	logger.endl();
+	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CAlertManager::Update_asm_target_1"] = signature_search("stellaris.exe", "e8 ?? ?? ?? ?? 84 c0 74 ?? ?? 8b 45 08 48 8b 14 18 48 8b 52 18 49 8b ce"_sig);
+	/*e8 [........] [........] [........] [........] 84 c0 74 [........] [01001...] 8b 45 08 [01001...] 8b 14 18 [01001...] 8b 52 18 [01001...] 8b ce */
+	//COutlinerGroupArmy::UpdateInternal_asm_target_1
+	logger << "[DBG-sigmatch] COutlinerGroupArmy::UpdateInternal_asm_target_1";
+	logger.endl();
+	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["COutlinerGroupArmy::UpdateInternal_asm_target_1"] = signature_search("stellaris.exe", "41 8b c4 41 0f af c4 8d 3c c5 00 00 00 00 8d 04 3b 03 c0 39 81 a0 03 00 00 0f 8c 18 04 00 00 85 c0 0f 88 10 04 00 00"_sig);
+	
+	logger << "[DBG-sigmatch] Done ";
+	logger.endl();
+
 	addr_map[VERSION_3_4_5][OS_WINDOWS][STEAM]["CTrigger::Evaluate_2"] = 0x1402ee3e0;
 	addr_map[VERSION_3_4_5][OS_WINDOWS][STEAM]["CTrigger::EvaluateExtended"] = 0x1402ee420;
 	addr_map[VERSION_3_4_5][OS_WINDOWS][STEAM]["CEffect::ExecuteActual"] = 0x140302b20;
@@ -162,12 +223,15 @@ void init_address_map() {
 }
 
 intptr_t find_address_from_symbol(const char * symbol) {
+
 	CLog& logger = *getLogger();
+
+	intptr_t addr = base_offset + addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform][symbol] - (intptr_t) hModule;
 	logger << "find_address_from_symbol(" << symbol << ")";
-	logger << " address(" << addr_map[global_current_version][global_current_os][global_current_platform][symbol] << ")";
+	logger << " address(" << addr << ")";
 	logger << " Version(" << global_current_version << ") OS(" << global_current_os << ") platform(" << global_current_platform << ")";
 	logger.endl();
 
-	return addr_map[global_current_version][global_current_os][global_current_platform][symbol];
+	return addr;
 }
 

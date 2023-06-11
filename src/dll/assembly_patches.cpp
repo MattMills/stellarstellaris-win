@@ -13,7 +13,7 @@ void do_patch_calertmanager_update(intptr_t target_address) {
 	bool err = VirtualProtectEx(hProcess, (void *) target_address, 1024, PAGE_EXECUTE_READWRITE, &oldProtect);
 	check(err);
 	
-	memcpy((void*)target_address, &asmBytes, size(asmBytes));
+	memcpy((void*)target_address, &asmBytes, sizeof(asmBytes));
 }
 
 
@@ -33,7 +33,7 @@ void do_patch_coutlinergrouparmy_updateinternal(intptr_t target_address) {
 	bool err = VirtualProtectEx(hProcess, (void*)target_address, 1024, PAGE_EXECUTE_READWRITE, &oldProtect);
 	check(err);
 
-	memcpy((void*)target_address, &asmBytes, size(asmBytes));
+	memcpy((void*)target_address, &asmBytes, sizeof(asmBytes));
 }
 
 void assembly_patches_init(enumPlatforms thisPlatform, intptr_t p_CApplication_Base, intptr_t base_augustus_ptr) {
