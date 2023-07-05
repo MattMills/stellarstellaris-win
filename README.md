@@ -7,9 +7,9 @@ The goal of this project is to start building an enhanced version of StellarStel
 
 This is in a very early alpha stage, it currently doesn't do much of anything.
 
-Currently supported in version v0.0.6-alpha:
- * Windows Steam 3.7.4
- * Windows GOG 3.7.4
+Currently supported in version v0.1.1-alpha:
+ * Windows Steam (should support any current version)
+ * Windows GOG (should support any current version)
 
 # NEED BETA TESTERS, JOIN DISCORD!
 
@@ -24,7 +24,7 @@ Game bugs patched:
 Performance issues patched:
 * Species-is-modifiable alert - Causes large lag spikes in late game with a lot of species/planets
 
-Debug logging added (all currently disabled, if you were using them let me know):
+Debug logging added:
  * CEvent::ExecuteActual
  * CEffect::ExecuteActual
  * CRandomInListEffect::ExecuteActual

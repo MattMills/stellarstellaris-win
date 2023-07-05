@@ -87,13 +87,15 @@ void thread_idler_testing() {
 	init_address_map();
 
 	// Logging Hooks:
-	//ceffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	//cevent_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	//crandominlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	//conactiondatabase_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	//ceveryinlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	//ctrigger_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	ceffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	cevent_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	crandominlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	conactiondatabase_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	ceveryinlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	
+	 
 	//Extremely verbose logging Hooks:
+	//ctrigger_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
 	//ctoken_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
 
 	// Fixes things hooks:
