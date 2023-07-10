@@ -9,6 +9,7 @@
 
 #include "dll/dllmain.h"
 #include "git_version.h"
+#include "dll/lua.h"
 
 
 #include <thread>
@@ -152,6 +153,9 @@ extern "C" _declspec(dllexport) void PushCApplicationPtr(void** ptr, void** ptr_
 
 	std::thread init_thread(thread_idler_testing);
 	init_thread.detach();
+
+	std::thread lua_thread(lua_init);
+	lua_thread.detach();
 
 	return;
 }

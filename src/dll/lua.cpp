@@ -1,25 +1,49 @@
 #include "lib/luajit/src/lua.hpp"
+#include <string>
+#include <iostream>
+#include <stdio.h>
+#include <stdlib.h>
+#include <ctime>
 
+#include "dll/hooking_common.h"
+#include "dll/common.h"
 
-int lua_testing() {
+int lua_init() {
+
+	AllocConsole();
+	freopen("CONIN$", "r", stdin);
+	freopen("CONOUT$", "w", stdout);
+	freopen("CONOUT$", "w", stderr);
+	TCHAR szConsoleTitle[MAX_PATH];
+	StringCchPrintf(szConsoleTitle, MAX_PATH, TEXT("StellarStellaris - Debug console"));
+	SetConsoleTitle(szConsoleTitle);
+
 	lua_State* L = luaL_newstate();
-	std::string cmd = "print('[LUA] hello world!')";
+	luaL_openlibs(L);
 
-	int r = luaL_dostring(L, cmd.c_str());
-	if (r == LUA_OK) {
-		lua_getglobal(L, "a");
-		if (lua_isnumber(L, -1)) {
-			float a_in_cpp = (float)lua_tonumber(L, -1);
+	std::cout << "> ";
+	while (1) {
+		std::string cmd_input;
+		
 
-			std::cout << "a = " << a_in_cpp << std::endl;
+		while (std::getline(std::cin, cmd_input)) {
+			if(cmd_input.length() == 0){
+				std::cout << "> ";
+				break;
+			}
+
+
+			int r = luaL_dostring(L, cmd_input.c_str());
+			if (r == LUA_OK) {
+				std::cout << std::endl << "> ";
+			}
+			else {
+				std::string errormsg = lua_tostring(L, -1);
+				std::cout << "ERROR: " << errormsg << std::endl << std::endl << "> ";
+			}
 		}
+		
 	}
-	else {
-		std::string errormsg = lua_tostring(L, -1);
-		std::cout << errormsg << std::endl;
-	}
-	cout << "Hello CMake." << endl;
-
 	lua_close(L);
 	return 0;
 }
