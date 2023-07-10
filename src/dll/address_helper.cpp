@@ -1,5 +1,7 @@
 #include "address_helper.h"
 #include <map>
+
+#define SIGMATCH_EXPERIMENTAL_ENABLE_GHIDRA_SIGNATURE_FORMAT
 #include <sigmatch/sigmatch.hpp>
 
 
@@ -62,92 +64,64 @@ intptr_t signature_search(std::string module_name, sigmatch::signature sig) {
 void init_address_map() {
 	CLog& logger = *getLogger();
 	using namespace sigmatch_literals;
-	//CShip::DailyUpdateRepair
 
+	//CShip::DailyUpdateRepair
 	logger << "[DBG-sigmatch] CShip::DailyUpdateRepair";
 	logger.endl();
-	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CShip::DailyUpdateRepair"] = signature_search("stellaris.exe", "48 89 5c 24 08 48 89 6c 24 18 48 89 74 24 20 57 41 54 41 55 41 56 41 57 48 83 ec 70 48 8b ?? 45 32 ?? ?? 8b ?? ?? ?? ?? ?? ?? 85 ?? 74 ?? ?? 8b ?? ?? ?? ?? ??"_sig);
-
-	/*[01001...] 89 5c [..100100] 08 [01001...] 89 6c [..100100] 18 [01001...] 89 74 
-	[..100100] 20 57 [01000...] 54 [01000...] 55 [01000...] 56 [01000...] 57 [01001...] 83 ec 70 
-	[01001...] 8b [11......] [01000...] 32 [11......] [01001...] 8b [00...101] [........] [........] [........] [........] [01001...] 85 [11......] 74 [........] [01000...] 8b [10......] [........] [........] [........] [........] */
+	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CShip::DailyUpdateRepair"] = signature_search("stellaris.exe", "[01001...] 89 5c [..100100] 08 [01001...] 89 6c [..100100] 18 [01001...] 89 74 [..100100] 20 57 [01000...] 54 [01000...] 55 [01000...] 56 [01000...] 57 [01001...] 83 ec 70 [01001...] 8b [11......] [01000...] 32 [11......] [01001...] 8b [00...101] [........] [........] [........] [........] [01001...] 85 [11......] 74 [........] [01000...] 8b [10......] [........] [........] [........] [........]"_sig);
+	//"48 89 5c 24 08 48 89 6c 24 18 48 89 74 24 20 57 41 54 41 55 41 56 41 57 48 83 ec 70 48 8b ?? 45 32 ?? ?? 8b ?? ?? ?? ?? ?? ?? 85 ?? 74 ?? ?? 8b ?? ?? ?? ?? ??"_sig
+	
 	
 	//CShip::CalcRegenAmount
 	logger << "[DBG-sigmatch] CShip::CalcRegenAmount";
 	logger.endl();
-	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CShip::CalcRegenAmount"] = signature_search("stellaris.exe", "49 0f af d0 48 b8 09 e1 d1 c6 11 6b f1 29 4c 8b d1 48 f7 ea 48 c1 fa 0e 48 8b c2 48 c1 e8 3f 48 03 d0 48 b8 fe ff ff ff ff ff ff 7f"_sig);
+	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CShip::CalcRegenAmount"] = signature_search("stellaris.exe", "[01001...] 0f af d0 [01001...] b8 09 e1 d1 c6 11 6b f1 29 [01001...] 8b d1 [01001...] f7 ea [01001...] c1 fa 0e [01001...] 8b c2 [01001...] c1 e8 3f [01001...] 03 d0 [01001...] b8 fe ff ff ff ff ff ff 7f "_sig);
+	//"49 0f af d0 48 b8 09 e1 d1 c6 11 6b f1 29 4c 8b d1 48 f7 ea 48 c1 fa 0e 48 8b c2 48 c1 e8 3f 48 03 d0 48 b8 fe ff ff ff ff ff ff 7f"_sig
 	
 	//CAlertManager::Update_asm_target_1
 	logger << "[DBG-sigmatch] CAlertManager::Update_asm_target_1";
 	logger.endl();
-	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CAlertManager::Update_asm_target_1"] = signature_search("stellaris.exe", "e8 ?? ?? ?? ?? 84 c0 74 ?? ?? 8b 45 08 48 8b 14 18 48 8b 52 18 49 8b ce"_sig);
-
-	/*e8 [........] [........] [........] [........] 84 c0 74 [........] [01001...] 8b 45 08 [01001...] 8b 14 18 [01001...] 8b 52 18 [01001...] 8b ce */
+	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CAlertManager::Update_asm_target_1"] = signature_search("stellaris.exe", "e8 [........] [........] [........] [........] 84 c0 74 [........] [01001...] 8b 45 08 [01001...] 8b 14 18 [01001...] 8b 52 18 [01001...] 8b ce "_sig);
+	//"e8 ?? ?? ?? ?? 84 c0 74 ?? ?? 8b 45 08 48 8b 14 18 48 8b 52 18 49 8b ce"_sig
+	
 	//COutlinerGroupArmy::UpdateInternal_asm_target_1
 	logger << "[DBG-sigmatch] COutlinerGroupArmy::UpdateInternal_asm_target_1";
 	logger.endl();
-	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["COutlinerGroupArmy::UpdateInternal_asm_target_1"] = signature_search("stellaris.exe", "41 8b c4 41 0f af c4 8d 3c c5 00 00 00 00 8d 04 3b 03 c0 39 81 a0 03 00 00 0f 8c 18 04 00 00 85 c0 0f 88 10 04 00 00"_sig);
+	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["COutlinerGroupArmy::UpdateInternal_asm_target_1"] = signature_search("stellaris.exe", "[01000...] 8b c4 [01000...] 0f af c4 8d 3c c5 00 00 00 00 8d 04 3b 03 c0 39 81 a0 03 00 00 0f 8c [........] [........] [........] [........] 85 c0 0f 88 [........] [........] [........] [........] "_sig);
+	//"41 8b c4 41 0f af c4 8d 3c c5 00 00 00 00 8d 04 3b 03 c0 39 81 a0 03 00 00 0f 8c 18 04 00 00 85 c0 0f 88 10 04 00 00"_sig
 	
-	/*
-	[01001...] 89 5c [..100100] 10 [01001...] 89 6c [..100100] 18 56 57 [01000...] 54 [01000...] 56 [01000...] 57 [01001...] 83 ec 20 [01001...] 8b f2
-	[01001...] 8b f9 [01001...] 63 79 14 [01001...] 85 ff 0f 8e [........] [........] [........] [........] [01000...] 33 e4 [01000...] 8b f4 90 
-
-	48 89 5c 24 10 48 89 6c 24 18 56 57 41 54 41 56 41 57 48 83 ec 20 4c 8b f2 48 8b f9 4c 63 79 14 4d 85 ff 0f 8e 82 00 00 00 45 33 e4 41 8b f4 90
-	*/
 
 	logger << "[DBG-sigmatch] CEffect::ExecuteActual";
 	logger.endl();
-	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CEffect::ExecuteActual"] = signature_search("stellaris.exe", "?? 89 5c ?? 10 ?? 89 6c ?? 18 56 57 ?? 54 ?? 56 ?? 57 ?? 83 ec 20 ?? 8b f2 ?? 8b f9 ?? 63 79 14 ?? 85 ff 0f 8e ?? ?? ?? ?? ?? 33 e4 ?? 8b f4 90"_sig);
-		
+	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CEffect::ExecuteActual"] = signature_search("stellaris.exe", "[01001...] 89 5c [..100100] 10 [01001...] 89 6c [..100100] 18 56 57 [01000...] 54 [01000...] 56 [01000...] 57 [01001...] 83 ec 20 [01001...] 8b f2 [01001...] 8b f9 [01001...] 63 79 14 [01001...] 85 ff 0f 8e [........] [........] [........] [........] [01000...] 33 e4 [01000...] 8b f4 90"_sig);
+	// "?? 89 5c ?? 10 ?? 89 6c ?? 18 56 57 ?? 54 ?? 56 ?? 57 ?? 83 ec 20 ?? 8b f2 ?? 8b f9 ?? 63 79 14 ?? 85 ff 0f 8e ?? ?? ?? ?? ?? 33 e4 ?? 8b f4 90"_sig
+	// 48 89 5c 24 10 48 89 6c 24 18 56 57 41 54 41 56 41 57 48 83 ec 20 4c 8b f2 48 8b f9 4c 63 79 14 4d 85 ff 0f 8e 82 00 00 00 45 33 e4 41 8b f4 90
 	
-
-
-	/*
-	[01001...] 89 5c [..100100] 10 [01001...] 89 6c [..100100] 18 56 57 [01000...] 54 [01000...] 56 [01000...] 57 [01001...] 83 ec 30 [01001...] 8b f1
-	[01000...] 8b e8 [01001...] 8b e2 [01001...] 8b f9 [01001...] 8b b1 48 0c 00 00 [01001...] 85 f6 74 [........] [01000...] 8d 40 ff 83 f8 01 77
-	[........] [01001...] 8b d1 [01001...] 8b ce e8 [........] [........] [........] [........] 84 c0 74 [........] 
-	*/
 	logger << "[DBG-sigmatch] CEvent::PerformImmediate";
 	logger.endl();
-	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CEvent::PerformImmediate"] = signature_search("stellaris.exe", "?? 89 5c ?? 10 ?? 89 6c ?? 18 56 57 ?? 54 ?? 56 ?? 57 ?? 83 ec 30 ?? 8b f1 ?? 8b e8 ?? 8b e2 ?? 8b f9 ?? 8b b1 48 0c 00 00 ?? 85 f6 74 ?? ?? 8d 40 ff 83 f8 01 77 ?? ?? 8b d1 ?? 8b ce e8 ?? ?? ?? ?? 84 c0 74 ??"_sig);
+	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CEvent::PerformImmediate"] = signature_search("stellaris.exe", "[01001...] 89 5c [..100100] 10 [01001...] 89 6c [..100100] 18 56 57 [01000...] 54 [01000...] 56 [01000...] 57 [01001...] 83 ec 30 [01001...] 8b f1 [01000...] 8b e8 [01001...] 8b e2 [01001...] 8b f9 [01001...] 8b b1 48 0c 00 00 [01001...] 85 f6 74 [........] [01000...] 8d 40 ff 83 f8 01 77 [........] [01001...] 8b d1 [01001...] 8b ce e8 [........] [........] [........] [........] 84 c0 74 [........]"_sig);
+	//"?? 89 5c ?? 10 ?? 89 6c ?? 18 56 57 ?? 54 ?? 56 ?? 57 ?? 83 ec 30 ?? 8b f1 ?? 8b e8 ?? 8b e2 ?? 8b f9 ?? 8b b1 48 0c 00 00 ?? 85 f6 74 ?? ?? 8d 40 ff 83 f8 01 77 ?? ?? 8b d1 ?? 8b ce e8 ?? ?? ?? ?? 84 c0 74 ??"_sig
 
-	/*
-	[01001...] 89 5c [..100100] 10 [01001...] 89 6c [..100100] 18 56 57 [01000...] 54 [01000...] 56 [01000...] 57 [01001...] 83 ec 50 [01000...] 8b e1
-	[01001...] 63 f0 [01001...] 8b f2 [01001...] 8b e9 bf 40 01 00 00 65 [01001...] 8b 04 [..100101] 58 00 00 00 [01001...] 03 38 [01001...] 8b 1f [01001...] 89 9c [..100100] 80 00 00 00 [01001...] 89 0f 
-	*/
 	logger << "[DBG-sigmatch] CEvent::Execute";
 	logger.endl();
-	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CEvent::Execute"] = signature_search("stellaris.exe", "?? 89 5c ?? 10 ?? 89 6c ?? 18 56 57 ?? 54 ?? 56 ?? 57 ?? 83 ec 50 ?? 8b e1 ?? 63 f0 ?? 8b f2 ?? 8b e9 bf 40 01 00 00 65 ?? 8b 04 ?? 58 00 00 00 ?? 03 38 ?? 8b 1f ?? 89 9c ?? 80 00 00 00 ?? 89 0f"_sig);
-
-	/*
-	[01001...] 89 54 [..100100] 10 55 53 56 57 [01000...] 54 [01000...] 55 [01000...] 56 [01000...] 57 [01001...] 81 ec 58 02 00 00 [01001...] 8d 6c
-	[..100100] 20 [01001...] 8b f2 [01001...] 8b f1 [01000...] 33 ff [01000...] 8b ef [01000...] 89 bd 80 02 00 00 
-	*/
+	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CEvent::Execute"] = signature_search("stellaris.exe", "[01001...] 89 5c [..100100] 10 [01001...] 89 6c [..100100] 18 56 57 [01000...] 54 [01000...] 56 [01000...] 57 [01001...] 83 ec 50 [01000...] 8b e1 [01001...] 63 f0 [01001...] 8b f2 [01001...] 8b e9 bf 40 01 00 00 65 [01001...] 8b 04 [..100101] 58 00 00 00 [01001...] 03 38 [01001...] 8b 1f [01001...] 89 9c [..100100] 80 00 00 00 [01001...] 89 0f"_sig);
+	// "?? 89 5c ?? 10 ?? 89 6c ?? 18 56 57 ?? 54 ?? 56 ?? 57 ?? 83 ec 50 ?? 8b e1 ?? 63 f0 ?? 8b f2 ?? 8b e9 bf 40 01 00 00 65 ?? 8b 04 ?? 58 00 00 00 ?? 03 38 ?? 8b 1f ?? 89 9c ?? 80 00 00 00 ?? 89 0f"_sig
+		
 	logger << "[DBG-sigmatch] CRandomInListEffect::ExecuteActual";
 	logger.endl();
-	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CRandomInListEffect::ExecuteActual"] = signature_search("stellaris.exe", "?? 89 54 ?? 10 55 53 56 57 ?? 54 ?? 55 ?? 56 ?? 57 ?? 81 ec 58 02 00 00 ?? 8d 6c ?? 20 ?? 8b f2 ?? 8b f1 ?? 33 ff ?? 8b ef ?? 89 bd 80 02 00 00"_sig);
-
-
-	/*
-	[01000...] 55 [01000...] 54 [01000...] 56 [01001...] 83 ec 40 80 3d [........] [........] [........] [........] 00 [01000...] 8b e1 
-	[01001...] 8b f0 [01001...] 8b ea 0f 84 [........] [........] [........] [........] [01001...] 85 d2 0f 84 [........] [........] [........] [........] [01001...] 
-	63 42 54 [01001...] 89 5c [..100100] 60 [01001...] 8b 5a 48 [01001...] 89 7c [..100100] 70 [01001...] 89 7c [..100100] 30 
-	*/
+	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CRandomInListEffect::ExecuteActual"] = signature_search("stellaris.exe", "[01001...] 89 54 [..100100] 10 55 53 56 57 [01000...] 54 [01000...] 55 [01000...] 56 [01000...] 57 [01001...] 81 ec 58 02 00 00 [01001...] 8d 6c [..100100] 20 [01001...] 8b f2 [01001...] 8b f1 [01000...] 33 ff [01000...] 8b ef [01000...] 89 bd 80 02 00 00"_sig);
+	//"?? 89 54 ?? 10 55 53 56 57 ?? 54 ?? 55 ?? 56 ?? 57 ?? 81 ec 58 02 00 00 ?? 8d 6c ?? 20 ?? 8b f2 ?? 8b f1 ?? 33 ff ?? 8b ef ?? 89 bd 80 02 00 00"_sig
+	
 	logger << "[DBG-sigmatch] COnActionDatabase::PerformEvent";
 	logger.endl();
-	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["COnActionDatabase::PerformEvent"] = signature_search("stellaris.exe", "?? 55 ?? 54 ?? 56 ?? 83 ec 40 80 3d ?? ?? ?? ?? 00 ?? 8b e1 ?? 8b f0 ?? 8b ea 0f 84 ?? ?? ?? ?? ?? 85 d2 0f 84 ?? ?? ?? ?? ?? 63 42 54 ?? 89 5c ?? 60 ?? 8b 5a 48 ?? 89 7c ?? 70 ?? 89 7c ?? 30"_sig);
-
-	/*
-	[01000...] 55 57 [01000...] 54 [01000...] 56 [01000...] 57 [01001...] 81 ec b0 00 00 00 [01001...] 8d 6c [..100100] 20 [01001...] 89 9d c8 00 00 00
-	[01001...] 89 b5 d0 00 00 00 [01001...] 8b f2 [01001...] 8b f1 [01000...] 33 ff [01001...] 89 7d 08 0f 57 c0 66 0f 7f 45 10 [01001...] 8b 05
-	[........] [........] [........] [........] [01001...] 89 45 20 [01001...] 8d 05 [........] [........] [........] [........] [01001...] 89 45 00
-	[01001...] 8d 45 00 [01001...] 89 45 28 [01001...] 8d 45 00 [01001...] 89 45 30 [01001...] 8d 45 00 
-	*/
+	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["COnActionDatabase::PerformEvent"] = signature_search("stellaris.exe", "[01000...] 55 [01000...] 54 [01000...] 56 [01001...] 83 ec 40 80 3d [........] [........] [........] [........] 00 [01000...] 8b e1 [01001...] 8b f0 [01001...] 8b ea 0f 84 [........] [........] [........] [........] [01001...] 85 d2 0f 84 [........] [........] [........] [........] [01001...] 63 42 54 [01001...] 89 5c [..100100] 60 [01001...] 8b 5a 48 [01001...] 89 7c [..100100] 70 [01001...] 89 7c [..100100] 30"_sig);
+	//"?? 55 ?? 54 ?? 56 ?? 83 ec 40 80 3d ?? ?? ?? ?? 00 ?? 8b e1 ?? 8b f0 ?? 8b ea 0f 84 ?? ?? ?? ?? ?? 85 d2 0f 84 ?? ?? ?? ?? ?? 63 42 54 ?? 89 5c ?? 60 ?? 8b 5a 48 ?? 89 7c ?? 70 ?? 89 7c ?? 30"_sig
+	
 	logger << "[DBG-sigmatch] CEveryInListEffect::ExecuteActual ";
 	logger.endl();
-	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CEveryInListEffect::ExecuteActual"] = signature_search("stellaris.exe", "?? 55 57 ?? 54 ?? 56 ?? 57 ?? 81 ec b0 00 00 00 ?? 8d 6c ?? 20 ?? 89 9d c8 00 00 00 ?? 89 b5 d0 00 00 00 ?? 8b f2 ?? 8b f1 ?? 33 ff ?? 89 7d 08 0f 57 c0 66 0f 7f 45 10 ?? 8b 05 ?? ?? ?? ?? ?? 89 45 20 ?? 8d 05 ?? ?? ?? ?? ?? 89 45 00 ?? 8d 45 00 ?? 89 45 28 ?? 8d 45 00 ?? 89 45 30 ?? 8d 45 00 "_sig);
-
-
+	addr_map[VERSION_UNKNOWN][global_current_os][global_current_platform]["CEveryInListEffect::ExecuteActual"] = signature_search("stellaris.exe", "[01000...] 55 57 [01000...] 54 [01000...] 56 [01000...] 57 [01001...] 81 ec b0 00 00 00 [01001...] 8d 6c [..100100] 20 [01001...] 89 9d c8 00 00 00 [01001...] 89 b5 d0 00 00 00 [01001...] 8b f2 [01001...] 8b f1 [01000...] 33 ff [01001...] 89 7d 08 0f 57 c0 66 0f 7f 45 10 [01001...] 8b 05 [........] [........] [........] [........] [01001...] 89 45 20 [01001...] 8d 05 [........] [........] [........] [........] [01001...] 89 45 00 [........] [........] [........] [........]"_sig);
+	// "?? 55 57 ?? 54 ?? 56 ?? 57 ?? 81 ec b0 00 00 00 ?? 8d 6c ?? 20 ?? 89 9d c8 00 00 00 ?? 89 b5 d0 00 00 00 ?? 8b f2 ?? 8b f1 ?? 33 ff ?? 89 7d 08 0f 57 c0 66 0f 7f 45 10 ?? 8b 05 ?? ?? ?? ?? ?? 89 45 20 ?? 8d 05 ?? ?? ?? ?? ?? 89 45 00 ?? 8d 45 00 ?? 89 45 28 ?? 8d 45 00 ?? 89 45 30 ?? 8d 45 00 "_sig
+	
 	logger << "[DBG-sigmatch] Done ";
 	logger.endl();
 
