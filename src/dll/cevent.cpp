@@ -77,9 +77,13 @@ void cevent_hook_init(enumPlatforms thisPlatform, intptr_t p_CApplication_Base, 
 	base_cevent_execute_ptr = find_address_from_symbol("CEvent::Execute");
 	base_cevent_performimmediate_ptr = find_address_from_symbol("CEvent::PerformImmediate");
 	
-	intptr_t this_cevent_execute_ptr = (intptr_t)p_CApplication_Base + (base_cevent_execute_ptr - base_augustus_ptr);
-	intptr_t this_cevent_performimmediate_ptr = (intptr_t)p_CApplication_Base + (base_cevent_performimmediate_ptr - base_augustus_ptr);
-	cevent_execute_trampoline = (void(*)(void* ptr1, void* arg2, void* arg3, void* arg4, void* arg5)) installHook((void*)this_cevent_execute_ptr, &cevent_execute_trampoline, cevent_execute_payload);
-	cevent_performimmediate_trampoline = (void(*)(void* arg1, void* arg2, void* arg3, void* arg4)) installHook((void*)this_cevent_performimmediate_ptr, &cevent_performimmediate_trampoline, cevent_performimmediate_payload);
+	if (base_cevent_execute_ptr != 0x0) {
+		intptr_t this_cevent_execute_ptr = (intptr_t)p_CApplication_Base + (base_cevent_execute_ptr - base_augustus_ptr);
+		cevent_execute_trampoline = (void(*)(void* ptr1, void* arg2, void* arg3, void* arg4, void* arg5)) installHook((void*)this_cevent_execute_ptr, &cevent_execute_trampoline, cevent_execute_payload);
+	}
+	if (base_cevent_performimmediate_ptr != 0x0) {
+		intptr_t this_cevent_performimmediate_ptr = (intptr_t)p_CApplication_Base + (base_cevent_performimmediate_ptr - base_augustus_ptr);
+		cevent_performimmediate_trampoline = (void(*)(void* arg1, void* arg2, void* arg3, void* arg4)) installHook((void*)this_cevent_performimmediate_ptr, &cevent_performimmediate_trampoline, cevent_performimmediate_payload);
+	}
 	
 }

@@ -51,7 +51,8 @@ void ceveryinlisteffect_hook_init(enumPlatforms thisPlatform, intptr_t p_CApplic
 
 	base_ceveryinlisteffect_executeactual_ptr = find_address_from_symbol("CEveryInListEffect::ExecuteActual");
 	
-	
-	intptr_t this_ceveryinlisteffect_executeactual_ptr = (intptr_t)p_CApplication_Base + (base_ceveryinlisteffect_executeactual_ptr - base_augustus_ptr);
-	ceveryinlisteffect_executeactual_trampoline = (void(*)(void* ptr1, void* ptr2)) installHook((void*)this_ceveryinlisteffect_executeactual_ptr, &ceveryinlisteffect_executeactual_trampoline, ceveryinlisteffect_executeactual_payload);
+	if (base_ceveryinlisteffect_executeactual_ptr != 0x0) {
+		intptr_t this_ceveryinlisteffect_executeactual_ptr = (intptr_t)p_CApplication_Base + (base_ceveryinlisteffect_executeactual_ptr - base_augustus_ptr);
+		ceveryinlisteffect_executeactual_trampoline = (void(*)(void* ptr1, void* ptr2)) installHook((void*)this_ceveryinlisteffect_executeactual_ptr, &ceveryinlisteffect_executeactual_trampoline, ceveryinlisteffect_executeactual_payload);
+	}
 }

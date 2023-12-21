@@ -40,7 +40,8 @@ void conactiondatabase_hook_init(enumPlatforms thisPlatform, intptr_t p_CApplica
 
 	base_conactiondatabase_performevent_ptr = find_address_from_symbol("COnActionDatabase::PerformEvent");
 	
-
-	intptr_t this_conactiondatabase_performevent_ptr = (intptr_t)p_CApplication_Base + (base_conactiondatabase_performevent_ptr - base_augustus_ptr);
-	conactiondatabase_performevent_trampoline = (void(*)(void* ptr1, void* ptr2, void* ptr3, void* ptr4, void* ptr5)) installHook((void*)this_conactiondatabase_performevent_ptr, &conactiondatabase_performevent_trampoline, conactiondatabase_performevent_payload);
+	if (base_conactiondatabase_performevent_ptr != 0x0) {
+		intptr_t this_conactiondatabase_performevent_ptr = (intptr_t)p_CApplication_Base + (base_conactiondatabase_performevent_ptr - base_augustus_ptr);
+		conactiondatabase_performevent_trampoline = (void(*)(void* ptr1, void* ptr2, void* ptr3, void* ptr4, void* ptr5)) installHook((void*)this_conactiondatabase_performevent_ptr, &conactiondatabase_performevent_trampoline, conactiondatabase_performevent_payload);
+	}
 }

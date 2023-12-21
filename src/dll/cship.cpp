@@ -123,7 +123,8 @@ void cship_hook_init(enumPlatforms thisPlatform, intptr_t p_CApplication_Base, i
 	// This is just for logging info
 	//intptr_t this_cship_dailyupdaterepair_ptr = (intptr_t)p_CApplication_Base + (base_cship_dailyupdaterepair_ptr - base_augustus_ptr);
 	//cship_dailyupdaterepair_trampoline = (void(*)(void* ptr1)) installHook((void*)this_cship_dailyupdaterepair_ptr, &cship_dailyupdaterepair_trampoline, cship_dailyupdaterepair_payload);
-
-	intptr_t this_cship_calcregenamount_ptr = (intptr_t)p_CApplication_Base + (base_cship_calcregenamount_ptr - base_augustus_ptr);
-	cship_calcregenamount_trampoline = (int64_t*(*)(void* ptr1, int64_t param_1, int64_t param_2, int64_t param_3)) installHook((void*)this_cship_calcregenamount_ptr, &cship_calcregenamount_trampoline, cship_calcregenamount_payload);
+	if (base_cship_calcregenamount_ptr != 0x0) {
+		intptr_t this_cship_calcregenamount_ptr = (intptr_t)p_CApplication_Base + (base_cship_calcregenamount_ptr - base_augustus_ptr);
+		cship_calcregenamount_trampoline = (int64_t * (*)(void* ptr1, int64_t param_1, int64_t param_2, int64_t param_3)) installHook((void*)this_cship_calcregenamount_ptr, &cship_calcregenamount_trampoline, cship_calcregenamount_payload);
+	}
 }

@@ -100,7 +100,7 @@ void thread_idler_testing() {
 
 	// Fixes things hooks:
 	//limit_once_in_x_seconds_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	cship_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
+	//cship_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
 	assembly_patches_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
 
 	logger << "Hook init complete, unpausing threads";

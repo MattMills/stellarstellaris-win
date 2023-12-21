@@ -293,6 +293,9 @@ intptr_t find_address_from_symbol(const char * symbol) {
 	logger << " Version(" << global_current_version << ") OS(" << global_current_os << ") platform(" << global_current_platform << ")";
 	logger.endl();
 
+	if (addr == base_offset - (intptr_t)hModule) {
+		return 0x0;
+	}
 	return addr;
 }
 

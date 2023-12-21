@@ -42,12 +42,15 @@ void assembly_patches_init(enumPlatforms thisPlatform, intptr_t p_CApplication_B
 	intptr_t this_ptr = 0x0;
 
 	base_ptr = find_address_from_symbol("CAlertManager::Update_asm_target_1");
-	this_ptr = (intptr_t)p_CApplication_Base + (base_ptr - base_augustus_ptr);
-
-	do_patch_calertmanager_update(this_ptr);
+	if (base_ptr != 0x0) {
+		this_ptr = (intptr_t)p_CApplication_Base + (base_ptr - base_augustus_ptr);
+		do_patch_calertmanager_update(this_ptr);
+	}
 
 	base_ptr = find_address_from_symbol("COutlinerGroupArmy::UpdateInternal_asm_target_1");
-	this_ptr = (intptr_t)p_CApplication_Base + (base_ptr - base_augustus_ptr);
-	do_patch_coutlinergrouparmy_updateinternal(this_ptr);
+	if (base_ptr != 0x0) {
+		this_ptr = (intptr_t)p_CApplication_Base + (base_ptr - base_augustus_ptr);
+		do_patch_coutlinergrouparmy_updateinternal(this_ptr);
+	}
 
 }
