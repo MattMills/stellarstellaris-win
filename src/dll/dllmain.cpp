@@ -87,11 +87,11 @@ void thread_idler_testing() {
 	init_address_map();
 
 	// Logging Hooks:
-	ceffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	cevent_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	crandominlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	conactiondatabase_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	ceveryinlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	//ceffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	//cevent_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	//crandominlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	//conactiondatabase_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
+	//ceveryinlisteffect_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
 	
 	 
 	//Extremely verbose logging Hooks:
@@ -100,8 +100,8 @@ void thread_idler_testing() {
 
 	// Fixes things hooks:
 	//limit_once_in_x_seconds_hook_init(thisPlatform, (intptr_t) p_CApplication_Base, base_augustus_ptr);
-	//cship_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
-	assembly_patches_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
+	cship_hook_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
+	//assembly_patches_init(thisPlatform, (intptr_t)p_CApplication_Base, base_augustus_ptr);
 
 	logger << "Hook init complete, unpausing threads";
 	SetOtherThreadsSuspended(false);
