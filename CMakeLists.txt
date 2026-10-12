@@ -67,6 +67,8 @@ add_library		( stellar-injected SHARED
 					"src/dll/dllmain.cpp" 
 					"src/dll/lua.cpp"
 					"src/dll/code_hook.cpp"
+					"src/dll/lexer_hook.cpp"
+					"src/dll/loading_hook.cpp"
 					"src/hooking/error.cpp" 
 					"src/hooking/shared.cpp"
 					"src/hooking/windows.cpp"  

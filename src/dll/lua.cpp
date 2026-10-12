@@ -12,6 +12,8 @@
 #include "dll/lua_runtime.h"
 #include "dll/dllmain.h"
 #include "dll/code_hook.h"
+#include "dll/lexer_hook.h"
+#include "dll/loading_hook.h"
 #include "util/logging.h"
 #include "git_version.h"
 
@@ -171,7 +173,7 @@ using handle_turn_tick_function = void (*)(void* game_state, const void* checksu
 handle_turn_tick_function handle_turn_tick = nullptr;
 volatile bool* game_state_gate = nullptr;
 
-bool call_protected(lua_State* L, int nargs);
+bool call_protected(lua_State* L, int nargs, int nresults = 0);
 
 void call_turn_tick(const char* phase, void* game_state) {
 	std::unique_lock<std::recursive_mutex> guard(stellar_lua_lock(), std::try_to_lock);
@@ -257,6 +259,10 @@ int luaopen_stellar(lua_State* L) {
 		lua_pushcfunction(L, f->func);
 		lua_setfield(L, -2, f->name);
 	}
+	// hook_lexer, lexer_stats, lexer_mismatches (src/dll/lexer_hook.cpp)
+	stellar_lexer_open(L);
+	// hook_loading, loading_events (src/dll/loading_hook.cpp)
+	stellar_loading_open(L);
 
 	// the game
 	push_address(L, hModule);
@@ -298,12 +304,13 @@ int traceback(lua_State* L) {
 	return 1;
 }
 
-// Runs the function on the top of the stack (with `nargs` arguments above it) and logs an error.
-bool call_protected(lua_State* L, int nargs) {
+// Runs the function below the `nargs` arguments on the top of the stack and logs an error; leaves
+// `nresults` results when it succeeds.
+bool call_protected(lua_State* L, int nargs, int nresults) {
 	const int base = lua_gettop(L) - nargs;
 	lua_pushcfunction(L, traceback);
 	lua_insert(L, base);
-	const int status = lua_pcall(L, nargs, 0, base);
+	const int status = lua_pcall(L, nargs, nresults, base);
 	lua_remove(L, base);
 	if (status != 0) {
 		write_log(lua_tostring(L, -1));
@@ -318,6 +325,14 @@ bool call_protected(lua_State* L, int nargs) {
 std::recursive_mutex& stellar_lua_lock() {
 	static std::recursive_mutex lock;
 	return lock;
+}
+
+lua_State* stellar_lua_state() {
+	return L;
+}
+
+bool stellar_lua_call(lua_State* state, int nargs, int nresults) {
+	return call_protected(state, nargs, nresults);
 }
 
 void stellar_lua_start() {

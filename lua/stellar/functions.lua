@@ -23,4 +23,10 @@ return {
     -- the text lexer: the game's PDXScript tokenizer (stellar.script.lexer replaces it)
     { name = "CTextLexer::GetTok", what = "the next token of a script text: the lexer hook" },
     { name = "CMemoryFile::CMemoryFile", what = "names the vtable of CMemoryFile: a lexer's file whose text is in memory" },
+    { name = "CToken::SetCharInString", what = "writes a byte of a token's text, growing it: the lexer in replace mode" },
+    -- the load screen: the stages of loading and its progress (stellar.loading)
+    { name = "SPushLoadScreenState::SPushLoadScreenState", what = "a loading stage begins: its share of the progress bar and the C++ file and line" },
+    { name = "SPushLoadScreenState::~SPushLoadScreenState", what = "a loading stage ends" },
+    { name = "RenderLoadScreen", what = "draws the load screen at a progress (0 to 100)" },
+    { name = "CGameApplication::LoadingScreenCallback", what = "a step of a phase of the startup load (current of total, the phase's start and span of the bar)" },
 }

@@ -27,6 +27,34 @@ if image == nil then
 end
 stellar.log(string.format("%s analysed in %.1fs, %d functions, md5 %s", image:path(), util.now() - t0, #image, image:md5()))
 
+-- first: the game's script lexer (stellar.script.loader), hooked in shadow mode before the game
+-- reads its script: every token it reads is compared with the Lua lexer's
+local loader = require("stellar.script.loader")
+local lexer_where, lexer_message = loader.locate(image, stellar.read)
+if lexer_where then
+    local hooked, hook_message = loader.hook(lexer_where)
+    stellar.log(string.format("loader: CTextLexer::GetTok %s, CMemoryFile vtable %s, token tree %s: %s",
+        hex(lexer_where.get_tok), hex(lexer_where.memory_file_vtable), hex(lexer_where.token_tree),
+        hooked and "hooked (shadow)" or ("not hooked: " .. tostring(hook_message))))
+else
+    stellar.log("loader: " .. tostring(lexer_message))
+end
+
+-- the load screen's stages and progress, logged from the heartbeat (stellar.loading)
+local loading = require("stellar.loading")
+local loading_where, loading_message = loading.locate(image, stellar.read)
+if loading_where then
+    stellar.log(string.format("load: SPushLoadScreenState %s, ~SPushLoadScreenState %s, RenderLoadScreen %s, LoadingScreenCallback %s, progress context at %s",
+        hex(loading_where.push), hex(loading_where.pop), hex(loading_where.render), hex(loading_where.step),
+        hex(loading_where.context)))
+    local hooked, hook_message = loading.hook(loading_where, stellar.read)
+    if not hooked then
+        stellar.log("load: not hooked: " .. tostring(hook_message))
+    end
+else
+    stellar.log("load: " .. tostring(loading_message))
+end
+
 -- the turn tick reaches Lua: log the first ticks, then each new month, with how long the tick that
 -- started it took (the tick that runs MonthlyUpdate) and the ticks of the month
 local ticks, month_ticks, started = 0, 0, 0
@@ -197,15 +225,6 @@ local function read_catalog(waited)
     return true
 end
 
--- the game's script lexer (stellar.script.loader): where it is in this build
-local lexer_where, lexer_message = require("stellar.script.loader").locate(image, stellar.read)
-if lexer_where then
-    stellar.log(string.format("loader: CTextLexer::GetTok %s, CMemoryFile vtable %s", hex(lexer_where.get_tok),
-        hex(lexer_where.memory_file_vtable)))
-else
-    stellar.log("loader: " .. tostring(lexer_message))
-end
-
 -- last: from here on the game's main thread calls into Lua
 local ok, err = pcall(game.start, image)
 if not ok then
@@ -223,17 +242,22 @@ stellar.heartbeat = function()
     if heartbeats == 1 then
         stellar.log("heartbeat from Lua" .. (dev.enabled and ", dev enabled" or ""))
     end
+    loading.poll(stellar.read)
+    -- the lexer hook's counts, every 10 seconds while they change
+    if heartbeats % 10 == 0 then
+        loader.report()
+    end
     if not catalog_done then
         local done, result = pcall(read_catalog, heartbeats)
         if not done then
             stellar.log("script catalog failed: " .. tostring(result))
         end
         catalog_done = not done or result
+        if catalog_done then
+            loader.report(true)
+        end
     end
     if catalog_done then
         dev.poll()
-        if not dev.enabled then
-            stellar.heartbeat = nil
-        end
     end
 end

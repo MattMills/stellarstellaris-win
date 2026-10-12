@@ -13,3 +13,12 @@ void stellar_lua_heartbeat(uint64_t count);
 
 // The Lua state is not thread-safe: hold this lock to call into Lua from any thread.
 std::recursive_mutex& stellar_lua_lock();
+
+struct lua_State;
+
+// The Lua state, or null before stellar_lua_start (hold stellar_lua_lock to use it).
+lua_State* stellar_lua_state();
+
+// Calls the function below the `nargs` arguments on the top of the stack; an error is logged with
+// its traceback and leaves nothing. Leaves `nresults` results when it succeeds.
+bool stellar_lua_call(lua_State* L, int nargs, int nresults);
