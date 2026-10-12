@@ -108,10 +108,20 @@ local marks_hooked, marks_failed = loading.hook_marks(marks)
 stellar.log(string.format("load: %d marks hooked%s", marks_hooked,
     #marks_failed > 0 and ("; not hooked: " .. table.concat(marks_failed, "; ")) or ""))
 -- The databases' loop in Lua: databases.txt next to the DLL says who runs it, "lua" (the default:
--- stellar.databases.run, before the game's loop, which then skips what Lua did), "parallel N"
--- (databases.run_parallel on N workers, default 4: an experiment, the game's databases share
--- tables that are not all locked yet) or "game"
+-- stellar.databases.run, before the game's loop, which then skips what Lua did), "trace" (the
+-- same, learning what each database reads of the others: cache/database_dependencies-<md5>.tsv),
+-- "parallel N" (databases.run_parallel on N workers, default 4, with the dependencies learned: an
+-- experiment, the game's databases share tables that are not all locked yet) or "game"
 local database_mode, database_workers = setting("databases.txt", "lua")
+local dependencies_path = util.dirname(stellar.dll_path) .. "\\cache\\database_dependencies-" .. image:md5() .. ".tsv"
+if databases_where and database_mode == "parallel" then
+    local learned = databases.load(databases_where, dependencies_path)
+    stellar.log(learned and string.format("databases: %d dependencies learned in a trace added", learned)
+        or "databases: no dependencies learned yet (run once with databases.txt \"trace\"): one at a time")
+    if not learned then
+        database_mode = "lua"
+    end
+end
 if databases_where and database_mode == "parallel" then
     -- the token table, which the databases add to, is locked
     local add = found["CStaticLexer::AddDynamicToken"]
@@ -133,7 +143,7 @@ if databases_where and database_mode == "parallel" then
         database_mode = "lua"
     end
 end
-if databases_where and (database_mode == "lua" or database_mode == "parallel") then
+if databases_where and (database_mode == "lua" or database_mode == "parallel" or database_mode == "trace") then
     stellar.setup_databases = function(a, done, progress)
         loading.milestone("NNullObjAndDatabaseInitUtil::SetupDatabases")
         local t0 = util.now()
@@ -147,7 +157,22 @@ if databases_where and (database_mode == "lua" or database_mode == "parallel") t
                     t.seconds))
             end
         else
-            n, stopped = databases.run(databases_where, progress, stellar.read)
+            n, stopped = databases.run(databases_where, progress, stellar.read, database_mode == "trace")
+            if database_mode == "trace" then
+                local count, beyond = 0, 0
+                for _, e in ipairs(databases_where.entries) do
+                    for _, d in ipairs(e.learned or {}) do
+                        count = count + 1
+                        local declared = false
+                        for _, x in ipairs(e.depends or {}) do
+                            declared = declared or x == d
+                        end
+                        beyond = beyond + (declared and 0 or 1)
+                    end
+                end
+                report = string.format("trace: %d reads of other databases (%d not declared by CanInitialize), %d traps; saved to %s",
+                    count, beyond, databases_where.traps or 0, tostring(databases.save(databases_where, dependencies_path)))
+            end
         end
         stellar.log(string.format("databases: Lua initialized %d of %d databases in %.1fs%s%s", n,
             #databases_where.entries, util.now() - t0, stopped and ("; the game does the rest from " .. stopped) or "",

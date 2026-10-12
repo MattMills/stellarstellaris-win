@@ -404,13 +404,21 @@ end
 -- trampolines and skip flags, stellar.loading). The game's loop then skips what Lua did. Lua does
 -- only what it can give back: at a database whose CreateInstance or InitInstance it cannot call
 -- that way, the loop stops (stopped says why), and the game's loop does the rest in its order.
-function databases.run(where, progress, read)
+function databases.run(where, progress, read, trace)
     local stellar = require("stellar")
     local left = {}
     for i = 1, #where.entries do
         left[i] = i
     end
-    local total, initialized = #where.entries, 0
+    if trace then
+        -- what each database's CreateInstance and InitInstance read of the databases' instances
+        local instances = {}
+        for _, e in ipairs(where.entries) do
+            instances[#instances + 1] = e.instance
+        end
+        stellar.trace_begin(instances)
+    end
+    local total, initialized, stopped = #where.entries, 0, nil
     while #left > 0 do
         local pick
         for k, i in ipairs(left) do
@@ -421,19 +429,28 @@ function databases.run(where, progress, read)
             end
         end
         if pick == nil then
-            return initialized, "no database left can initialize"
+            stopped = "no database left can initialize"
+            break
         end
-        local e = where.entries[left[pick]]
+        local index = left[pick]
+        local e = where.entries[index]
         local create, create_mark = callable(read, e.create, e.create_mark)
         local init, init_mark = callable(read, e.init, e.init_mark)
         if create == nil or init == nil then
-            return initialized, string.format("%s: %s", e.name, tostring(create == nil and create_mark or init_mark))
+            stopped = string.format("%s: %s", e.name, tostring(create == nil and create_mark or init_mark))
+            break
         end
         if create_mark then
             stellar.mark(create_mark.id)
         end
+        if trace then
+            stellar.trace_set(index)
+        end
         stellar.call(create)
         stellar.call(init)
+        if trace then
+            stellar.trace_set(0)
+        end
         if create_mark then
             stellar.set_entry_skip(create_mark.id, true)
         end
@@ -444,7 +461,79 @@ function databases.run(where, progress, read)
         initialized = initialized + 1
         stellar.call_progress(progress, initialized, total)
     end
-    return initialized
+    if trace then
+        local records, traps = stellar.trace_end()
+        databases.learn(where, records)
+        where.traps = traps
+    end
+    return initialized, stopped
+end
+
+-- databases.learn(where, records) -> count: each entry gets learned, the databases whose instance
+-- its CreateInstance or InitInstance read (records from stellar.trace_end: { [index] = addresses })
+function databases.learn(where, records)
+    local by_instance, count = {}, 0
+    for _, e in ipairs(where.entries) do
+        if e.instance then
+            by_instance[e.instance] = e
+        end
+    end
+    for index, addresses in pairs(records) do
+        local e = where.entries[index]
+        e.learned = {}
+        for _, address in ipairs(addresses) do
+            local d = by_instance[address]
+            if d and d ~= e then
+                e.learned[#e.learned + 1] = d
+                count = count + 1
+            end
+        end
+    end
+    return count
+end
+
+-- databases.save(where, path): the dependencies learned, as "database<TAB>depends on" lines
+function databases.save(where, path)
+    local f = io.open(path, "w")
+    if f == nil then
+        return nil
+    end
+    for _, e in ipairs(where.entries) do
+        for _, d in ipairs(e.learned or {}) do
+            f:write(e.name, "\t", d.name, "\n")
+        end
+    end
+    f:close()
+    return path
+end
+
+-- databases.load(where, path) -> count | nil: the dependencies learned in an earlier load, added
+-- to each entry's depends
+function databases.load(where, path)
+    local f = io.open(path, "r")
+    if f == nil then
+        return nil
+    end
+    local by_name, count = {}, 0
+    for _, e in ipairs(where.entries) do
+        by_name[e.name] = e
+    end
+    for line in f:lines() do
+        local name, depends = line:match("^([^\t]+)\t([^\t]+)$")
+        local e, d = by_name[name or ""], by_name[depends or ""]
+        if e and d then
+            local known = false
+            for _, x in ipairs(e.depends) do
+                known = known or x == d
+            end
+            if not known then
+                e.depends[#e.depends + 1] = d
+                count = count + 1
+            end
+        end
+    end
+    f:close()
+    return count
 end
 
 return databases
