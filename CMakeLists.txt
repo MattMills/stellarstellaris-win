@@ -46,7 +46,10 @@ set(LUA_FNMATCH_BUILD_MODULE OFF CACHE BOOL "" FORCE)
 add_subdirectory(lib/lua_sigmatch)
 add_subdirectory(lib/lua_fnmatch)
 
+# capstone asks for CMake 2.8.12, and CMake 4 no longer accepts a minimum below 3.5
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 add_subdirectory(lib/capstone)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
 add_subdirectory(lib/sigmatch)
 
 
