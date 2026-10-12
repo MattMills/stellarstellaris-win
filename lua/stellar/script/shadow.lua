@@ -581,6 +581,30 @@ function shadow.everything(options)
             end
         end
         if file == nil then
+            -- inline script content in a scripted trigger or effect: `file: scripted effect <tag> at
+            -- <the call's location>:<line from the definition's first>(inline_script) ...`; the
+            -- call's location may hold inline chains of its own, so each split is tried
+            local s = (tostring(location):gsub("^%s+", ""):gsub("%s+$", ""))
+            local tag = s:match("^file: scripted %a+ (%S+) at ")
+            local start = 1
+            while tag do
+                local a = s:find(":%d+%(inline_script%)", start)
+                if a == nil then
+                    break
+                end
+                local prefix = s:sub(1, a - 1)
+                local instance = by_call[tag .. " at " .. prefix:match("^file: scripted %a+ %S+ at (.*)$")]
+                if instance then
+                    instance.inline_where = instance.inline_where or prefix
+                    root.line = s
+                    instance.roots[#instance.roots + 1] = root
+                    file = false
+                    break
+                end
+                start = a + 1
+            end
+        end
+        if file == nil then
             -- inside a script value: `file: script value <name> at <the call's location> line: <line>`
             local name, call, line = tostring(location):match("^%s*file: script value (%S+) at (.*) line: (%d+)%s*$")
             if name then
@@ -693,7 +717,7 @@ function shadow.everything(options)
         local label = string.format("%s %s%s", def and def.file or "?", instance.tag, #instance.args > 0 and " (with arguments)" or "")
         local block, message
         if def then
-            block, message = source.instantiate(fs, def, instance.args, result.expand_errors)
+            block, message = source.instantiate(fs, def, instance.args, result.expand_errors, instance.inline_where)
         end
         if block == nil and #result.instance_errors < 50 then
             result.instance_errors[#result.instance_errors + 1] = instance.tag .. ": " .. tostring(message or "no definition")

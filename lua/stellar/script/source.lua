@@ -411,12 +411,15 @@ end
 -- events/x.txt" for a file), and an inline script whose statement ends at line 12 of it (the '}'
 -- of `inline_script = { ... }`) adds `inline` = "file: events/x.txt:12(inline_script)
 -- common/inline_scripts/y.txt" (then " line: 3" in the game's locations; inline scripts in inline
--- scripts make a chain). Errors (a missing script, a parse error) are collected in errors and the
--- statement is dropped.
-function source.expand(fs, block, errors, depth, where)
+-- scripts make a chain). In the instance of a scripted trigger or effect, the game counts the
+-- line of an inline_script statement from the definition's first line: line_base is the line
+-- before it (0 for a file). Errors (a missing script, a parse error) are collected in errors and
+-- the statement is dropped.
+function source.expand(fs, block, errors, depth, where, line_base)
     fs = filesystem_of(fs)
     depth = depth or 0
     where = where or "?"
+    line_base = line_base or 0
     local out = { line = block.line, type = block.type, name = block.name, warnings = block.warnings }
     for _, e in ipairs(block) do
         if e.op and e.key and e.key.text:lower() == "inline_script" and depth < 32 then
@@ -458,7 +461,7 @@ function source.expand(fs, block, errors, depth, where)
             else
                 -- the game places the call where its statement ends: `inline_script = { ... }` at
                 -- the line of its '}'
-                local call_line = e.value.text == nil and e.value.last or e.line
+                local call_line = (e.value.text == nil and e.value.last or e.line) - line_base
                 local inner_where = string.format("%s:%d(inline_script) %s", where, call_line, file)
                 for _, inner in ipairs(source.expand(fs, tree, errors, depth + 1, inner_where)) do
                     -- where it came from (its line numbers are those of the inline script)
@@ -468,7 +471,7 @@ function source.expand(fs, block, errors, depth, where)
             end
         else
             if e.op and e.value and e.value.text == nil then
-                e.value = source.expand(fs, e.value, errors, depth, where)
+                e.value = source.expand(fs, e.value, errors, depth, where, line_base)
             end
             out[#out + 1] = e
         end
@@ -513,9 +516,11 @@ end
 -- effect or value definition (from source.definitions) as the game reads it for a call with these
 -- arguments ({ { name, value }, ... }): its text (lines def.line to def.last of its file) as a
 -- template (source.template, kept in def.template), rewritten for the call (source.generate),
--- parsed at its lines in its file, its inline scripts expanded. The file texts are cached.
+-- parsed at its lines in its file, its inline scripts expanded (where: the location the game gives
+-- the instance, "file: scripted effect x at <the call's location>", for the inline script content
+-- in it). The file texts are cached.
 local texts = setmetatable({}, { __mode = "v" })
-function source.instantiate(fs, def, args, errors)
+function source.instantiate(fs, def, args, errors, where)
     if def.template == nil then
         local lines = texts[def.path]
         if lines == nil then
@@ -545,7 +550,7 @@ function source.instantiate(fs, def, args, errors)
     if not (e and e.op and e.value and e.value.text == nil) then
         return nil, def.file .. ":" .. def.line .. ": not a definition after substitution"
     end
-    return source.expand(fs, e.value, errors)
+    return source.expand(fs, e.value, errors, 0, where, def.line - 1)
 end
 
 return source
