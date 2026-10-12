@@ -216,8 +216,8 @@ const char* token_text(const Stream& s, const LuaToken& t) {
 	return t.text >= 0 ? s.buffer + t.text : s.escaped.data() + (-1 - static_cast<int64_t>(t.text));
 }
 
-// Asks Lua for the tokens of the text from `from`. Holds the Lua lock: the threads that read
-// script wait for each other here.
+// Asks Lua for the tokens of the text from `from`: the worker state of this thread
+// (lua/worker.lua), so the threads that read script do not wait for each other.
 bool load_tokens(Stream& s, const FileState& from) {
 	s.tokens.clear();
 	s.escaped.clear();
@@ -227,8 +227,7 @@ bool load_tokens(Stream& s, const FileState& from) {
 	QueryPerformanceCounter(&t0);
 	bool ok = false;
 	{
-		std::lock_guard<std::recursive_mutex> guard(stellar_lua_lock());
-		lua_State* L = stellar_lua_state();
+		lua_State* L = stellar_worker_state();
 		if (L != nullptr) {
 			const int top = lua_gettop(L);
 			lua_getglobal(L, "package");

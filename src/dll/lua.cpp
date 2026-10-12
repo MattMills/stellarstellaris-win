@@ -1,10 +1,16 @@
 // lua.cpp : the Lua runtime of stellar-injected.
 //
-// One LuaJIT state, created by the init thread. Scripts get the standard libraries (with the LuaJIT
-// FFI), `fnmatch` (lua_fnmatch: finding functions by stellar-fnmatch signatures in any build,
-// decoding instructions), `sigmatch` (lua_sigmatch: byte patterns, many in one pass), and
-// `stellar`, this DLL: logging, the game module, thread suspension, memory patching and the turn
-// tick hook. lua/init.lua, next to stellar-injected.dll, runs first.
+// The main LuaJIT state, created by the init thread, runs lua/init.lua (next to
+// stellar-injected.dll); the init thread (heartbeat) and the game's main thread (turn tick, the
+// databases) use it under stellar_lua_lock(). A thread that needs Lua for itself (the lexer hook,
+// on every thread that reads script) gets a worker state of its own, which runs lua/worker.lua:
+// Lua states are not shared between threads, and states share nothing with each other; what
+// passes between them goes through C++.
+//
+// Every state gets the standard libraries (with the LuaJIT FFI), `fnmatch` (lua_fnmatch: finding
+// functions by stellar-fnmatch signatures in any build, decoding instructions), `sigmatch`
+// (lua_sigmatch: byte patterns, many in one pass), and `stellar`, this DLL: logging, the game
+// module, thread suspension, memory patching, calls into the game and the hooks.
 //
 // Lua errors are raised only while no C++ object that owns resources is alive in the calling
 // frame; scratch memory is Lua userdata.
@@ -32,7 +38,14 @@ lua_State* L = nullptr;
 char dll_path[MAX_PATH * 4] = "";
 char lua_dir[MAX_PATH * 4] = "";
 
+// the log file is written by every state's thread
+std::mutex& log_lock() {
+	static std::mutex lock;
+	return lock;
+}
+
 void write_log(const char* text) {
+	std::lock_guard<std::mutex> guard(log_lock());
 	CLog& logger = *getLogger();
 	logger << "[lua] " << text;
 	logger.endl();
@@ -242,6 +255,47 @@ int l_hook_turn_tick(lua_State* L) {
 	return 1;
 }
 
+// an integer or pointer argument: a number, a boolean, or nil (0)
+uintptr_t check_argument(lua_State* L, int idx) {
+	if (lua_isnoneornil(L, idx)) {
+		return 0;
+	}
+	if (lua_isboolean(L, idx)) {
+		return lua_toboolean(L, idx) ? 1 : 0;
+	}
+	return check_address(L, idx);
+}
+
+// stellar.call(address [, a1, a2, a3, a4]) -> rax: calls a function of the game with up to 4
+// integer or pointer arguments, and returns what it returns in rax (a number; for a bool, the low
+// byte: stellar.call(f) % 256 ~= 0). A C function of the classic API, so the game's code may call
+// back into this Lua state through the hooks.
+int l_call(lua_State* L) {
+	using function = uintptr_t (*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+	const function f = reinterpret_cast<function>(check_address(L, 1));
+	const uintptr_t a1 = check_argument(L, 2), a2 = check_argument(L, 3), a3 = check_argument(L, 4),
+		a4 = check_argument(L, 5);
+	const uintptr_t result = f(a1, a2, a3, a4);
+	lua_pushnumber(L, static_cast<lua_Number>(result));
+	return 1;
+}
+
+// stellar.call_progress(function, current, total): calls a std::function<void(unsigned, unsigned)>
+// of the game at `function` (MSVC: the callable at +56; its vtable's slot 2 calls it, with the
+// arguments by reference)
+int l_call_progress(lua_State* L) {
+	uint8_t* function = reinterpret_cast<uint8_t*>(check_address(L, 1));
+	unsigned current = static_cast<unsigned>(luaL_checknumber(L, 2));
+	unsigned total = static_cast<unsigned>(luaL_checknumber(L, 3));
+	void* callable = *reinterpret_cast<void* const*>(function + 56);
+	if (callable != nullptr) {
+		using call_function = void (*)(void* callable, unsigned* current, unsigned* total);
+		const call_function call = (*reinterpret_cast<const call_function* const*>(callable))[2];
+		call(callable, &current, &total);
+	}
+	return 0;
+}
+
 int luaopen_stellar(lua_State* L) {
 	const luaL_Reg functions[] = {
 		{"log", l_log},
@@ -252,6 +306,8 @@ int luaopen_stellar(lua_State* L) {
 		{"thread_id", l_thread_id},
 		{"skipped_ticks", l_skipped_ticks},
 		{"hook_turn_tick", l_hook_turn_tick},
+		{"call", l_call},
+		{"call_progress", l_call_progress},
 		{nullptr, nullptr},
 	};
 	lua_newtable(L);
@@ -304,6 +360,48 @@ int traceback(lua_State* L) {
 	return 1;
 }
 
+bool call_protected(lua_State* L, int nargs, int nresults);
+
+// A new state with the libraries, `stellar`, `fnmatch` and `sigmatch`, scripts from lua/ and
+// print() to the log; null if it cannot be made
+lua_State* new_state() {
+	lua_State* S = luaL_newstate();
+	if (S == nullptr) {
+		write_log("cannot create a Lua state");
+		return nullptr;
+	}
+	luaL_openlibs(S);
+	preload(S, "stellar", luaopen_stellar);
+	preload(S, "fnmatch", luaopen_fnmatch);
+	preload(S, "sigmatch", luaopen_sigmatch);
+	lua_getglobal(S, "package");
+	lua_pushfstring(S, "%s\\?.lua;%s\\?\\init.lua;", lua_dir, lua_dir);
+	lua_getfield(S, -2, "path");
+	lua_concat(S, 2);
+	lua_setfield(S, -2, "path");
+	lua_pop(S, 1);
+	lua_pushcfunction(S, l_log);
+	lua_setglobal(S, "print");
+	return S;
+}
+
+// Runs lua/<script> in S; false (logged) when it cannot be loaded or fails
+bool run_script(lua_State* S, const char* script) {
+	lua_pushfstring(S, "%s\\%s", lua_dir, script);
+	const int status = luaL_loadfile(S, lua_tostring(S, -1));
+	lua_remove(S, -2);
+	if (status != 0) {
+		write_log(lua_tostring(S, -1));
+		lua_pop(S, 1);
+		return false;
+	}
+	return call_protected(S, 0, 0);
+}
+
+// the worker state of this thread (made on first use; null if it could not be)
+thread_local lua_State* worker_state = nullptr;
+thread_local bool worker_tried = false;
+
 // Runs the function below the `nargs` arguments on the top of the stack and logs an error; leaves
 // `nresults` results when it succeeds.
 bool call_protected(lua_State* L, int nargs, int nresults) {
@@ -331,6 +429,23 @@ lua_State* stellar_lua_state() {
 	return L;
 }
 
+lua_State* stellar_worker_state() {
+	if (!worker_tried) {
+		worker_tried = true;
+		// after stellar_lua_start has found lua/
+		if (lua_dir[0] == '\0') {
+			return nullptr;
+		}
+		lua_State* S = new_state();
+		if (S != nullptr && !run_script(S, "worker.lua")) {
+			lua_close(S);
+			S = nullptr;
+		}
+		worker_state = S;
+	}
+	return worker_state;
+}
+
 bool stellar_lua_call(lua_State* state, int nargs, int nresults) {
 	return call_protected(state, nargs, nresults);
 }
@@ -354,39 +469,18 @@ void stellar_lua_start() {
 	char* slash = std::strrchr(lua_dir, '\\');
 	std::strcpy(slash != nullptr ? slash + 1 : lua_dir, "lua");
 
-	L = luaL_newstate();
+	L = new_state();
 	if (L == nullptr) {
-		write_log("cannot create the Lua state");
 		return;
 	}
-	luaL_openlibs(L);
-	preload(L, "stellar", luaopen_stellar);
-	preload(L, "fnmatch", luaopen_fnmatch);
-	preload(L, "sigmatch", luaopen_sigmatch);
-
-	// scripts come from lua/, print() writes to the log
-	lua_getglobal(L, "package");
-	lua_pushfstring(L, "%s\\?.lua;%s\\?\\init.lua;", lua_dir, lua_dir);
-	lua_getfield(L, -2, "path");
-	lua_concat(L, 2);
-	lua_setfield(L, -2, "path");
-	lua_pop(L, 1);
-	lua_pushcfunction(L, l_log);
-	lua_setglobal(L, "print");
-
-	CLog& logger = *getLogger();
-	logger << "Lua: " << LUAJIT_VERSION << ", scripts in " << lua_dir;
-	logger.endl();
-
-	lua_pushfstring(L, "%s\\init.lua", lua_dir);
-	const int status = luaL_loadfile(L, lua_tostring(L, -1));
-	lua_remove(L, -2);
-	if (status != 0) {
-		write_log(lua_tostring(L, -1));
-		lua_pop(L, 1);
-		return;
+	{
+		std::lock_guard<std::mutex> log_guard(log_lock());
+		CLog& logger = *getLogger();
+		logger << "Lua: " << LUAJIT_VERSION << ", scripts in " << lua_dir;
+		logger.endl();
 	}
-	call_protected(L, 0);
+	// the main state keeps running whatever init.lua did before an error (its hooks)
+	run_script(L, "init.lua");
 }
 
 void stellar_lua_heartbeat(uint64_t count) {

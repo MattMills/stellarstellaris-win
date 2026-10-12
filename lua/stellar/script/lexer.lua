@@ -617,6 +617,24 @@ function lexer.scan(data, size, pos, last, ungot, line)
     return records, n, table.concat(escaped)
 end
 
+local scan_failures = 0
+
+-- lexer.records(buffer, size, pos, last, unget, line) -> records, escaped | nil: lexer.scan packed
+-- for the lexer hook (src/dll/lexer_hook.cpp calls it as stellar.lexer_tokens in each thread's
+-- worker state, lua/worker.lua): the calls as one string of stellar_lexer_token, and the escaped
+-- strings
+function lexer.records(buffer, size, pos, last, unget, line)
+    local ok, records, n, escaped = pcall(lexer.scan, buffer, size, pos, last, unget, line)
+    if ok then
+        return ffi.string(records, n * lexer.TOKEN_SIZE), escaped
+    end
+    scan_failures = scan_failures + 1
+    if scan_failures <= 5 then
+        require("stellar").log("lexer: the scan failed: " .. tostring(records))
+    end
+    return nil
+end
+
 -- The text CLexer::CLexer gives a CMemoryFile for a file of type LexerFileType_UTF8_BOM (name
 -- lists): without its BOM (the game logs a warning when there is none). Other files keep it.
 function lexer.strip_bom(text)

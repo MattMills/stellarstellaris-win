@@ -27,18 +27,22 @@ if image == nil then
 end
 stellar.log(string.format("%s analysed in %.1fs, %d functions, md5 %s", image:path(), util.now() - t0, #image, image:md5()))
 
+-- setting(file, default) -> the first word of that file next to the DLL, or default
+local function setting(file, default)
+    local f = io.open(util.dirname(stellar.dll_path) .. "\\" .. file, "r")
+    if f == nil then
+        return default
+    end
+    local word = (f:read("*l") or ""):match("^%s*(%w+)")
+    f:close()
+    return word or default
+end
+
 -- first: the game's script lexer (stellar.script.loader), hooked before the game reads its script.
 -- The mode is the first word of lexer.txt next to the DLL: "replace" (the default: the game reads
 -- its script with the Lua lexer), "shadow" (the game's lexer reads, every token is compared with
 -- the Lua lexer's) or "off"
-local lexer_mode = "replace"
-do
-    local f = io.open(util.dirname(stellar.dll_path) .. "\\lexer.txt", "r")
-    if f then
-        lexer_mode = (f:read("*l") or ""):match("^%s*(%a+)") or lexer_mode
-        f:close()
-    end
-end
+local lexer_mode = setting("lexer.txt", "replace")
 local loader = require("stellar.script.loader")
 local lexer_where, lexer_message = loader.locate(image, stellar.read)
 if lexer_mode == "off" then
@@ -74,8 +78,15 @@ local databases = require("stellar.databases")
 local databases_where, databases_message = databases.locate(image, stellar.read)
 local marks = {}
 if databases_where then
+    -- CreateInstance and InitInstance: also how Lua runs the loop (their trampolines and skip flags)
+    -- (a thunk that jumps to the function is followed: the function is marked)
     for _, e in ipairs(databases_where.entries) do
-        marks[#marks + 1] = { address = e.create, kind = "create", name = e.name }
+        e.create_mark = { address = databases.follow(stellar.read, e.create), kind = "create", name = e.name }
+        marks[#marks + 1] = e.create_mark
+    end
+    for _, e in ipairs(databases_where.entries) do
+        e.init_mark = { address = databases.follow(stellar.read, e.init), kind = "init", name = e.name }
+        marks[#marks + 1] = e.init_mark
     end
     for _, e in ipairs(databases_where.entries) do
         marks[#marks + 1] = { address = e.post_read, kind = "post_read", name = e.name }
@@ -92,6 +103,22 @@ end
 local marks_hooked, marks_failed = loading.hook_marks(marks)
 stellar.log(string.format("load: %d marks hooked%s", marks_hooked,
     #marks_failed > 0 and ("; not hooked: " .. table.concat(marks_failed, "; ")) or ""))
+-- The databases' loop in Lua: databases.txt next to the DLL says who runs it, "lua" (the default:
+-- stellar.databases.run, before the game's loop, which then skips what Lua did) or "game"
+local database_mode = setting("databases.txt", "lua")
+if databases_where and database_mode == "lua" then
+    stellar.setup_databases = function(a, done, progress)
+        loading.milestone("NNullObjAndDatabaseInitUtil::SetupDatabases")
+        local t0 = util.now()
+        local n, stopped = databases.run(databases_where, progress, stellar.read)
+        stellar.log(string.format("databases: Lua initialized %d of %d databases in %.1fs%s", n,
+            #databases_where.entries, util.now() - t0, stopped and ("; the game does the rest from " .. stopped) or ""))
+    end
+    local hooked, message = stellar.hook_setup_databases(databases_where.setup)
+    stellar.log("databases: the loop runs in Lua" .. (hooked and "" or (": not hooked: " .. tostring(message))))
+else
+    stellar.log("databases: the loop is the game's (" .. database_mode .. ")")
+end
 -- the read: the files listed, read and parsed
 local reads_hooked, reads_failed = loading.hook_reads(found)
 stellar.log(string.format("load: read hooks: %d of 4%s", reads_hooked,

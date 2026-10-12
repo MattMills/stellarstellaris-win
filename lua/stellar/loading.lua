@@ -107,9 +107,11 @@ local post_read, post_reads = nil, {}          -- the PostReadInitInstance runni
 local milestone                                -- the last milestone
 
 -- The steps of CGameApplication::InitGame that are milestones (stellar.functions), in its order
+-- (NNullObjAndDatabaseInitUtil::SetupDatabases has a hook of its own, stellar.hook_setup_databases;
+-- loading.milestone records it)
 loading.MILESTONES = {
     "CGlobalScriptedVariablesDatabase::InitializeWithDirectory", "CModifier::InitDefinitions",
-    "NNullObjAndDatabaseInitUtil::SetupDatabases", "CModifier::InitDefinitionIcons", "CGameRules::InitInstance",
+    "CModifier::InitDefinitionIcons", "CGameRules::InitInstance",
     "CAchievementsManager::InitFromFile", "CApplication::CalculateGameFilesChecksum", "CStaticModifierDatabase::Init",
     "CTriggerDatabase::PostInit", "CTriggerDatabase::PostValidate", "CEffectDatabase::PostInit",
     "CEffectDatabase::PostValidate", "CEventManager::InitEventConnectivityMaps", "CModifier::LogDefinitions",
@@ -118,7 +120,8 @@ loading.MILESTONES = {
 }
 
 -- loading.hook_marks(list) -> hooked, failures: hooks each { address, kind, name } of list (an
--- address hooked once: the first mark for it)
+-- address hooked once: the first mark for it). A mark hooked gets its id and trampoline (which
+-- runs the function past the hook); a mark for an address already marked gets shared = true.
 function loading.hook_marks(list)
     local addresses, kept, failures, seen = {}, {}, {}, {}
     for _, m in ipairs(list) do
@@ -126,16 +129,21 @@ function loading.hook_marks(list)
             seen[m.address] = true
             kept[#kept + 1] = m
             addresses[#addresses + 1] = m.address
+        elseif m.address then
+            m.shared = true
         end
     end
-    local results = stellar.hook_entries(addresses)
+    local results, base = stellar.hook_entries(addresses)
     local hooked = 0
     for i, r in ipairs(results) do
-        marks[i] = kept[i]
-        if r == true then
+        local m = kept[i]
+        marks[base + i] = m
+        if type(r) == "number" then
+            m.id, m.trampoline = base + i, r
             hooked = hooked + 1
         else
-            failures[#failures + 1] = kept[i].name .. " (" .. kept[i].kind .. "): " .. tostring(r)
+            m.error = tostring(r)
+            failures[#failures + 1] = m.name .. " (" .. m.kind .. "): " .. m.error
         end
     end
     return hooked, failures
@@ -192,6 +200,22 @@ local function write_files()
         f:close()
     end
     return files_path()
+end
+
+-- loading.milestone(name): records entering a milestone that has no mark (a function with a hook
+-- of its own), from the thread that calls it
+local virtual_marks = {}
+function loading.milestone(name)
+    local id = virtual_marks[name]
+    if id == nil then
+        id = 1000000 + #marks + 1
+        for _ in pairs(virtual_marks) do
+            id = id + 1
+        end
+        virtual_marks[name] = id
+        marks[id] = { kind = "milestone", name = name }
+    end
+    stellar.mark(id)
 end
 
 -- the post read running on the thread of e ends at e

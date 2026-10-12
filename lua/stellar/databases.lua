@@ -112,4 +112,89 @@ function databases.locate(image, read)
     return { setup = setup, entries = entries }
 end
 
+-- databases.follow(read, address) -> the function a thunk jumps to (`jmp x` as its first
+-- instruction, followed up to 4 times), or address itself
+function databases.follow(read, address)
+    for _ = 1, 4 do
+        local bytes = address and read(address, 16)
+        local i = bytes and fnmatch.decode(bytes, address)
+        if i == nil or i.flow ~= "branch" or not i.target then
+            break
+        end
+        address = i.target
+    end
+    return address
+end
+
+-- Whether the function at address does nothing (its first instruction returns): calling it again
+-- is harmless, so it needs no hook to be skipped
+local function returns_at_once(read, address)
+    local bytes = address and read(address, 16)
+    local i = bytes and fnmatch.decode(bytes, address)
+    return i ~= nil and i.flow == "return"
+end
+
+-- How Lua calls a function of an entry so that the game's loop will not run it again: through the
+-- trampoline of its mark (the mark's skip flag is set after), or directly if it does nothing.
+-- Returns the address to call and the mark, or nil and why not.
+local function callable(read, address, mark)
+    if mark and mark.trampoline then
+        return mark.trampoline, mark
+    end
+    if returns_at_once(read, address) then
+        return address, nil
+    end
+    return nil, mark and (mark.error or (mark.shared and "shared with another database")) or "not marked"
+end
+
+-- databases.run(where, progress, read) -> initialized, stopped: the loop of SetupDatabases, in
+-- Lua, before the game's: the first database left (in the table's order) whose CanInitialize is
+-- true, or that has none, then its CreateInstance and InitInstance, then progress (the game's
+-- std::function at `progress`). Each entry has its marks (create_mark, init_mark: their
+-- trampolines and skip flags, stellar.loading). The game's loop then skips what Lua did. Lua does
+-- only what it can give back: at a database whose CreateInstance or InitInstance it cannot call
+-- that way, the loop stops (stopped says why), and the game's loop does the rest in its order.
+function databases.run(where, progress, read)
+    local stellar = require("stellar")
+    local left = {}
+    for i = 1, #where.entries do
+        left[i] = i
+    end
+    local total, initialized = #where.entries, 0
+    while #left > 0 do
+        local pick
+        for k, i in ipairs(left) do
+            local e = where.entries[i]
+            if e.can_initialize == nil or stellar.call(e.can_initialize) % 256 ~= 0 then
+                pick = k
+                break
+            end
+        end
+        if pick == nil then
+            return initialized, "no database left can initialize"
+        end
+        local e = where.entries[left[pick]]
+        local create, create_mark = callable(read, e.create, e.create_mark)
+        local init, init_mark = callable(read, e.init, e.init_mark)
+        if create == nil or init == nil then
+            return initialized, string.format("%s: %s", e.name, tostring(create == nil and create_mark or init_mark))
+        end
+        if create_mark then
+            stellar.mark(create_mark.id)
+        end
+        stellar.call(create)
+        stellar.call(init)
+        if create_mark then
+            stellar.set_entry_skip(create_mark.id, true)
+        end
+        if init_mark then
+            stellar.set_entry_skip(init_mark.id, true)
+        end
+        table.remove(left, pick)
+        initialized = initialized + 1
+        stellar.call_progress(progress, initialized, total)
+    end
+    return initialized
+end
+
 return databases

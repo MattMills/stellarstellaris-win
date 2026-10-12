@@ -15,9 +15,11 @@
 #include "dll/loading_hook.h"
 #include "dll/lexer_hook.h"
 #include "dll/code_hook.h"
+#include "dll/lua_runtime.h"
 
 #include <lua.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -148,10 +150,24 @@ void step_hook(void* application, unsigned current, unsigned total, unsigned sta
 // Entry hooks: a stub per function records "enter" with the function's id, then runs the function.
 // The stub saves and restores the argument registers (rcx, rdx, r8, r9, xmm0-3) around the call to
 // record_entry and jumps to the trampoline that install_code_hook writes into its last 8 bytes.
+// Each stub has a skip flag (a byte): while it is set, the function returns 0 at once, without the
+// event (stellar.set_entry_skip; the original still runs through its trampoline).
 void record_entry(uint64_t id) {
 	record("enter", static_cast<int>(id), 0, 0, false, std::string());
 }
 
+// the skip flags of the stubs, by id (1, 2, ... across every hook_entries call)
+std::vector<uint8_t*> entry_flags(1, nullptr);
+
+const uint8_t kStubSkip[] = {
+	0x48, 0xB8,                                // mov rax, imm64 (the skip flag)
+};
+const uint8_t kStubSkipTest[] = {
+	0x80, 0x38, 0x00,                          // cmp byte ptr [rax], 0
+	0x74, 0x03,                                // je +3: not skipped
+	0x31, 0xC0,                                // xor eax, eax
+	0xC3,                                      // ret
+};
 const uint8_t kStubHead[] = {
 	0x48, 0x81, 0xEC, 0x88, 0x00, 0x00, 0x00,  // sub rsp, 0x88 (aligned for the call)
 	0x48, 0x89, 0x4C, 0x24, 0x20,              // mov [rsp+0x20], rcx
@@ -179,11 +195,20 @@ const uint8_t kStubTail[] = {
 	0xFF, 0x25, 0x00, 0x00, 0x00, 0x00,        // jmp [rip+0]: the trampoline, in the next 8 bytes
 };
 const size_t kStubSize = 160;
-static_assert(sizeof(kStubHead) + 8 + sizeof(kStubCall) + 8 + sizeof(kStubTail) + 8 <= kStubSize, "stub size");
+static_assert(sizeof(kStubSkip) + 8 + sizeof(kStubSkipTest) + sizeof(kStubHead) + 8 + sizeof(kStubCall) + 8
+	+ sizeof(kStubTail) + 8 <= kStubSize, "stub size");
 
-// Writes the stub for `id` at `stub`; returns where the trampoline's address goes
-void** write_stub(uint8_t* stub, uint64_t id) {
+// Writes the stub for `id` (with its skip flag) at `stub`; returns where the trampoline's address
+// goes
+void** write_stub(uint8_t* stub, uint64_t id, const uint8_t* flag) {
 	uint8_t* p = stub;
+	std::memcpy(p, kStubSkip, sizeof(kStubSkip));
+	p += sizeof(kStubSkip);
+	const uint64_t flag_address = reinterpret_cast<uint64_t>(flag);
+	std::memcpy(p, &flag_address, 8);
+	p += 8;
+	std::memcpy(p, kStubSkipTest, sizeof(kStubSkipTest));
+	p += sizeof(kStubSkipTest);
 	std::memcpy(p, kStubHead, sizeof(kStubHead));
 	p += sizeof(kStubHead);
 	std::memcpy(p, &id, 8);
@@ -337,17 +362,20 @@ int l_hook_loading(lua_State* L) {
 	return 1;
 }
 
-// stellar.hook_entries(functions) -> results: hooks each function of the list (addresses) so that
-// entering it records the event "enter" with its index in the list; results[i] is true or the
-// reason it could not be hooked
+// stellar.hook_entries(functions) -> results, base: hooks each function of the list (addresses) so
+// that entering it records the event "enter" with the id base + its index in the list;
+// results[i] is the address of its trampoline (which runs the original function, past the hook),
+// or the reason it could not be hooked
 int l_hook_entries(lua_State* L) {
 	luaL_checktype(L, 1, LUA_TTABLE);
 	const int n = static_cast<int>(lua_objlen(L, 1));
-	uint8_t* block = n > 0 ? static_cast<uint8_t*>(VirtualAlloc(nullptr, kStubSize * static_cast<size_t>(n),
+	// the stubs, then their skip flags
+	uint8_t* block = n > 0 ? static_cast<uint8_t*>(VirtualAlloc(nullptr, (kStubSize + 1) * static_cast<size_t>(n),
 		MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)) : nullptr;
 	if (n > 0 && block == nullptr) {
 		return luaL_error(L, "cannot allocate %d entry stubs", n);
 	}
+	const size_t base = entry_flags.size() - 1;
 	lua_createtable(L, n, 0);
 	for (int i = 1; i <= n; ++i) {
 		lua_rawgeti(L, 1, i);
@@ -355,7 +383,10 @@ int l_hook_entries(lua_State* L) {
 		lua_pop(L, 1);
 		void* target = reinterpret_cast<void*>(static_cast<uintptr_t>(value));
 		uint8_t* stub = block + kStubSize * static_cast<size_t>(i - 1);
-		void** original = write_stub(stub, static_cast<uint64_t>(i));
+		uint8_t* flag = block + kStubSize * static_cast<size_t>(n) + static_cast<size_t>(i - 1);
+		*flag = 0;
+		entry_flags.push_back(flag);
+		void** original = write_stub(stub, static_cast<uint64_t>(base + i), flag);
 		FlushInstructionCache(GetCurrentProcess(), stub, kStubSize);
 		const char* error = nullptr;
 		if (!(value > 0)) {
@@ -363,11 +394,82 @@ int l_hook_entries(lua_State* L) {
 		} else if (!install_code_hook(target, stub, original, &error)) {
 			lua_pushstring(L, error);
 		} else {
-			lua_pushboolean(L, 1);
+			lua_pushnumber(L, static_cast<lua_Number>(reinterpret_cast<uintptr_t>(*original)));
 		}
 		lua_rawseti(L, -2, i);
 	}
+	lua_pushnumber(L, static_cast<lua_Number>(base));
+	return 2;
+}
+
+// stellar.set_entry_skip(id, skip): while skip, the function hooked with this id returns 0 at once
+int l_set_entry_skip(lua_State* L) {
+	const lua_Number id = luaL_checknumber(L, 1);
+	if (id >= 1 && id < static_cast<lua_Number>(entry_flags.size())) {
+		*entry_flags[static_cast<size_t>(id)] = lua_toboolean(L, 2) ? 1 : 0;
+	}
+	return 0;
+}
+
+// The databases. NNullObjAndDatabaseInitUtil::SetupDatabases(a, done, progress) initializes them
+// (lua/stellar/databases.lua). The hook lets Lua run the loop first: stellar.setup_databases(a,
+// done, progress) in the main state, which initializes databases itself and sets the skip flags of
+// their CreateInstance and InitInstance; then the game's SetupDatabases runs as always, its loop
+// skipping those, and the rest of it (deferred references, PostReadInitInstance) runs on every
+// database. The skip flags are cleared after.
+using setup_function = void (*)(void* a, void* done, void* progress);
+setup_function original_setup = nullptr;
+
+void setup_hook(void* a, void* done, void* progress) {
+	{
+		std::lock_guard<std::recursive_mutex> guard(stellar_lua_lock());
+		lua_State* L = stellar_lua_state();
+		if (L != nullptr) {
+			const int top = lua_gettop(L);
+			lua_getglobal(L, "package");
+			lua_getfield(L, -1, "loaded");
+			lua_getfield(L, -1, "stellar");
+			if (lua_istable(L, -1)) {
+				lua_getfield(L, -1, "setup_databases");
+				if (lua_isfunction(L, -1)) {
+					lua_pushnumber(L, static_cast<lua_Number>(reinterpret_cast<uintptr_t>(a)));
+					lua_pushnumber(L, static_cast<lua_Number>(reinterpret_cast<uintptr_t>(done)));
+					lua_pushnumber(L, static_cast<lua_Number>(reinterpret_cast<uintptr_t>(progress)));
+					stellar_lua_call(L, 3, 0);
+				}
+			}
+			lua_settop(L, top);
+		}
+	}
+	original_setup(a, done, progress);
+	for (size_t i = 1; i < entry_flags.size(); ++i) {
+		*entry_flags[i] = 0;
+	}
+}
+
+// stellar.hook_setup_databases(address) -> true | nil, message
+int l_hook_setup_databases(lua_State* L) {
+	void* target = reinterpret_cast<void*>(check_address(L, 1));
+	const char* error = nullptr;
+	if (original_setup != nullptr) {
+		lua_pushnil(L);
+		lua_pushliteral(L, "SetupDatabases is hooked already");
+		return 2;
+	}
+	if (!install_code_hook(target, reinterpret_cast<void*>(&setup_hook), reinterpret_cast<void**>(&original_setup), &error)) {
+		lua_pushnil(L);
+		lua_pushstring(L, error);
+		return 2;
+	}
+	lua_pushboolean(L, 1);
 	return 1;
+}
+
+// stellar.mark(id): records "enter" with this id, as entering a hooked function does (for a
+// function that Lua calls through its trampoline)
+int l_mark(lua_State* L) {
+	record_entry(static_cast<uint64_t>(luaL_checknumber(L, 1)));
+	return 0;
 }
 
 // stellar.hook_reads(lexer_ctor, file_dtor, enumerated, pre_enumerate) -> results: hooks the read
@@ -467,6 +569,12 @@ void stellar_loading_open(lua_State* L) {
 	lua_setfield(L, -2, "loading_events");
 	lua_pushcfunction(L, l_hook_entries);
 	lua_setfield(L, -2, "hook_entries");
+	lua_pushcfunction(L, l_set_entry_skip);
+	lua_setfield(L, -2, "set_entry_skip");
+	lua_pushcfunction(L, l_hook_setup_databases);
+	lua_setfield(L, -2, "hook_setup_databases");
+	lua_pushcfunction(L, l_mark);
+	lua_setfield(L, -2, "mark");
 	lua_pushcfunction(L, l_hook_reads);
 	lua_setfield(L, -2, "hook_reads");
 	lua_pushcfunction(L, l_read_counts);

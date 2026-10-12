@@ -87,34 +87,16 @@ loader.layout = {
     memory_get_size = 16,      -- the vtable slot of CMemoryFile::GetSize
 }
 
-local failures = 0
-
--- the GetTok calls (lexer.scan) packed for the hook (LuaToken in src/dll/lexer_hook.cpp)
-local function tokens(buffer, size, pos, last, unget, line)
-    local records, n, escaped = lexer.scan(buffer, size, pos, last, unget, line)
-    return ffi.string(records, n * lexer.TOKEN_SIZE), escaped
-end
-
 -- loader.tokens(buffer, size, pos, last, unget, line) -> records, escaped | nil: the GetTok calls on
--- the text at buffer from that state of the file, for the hook (stellar.lexer_tokens): a token's
--- text is at its offset in the buffer, or (a negative offset) in escaped
-function loader.tokens(buffer, size, pos, last, unget, line)
-    local ok, records, escaped = pcall(tokens, buffer, size, pos, last, unget, line)
-    if ok then
-        return records, escaped
-    end
-    failures = failures + 1
-    if failures <= 5 then
-        require("stellar").log("loader: the tokens failed: " .. tostring(records))
-    end
-    return nil
-end
+-- the text at buffer from that state of the file (lexer.records): a token's text is at its offset
+-- in the buffer, or (a negative offset) in escaped. The hook calls it in each thread's worker state
+-- (lua/worker.lua) as stellar.lexer_tokens.
+loader.tokens = lexer.records
 
 -- loader.hook(where, mode) -> true | nil, message: CTextLexer::GetTok hooked; mode "shadow" (the
 -- game reads, Lua's tokens are compared with its) or "replace" (the game gets Lua's tokens)
 function loader.hook(where, mode)
     local stellar = require("stellar")
-    stellar.lexer_tokens = loader.tokens
     local layout = {}
     for k, v in pairs(loader.layout) do
         layout[k] = v

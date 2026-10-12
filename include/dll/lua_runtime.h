@@ -16,8 +16,12 @@ std::recursive_mutex& stellar_lua_lock();
 
 struct lua_State;
 
-// The Lua state, or null before stellar_lua_start (hold stellar_lua_lock to use it).
+// The main Lua state, or null before stellar_lua_start (hold stellar_lua_lock to use it).
 lua_State* stellar_lua_state();
+
+// The calling thread's own Lua state, made on first use by running lua/worker.lua (no lock: only
+// this thread uses it); null before stellar_lua_start, or if it could not be made.
+lua_State* stellar_worker_state();
 
 // Calls the function below the `nargs` arguments on the top of the stack; an error is logged with
 // its traceback and leaves nothing. Leaves `nresults` results when it succeeds.

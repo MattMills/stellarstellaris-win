@@ -2,8 +2,8 @@
 //
 // The target changes in one atomic 8-byte store: its first 5 bytes become a jmp to a relay next to
 // it, which jumps to the replacement. The instructions the jmp covers move to a trampoline (those
-// relative to RIP with their displacement rewritten), followed by a jump back to the rest of the
-// target; the other threads keep running.
+// relative to RIP with their displacement rewritten, a near call made absolute), followed by a
+// jump back to the rest of the target; the other threads keep running.
 //
 // A thread that is between two of the moved instructions when the jmp lands would resume in the
 // middle of the jmp, so the moved instructions should be one instruction of 5 bytes or more (a
@@ -20,42 +20,45 @@
 
 namespace {
 
-// An instruction moved to the trampoline whose memory operand is relative to RIP: its 32-bit
-// displacement is rewritten for the new place
+// An instruction moved to the trampoline
 struct Relocation {
-	size_t offset;    // of the instruction in the moved bytes
+	size_t offset;      // of the instruction in the moved bytes
 	uint32_t length;
-	uint64_t target;  // the address its operand refers to
+	uint64_t target;    // the address its operand refers to, or its call's target
+	bool rip_relative;  // its 32-bit displacement is rewritten for the new place
+	bool call;          // a near call: made absolute
 };
 
-// How many bytes of whole instructions at the start of `code` (at `address`) cover 5 bytes, or 0.
-// Instructions that transfer control cannot run from the trampoline; those relative to RIP can,
-// once relocated (`relocations`, at most 4).
-size_t bytes_to_move(const uint8_t* code, size_t size, uint64_t address, Relocation* relocations, size_t* count,
+const size_t kMaxMoved = 6;
+
+// How many bytes of whole instructions at the start of `code` (at `address`) cover 5 bytes, or 0;
+// the instructions in `moved` (at most kMaxMoved). Those relative to RIP and near calls can run
+// from the trampoline once relocated; other transfers of control cannot.
+size_t bytes_to_move(const uint8_t* code, size_t size, uint64_t address, Relocation* moved, size_t* count,
 	const char** error) {
-	size_t moved = 0;
+	size_t bytes = 0;
 	*count = 0;
-	while (moved < 5) {
+	while (bytes < 5) {
 		fnme_instruction instruction{};
-		const uint32_t length = fnme_decode(code + moved, size - moved, address + moved, &instruction, nullptr, 0);
+		const uint32_t length = fnme_decode(code + bytes, size - bytes, address + bytes, &instruction, nullptr, 0);
 		if (length == 0) {
 			*error = "cannot decode the first instructions of the target";
 			return 0;
 		}
-		if (instruction.flow != FNME_FLOW_NEXT) {
+		const bool call = instruction.flow == FNME_FLOW_CALL && instruction.target != 0;
+		const bool indirect_call = instruction.flow == FNME_FLOW_INDIRECT_CALL;
+		if (instruction.flow != FNME_FLOW_NEXT && !call && !indirect_call) {
 			*error = "the first instructions of the target transfer control";
 			return 0;
 		}
-		if (instruction.rip_relative) {
-			if (*count >= 4) {
-				*error = "too many instructions relative to RIP at the start of the target";
-				return 0;
-			}
-			relocations[(*count)++] = Relocation{moved, length, instruction.target};
+		if (*count >= kMaxMoved) {
+			*error = "too many instructions at the start of the target";
+			return 0;
 		}
-		moved += length;
+		moved[(*count)++] = Relocation{bytes, length, instruction.target, instruction.rip_relative != 0, call};
+		bytes += length;
 	}
-	return moved;
+	return bytes;
 }
 
 // Rewrites the displacement of a relocated instruction now at `at` (its bytes as they were at
@@ -116,10 +119,10 @@ bool install_code_hook(void* target_pointer, void* replacement, void** original,
 		*error = "the target starts with a jmp (hooked already?)";
 		return false;
 	}
-	Relocation relocations[4];
-	size_t relocation_count = 0;
-	const size_t moved = bytes_to_move(code, sizeof(code), reinterpret_cast<uint64_t>(target), relocations,
-		&relocation_count, error);
+	Relocation instructions[kMaxMoved];
+	size_t instruction_count = 0;
+	const size_t moved = bytes_to_move(code, sizeof(code), reinterpret_cast<uint64_t>(target), instructions,
+		&instruction_count, error);
 	if (moved == 0) {
 		return false;
 	}
@@ -146,15 +149,25 @@ bool install_code_hook(void* target_pointer, void* replacement, void** original,
 	}
 	write_absolute_jump(page, replacement);
 	uint8_t* trampoline = page + 16;
-	std::memcpy(trampoline, code, moved);
-	for (size_t i = 0; i < relocation_count; ++i) {
-		const Relocation& r = relocations[i];
-		if (!relocate(trampoline + r.offset, reinterpret_cast<uint64_t>(target) + r.offset, r, error)) {
+	uint8_t* p = trampoline;
+	for (size_t i = 0; i < instruction_count; ++i) {
+		const Relocation& r = instructions[i];
+		if (r.call) {
+			// call [rip+2]; jmp +8; the target: the call returns into the trampoline
+			const uint8_t call[] = {0xFF, 0x15, 0x02, 0x00, 0x00, 0x00, 0xEB, 0x08};
+			std::memcpy(p, call, sizeof(call));
+			std::memcpy(p + sizeof(call), &r.target, 8);
+			p += sizeof(call) + 8;
+			continue;
+		}
+		std::memcpy(p, code + r.offset, r.length);
+		if (r.rip_relative && !relocate(p, reinterpret_cast<uint64_t>(target) + r.offset, r, error)) {
 			VirtualFree(page, 0, MEM_RELEASE);
 			return false;
 		}
+		p += r.length;
 	}
-	write_absolute_jump(trampoline + moved, target + moved);
+	write_absolute_jump(p, target + moved);
 	DWORD protect = 0;
 	VirtualProtect(page, 4096, PAGE_EXECUTE_READ, &protect);
 	FlushInstructionCache(GetCurrentProcess(), page, 4096);
