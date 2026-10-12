@@ -93,7 +93,7 @@ its `msvcbuild.bat`).
 
  This will load the DLL into the currently running game, it must be run every time the game is restarted to use it.
 
- NOTE: There is not currently any protection against loading the patch into game memory more than once at a time; this may cause weirdness.
+ It loads once per game: if the DLL is already in the game, the loader says so and does nothing (restart Stellaris to load a new build).
 
 ## Compatibility:
 

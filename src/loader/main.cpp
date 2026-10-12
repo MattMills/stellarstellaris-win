@@ -70,6 +70,17 @@ int main() {
     }
     std::cout << "Base module: " << hModule << std::endl;
 
+    // once per game: a second injection would start a second copy of everything (restart the game
+    // to load a new build)
+    if (FindModuleBaseAddress(hProcess, PAYLOAD_DLL_NAME) != NULL) {
+        std::cout << PAYLOAD_DLL_NAME << " is already loaded in this game, nothing to do. Restart Stellaris to load it again." << std::endl;
+        std::cout << "Press any key to close this window." << std::endl;
+        while (!_kbhit()) {
+            Sleep(10);
+        }
+        return 1;
+    }
+
     char fullPath[1024];
     GetPathToPayloadDLL(fullPath);
     InjectPayload(hProcess, fullPath);

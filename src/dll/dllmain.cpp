@@ -8,6 +8,7 @@
 #include "util/logging.h"
 #include "git_version.h"
 
+#include <atomic>
 #include <thread>
 
 HANDLE hProcess;
@@ -40,8 +41,18 @@ void init_thread() {
 
 } // namespace
 
+// Once per process: a second loader run must not start a second init thread (two heartbeats, and
+// Lua hooks installed twice).
 extern "C" __declspec(dllexport) DWORD WINAPI stellar_start(void* parameter) {
 	(void)parameter;
+	static std::atomic<bool> started{false};
+	if (started.exchange(true)) {
+		std::lock_guard<std::recursive_mutex> guard(stellar_lua_lock());
+		CLog& logger = *getLogger();
+		logger << "stellar_start: already started in this process, ignored";
+		logger.endl();
+		return 1;
+	}
 	std::thread(init_thread).detach();
 	return 0;
 }
