@@ -81,6 +81,56 @@ script: census in 2.80s
 
 `catalog.identify(c, object)` names any compiled trigger or effect object by its vtable.
 
+## Shadow: our reading next to the game's (`stellar.script.shadow`)
+
+The first step toward Lua building the script itself: Lua reads the script files
+(`stellar.script.source`: the files of a directory in load order, parsed with `pdxscript`, with
+`inline_script` expanded as the game does: the script's text with `$PARAM$` / `$PARAM|default$`
+substituted, parsed, its `[[PARAM] ]` blocks resolved), and `stellar.script.native` reads back
+what the game compiled from them. The two are compared node by node: every native child must be
+made, in order, by a statement of the same block (the same trigger or effect class, scope chain or
+scripted name), with the same children; statements that make no node are counted by key, so that
+the members of a trigger or effect (`limit`, `count`, `text` in `custom_tooltip`) are visible,
+and a real keyword without a node shows up.
+
+What the native side reads:
+
+| | |
+|---|---|
+| children | `CTriggerCollectionBase::_Children` (`+0x78`) for collections (recognized by the vtable of that `CPdxArray<CTrigger *>`), the `CPdxArray<CEffect *>` every `CEffect` is (`+0x8`) |
+| scope changes | `CContextTrigger` / `CContextEffect::_pTarget` (`+0xc8`), a `CEventTarget` chain: per link the token (`_Token` at `+0x68`), a dynamic name (`_DynamicFlag`), `_IsNullable` (the `?`), `_pNext`. Saved event targets (`event_target:x`, `event_target:x@root.owner`) have no token: their text is the game's `_TokenString`, which is the chain as written followed by the next links again |
+| scripted calls | tag, arguments and the instantiated body (`CScriptedTrigger` `+0x98` / `+0x80` / `+0xd0`, `CScriptedEffect` `+0xe0` / `+0xc8` / `+0x118`) |
+| if / else_if / else | `CIfTrigger::_pElse` (`+0x180`) and `CIfEffect::_pElse` (`+0x240`): the next else_if or else, another if object. `CIfEffect::_Else` (`+0x180`, an embedded `CEffect`) holds the old form, an `else` inside the if's own block. `CIfTrigger::_DisplayTrigger` (`+0xc0`) is the limit |
+| source | `_FileLocationDesc` (`CTrigger +0x40`, `CEffect +0x28`): where the object was read, with the call chain for scripted and inline script content |
+
+In Steam 4.5.2 (vanilla), comparing each scripted trigger and effect the game instantiated without
+arguments with its definition:
+
+| | definitions | compared | identical | nodes | mismatches | keywords without a node |
+|---|---|---|---|---|---|---|
+| scripted triggers | 1,684 | 1,423 | 1,423 | 9,167 | 0 | `text`, `fail_text` in `custom_tooltip` (members) |
+| scripted effects | 1,687 | 1,249 | 1,248 | 16,742 | 1 | none |
+
+The one difference: in `country_defaulted_effect`, an `else = { log = ... }` after an `if` inside
+`hidden_effect` is not in the game's chain (and the next effect's source line is that of the
+`else`); not explained yet. The definitions not compared are only instantiated with arguments.
+
+For developing this, `stellar.dev` runs `dev\run.lua` next to the DLL in the running game (when
+`dev\enabled` exists): no restart to try a change.
+
+Next, to call the reading validated:
+
+- **Everything the game compiled, not only scripted definitions.** Every compiled object knows its
+  source file and line: the roots of the census (objects that are no other object's child) can be
+  matched to the statement at that place in our parse, whatever database they belong to (events,
+  buildings, jobs, decisions, ...), and compared the same way.
+- **Parameters.** Instantiations with arguments (`$PARAM$` in scripted triggers and effects).
+- **Mods.** The game's file overlay (load order, replaced files and paths) has to be reproduced,
+  and the comparison run on modded games.
+
+Then Lua takes over building the script: the same trees, constructed in parallel from the Lua
+reading instead of by the game's single-threaded reader.
+
 ## Toward a Lua script layer
 
 The aim: do the script work in Lua, and keep the C++ engine for what only it can do.

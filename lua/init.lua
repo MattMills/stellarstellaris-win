@@ -129,11 +129,15 @@ local function read_catalog(waited)
 
     -- the script the game has compiled: every trigger and effect object, named by its vtable
     local t2 = util.now()
-    local census, census_message = catalog.census(c, script_where, stellar.read)
+    local census, census_message = catalog.census(c, script_where, stellar.read,
+        { ["(scripted trigger)"] = true, ["(scripted effect)"] = true })
     if census == nil then
         stellar.log("script: census failed: " .. tostring(census_message))
         return true
     end
+    -- for dev\run.lua (stellar.dev)
+    local state = require("stellar.dev").state
+    state.catalog, state.census, state.docs = c, census, documented and d or nil
     for _, kind in ipairs({ "triggers", "effects" }) do
         local s = census[kind]
         local names, unknown = {}, {}
@@ -157,6 +161,39 @@ local function read_catalog(waited)
             table.concat(top, ", "), table.concat(other, ", ")))
     end
     stellar.log(string.format("script: census in %.2fs", util.now() - t2))
+
+    -- shadow: the scripted triggers and effects read from the files in Lua, next to what the game
+    -- compiled from them
+    local shadow = require("stellar.script.shadow")
+    for _, s in ipairs({
+        { what = "scripted triggers", run = shadow.scripted_triggers, calls = census.triggers.objects["(scripted trigger)"] },
+        { what = "scripted effects", run = shadow.scripted_effects, calls = census.effects.objects["(scripted effect)"] },
+    }) do
+        local t3 = util.now()
+        local done, result = pcall(s.run, { catalog = c, read = stellar.read,
+            game_dir = util.dirname(stellar.module_path), calls = s.calls or {} })
+        if not done then
+            stellar.log("script: shadow of " .. s.what .. " failed: " .. tostring(result))
+        else
+            stellar.log(string.format("script: shadow of %s: %d definitions (%d parse errors), %d compared, %d identical, %d without a call without arguments (%d calls with arguments); %d nodes match (%d with a ? on another link of the chain), %d mismatches; in %.2fs; native location format: %s",
+                s.what, result.definitions, #result.parse_errors, result.compared, result.identical, result.not_instantiated,
+                result.calls_with_args, result.matched, result.nullable_differences, result.mismatches, util.now() - t3,
+                tostring(result.sample_location)))
+            local skipped = {}
+            for k, n in pairs(result.skipped) do
+                skipped[#skipped + 1] = { k, n }
+            end
+            table.sort(skipped, function(a, b) return a[2] > b[2] end)
+            for i = 1, math.min(#skipped, 25) do
+                skipped[i] = skipped[i][1] .. " " .. skipped[i][2]
+            end
+            stellar.log("script: " .. s.what .. ", statements that made no node (members of their parent): "
+                .. table.concat(skipped, ", ", 1, math.min(#skipped, 25)))
+            for _, example in ipairs(result.examples) do
+                stellar.log("script:   " .. example)
+            end
+        end
+    end
     return true
 end
 
@@ -167,12 +204,15 @@ if not ok then
 end
 image:close()
 
--- the heartbeat reaches Lua: log the first one; read the catalog when the game has loaded
+-- the heartbeat reaches Lua: log the first one; read the catalog when the game has loaded; run
+-- dev\run.lua when there is one (stellar.dev, development only)
+local dev = require("stellar.dev")
+dev.state.where = script_where
 local heartbeats, catalog_done = 0, script_where == nil
 stellar.heartbeat = function(frame)
     heartbeats = heartbeats + 1
     if heartbeats == 1 then
-        stellar.log("heartbeat from Lua, frame " .. tostring(frame))
+        stellar.log("heartbeat from Lua, frame " .. tostring(frame) .. (dev.enabled and ", dev enabled" or ""))
     end
     if not catalog_done then
         local done, result = pcall(read_catalog, heartbeats)
@@ -182,6 +222,9 @@ stellar.heartbeat = function(frame)
         catalog_done = not done or result
     end
     if catalog_done then
-        stellar.heartbeat = nil
+        dev.poll()
+        if not dev.enabled then
+            stellar.heartbeat = nil
+        end
     end
 end

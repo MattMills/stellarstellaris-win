@@ -25,6 +25,7 @@
 local fnmatch = require("fnmatch")
 local ffi = require("ffi")
 local signatures = require("stellar.signatures")
+local memory = require("stellar.script.memory")
 
 local catalog = {}
 
@@ -79,54 +80,13 @@ local function alternatives(name)
     return list
 end
 
--- Little-endian values in a string of bytes (offsets from 0)
-local function u8(s, o)
-    return s:byte(o + 1)
-end
+-- Little-endian values in a string of bytes (offsets from 0), checked reads
+local u8, i32, u32, u64 = memory.u8, memory.i32, memory.u32, memory.u64
+local strict = memory.strict
 
-local function i32(s, o)
-    local b1, b2, b3, b4 = s:byte(o + 1, o + 4)
-    local v = b1 + b2 * 0x100 + b3 * 0x10000 + b4 * 0x1000000
-    return v >= 0x80000000 and v - 0x100000000 or v
-end
-
-local function u32(s, o)
-    local v = i32(s, o)
-    return v < 0 and v + 0x100000000 or v
-end
-
-local function u64(s, o)
-    -- addresses are below 2^53
-    return u32(s, o) + u32(s, o + 4) * 0x100000000
-end
-
--- A reader that raises errors, from one that returns nil, message.
-local function strict(read)
-    return function(address, size)
-        local bytes, message = read(address, size)
-        if bytes == nil then
-            error(message or string.format("cannot read %d bytes at 0x%x", size, address), 0)
-        end
-        return bytes
-    end
-end
-
--- A NUL-terminated string, read up to page boundaries (the page after it may not be mapped).
+-- A NUL-terminated string (an error if it cannot be read)
 local function cstring(read, address, max)
-    max = max or 256
-    local parts, length = {}, 0
-    while length < max do
-        local n = math.min(max - length, 4096 - (address + length) % 4096)
-        local s = read(address + length, n)
-        local nul = s:find("\0", 1, true)
-        if nul then
-            parts[#parts + 1] = s:sub(1, nul - 1)
-            break
-        end
-        parts[#parts + 1] = s
-        length = length + n
-    end
-    return table.concat(parts)
+    return memory.cstring(memory.strict(read), address, max)
 end
 
 -- catalog.locate(image, read) -> where | nil, message
@@ -293,17 +253,21 @@ local function read_tokens(r, lexer)
     return tokens, count, { lookup = lookup_size, dynamic = dynamic_size, base = base, stale = stale }
 end
 
--- The registers a `mov reg, source` copies source into in code[from, to) (REX.W 8b /r with
--- rm = source, or 89 /r with reg = source; register-to-register only).
+-- The callee-saved registers (rbx, rbp, rsi, rdi, r12 to r15): only these keep the object across
+-- the rest of the function; a volatile copy (rcx for a call) is soon reused for something else.
+local CALLEE_SAVED = { [3] = true, [5] = true, [6] = true, [7] = true, [12] = true, [13] = true, [14] = true, [15] = true }
+
+-- The callee-saved registers a `mov reg, source` copies source into in code[from, to) (REX.W 8b /r
+-- with rm = source, or 89 /r with reg = source; register-to-register only).
 local function copies(code, from, to, source, into)
     for o = from, math.min(to, #code - 3) do
         local rex, op, modrm = u8(code, o), u8(code, o + 1), u8(code, o + 2)
         if rex >= 0x48 and rex <= 0x4f and modrm >= 0xc0 then
             local r_field = math.floor(modrm / 8) % 8 + (rex >= 0x4c and 8 or 0)
             local m_field = modrm % 8 + (rex % 2 == 1 and 8 or 0)
-            if op == 0x8b and m_field == source then
+            if op == 0x8b and m_field == source and CALLEE_SAVED[r_field] then
                 into[r_field] = true
-            elseif op == 0x89 and r_field == source then
+            elseif op == 0x89 and r_field == source and CALLEE_SAVED[m_field] then
                 into[m_field] = true
             end
         end
@@ -313,9 +277,10 @@ end
 -- Scans a function up to its first epilogue (`pop reg; ret` or `add rsp, n; ret`, at most 1024
 -- bytes): the size of the first `mov ecx, size; call` (operator new), the targets of the calls
 -- (byte-level, so possibly a few false ones), and the vtable of the last
--- `lea reg, [rip+vtable]; mov [obj], reg` where obj holds the object: in a Create, the register rax
--- (the result of operator new) is copied into right after the call, in a constructor rcx (this)
--- and the register it is copied into in the prologue. Stores into members do not count.
+-- `lea reg, [rip+vtable]; mov [obj], reg` where obj holds the object: in a Create, the callee-saved
+-- register rax (the result of operator new) is copied into right after the call (rax itself when
+-- there is none), in a constructor the one rcx (this) is copied into in the prologue (rcx itself
+-- when there is none). Stores into members do not count.
 local function scan(read, address, this)
     local code = read(address, 1024) or read(address, 4096 - address % 4096)
     if code == nil then
@@ -324,8 +289,10 @@ local function scan(read, address, this)
     local s = { calls = {} }
     local obj = {}
     if this then
-        obj[1] = true
         copies(code, 0, 48, 1, obj)
+        if next(obj) == nil then
+            obj[1] = true
+        end
     end
     for o = 0, #code - 10 do
         local b = u8(code, o)
@@ -456,12 +423,13 @@ function catalog.identify(c, object)
     end
 end
 
--- catalog.census(c, where, read) -> census | nil, message: every trigger and effect object the game
--- has compiled from its script (CTriggerDatabase::_Triggers, a CPdxUnorderedSet at +0x8, and
--- CEffectDatabase::_Effects, a CPdxArray at +0x0), named by their vtables.
+-- catalog.census(c, where, read [, keep]) -> census | nil, message: every trigger and effect object
+-- the game has compiled from its script (CTriggerDatabase::_Triggers, a CPdxUnorderedSet at +0x8,
+-- and CEffectDatabase::_Effects, a CPdxArray at +0x0), named by their vtables.
 --   census.triggers, census.effects = { total, identified, by_name = { name -> count },
---                                       unknown = { vtable -> count } }
-function catalog.census(c, where, read)
+--                                       unknown = { vtable -> count }, objects = { name -> list } }
+-- objects has the addresses of the objects whose name is in keep ({ name -> true }).
+function catalog.census(c, where, read, keep)
     local ok, result = pcall(function()
         local r = strict(read)
         -- vtable -> structural kind (or false), from the methods in its first slots
@@ -492,7 +460,7 @@ function catalog.census(c, where, read)
             return kind
         end
         local function count(objects)
-            local s = { total = #objects, identified = 0, by_name = {}, unknown = {} }
+            local s = { total = #objects, identified = 0, by_name = {}, unknown = {}, objects = {} }
             for _, object in ipairs(objects) do
                 local bytes = read(object, 8)
                 local vtable = bytes and u64(bytes, 0)
@@ -502,6 +470,11 @@ function catalog.census(c, where, read)
                     s.identified = s.identified + 1
                     local name = e and e.name or kind
                     s.by_name[name] = (s.by_name[name] or 0) + 1
+                    if keep and keep[name] then
+                        local list = s.objects[name] or {}
+                        s.objects[name] = list
+                        list[#list + 1] = object
+                    end
                 elseif vtable then
                     s.unknown[vtable] = (s.unknown[vtable] or 0) + 1
                 end

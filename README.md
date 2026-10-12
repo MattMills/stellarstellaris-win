@@ -64,6 +64,11 @@ end)
 | `lua/stellar/game.lua` | the turn tick hook, the game state and the date |
 | `lua/stellar/script/catalog.lua` | the script engine read from the game: every token, trigger and effect (with the vtable of its objects), and a census of the compiled script ([docs/script_engine.md](docs/script_engine.md)); written to `cache/script_catalog-<md5>.tsv` |
 | `lua/stellar/script/docs.lua` | the game's own documentation of triggers, effects, scope links and modifiers |
+| `lua/stellar/script/source.lua` | the game's script files read in Lua (load order, `inline_script` expanded) |
+| `lua/stellar/script/native.lua` | the game's compiled triggers and effects read back as Lua trees |
+| `lua/stellar/script/shadow.lua` | the two compared node by node (scripted triggers and effects: identical but for one `else`) |
+| `lua/stellar/script/memory.lua` | checked reads of the game's structures (strings, arrays) |
+| `lua/stellar/dev.lua` | runs `dev\run.lua` in the running game when `dev\enabled` exists next to the DLL (development) |
 | `lib/stellar-lua-pdxscript` | [stellar-lua-pdxscript](https://github.com/MattMills/stellar-lua-pdxscript): `require("pdxscript")`, Paradox script text -> a tree (every vanilla 4.5.2 script file, 0 errors); the build copies `pdxscript.lua` into `lua/` |
 | `lua/stellar/targets.lua` | the functions the C++ patches target, with their C++ byte patterns |
 | `lua/stellar/functions.lua` | the functions the Lua side uses itself (the hook point, and the functions that name the globals) |
