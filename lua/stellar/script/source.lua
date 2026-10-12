@@ -479,6 +479,24 @@ function source.expand(fs, block, errors, depth, where, line_base)
     return out
 end
 
+-- The text with the markers of its parameter blocks blanked (their content kept, lines unchanged):
+-- a template may interleave them with braces (`[[P] x = { ]`, Gigastructures), which only reads as
+-- script once the blocks are resolved; with the markers blanked, its definitions can be found.
+local function blank_markers(text)
+    local t = source.template(text)
+    local out, i = {}, 1
+    for _, b in ipairs(t.blocks) do
+        local header = b.last - #b.content - 1
+        out[#out + 1] = t.text:sub(i, b.first - 1)
+        out[#out + 1] = string.rep(" ", header - b.first + 1)
+        out[#out + 1] = b.content
+        out[#out + 1] = " "
+        i = b.last + 1
+    end
+    out[#out + 1] = t.text:sub(i)
+    return table.concat(out)
+end
+
 -- source.definitions(fs, subdir) -> definitions, errors: the top-level `name = { ... }`
 -- statements of the subdir's .txt files.
 -- A definition also has `last`, the line before the next top-level entry of its file (or the last
@@ -489,6 +507,11 @@ function source.definitions(fs, subdir)
     for _, short in ipairs(fs:files(subdir, "txt")) do
         local path = fs:path(short)
         local tree, message = source.parse(fs, short)
+        if tree == nil and path then
+            -- parameter blocks interleaved with braces: find the definitions with them blanked
+            local text = read_file(path)
+            tree = text and pdxscript.parse(blank_markers(text), short)
+        end
         if tree == nil then
             errors[#errors + 1] = message
         else

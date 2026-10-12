@@ -62,18 +62,23 @@ if script_where == nil then
 end
 local catalog_path = util.dirname(stellar.dll_path) .. "\\cache\\script_catalog-" .. image:md5() .. ".tsv"
 
+-- how long (heartbeats, seconds) to wait for the game to load before reading what there is: the
+-- game writes its script documentation once its databases are loaded, which takes minutes with
+-- large mods
+local WAIT_FOR_LOAD = 600
+
 local function read_catalog(waited)
     local d = docs.read()
     local documented = d ~= nil and #d.triggers_order > 0 and #d.effects_order > 0
     local c, message = catalog.read(script_where, stellar.read)
     if c == nil then
-        if waited < 120 then
+        if waited < WAIT_FOR_LOAD then
             return false
         end
         stellar.log("script: cannot read the catalog: " .. tostring(message))
         return true
     end
-    if (c.lexer.stale or not documented) and waited < 120 then
+    if (c.lexer.stale or not documented) and waited < WAIT_FOR_LOAD then
         return false
     end
     local vtables = 0
