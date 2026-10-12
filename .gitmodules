@@ -7,3 +7,6 @@
 [submodule "lib/stellar-lua-pdxscript"]
 	path = lib/stellar-lua-pdxscript
 	url = https://github.com/MattMills/stellar-lua-pdxscript.git
+[submodule "lib/lua_sigmatch"]
+	path = lib/lua_sigmatch
+	url = https://github.com/MattMills/lua_sigmatch.git

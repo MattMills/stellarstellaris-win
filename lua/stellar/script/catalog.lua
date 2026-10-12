@@ -24,6 +24,7 @@
 
 local ffi = require("ffi")
 local resolve = require("stellar.resolve")
+local code = require("stellar.code")
 local memory = require("stellar.script.memory")
 
 local catalog = {}
@@ -95,69 +96,60 @@ function catalog.locate(image, read)
     for i, s in ipairs(STRUCTURAL) do
         structural[i] = { found = found[s.method] ~= nil, address = found[s.method] }
     end
-    local ok, result = pcall(function()
-        local r = strict(read)
-        local function code(key)
-            local f = image:function_at(entries[key].address)
-            return f.address, r(f.address, f.end_address - f.address)
-        end
-        local where = {}
-
-        -- AccessStaticLexer returns the address of its static instance: lea rax, [rip+x]
-        local at, bytes = code("lexer")
-        for o = 0, #bytes - 7 do
-            if u8(bytes, o) == 0x48 and u8(bytes, o + 1) == 0x8d and u8(bytes, o + 2) == 0x05 then
-                local lexer = at + o + 7 + i32(bytes, o + 3)
-                if where.lexer and where.lexer ~= lexer then
-                    error("CStaticLexer::AccessStaticLexer: two different instances", 0)
-                end
-                where.lexer = lexer
-            end
-        end
-        if not where.lexer then
-            error("CStaticLexer::AccessStaticLexer: no lea rax, [rip+x]", 0)
-        end
-
-        -- The registry helper creates the databases when they do not exist yet:
-        --   mov reg, [rip+_pEffectDatabase]; test reg, reg; jne; lea ecx, [reg+112]; call operator new
-        --   mov reg, [rip+_pTriggerDatabase]; test reg, reg; jne; call CTriggerDatabase::CreateInstance
-        at, bytes = code("registry")
-        for o = 0, #bytes - 16 do
-            local rex, op, modrm = u8(bytes, o), u8(bytes, o + 1), u8(bytes, o + 2)
-            if (rex == 0x48 or rex == 0x4c) and op == 0x8b and modrm < 0x40 and modrm % 8 == 5
-                and (u8(bytes, o + 7) == 0x48 or u8(bytes, o + 7) == 0x4d) and u8(bytes, o + 8) == 0x85
-                and u8(bytes, o + 10) == 0x75 then
-                local global = at + o + 7 + i32(bytes, o + 3)
-                local key
-                if u8(bytes, o + 12) == 0x8d and u8(bytes, o + 14) == 112 then
-                    key = "effect_database"
-                elseif u8(bytes, o + 12) == 0xe8 then
-                    key = "trigger_database"
-                end
-                if key then
-                    if where[key] and where[key] ~= global then
-                        error("the registry helper names two different " .. key .. "s", 0)
-                    end
-                    where[key] = global
-                end
-            end
-        end
-        if not where.effect_database or not where.trigger_database then
-            error("the registry helper does not name both databases", 0)
-        end
-
-        where.methods = {}
-        for i, s in ipairs(STRUCTURAL) do
-            if structural[i].found then
-                where.methods[structural[i].address] = s.kind
-            end
-        end
-        return where
-    end)
-    if not ok then
-        return nil, result
+    -- AccessStaticLexer returns the address of its static instance (lea rax, [rip+x]). The registry
+    -- helper creates the databases when they do not exist yet:
+    --   mov reg, [rip+_pEffectDatabase]; test reg, reg; jne; lea ecx, [reg+112]; call operator new
+    --   mov reg, [rip+_pTriggerDatabase]; test reg, reg; jne; call CTriggerDatabase::CreateInstance
+    local patterns = code.bundle(read, image)
+    local lexer = patterns:register({ name = "lea rax, [rip+x] in CStaticLexer::AccessStaticLexer",
+        in_function = entries.lexer.address, signature = "48 8d 05 ?? ?? ?? ??", count = false })
+    local loads = patterns:register({ name = "mov reg, [rip+x]; test; jne in the registry helper",
+        in_function = entries.registry.address, signature = "[01001.00] 8b [00...101] ?? ?? ?? ?? ?? 85 ?? 75",
+        count = false })
+    local report = patterns:run()
+    if not report.ok then
+        return nil, "sigmatch: " .. tostring(report.error)
     end
-    return result
+    local where = {}
+    for _, at in ipairs(lexer.matches or {}) do
+        local instance = code.relative(read, at + 3, at + 7)
+        if where.lexer and where.lexer ~= instance then
+            return nil, "CStaticLexer::AccessStaticLexer: two different instances"
+        end
+        where.lexer = instance
+    end
+    if not where.lexer then
+        return nil, "CStaticLexer::AccessStaticLexer: no lea rax, [rip+x]"
+    end
+    for _, at in ipairs(loads.matches or {}) do
+        local rex = code.byte(read, at + 7)
+        if rex == 0x48 or rex == 0x4d then
+            local global = code.relative(read, at + 3, at + 7)
+            local key
+            if code.byte(read, at + 12) == 0x8d and code.byte(read, at + 14) == 112 then
+                key = "effect_database"
+            elseif code.byte(read, at + 12) == 0xe8 then
+                key = "trigger_database"
+            end
+            if key then
+                if where[key] and where[key] ~= global then
+                    return nil, "the registry helper names two different " .. key .. "s"
+                end
+                where[key] = global
+            end
+        end
+    end
+    if not where.effect_database or not where.trigger_database then
+        return nil, "the registry helper does not name both databases"
+    end
+
+    where.methods = {}
+    for i, s in ipairs(STRUCTURAL) do
+        if structural[i].found then
+            where.methods[structural[i].address] = s.kind
+        end
+    end
+    return where
 end
 
 -- The (key, value) pairs of an MSVC std::map<int, T *> in key order: the head node (at the map's

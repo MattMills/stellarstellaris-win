@@ -20,6 +20,7 @@
 -- deterministic. A callback that raises an error is logged and removed.
 
 local resolve = require("stellar.resolve")
+local code = require("stellar.code")
 local util = require("stellar.util")
 local hex = util.hex
 
@@ -38,31 +39,6 @@ local FUNCTIONS = {
     "CInGameIdler::CheckTick",
 }
 
--- Offsets (from 0) of the matches of a pattern ("c6 05 ?? ?? ?? ?? 01") in a string of bytes.
-local function search(bytes, pattern)
-    local want = {}
-    for b in pattern:gmatch("%S+") do
-        want[#want + 1] = b ~= "??" and tonumber(b, 16) or false
-    end
-    local matches = {}
-    for i = 1, #bytes - #want + 1 do
-        local j = 1
-        while j <= #want and (not want[j] or bytes:byte(i + j - 1) == want[j]) do
-            j = j + 1
-        end
-        if j > #want then
-            matches[#matches + 1] = i - 1
-        end
-    end
-    return matches
-end
-
-local function int32(bytes, offset)
-    local b1, b2, b3, b4 = bytes:byte(offset + 1, offset + 4)
-    local v = b1 + b2 * 0x100 + b3 * 0x10000 + b4 * 0x1000000
-    return v >= 0x80000000 and v - 0x100000000 or v
-end
-
 -- game.locate(image, read) -> where | nil, message
 --   image  an fnmatch image of the game
 --   read   function(address, size) -> string | nil, message: reads the game's code (stellar.read)
@@ -70,61 +46,51 @@ end
 -- g_AllowGlobalGameStateAccess, allow_get_player, current_game_state).
 function game.locate(image, read)
     local found = resolve.functions(image)
-    local entries = {}
     for _, name in ipairs(FUNCTIONS) do
         if not found[name] then
             return nil, "fnmatch: " .. name .. " not found"
         end
-        entries[name] = { address = found[name] }
     end
-    local where = {
-        handle_turn_tick = entries["CGameState::HandleTurnTick"].address,
-        update = entries["CGameApplication::Update"].address,
-        check_tick = entries["CInGameIdler::CheckTick"].address,
-    }
+    local update, check_tick = found["CGameApplication::Update"], found["CInGameIdler::CheckTick"]
+    local where = { handle_turn_tick = found["CGameState::HandleTurnTick"], update = update,
+        check_tick = check_tick }
 
-    local function code(name)
-        local f = image:function_at(entries[name].address)
-        local bytes, message = read(f.address, f.end_address - f.address)
-        if bytes == nil then
-            error(name .. ": " .. tostring(message), 0)
-        end
-        return f.address, bytes
+    -- CGameApplication::Update opens the game state: g_AllowGetPlayer = 0, then
+    -- g_AllowGlobalGameStateAccess = 1 (two `mov byte ptr [rip+x], imm8`), and soon after compares
+    -- g_CurrentGameState with 0 (`cmp qword ptr [rip+x], reg`: REX.W 39 /r, mod 00, rm 101);
+    -- CInGameIdler::CheckTick opens the same gate
+    local patterns = code.bundle(read, image)
+    local gate = patterns:register({ name = "the gate in CGameApplication::Update", in_function = update,
+        signature = "c6 05 ?? ?? ?? ?? 00 c6 05 ?? ?? ?? ?? 01" })
+    local compare = patterns:register({ name = "cmp [rip+x], reg in CGameApplication::Update",
+        in_function = update, signature = "[01001.00] 39 [00...101] ?? ?? ?? ??", count = false })
+    local opens = patterns:register({ name = "the gate in CInGameIdler::CheckTick", in_function = check_tick,
+        signature = "c6 05 ?? ?? ?? ?? 01", count = false })
+    local report = patterns:run()
+    if not report.ok then
+        return nil, "sigmatch: " .. tostring(report.error)
     end
-    local ok, message = pcall(function()
-        -- CGameApplication::Update opens the game state: g_AllowGetPlayer = 0, then
-        -- g_AllowGlobalGameStateAccess = 1 (two `mov byte ptr [rip+x], imm8`), and soon after
-        -- compares g_CurrentGameState with 0 (`cmp qword ptr [rip+x], reg`)
-        local at, bytes = code("CGameApplication::Update")
-        local m = search(bytes, "c6 05 ?? ?? ?? ?? 00 c6 05 ?? ?? ?? ?? 01")
-        if #m ~= 1 then
-            error(string.format("CGameApplication::Update: %d matches for the gate", #m), 0)
-        end
-        where.allow_get_player = at + m[1] + 7 + int32(bytes, m[1] + 2)
-        where.gate = at + m[1] + 14 + int32(bytes, m[1] + 9)
-        for i = m[1] + 14, #bytes - 7 do
-            local rex, op, modrm = bytes:byte(i + 1, i + 3)
-            if (rex == 0x48 or rex == 0x4c) and op == 0x39 and modrm < 0x40 and modrm % 8 == 5 then
-                where.current_game_state = at + i + 7 + int32(bytes, i + 3)
-                break
-            end
-        end
-        if where.current_game_state == nil then
-            error("CGameApplication::Update: no cmp with g_CurrentGameState", 0)
-        end
+    where.allow_get_player = code.relative(read, gate.address + 2, gate.address + 7)
+    where.gate = code.relative(read, gate.address + 9, gate.address + 14)
 
-        -- CInGameIdler::CheckTick opens the same gate
-        at, bytes = code("CInGameIdler::CheckTick")
-        local confirmed = false
-        for _, o in ipairs(search(bytes, "c6 05 ?? ?? ?? ?? 01")) do
-            confirmed = confirmed or at + o + 7 + int32(bytes, o + 2) == where.gate
+    -- the first comparison after the gate
+    local first
+    for _, at in ipairs(compare.matches or {}) do
+        if at >= gate.address + 14 and (first == nil or at < first) then
+            first = at
         end
-        if not confirmed then
-            error("CInGameIdler::CheckTick does not open the gate CGameApplication::Update opens", 0)
-        end
-    end)
-    if not ok then
-        return nil, message
+    end
+    if first == nil then
+        return nil, "CGameApplication::Update: no cmp with g_CurrentGameState"
+    end
+    where.current_game_state = code.relative(read, first + 3, first + 7)
+
+    local confirmed = false
+    for _, at in ipairs(opens.matches or {}) do
+        confirmed = confirmed or code.relative(read, at + 2, at + 7) == where.gate
+    end
+    if not confirmed then
+        return nil, "CInGameIdler::CheckTick does not open the gate CGameApplication::Update opens"
     end
     return where
 end

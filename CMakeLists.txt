@@ -36,12 +36,15 @@ ExternalProject_Add(stellar_luajit
 )
 
 #
-# Lua bindings for stellar-fnmatch (function signatures, instruction decoding), as a static library
-# built against the LuaJIT headers above
+# Lua bindings for stellar-fnmatch (function signatures, instruction decoding) and sigmatch (byte
+# patterns), as static libraries built against the LuaJIT headers above
 #
 set(LUA_FNMATCH_LUA_INCLUDE_DIR "${luajit_include_dir}" CACHE PATH "" FORCE)
 set(LUA_FNMATCH_BUILD_MODULE OFF CACHE BOOL "" FORCE)
 add_subdirectory(lib/lua_fnmatch)
+set(LUA_SIGMATCH_LUA_INCLUDE_DIR "${luajit_include_dir}" CACHE PATH "" FORCE)
+set(LUA_SIGMATCH_BUILD_MODULE OFF CACHE BOOL "" FORCE)
+add_subdirectory(lib/lua_sigmatch)
 
 
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
@@ -87,7 +90,7 @@ target_include_directories(stellar-injected PUBLIC
 target_link_libraries(stellar-loader git_version)
 target_link_libraries(stellar-injected git_version)
 # lua_fnmatch_engine: fnmatch_engine.h (fnme_decode, for code_hook.cpp)
-target_link_libraries(stellar-injected lua_fnmatch::static lua_fnmatch_engine "${luajit_library}")
+target_link_libraries(stellar-injected lua_fnmatch::static lua_fnmatch_engine lua_sigmatch::static "${luajit_library}")
 add_dependencies(stellar-injected stellar_luajit)
 
 target_compile_features(stellar-injected PRIVATE cxx_std_14)

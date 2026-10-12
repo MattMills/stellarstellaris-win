@@ -197,6 +197,15 @@ local function read_catalog(waited)
     return true
 end
 
+-- the game's script lexer (stellar.script.loader): where it is in this build
+local lexer_where, lexer_message = require("stellar.script.loader").locate(image, stellar.read)
+if lexer_where then
+    stellar.log(string.format("loader: CTextLexer::GetTok %s, CMemoryFile vtable %s", hex(lexer_where.get_tok),
+        hex(lexer_where.memory_file_vtable)))
+else
+    stellar.log("loader: " .. tostring(lexer_message))
+end
+
 -- last: from here on the game's main thread calls into Lua
 local ok, err = pcall(game.start, image)
 if not ok then

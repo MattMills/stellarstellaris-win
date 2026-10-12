@@ -1,9 +1,10 @@
 // lua.cpp : the Lua runtime of stellar-injected.
 //
 // One LuaJIT state, created by the init thread. Scripts get the standard libraries (with the LuaJIT
-// FFI), `fnmatch` (lua_fnmatch: finding code by stellar-fnmatch function signatures, decoding
-// instructions), and `stellar`, this DLL: logging, the game module, thread suspension, memory
-// patching and the turn tick hook. lua/init.lua, next to stellar-injected.dll, runs first.
+// FFI), `fnmatch` (lua_fnmatch: finding functions by stellar-fnmatch signatures in any build,
+// decoding instructions), `sigmatch` (lua_sigmatch: byte patterns, many in one pass), and
+// `stellar`, this DLL: logging, the game module, thread suspension, memory patching and the turn
+// tick hook. lua/init.lua, next to stellar-injected.dll, runs first.
 //
 // Lua errors are raised only while no C++ object that owns resources is alive in the calling
 // frame; scratch memory is Lua userdata.
@@ -16,6 +17,7 @@
 
 #include <lua.hpp>
 #include <lua_fnmatch.h>
+#include <lua_sigmatch.h>
 
 #include <atomic>
 #include <cstring>
@@ -345,6 +347,7 @@ void stellar_lua_start() {
 	luaL_openlibs(L);
 	preload(L, "stellar", luaopen_stellar);
 	preload(L, "fnmatch", luaopen_fnmatch);
+	preload(L, "sigmatch", luaopen_sigmatch);
 
 	// scripts come from lua/, print() writes to the log
 	lua_getglobal(L, "package");

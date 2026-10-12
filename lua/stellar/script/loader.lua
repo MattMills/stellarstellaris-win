@@ -10,58 +10,15 @@
 --   local loader = require("stellar.script.loader")
 --   local where = assert(loader.locate(image, stellar.read))
 
-local fnmatch = require("fnmatch")
 local resolve = require("stellar.resolve")
+local code = require("stellar.code")
 
 local loader = {}
 
--- The vtable a constructor stores last at offset 0 of its object (the most derived class's: a
--- constructor stores its bases' first): `lea reg, [rip+x]` then `mov qword ptr [this], reg`.
-local function constructed_vtable(read, f)
-    local code = read(f.address, f.end_address - f.address)
-    if code == nil then
-        return nil
-    end
-    local this = { rcx = true }
-    local loaded, vtable = {}, nil
-    local pos = 1
-    while pos <= #code do
-        local i = fnmatch.decode(code, f.address, pos)
-        if i == nil then
-            break
-        end
-        local text = i.text
-        -- the object stays in rcx, or is copied to another register first (mov rbx,rcx); a
-        -- register that is changed otherwise (add rcx,20h) no longer holds it
-        local copy_to, copy_from = text:match("^mov (r%w+),(r%w+)$")
-        local dest = text:match("^%a+ (r%w+),")
-        if copy_to and this[copy_from] then
-            this[copy_to] = true
-        elseif dest and this[dest] then
-            this[dest] = nil
-        end
-        local lea = text:match("^lea (r%w+),%[")
-        if lea and i.rip_relative then
-            loaded[lea] = i.target
-        end
-        -- iced writes `mov [rcx],rax` (the size is the register's)
-        local base, reg = text:match("^mov %[(r%w+)%],(r%w+)$")
-        if not base then
-            base, reg = text:match("^mov qword ptr %[(r%w+)%],(r%w+)$")
-        end
-        if base and this[base] and loaded[reg] then
-            vtable = loaded[reg]
-        end
-        if i.flow == "return" then
-            break
-        end
-        pos = pos + i.length
-    end
-    return vtable
-end
-
 -- loader.locate(image, read) -> where | nil, message: get_tok (CTextLexer::GetTok) and
--- memory_file_vtable (the vtable of CMemoryFile)
+-- memory_file_vtable (the vtable of CMemoryFile). A constructor stores its bases' vtables in the
+-- object first and its own last: the last `lea r64, [rip+x]` followed by `mov [reg], r64` in
+-- CMemoryFile::CMemoryFile.
 function loader.locate(image, read)
     local found = resolve.functions(image)
     local get_tok, ctor = found["CTextLexer::GetTok"], found["CMemoryFile::CMemoryFile"]
@@ -71,12 +28,23 @@ function loader.locate(image, read)
     if not ctor then
         return nil, "CMemoryFile::CMemoryFile not found"
     end
-    local f = image:function_at(ctor)
-    local vtable = f and constructed_vtable(read, f)
-    if vtable == nil then
+    local patterns = code.bundle(read, image)
+    local stores = patterns:register({ name = "vtable stores in CMemoryFile::CMemoryFile", in_function = ctor,
+        signature = "48 8d [00...101] ?? ?? ?? ?? [0100100.] 89 [00......]", count = false })
+    local report = patterns:run()
+    if not report.ok then
+        return nil, "sigmatch: " .. tostring(report.error)
+    end
+    local last
+    for _, at in ipairs(stores.matches or {}) do
+        if last == nil or at > last then
+            last = at
+        end
+    end
+    if last == nil then
         return nil, "no vtable stored by CMemoryFile::CMemoryFile"
     end
-    return { get_tok = get_tok, memory_file_vtable = vtable }
+    return { get_tok = get_tok, memory_file_vtable = code.relative(read, last + 3, last + 7) }
 end
 
 return loader
