@@ -12,6 +12,7 @@ return {
         what = "registers the agreement iterators: names CTriggerDatabase::_pTriggerDatabase and CEffectDatabase::_pEffectDatabase" },
     -- methods that tell the script classes without a token apart (stellar.script.catalog census)
     { name = "CScriptedTrigger::ActualEvaluate", what = "a scripted trigger (the vtable of CScriptedTrigger)" },
+    { name = "CSharedScriptedTrigger::ActualEvaluate", what = "a shared scripted trigger (a CScriptedTrigger)" },
     { name = "CContextTrigger::ReadMember", what = "a scope change in a trigger (CContextTrigger)" },
     { name = "CTriggerMTTHModifier::ReadMember", what = "a weight / MTTH modifier block (CTriggerMTTHModifier)" },
     { name = "CAndTrigger::ReadMember", what = "a block of triggers (limit, trigger, potential, ...)" },

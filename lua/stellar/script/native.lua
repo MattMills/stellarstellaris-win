@@ -71,7 +71,7 @@ function native:target(event_target)
         return nil
     end
     local display = memory.cstring_object(self.read, event_target + EVENT_TARGET.text)
-    local links, saved = {}, false
+    local links, saved = {}, nil
     while event_target ~= 0 and #links < 16 do
         local b = self.read(event_target, EVENT_TARGET.size)
         if b == nil then
@@ -83,7 +83,7 @@ function native:target(event_target)
         if name == nil then
             -- a saved event target (event_target:x, event_target:x@root.owner) has no token: its
             -- name is in the game's table of saved targets (_SavedEventTarget)
-            saved = saved or #links == 0
+            saved = #links + 1
             link = "?"
         elseif flag and flag ~= "" then
             link = name .. ":" .. flag
@@ -97,9 +97,9 @@ function native:target(event_target)
         event_target = u64(b, EVENT_TARGET.next)
     end
     if saved and display then
-        -- the display text is the chain as written, then the following links again: without them,
-        -- it is the chain
-        local rest = table.concat(links, ".", 2):gsub("%?", "")
+        -- the display text is the chain as written, then the links after the saved target again:
+        -- without them, it is the chain (event_target:x.species, root.event_target:arkship)
+        local rest = table.concat(links, ".", saved + 1):gsub("%?", "")
         if rest ~= "" and display:sub(-#rest - 1) == "." .. rest then
             return display:sub(1, -#rest - 2), display
         end
@@ -111,6 +111,16 @@ end
 local function pointer_at(self, address)
     local b = self.read(address, 8)
     return b and u64(b, 0) or 0
+end
+
+-- Whether the objects are all triggers or effects the catalog (or a census) names.
+function native:triggers(pointers)
+    for _, p in ipairs(pointers) do
+        if self:name(p) == nil then
+            return false
+        end
+    end
+    return true
 end
 
 function native:trigger(object, depth)
@@ -132,9 +142,14 @@ function native:trigger(object, depth)
         node.body = pointer_at(self, object + SCRIPTED_TRIGGER.body)
     end
     if self.children_vtable and array_vtable == self.children_vtable and depth < MAX_DEPTH then
-        node.children = {}
-        for i, child in ipairs(memory.pointer_array(self.read, object + TRIGGER_CHILDREN, 100000) or {}) do
-            node.children[i] = self:trigger(child, depth + 1)
+        -- identical pointer arrays share that vtable: an array of something else than triggers at
+        -- +0x78 (trait_has_any_tag's tags) is a member, not children
+        local pointers = memory.pointer_array(self.read, object + TRIGGER_CHILDREN, 100000) or {}
+        if self:triggers(pointers) then
+            node.children = {}
+            for i, child in ipairs(pointers) do
+                node.children[i] = self:trigger(child, depth + 1)
+            end
         end
     end
     if IF_NAMES[name] and depth < MAX_DEPTH then
@@ -180,6 +195,92 @@ function native:effect(object, depth)
         end
     end
     return node
+end
+
+-- native:learn(triggers): the vtable of CPdxArray<CTrigger *> that marks a collection, from the
+-- first `and` or block among the trigger objects (n:trigger learns it too, from its first one).
+function native:learn(triggers)
+    for _, object in ipairs(triggers) do
+        if self.children_vtable then
+            return true
+        end
+        if COLLECTIONS[self:name(object)] then
+            self.children_vtable = pointer_at(self, object + TRIGGER_CHILDREN)
+        end
+    end
+    return self.children_vtable ~= nil
+end
+
+-- native:links(object, kind, into): adds to `into` ({ address -> true }) every object `object`
+-- points to as part of its tree: children, the next if of an if chain and its embedded limit (a
+-- trigger if) or else block (an effect if), the instantiated body of a scripted call. One read for
+-- the vtable and children, more for ifs and scripted calls. kind is "trigger" or "effect".
+function native:links(object, kind, into)
+    if kind == "trigger" then
+        local b = self.read(object, TRIGGER_CHILDREN + 24)
+        if b == nil then
+            return
+        end
+        local vtable = u64(b, 0)
+        local e = self.c.by_vtable[vtable]
+        local name = e and e.name or (self.c.structural and self.c.structural[vtable])
+        if u64(b, TRIGGER_CHILDREN) == self.children_vtable then
+            local data, size = u64(b, TRIGGER_CHILDREN + 8), i32(b, TRIGGER_CHILDREN + 20)
+            if size > 0 and size < 100000 then
+                local pointers = self.read(data, size * 8)
+                for i = 0, pointers and size - 1 or -1 do
+                    into[u64(pointers, i * 8)] = true
+                end
+            end
+        end
+        if IF_NAMES[name] then
+            -- the embedded limit, and its children (in case the embedded object is not listed)
+            into[object + IF_TRIGGER.limit] = true
+            for _, child in ipairs(memory.pointer_array(self.read, object + IF_TRIGGER.limit + TRIGGER_CHILDREN, 100000) or {}) do
+                into[child] = true
+            end
+            local next_if = pointer_at(self, object + IF_TRIGGER.next)
+            if next_if ~= 0 then
+                into[next_if] = true
+            end
+        elseif name == "(scripted trigger)" then
+            local body = pointer_at(self, object + SCRIPTED_TRIGGER.body)
+            if body ~= 0 then
+                into[body] = true
+            end
+        end
+    else
+        local b = self.read(object, EFFECT_CHILDREN + 24)
+        if b == nil then
+            return
+        end
+        local vtable = u64(b, 0)
+        local e = self.c.by_vtable[vtable]
+        local name = e and e.name or (self.c.structural and self.c.structural[vtable])
+        local data, size = u64(b, EFFECT_CHILDREN + 8), i32(b, EFFECT_CHILDREN + 20)
+        if size > 0 and size < 100000 then
+            local pointers = self.read(data, size * 8)
+            for i = 0, pointers and size - 1 or -1 do
+                into[u64(pointers, i * 8)] = true
+            end
+        end
+        if IF_NAMES[name] then
+            -- the embedded else block, and its children (in case the embedded object is not listed)
+            into[object + IF_EFFECT.else_block] = true
+            for _, child in ipairs(memory.pointer_array(self.read, object + IF_EFFECT.else_block + EFFECT_CHILDREN, 100000) or {}) do
+                into[child] = true
+            end
+            local next_if = pointer_at(self, object + IF_EFFECT.next)
+            if next_if ~= 0 then
+                into[next_if] = true
+            end
+        elseif name == "(scripted effect)" then
+            local body = pointer_at(self, object + SCRIPTED_EFFECT.body)
+            if body ~= 0 then
+                into[body] = true
+            end
+        end
+    end
 end
 
 return native

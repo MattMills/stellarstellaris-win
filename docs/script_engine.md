@@ -54,11 +54,12 @@ Same addresses as the PDB in GOG 4.5.2 (`tools/dry_run.lua`), and resolved in St
 
 `catalog.read()` then reads, with checked reads, once the game has loaded: every token name, every
 trigger and effect entry (token, name, description, `Create`), and decodes each `Create` for the
-object size and vtable. The decoder follows folded `jmp`s and out-of-line constructors and only
-counts the vtable stored through the register holding the new object; on the 824 `Create`s whose
-vtable the PDB names it is right for all, finds no vtable for 1, and two others (of 2,166) take a
-member's vtable (`CPersistentName`). 2,152 distinct vtables; the few shared ones are aliases
-(`owned_planet` / `owned_colony`, planet / colony carrier flags).
+object size and vtable. The decoder follows folded `jmp`s and out-of-line constructors, only
+counts the vtable stored through the callee-saved register holding the new object, and stops at an
+epilogue that ends the function (a `pop; ret` also occurs inside a call's offset); on the 1,527
+`Create`s (of 2,166) whose vtable the PDB names it is right for all, and it finds one for every
+`Create`. 2,154 distinct vtables; the few shared ones are aliases (`owned_planet` /
+`owned_colony`, planet / colony carrier flags).
 
 In the game (Steam 4.5.2, a 2200 save), at startup (`lua/init.lua`, written to
 `cache/script_catalog-<md5>.tsv`):
@@ -116,15 +117,53 @@ The one difference: in `country_defaulted_effect`, an `else = { log = ... }` aft
 `else`); not explained yet. The definitions not compared are only instantiated with arguments.
 
 For developing this, `stellar.dev` runs `dev\run.lua` next to the DLL in the running game (when
-`dev\enabled` exists): no restart to try a change.
+`dev\enabled` exists): no restart to try a change. While a game is loaded, a long run holds the
+Lua lock and the turn tick waits for it.
 
-Next, to call the reading validated:
+### Everything the game compiled (`shadow.everything`)
 
-- **Everything the game compiled, not only scripted definitions.** Every compiled object knows its
-  source file and line: the roots of the census (objects that are no other object's child) can be
-  matched to the statement at that place in our parse, whatever database they belong to (events,
-  buildings, jobs, decisions, ...), and compared the same way.
-- **Parameters.** Instantiations with arguments (`$PARAM$` in scripted triggers and effects).
+Every compiled object knows where it was read. The roots of the census, the objects no other object
+points to (children, if chains, embedded limits and else blocks, scripted bodies:
+`native:links`), are each compared with the statement at their place in our reading of that file,
+whatever they belong to (events, buildings, jobs, decisions, ...). Members a trigger or effect keeps
+outside its children (the `limit` of `count_*`, the trigger of a `switch` case) are roots of their
+own and compared at their own place. What the comparison had to learn about the game's reading:
+
+- a trigger can be named by a value: `trigger = num_districts` (complex trigger modifiers),
+  `order_by = trigger:pop_amount`, `amount = x@root.trigger:fleet_integrity` inside a block (at the
+  block's line);
+- `switch` and `inverted_switch` make one trigger of the `trigger = x` kind per case, at the line of
+  the switch;
+- `hidden:owner = { }` is the scope change `owner` without its tooltip;
+- the same key twice in a block (`init_effect` of a system initializer) is one block: the game
+  appends the second;
+- an event's `immediate` and option blocks are read without a location (their children have one);
+- a block in a list (`{ name = x trigger = { } }` in ship_sizes) is read like any block;
+- the identical code folding of the linker gives every `CPdxArray<T *>` one vtable: an array of
+  tags (`trait_has_any_tag`) at the children's offset is not children; triggers and effects are
+  recognized by being named.
+
+Result, Steam 4.5.2 vanilla with a loaded save (1,318,777 compiled triggers, 424,716 effects;
+`dev\parity.txt`):
+
+| | roots | compared | identical | nodes | mismatches |
+|---|---|---|---|---|---|
+| placed in a file (1,215 files: common/*, events, gfx, ...) | 111,616 | 111,616 | 111,615 | 354,982 | 1 |
+| empty blocks every object of a database has | 222,652 | | | | |
+| inside parameterized content | 117,650 | not yet | | | |
+
+The one difference is a vanilla oddity: `events/terraforming_events.txt` puts an `inline_script`
+that makes whole `picture = { trigger = { } }` blocks inside a `picture` block; the game reads the
+inner trigger into the outer picture's.
+
+The content not compared yet is what is read with parameters: scripted effects and triggers
+called with arguments (66,862 and 1,515 roots), inline scripts (25,984) and script values
+(22,941). Their locations name the call (`... @ scripted effect x at file: events/y.txt line: 12`,
+`file: x.txt:889(inline_script) common/inline_scripts/z.txt line: 3`): the comparison needs our
+reading of each with the call's arguments.
+
+Then:
+
 - **Mods.** The game's file overlay (load order, replaced files and paths) has to be reproduced,
   and the comparison run on modded games.
 

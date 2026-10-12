@@ -132,7 +132,8 @@ end
 -- its $PARAM$ substituted in the text, parsed, its parameter blocks resolved, and expanded in turn.
 --   inline_script = "jobs/soldiers_add"
 --   inline_script = { script = jobs/soldiers_add  AMOUNT = 2  TRIGGER = "owner? = { ... }" }
--- Nested blocks are expanded too. Errors (a missing script, a parse error) are collected in
+-- Nested blocks are expanded too. The entries an inline script adds have `inline` = its name (their
+-- lines are those of the inline script). Errors (a missing script, a parse error) are collected in
 -- errors and the statement is dropped.
 function source.expand(game_dir, block, errors, depth)
     depth = depth or 0
@@ -166,6 +167,8 @@ function source.expand(game_dir, block, errors, depth)
                 end
             else
                 for _, inner in ipairs(source.expand(game_dir, resolve_conditions(tree, params), errors, depth + 1)) do
+                    -- where it came from (its line numbers are those of the inline script)
+                    inner.inline = inner.inline or script
                     out[#out + 1] = inner
                 end
             end

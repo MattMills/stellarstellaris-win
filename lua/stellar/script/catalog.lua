@@ -40,6 +40,7 @@ local FUNCTIONS = {
 -- entries, and the plain blocks (`limit = { }`, `immediate = { }`).
 local STRUCTURAL = {
     { kind = "(scripted trigger)", of = "trigger", method = "CScriptedTrigger::ActualEvaluate" },
+    { kind = "(scripted trigger)", of = "trigger", method = "CSharedScriptedTrigger::ActualEvaluate" },
     { kind = "(scope trigger)", of = "trigger", method = "CContextTrigger::ReadMember" },
     { kind = "(modifier block)", of = "trigger", method = "CTriggerMTTHModifier::ReadMember" },
     { kind = "(scripted effect)", of = "effect", method = "CScriptedEffect::Read" },
@@ -274,6 +275,20 @@ local function copies(code, from, to, source, into)
     end
 end
 
+-- Whether code[o] is where a function ends: int3 padding, a 16-byte boundary, or the prologue of
+-- the next function (push rbx..rdi, push r12..r15, mov [rsp+n], reg, sub rsp, n, mov r11 / rax, rsp).
+local function ends_function(code, o, address)
+    local b1, b2, b3 = u8(code, o), u8(code, o + 1), u8(code, o + 2)
+    if b1 == nil or b1 == 0xcc or (address + o) % 16 == 0 then
+        return true
+    end
+    return (b1 >= 0x53 and b1 <= 0x57) or (b1 == 0x40 and b2 and b2 >= 0x53 and b2 <= 0x57)
+        or (b1 == 0x41 and b2 and b2 >= 0x54 and b2 <= 0x57)
+        or ((b1 == 0x48 or b1 == 0x4c) and b2 == 0x89 and b3 and b3 % 8 == 4)
+        or (b1 == 0x48 and b2 == 0x83 and b3 == 0xec) or (b1 == 0x48 and b2 == 0x81 and b3 == 0xec)
+        or (b1 == 0x4c and b2 == 0x8b and b3 == 0xdc) or (b1 == 0x48 and b2 == 0x8b and b3 == 0xc4)
+end
+
 -- Scans a function up to its first epilogue (`pop reg; ret` or `add rsp, n; ret`, at most 1024
 -- bytes): the size of the first `mov ecx, size; call` (operator new), the targets of the calls
 -- (byte-level, so possibly a few false ones), and the vtable of the last
@@ -320,7 +335,11 @@ local function scan(read, address, this)
                 s.vtable = address + o + 7 + i32(code, o + 3)
             end
         end
-        if u8(code, o + 1) == 0xc3 and ((b >= 0x58 and b <= 0x5f) or (o >= 1 and u8(code, o - 1) == 0xc4)) then
+        -- the epilogue: pop reg or add rsp, n, then ret. The bytes `58 c3` also occur inside a
+        -- call's offset, and a function can go on after a ret: stop there once the vtable is found,
+        -- or when the ret ends the function
+        if u8(code, o + 1) == 0xc3 and ((b >= 0x58 and b <= 0x5f) or (o >= 1 and u8(code, o - 1) == 0xc4))
+            and (s.vtable or ends_function(code, o + 2, address)) then
             break
         end
     end
@@ -427,32 +446,29 @@ end
 -- the game has compiled from its script (CTriggerDatabase::_Triggers, a CPdxUnorderedSet at +0x8,
 -- and CEffectDatabase::_Effects, a CPdxArray at +0x0), named by their vtables.
 --   census.triggers, census.effects = { total, identified, by_name = { name -> count },
---                                       unknown = { vtable -> count }, objects = { name -> list } }
--- objects has the addresses of the objects whose name is in keep ({ name -> true }).
+--                                       unknown = { vtable -> count }, objects = { name -> list },
+--                                       all = list }
+-- objects has the addresses of the objects whose name is in keep ({ name -> true }), all those of
+-- every object.
 function catalog.census(c, where, read, keep)
     local ok, result = pcall(function()
         local r = strict(read)
-        -- vtable -> structural kind (or false), from the methods in its first slots
+        -- vtable -> structural kind (or false), from the methods in its first slots: the kind that
+        -- comes first in STRUCTURAL among those of the methods found
         c.structural = c.structural or {}
-        local address_of = {}
-        for address, kind in pairs(where.methods or {}) do
-            address_of[kind] = address
+        local priority = {}
+        for i, s in ipairs(STRUCTURAL) do
+            priority[s.kind] = priority[s.kind] or i
         end
         local function structural(vtable)
             local kind = c.structural[vtable]
             if kind == nil then
                 kind = false
                 local slots = read(vtable, VTABLE_SLOTS * 8)
-                if slots then
-                    local present = {}
-                    for i = 0, VTABLE_SLOTS - 1 do
-                        present[u64(slots, i * 8)] = true
-                    end
-                    for _, s in ipairs(STRUCTURAL) do
-                        if address_of[s.kind] and present[address_of[s.kind]] then
-                            kind = s.kind
-                            break
-                        end
+                for i = 0, slots and VTABLE_SLOTS - 1 or -1 do
+                    local k = (where.methods or {})[u64(slots, i * 8)]
+                    if k and (not kind or priority[k] < priority[kind]) then
+                        kind = k
                     end
                 end
                 c.structural[vtable] = kind
@@ -460,7 +476,7 @@ function catalog.census(c, where, read, keep)
             return kind
         end
         local function count(objects)
-            local s = { total = #objects, identified = 0, by_name = {}, unknown = {}, objects = {} }
+            local s = { total = #objects, identified = 0, by_name = {}, unknown = {}, objects = {}, all = objects }
             for _, object in ipairs(objects) do
                 local bytes = read(object, 8)
                 local vtable = bytes and u64(bytes, 0)

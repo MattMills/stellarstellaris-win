@@ -1496,6 +1496,30 @@ return {
                 } },
             },
         },
+        ["CSharedScriptedTrigger::ActualEvaluate"] = {
+            { -- overload 1
+                { reference = 1, rva = 0x7ee7e0, signatures = {
+                    "layout3:09ae452da5899cb", "exact:20c0fea209dd203", "pic:348edc7926c01fb", "a_layout_prev:01cf96faf379a63",
+                    "a_layout_prev:0280b87008b5616", "a_layout_prev:06b830af4a47a64", "a_layout_prev:1a6fdd44e011e3a", "a_layout_next:046e6de291d55b8",
+                    "a_layout_next:1e631488d64322e", "a_layout_next:218c634e61263b0", "a_layout_next:2332381e591fe9c", "a_layout_next:2dc45d1db085f00",
+                    "a_layout_next:3f52e29e616226a", "s_layout_prev:2663e910122a0d1", "s_layout_prev:2a22732f965e798", "s_layout_prev:309bd37fbcf8364",
+                    "s_layout_prev:3cf42a2f128dba2", "s_layout_next:19cbc470532dbd9", "s_layout_next:1ef3eeb6b114e84", "s_layout_next:2034f55a574c0ac",
+                    "s_layout_next:3e67adb6423d4be",
+                } },
+                { reference = 2, rva = 0x7ef750, signatures = {
+                    "a_layout_prev:015ddf7163021b5", "a_layout_prev:390f61e8c0ebc5e", "a_layout_next:120da6bc7c96ce0", "a_layout_next:13268fdca1e1b5e",
+                    "a_layout_next:1646f386b8f9935",
+                } },
+                { reference = 3, rva = 0x528ba0, signatures = {
+                    "layout3:2bd7e593e3344f4", "exact:3ecb9e6f6701f8d", "pic:21bbfe81d510c16", "a_layout_prev:0ecd17bbfec9dd9",
+                    "a_layout_prev:10a900360dbfdb1", "a_layout_prev:2ab94320934ff9a", "a_layout_prev:2d1143322809f0d", "a_layout_prev:33819460e477654",
+                    "a_layout_prev:3797e34eeae8798", "a_layout_prev:38878554893f7d3", "a_layout_prev:3c4a8b60be44957", "a_layout_next:0177974028404b3",
+                    "a_layout_next:01954be76306e99", "a_layout_next:0a1213e0a20c14d", "a_layout_next:1be67987c5176d9", "a_layout_next:27593eb56246e5e",
+                    "a_layout_next:2d977a329315c3d", "a_layout_next:3aa6a6cfb48593d", "a_layout_next:3b491424c317135", "s_layout_prev:0193cea9d4ecba2",
+                    "s_layout_prev:1aa3dc44964ff2d", "s_layout_prev:2097efad5d44720", "s_layout_prev:257193b4990859c",
+                } },
+            },
+        },
         ["CContextTrigger::ReadMember"] = {
             { -- overload 1
                 { reference = 1, rva = 0x1945f10, signatures = {

@@ -28,8 +28,10 @@ local KINDS = {
         decompile = "effect", directory = "common/scripted_effects" },
 }
 
--- Whether a statement (its key, lower case) made a native node.
+-- Whether a statement (its key, lower case) made a native node. k can also be a value that names a
+-- trigger: `trigger:pop_amount`, `owner.trigger:num_ascension_perks` (the trigger it names).
 local function makes(ctx, k, child)
+    k = k:match("trigger:([%w_]+)$") or k
     local bare = k:gsub("%?$", "")
     local entry = ctx.catalog[ctx.kind.entries][bare]
     if entry and child.vtable and entry.vtable then
@@ -44,6 +46,8 @@ local function makes(ctx, k, child)
     if child.name == ctx.kind.scripted then
         return (child.tag or ""):lower() == bare
     elseif child.name == ctx.kind.scope then
+        -- `hidden:owner = { }` is the scope change owner without its tooltip
+        k = k:gsub("^hidden:", "")
         local target = (child.target or ""):lower()
         if target == k then
             return true
@@ -227,6 +231,324 @@ end
 
 function shadow.scripted_effects(options)
     return scripted(KINDS.effect, options)
+end
+
+-- Everything the game compiled ------------------------------------------------------------------
+
+-- The place of a location: " file: events/x.txt line: 123". Other locations are inside scripted
+-- triggers or effects (" path:line @ scripted effect x at ...") or inline scripts.
+local function place(location)
+    local file, line = (location or ""):match("^%s*file: (%S+) line: (%d+)%s*$")
+    if file then
+        return file, tonumber(line)
+    end
+end
+
+-- The statements of an expanded tree by line (of the key, and of the `{` when it is on another
+-- line), outer ones first, each with its parent block. Entries from inline scripts are not indexed:
+-- their lines are those of the inline script.
+local function index_lines(block, by_line)
+    local function add(line, e)
+        local list = by_line[line]
+        if list == nil then
+            list = {}
+            by_line[line] = list
+        end
+        list[#list + 1] = e
+    end
+    for _, e in ipairs(block) do
+        if e.inline then
+            -- from an inline script
+        elseif e.op and e.key then
+            e.parent = block
+            add(e.line, e)
+            if is_block(e) then
+                if e.value.line and e.value.line ~= e.line then
+                    add(e.value.line, e)
+                end
+                index_lines(e.value, by_line)
+            end
+        elseif e.param or e.text == nil then
+            -- a parameter block, or a block in a list (`{ name = x trigger = { } }` in ship_sizes)
+            index_lines(e, by_line)
+        end
+    end
+end
+
+local function new_ctx(catalog, kind, max_examples)
+    return { catalog = catalog, kind = kind, matched = 0, mismatches = 0, nullable_differences = 0,
+        skipped = {}, skipped_at = {}, examples = {}, max_examples = max_examples }
+end
+
+local function merge(into, from)
+    into.matched = into.matched + from.matched
+    into.mismatches = into.mismatches + from.mismatches
+    into.nullable_differences = into.nullable_differences + from.nullable_differences
+    for k, n in pairs(from.skipped) do
+        into.skipped[k] = (into.skipped[k] or 0) + n
+        local at = into.skipped_at[k] or {}
+        into.skipped_at[k] = at
+        for _, place_at in ipairs(from.skipped_at[k] or {}) do
+            if #at < 3 then
+                at[#at + 1] = place_at
+            end
+        end
+    end
+    for _, example in ipairs(from.examples) do
+        if #into.examples < into.max_examples then
+            into.examples[#into.examples + 1] = example
+        end
+    end
+end
+
+-- The keyword in `trigger = ...` of a switch block, lower case.
+local function switch_trigger(block)
+    for _, e in ipairs(block) do
+        if e.op and e.key and e.key.text:lower() == "trigger" and e.value.text then
+            return e.value.text:lower()
+        end
+    end
+end
+
+local BLOCKS = { ["(trigger block)"] = true, ["(effect block)"] = true, ["(modifier block)"] = true,
+    ["(random_list entry)"] = true }
+local SWITCHES = { switch = true, inverted_switch = true }
+
+-- Whether a value of a statement of the block names the node (`amount = x@root.trigger:fleet_integrity`).
+local function names_in_block(ctx, block, node)
+    for _, e in ipairs(block) do
+        if e.op and e.value and e.value.text and e.value.text:find("trigger:", 1, true)
+            and makes(ctx, e.value.text:lower(), node) then
+            return true
+        end
+    end
+    return false
+end
+
+-- The entries of a block statement followed by those of the later statements with the same key in
+-- the same block, or nil if there are none.
+local function merged_siblings(e)
+    if e.parent == nil then
+        return nil
+    end
+    local k, after, merged = e.key.text:lower(), false, nil
+    for _, s in ipairs(e.parent) do
+        if s == e then
+            after = true
+            merged = {}
+            for _, inner in ipairs(e.value) do
+                merged[#merged + 1] = inner
+            end
+        elseif after and s.op and s.key and s.key.text:lower() == k and is_block(s) then
+            merged.extended = true
+            for _, inner in ipairs(s.value) do
+                merged[#merged + 1] = inner
+            end
+        end
+    end
+    return merged and merged.extended and merged or nil
+end
+
+-- The statement at a root's line that made it: the first one without a mismatch, else the one with
+-- the fewest. Returns the scratch context of that comparison, or nil if no statement fits.
+local function compare_root(catalog, kind, root, candidates, where)
+    local best
+    local has_children = (root.children and #root.children > 0) or root.next or root.else_children
+    local empty_block = not has_children and (root.children ~= nil or BLOCKS[root.name])
+    for _, e in ipairs(candidates) do
+        local ctx = new_ctx(catalog, kind, 10)
+        local k = e.key.text:lower()
+        local at = string.format("%s > %s (line %d)", where, e.key.text, e.line)
+        if has_children then
+            if is_block(e) then
+                compare_block(ctx, e.value, root, at)
+                -- the same key again in the same block: the game appends their content to the
+                -- first one (two init_effect blocks of a system initializer)
+                local merged = merged_siblings(e)
+                if ctx.mismatches > 0 and merged then
+                    local again = new_ctx(catalog, kind, 10)
+                    compare_block(again, merged, root, at .. " (merged with the later " .. e.key.text .. ")")
+                    if again.mismatches < ctx.mismatches then
+                        ctx = again
+                    end
+                end
+            else
+                ctx = nil
+            end
+        elseif makes(ctx, k, root) or (e.value and e.value.text and makes(ctx, e.value.text:lower(), root)) then
+            -- the statement makes it (`has_x = yes`), or names it (`trigger = num_districts`)
+            ctx.matched = 1
+        elseif SWITCHES[k] and is_block(e) and switch_trigger(e.value) and makes(ctx, switch_trigger(e.value), root) then
+            -- the trigger a switch compares its cases with (`switch = { trigger = has_ethic ... }`):
+            -- the game makes one per case, at the line of the switch
+            ctx.matched = 1
+        elseif not root.children and is_block(e) and names_in_block(ctx, e.value, root) then
+            -- a trigger a member of the block names (`hostile_military_power = { value > root.trigger:fleet_power }`):
+            -- the game places it at the line of the block's statement
+            ctx.matched = 1
+        elseif empty_block then
+            -- an empty block: `on_fail = { }`, or a value (`weight = 0.2` in a weight block)
+            if is_block(e) then
+                compare_block(ctx, e.value, root, at)
+            end
+            ctx.matched = ctx.matched + 1
+        else
+            ctx = nil
+        end
+        if ctx then
+            if ctx.mismatches == 0 then
+                return ctx
+            elseif best == nil or ctx.mismatches < best.mismatches then
+                best = ctx
+            end
+        end
+    end
+    return best
+end
+
+-- shadow.everything(options) -> result: every compiled trigger and effect tree the game read from a
+-- file (not from a scripted trigger or effect or an inline script, which are the content of a tree),
+-- compared with the statement at its place in our reading of that file.
+--   options: catalog (after a census), read, game_dir, triggers, effects (every object: the
+--   census' all lists), log (progress), max_examples
+-- The roots are the objects no other object points to (native:links); members a trigger or effect
+-- keeps outside its children (the limit of count_*, ...) are roots of their own, compared at their
+-- own place. result.directories[dir] = { roots, compared, identical, matched, mismatches,
+-- no_statement }, plus indirect (roots placed in scripted or inline content), files (read),
+-- file_errors, examples, skipped.
+function shadow.everything(options)
+    local log = options.log or function() end
+    local catalog = options.catalog
+    local n = native.new(catalog, options.read)
+    n:learn(options.triggers)
+
+    -- the roots
+    local roots = {}
+    for _, kind in ipairs({ "trigger", "effect" }) do
+        local objects = kind == "trigger" and options.triggers or options.effects
+        local pointed = {}
+        for _, object in ipairs(objects) do
+            n:links(object, kind, pointed)
+        end
+        local count = 0
+        for _, object in ipairs(objects) do
+            if not pointed[object] then
+                roots[#roots + 1] = { object = object, kind = kind }
+                count = count + 1
+            end
+        end
+        log(string.format("shadow: %d %s objects, %d roots", #objects, kind, count))
+    end
+
+    -- their places, by file
+    local by_file, result = {}, { directories = {}, indirect = 0, indirect_kinds = {}, files = 0,
+        file_errors = {}, expand_errors = {} }
+    result.empty = 0
+    for _, root in ipairs(roots) do
+        local decompile = root.kind == "trigger" and n.trigger or n.effect
+        local location = decompile(n, root.object, 64).location
+        local file, line = place(location)
+        if file == nil and (location == nil or location == "") then
+            -- no location: the blocks an object of a database has whether its script sets them or
+            -- not (empty), and blocks the game reads without noting where (an event's immediate
+            -- and options): those are placed by their first child, which has a location
+            local node = decompile(n, root.object, 63)
+            if not (node.children and #node.children > 0) and not node.next then
+                result.empty = result.empty + 1
+                file = false
+            else
+                file, line = place(decompile(n, node.children[1].object, 64).location)
+                root.via_child = file ~= nil
+            end
+        end
+        if file then
+            root.line = line
+            local list = by_file[file] or {}
+            by_file[file] = list
+            list[#list + 1] = root
+        elseif file == nil then
+            result.indirect = result.indirect + 1
+            -- what it is inside: the first marker of the location
+            local s = tostring(location)
+            local kind = (s == "" or s == "nil") and "no location"
+                or s:match("^%s*[^@]-@ (in scripted trigger)") or s:match("^%s*[^@]-@ (scripted trigger)")
+                or s:match("^%s*[^@]-@ (scripted effect)") or s:match("(script value)")
+                or (s:find("(inline_script)", 1, true) and "inline script") or "other"
+            local k = result.indirect_kinds[kind]
+            if k == nil then
+                k = { count = 0, example = s, names = {} }
+                result.indirect_kinds[kind] = k
+            end
+            k.count = k.count + 1
+            local name = (n:name(root.object) or "?") .. " (" .. root.kind .. ")"
+            k.names[name] = (k.names[name] or 0) + 1
+        end
+    end
+    local files = {}
+    for file in pairs(by_file) do
+        files[#files + 1] = file
+    end
+    table.sort(files)
+    log(string.format("shadow: roots in %d files, %d inside scripted or inline content", #files, result.indirect))
+
+    -- each file: parse, index, expand, compare its roots
+    local total = new_ctx(catalog, nil, options.max_examples or 200)
+    for _, file in ipairs(files) do
+        local dir = file:match("^(common/[^/]+)/") or file:match("^([^/]+)/") or file
+        local d = result.directories[dir]
+        if d == nil then
+            d = { roots = 0, compared = 0, identical = 0, matched = 0, mismatches = 0, no_statement = 0 }
+            result.directories[dir] = d
+        end
+        local tree, message = source.parse(options.game_dir .. "/" .. file, file)
+        result.files = result.files + 1
+        local list = by_file[file]
+        d.roots = d.roots + #list
+        if tree == nil then
+            result.file_errors[#result.file_errors + 1] = message
+        else
+            local by_line = {}
+            index_lines(source.expand(options.game_dir, tree, result.expand_errors), by_line)
+            for _, root in ipairs(list) do
+                local kind = KINDS[root.kind]
+                local node = (root.kind == "trigger" and n.trigger or n.effect)(n, root.object)
+                local where = string.format("%s:%d", file, root.line)
+                local ctx
+                if root.via_child then
+                    -- the block of the statement at its first child's line
+                    for _, e in ipairs(by_line[root.line] or {}) do
+                        if e.parent then
+                            local try = new_ctx(catalog, kind, 10)
+                            compare_block(try, e.parent, node, where .. " (the block of its first child)")
+                            if ctx == nil or try.mismatches < ctx.mismatches then
+                                ctx = try
+                            end
+                        end
+                    end
+                else
+                    ctx = compare_root(catalog, kind, node, by_line[root.line] or {}, where)
+                end
+                if ctx == nil then
+                    d.no_statement = d.no_statement + 1
+                    if #total.examples < total.max_examples then
+                        total.examples[#total.examples + 1] = string.format("%s:%d: no statement for the game's %s %s",
+                            file, root.line, root.kind, describe(node))
+                    end
+                else
+                    d.compared = d.compared + 1
+                    d.matched = d.matched + ctx.matched
+                    d.mismatches = d.mismatches + ctx.mismatches
+                    if ctx.mismatches == 0 then
+                        d.identical = d.identical + 1
+                    end
+                    merge(total, ctx)
+                end
+            end
+        end
+    end
+    result.examples, result.skipped, result.skipped_at = total.examples, total.skipped, total.skipped_at
+    result.matched, result.mismatches = total.matched, total.mismatches
+    return result
 end
 
 return shadow
