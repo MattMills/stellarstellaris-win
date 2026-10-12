@@ -8,6 +8,7 @@
 
 
 #include "dll/dllmain.h"
+#include "dll/lua_runtime.h"
 #include "git_version.h"
 
 
@@ -36,6 +37,13 @@ intptr_t base_gog_augustus_ptr = 0x141a4c058; // 3.7.4
 
 
 intptr_t augustus_ptr = 0x0;
+
+// Reads memory that may not be mapped.
+template <class T>
+bool checked_read(const void* address, T* out) {
+	SIZE_T read = 0;
+	return ReadProcessMemory(GetCurrentProcess(), address, out, sizeof(T), &read) && read == sizeof(T);
+}
 
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call, LPVOID lpvReserved) {
@@ -112,28 +120,44 @@ void thread_idler_testing() {
 	
 	logger.endl();
 
+	// Lua scripts (lua/init.lua next to this DLL), after the C++ hooks
+	stellar_lua_start();
+
 	while (1) {
-		logger << PAYLOAD_DLL_NAME << " heartbeat: frame(" << p_CApplication->_nCurrentFrame << ") ";
+		// The CApplication / CGameIdler layouts (include/stellaris, from 3.7.4) do not match current
+		// versions, so these fields are read with checked reads: a wrong offset gives a wrong value,
+		// not a crash.
+		uint64_t frame = 0;
+		checked_read(&p_CApplication->_nCurrentFrame, &frame);
+		logger << PAYLOAD_DLL_NAME << " heartbeat: frame(" << frame << ") ";
+		qword idler = 0;
+		checked_read(&p_CApplication->_pIdler, &idler);
 #if DBG_PTR == 1
-		logger << "pIdler(" << static_cast<qword>(p_CApplication->_pIdler) << ") ";
+		logger << "pIdler(" << idler << ") ";
 #endif
-		if (p_CApplication->_pIdler != NULL) {
-			CGameIdler* p_CGameIdler = (CGameIdler *) p_CApplication->_pIdler;
-			
-			logger << " IdlerType(" << (int) p_CGameIdler->_eType;
-			if (p_CGameIdler->_eType == IdlerType::_IDLERTYPE_FRONTEND_) {
-				logger << " FRONTEND )";
-			}
-			else if (p_CGameIdler->_eType == IdlerType::_IDLERTYPE_INGAME_) {
-				logger << " INGAME )";
+		if (idler != NULL) {
+			CGameIdler* p_CGameIdler = (CGameIdler *) idler;
+			decltype(p_CGameIdler->_eType) type;
+			if (checked_read(&p_CGameIdler->_eType, &type)) {
+				logger << " IdlerType(" << (int) type;
+				if (type == IdlerType::_IDLERTYPE_FRONTEND_) {
+					logger << " FRONTEND )";
+				}
+				else if (type == IdlerType::_IDLERTYPE_INGAME_) {
+					logger << " INGAME )";
+				}
+				else {
+					logger << ") ";
+				}
 			}
 			else {
-				logger << ") ";
+				logger << " IdlerType(unreadable) ";
 			}
-
 		}
-		
+
 		logger.endl();
+
+		stellar_lua_heartbeat(frame);
 
 		Sleep(1000);
 	}

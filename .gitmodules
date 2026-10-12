@@ -13,3 +13,9 @@
 [submodule "lib/sigmatch"]
 	path = lib/sigmatch
 	url = https://github.com/SpriteOvO/sigmatch.git
+[submodule "lib/lua_sigmatch"]
+	path = lib/lua_sigmatch
+	url = https://github.com/MattMills/lua_sigmatch.git
+[submodule "lib/lua_fnmatch"]
+	path = lib/lua_fnmatch
+	url = https://github.com/MattMills/lua_fnmatch.git
