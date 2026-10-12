@@ -145,6 +145,7 @@ struct Stats {
 	std::atomic<uint64_t> mismatches{0};
 	std::atomic<uint64_t> without_lua{0};  // calls without a Lua token (the game's GetTok reads)
 	std::atomic<uint64_t> replaced{0};     // replace mode: tokens Lua gave the game
+	std::atomic<uint64_t> text_bytes{0};   // the sizes of the texts started
 };
 
 Stats stats;
@@ -317,6 +318,7 @@ const LuaToken* next_lua_token(uint8_t* file, const FileState& before, const Str
 			++stats.resyncs;
 		} else {
 			++stats.texts;
+			stats.text_bytes += static_cast<uint64_t>(size > 0 ? size : 0);
 			if (before.pos != 0) {
 				++stats.texts_not_at_start;
 			}
@@ -582,6 +584,12 @@ int l_lexer_mismatches(lua_State* L) {
 }
 
 } // namespace
+
+void stellar_lexer_counts(uint64_t* texts, uint64_t* tokens, uint64_t* bytes) {
+	*texts = stats.texts.load();
+	*tokens = stats.compared.load() + stats.replaced.load();
+	*bytes = stats.text_bytes.load();
+}
 
 void stellar_lexer_open(lua_State* L) {
 	lua_pushcfunction(L, l_hook_lexer);

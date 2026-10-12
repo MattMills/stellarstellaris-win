@@ -67,6 +67,32 @@ else
     stellar.log("load: " .. tostring(loading_message))
 end
 
+-- the game databases (stellar.databases): the table SetupDatabases initializes them from. Marks
+-- on each one's CreateInstance and PostReadInitInstance and on the steps of InitGame around them,
+-- so that the log has each database with its time and texts, and what the load does after 100%
+local databases = require("stellar.databases")
+local databases_where, databases_message = databases.locate(image, stellar.read)
+local marks = {}
+if databases_where then
+    for _, e in ipairs(databases_where.entries) do
+        marks[#marks + 1] = { address = e.create, kind = "create", name = e.name }
+    end
+    for _, e in ipairs(databases_where.entries) do
+        marks[#marks + 1] = { address = e.post_read, kind = "post_read", name = e.name }
+    end
+    stellar.log(string.format("databases: SetupDatabases %s, %d databases", hex(databases_where.setup),
+        #databases_where.entries))
+else
+    stellar.log("databases: " .. tostring(databases_message))
+end
+local found = require("stellar.resolve").functions(image)
+for _, name in ipairs(loading.MILESTONES) do
+    marks[#marks + 1] = { address = found[name], kind = "milestone", name = name }
+end
+local marks_hooked, marks_failed = loading.hook_marks(marks)
+stellar.log(string.format("load: %d marks hooked%s", marks_hooked,
+    #marks_failed > 0 and ("; not hooked: " .. table.concat(marks_failed, "; ")) or ""))
+
 -- the turn tick reaches Lua: log the first ticks, then each new month, with how long the tick that
 -- started it took (the tick that runs MonthlyUpdate) and the ticks of the month
 local ticks, month_ticks, started = 0, 0, 0
@@ -259,7 +285,8 @@ stellar.heartbeat = function()
     if heartbeats % 10 == 0 then
         loader.report()
     end
-    if not catalog_done then
+    -- the catalog once the load is done: reading it holds the Lua lock, which the lexer hook needs
+    if not catalog_done and (loading.loaded() or heartbeats >= WAIT_FOR_LOAD) then
         local done, result = pcall(read_catalog, heartbeats)
         if not done then
             stellar.log("script catalog failed: " .. tostring(result))

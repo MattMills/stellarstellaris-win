@@ -97,6 +97,58 @@ local PHASE_NAMES = {
 
 local where_hooked
 local phases, phase_order = {}, {}
+-- Marks: functions whose entry is an event (src/dll/loading_hook.cpp, stellar.hook_entries), by id
+--   create     a database's CreateInstance: it is initialized until the next progress step
+--   post_read  a database's PostReadInitInstance (after 100%): until the next mark
+--   milestone  a step of CGameApplication::InitGame
+local marks = {}
+local database, databases_done = nil, {}       -- the database being initialized, those done
+local post_read, post_reads = nil, {}          -- the PostReadInitInstance running, those done
+local milestone                                -- the last milestone
+
+-- The steps of CGameApplication::InitGame that are milestones (stellar.functions), in its order
+loading.MILESTONES = {
+    "CGlobalScriptedVariablesDatabase::InitializeWithDirectory", "CModifier::InitDefinitions",
+    "NNullObjAndDatabaseInitUtil::SetupDatabases", "CModifier::InitDefinitionIcons", "CGameRules::InitInstance",
+    "CAchievementsManager::InitFromFile", "CApplication::CalculateGameFilesChecksum", "CStaticModifierDatabase::Init",
+    "CTriggerDatabase::PostInit", "CTriggerDatabase::PostValidate", "CEffectDatabase::PostInit",
+    "CEffectDatabase::PostValidate", "CEventManager::InitEventConnectivityMaps", "CModifier::LogDefinitions",
+    "CGameApplication::PrintScriptingDocumentation", "CPortraitSpriteType::InitializeScriptedLogic",
+    "CFrontEndIdler::CFrontEndIdler", "DestroyLoadScreen",
+}
+
+-- loading.hook_marks(list) -> hooked, failures: hooks each { address, kind, name } of list (an
+-- address hooked once: the first mark for it)
+function loading.hook_marks(list)
+    local addresses, kept, failures, seen = {}, {}, {}, {}
+    for _, m in ipairs(list) do
+        if m.address and not seen[m.address] then
+            seen[m.address] = true
+            kept[#kept + 1] = m
+            addresses[#addresses + 1] = m.address
+        end
+    end
+    local results = stellar.hook_entries(addresses)
+    local hooked = 0
+    for i, r in ipairs(results) do
+        marks[i] = kept[i]
+        if r == true then
+            hooked = hooked + 1
+        else
+            failures[#failures + 1] = kept[i].name .. " (" .. kept[i].kind .. "): " .. tostring(r)
+        end
+    end
+    return hooked, failures
+end
+
+-- the post read running on the thread of e ends at e
+local function end_post_read(e)
+    if post_read and post_read.thread == e.thread then
+        post_read.seconds = e.time - post_read.time
+        post_reads[#post_reads + 1] = post_read
+        post_read = nil
+    end
+end
 local stack = {}            -- the stages, as the events tell them
 local deep = {}             -- stages below MAX_DEPTH: count by file:line
 local MAX_DEPTH = 3         -- stages deeper than this are counted, not logged
@@ -131,6 +183,12 @@ function loading.hook(where, read)
         stellar.log("load: hooked before the load screen is up")
     end
     return true
+end
+
+-- loading.loaded() -> whether the load is done: the load screen was up and is gone (always true
+-- when the load screen is not hooked)
+function loading.loaded()
+    return where_hooked == nil or closed
 end
 
 -- loading.poll(read): logs the events since the last poll, and the load screen going away
@@ -181,6 +239,38 @@ function loading.poll(read)
             end
             p.steps, p.current, p.total, p.last = p.steps + 1, e.a, e.b, e.time
             p.threads[e.thread] = true
+            -- a database's InitInstance is done: the step after its CreateInstance
+            if database and database.thread == e.thread then
+                local d = database
+                d.seconds, d.texts, d.tokens, d.bytes = e.time - d.time, e.texts - d.texts, e.tokens - d.tokens,
+                    e.bytes - d.bytes
+                databases_done[#databases_done + 1] = d
+                log(e, string.format("database %d/%d %s: %.3fs, %d texts (%.2f MB), %d tokens", e.a, e.b, d.name,
+                    d.seconds, d.texts, d.bytes / 1e6, d.tokens))
+                database = nil
+            end
+        elseif e.kind == "enter" then
+            local m = marks[e.a] or { kind = "?", name = "#" .. e.a }
+            end_post_read(e)
+            if m.kind == "create" then
+                database = { name = m.name, time = e.time, thread = e.thread, texts = e.texts, tokens = e.tokens,
+                    bytes = e.bytes }
+            elseif m.kind == "post_read" then
+                post_read = { name = m.name, time = e.time, thread = e.thread }
+            elseif m.kind == "milestone" then
+                if milestone and milestone.name == m.name then
+                    -- called again right away (one call per object): counted
+                    milestone.calls = milestone.calls + 1
+                else
+                    if milestone and milestone.calls > 1 then
+                        log(e, string.format("  (%s: %d calls)", milestone.name, milestone.calls))
+                    end
+                    local since = milestone and string.format(", %.3fs after %s", e.time - milestone.time, milestone.name) or ""
+                    log(e, string.format("%s begins (thread %d%s; %d texts, %d tokens so far)", m.name, e.thread, since,
+                        e.texts, e.tokens))
+                    milestone = { name = m.name, time = e.time, calls = 1 }
+                end
+            end
         end
     end
     -- the progress context exists while the load screen is up
@@ -199,6 +289,34 @@ function loading.poll(read)
             stellar.log(string.format("load:   phase %s (%d%% to %d%%): %d steps, the last %d of %d, from %s to %s (%.1fs), %d thread(s)",
                 p.name, p.start, p.start + p.span, p.steps, p.current, p.total, clock(p.first), clock(p.last),
                 p.last - p.first, threads))
+        end
+        if #databases_done > 0 then
+            local by_time, seconds, texts, tokens, bytes = {}, 0, 0, 0, 0
+            for i, d in ipairs(databases_done) do
+                by_time[i] = d
+                seconds, texts, tokens, bytes = seconds + d.seconds, texts + d.texts, tokens + d.tokens, bytes + d.bytes
+            end
+            table.sort(by_time, function(a, b) return a.seconds > b.seconds end)
+            local top = {}
+            for i = 1, math.min(#by_time, 15) do
+                top[i] = string.format("%s %.2fs", by_time[i].name, by_time[i].seconds)
+            end
+            stellar.log(string.format("load:   %d databases initialized in %.1fs: %d texts (%.1f MB), %d tokens; the longest: %s",
+                #databases_done, seconds, texts, bytes / 1e6, tokens, table.concat(top, ", ")))
+        end
+        if #post_reads > 0 then
+            local by_time, seconds = {}, 0
+            for i, p in ipairs(post_reads) do
+                by_time[i] = p
+                seconds = seconds + p.seconds
+            end
+            table.sort(by_time, function(a, b) return a.seconds > b.seconds end)
+            local top = {}
+            for i = 1, math.min(#by_time, 15) do
+                top[i] = string.format("%s %.3fs", by_time[i].name, by_time[i].seconds)
+            end
+            stellar.log(string.format("load:   %d PostReadInitInstance in %.1fs; the longest: %s", #post_reads, seconds,
+                table.concat(top, ", ")))
         end
         local keys = {}
         for key, n in pairs(deep) do

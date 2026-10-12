@@ -13,6 +13,7 @@
 #include <windows.h>
 
 #include "dll/loading_hook.h"
+#include "dll/lexer_hook.h"
 #include "dll/code_hook.h"
 
 #include <lua.hpp>
@@ -28,11 +29,13 @@ namespace {
 struct LoadingEvent {
 	double time;          // seconds since 1970
 	uint32_t thread;
-	const char* kind;     // "push", "pop", "render"
-	int a, b, line;       // push: start, end, line; render: progress; step: current, total, start
+	const char* kind;     // "push", "pop", "render", "step", "enter"
+	int a, b, line;       // push: start, end, line; render: progress; step: current, total, start;
+	                      // enter: the id of the function entered
 	int c;                // step: span
 	bool flag;            // push: the state was pushed; pop: it had been
 	std::string text;     // push: the file; render: the text drawn
+	uint64_t texts, tokens, bytes;  // the lexer hook's counts at that moment
 };
 
 std::mutex events_lock;
@@ -47,7 +50,8 @@ double now() {
 }
 
 void record(const char* kind, int a, int b, int line, bool flag, std::string text, int c = 0) {
-	LoadingEvent e{now(), GetCurrentThreadId(), kind, a, b, line, c, flag, std::move(text)};
+	LoadingEvent e{now(), GetCurrentThreadId(), kind, a, b, line, c, flag, std::move(text), 0, 0, 0};
+	stellar_lexer_counts(&e.texts, &e.tokens, &e.bytes);
 	std::lock_guard<std::mutex> guard(events_lock);
 	if (events.size() < kMaxEvents) {
 		events.push_back(std::move(e));
@@ -129,6 +133,60 @@ void step_hook(void* application, unsigned current, unsigned total, unsigned sta
 	original_step(application, current, total, start, span);
 }
 
+// Entry hooks: a stub per function records "enter" with the function's id, then runs the function.
+// The stub saves and restores the argument registers (rcx, rdx, r8, r9, xmm0-3) around the call to
+// record_entry and jumps to the trampoline that install_code_hook writes into its last 8 bytes.
+void record_entry(uint64_t id) {
+	record("enter", static_cast<int>(id), 0, 0, false, std::string());
+}
+
+const uint8_t kStubHead[] = {
+	0x48, 0x81, 0xEC, 0x88, 0x00, 0x00, 0x00,  // sub rsp, 0x88 (aligned for the call)
+	0x48, 0x89, 0x4C, 0x24, 0x20,              // mov [rsp+0x20], rcx
+	0x48, 0x89, 0x54, 0x24, 0x28,              // mov [rsp+0x28], rdx
+	0x4C, 0x89, 0x44, 0x24, 0x30,              // mov [rsp+0x30], r8
+	0x4C, 0x89, 0x4C, 0x24, 0x38,              // mov [rsp+0x38], r9
+	0x0F, 0x11, 0x44, 0x24, 0x40,              // movups [rsp+0x40], xmm0
+	0x0F, 0x11, 0x4C, 0x24, 0x50,              // movups [rsp+0x50], xmm1
+	0x0F, 0x11, 0x54, 0x24, 0x60,              // movups [rsp+0x60], xmm2
+	0x0F, 0x11, 0x5C, 0x24, 0x70,              // movups [rsp+0x70], xmm3
+	0x48, 0xB9,                                // mov rcx, imm64 (the id)
+};
+const uint8_t kStubCall[] = {0x48, 0xB8};      // mov rax, imm64 (record_entry)
+const uint8_t kStubTail[] = {
+	0xFF, 0xD0,                                // call rax
+	0x48, 0x8B, 0x4C, 0x24, 0x20,              // mov rcx, [rsp+0x20]
+	0x48, 0x8B, 0x54, 0x24, 0x28,              // mov rdx, [rsp+0x28]
+	0x4C, 0x8B, 0x44, 0x24, 0x30,              // mov r8, [rsp+0x30]
+	0x4C, 0x8B, 0x4C, 0x24, 0x38,              // mov r9, [rsp+0x38]
+	0x0F, 0x10, 0x44, 0x24, 0x40,              // movups xmm0, [rsp+0x40]
+	0x0F, 0x10, 0x4C, 0x24, 0x50,              // movups xmm1, [rsp+0x50]
+	0x0F, 0x10, 0x54, 0x24, 0x60,              // movups xmm2, [rsp+0x60]
+	0x0F, 0x10, 0x5C, 0x24, 0x70,              // movups xmm3, [rsp+0x70]
+	0x48, 0x81, 0xC4, 0x88, 0x00, 0x00, 0x00,  // add rsp, 0x88
+	0xFF, 0x25, 0x00, 0x00, 0x00, 0x00,        // jmp [rip+0]: the trampoline, in the next 8 bytes
+};
+const size_t kStubSize = 160;
+static_assert(sizeof(kStubHead) + 8 + sizeof(kStubCall) + 8 + sizeof(kStubTail) + 8 <= kStubSize, "stub size");
+
+// Writes the stub for `id` at `stub`; returns where the trampoline's address goes
+void** write_stub(uint8_t* stub, uint64_t id) {
+	uint8_t* p = stub;
+	std::memcpy(p, kStubHead, sizeof(kStubHead));
+	p += sizeof(kStubHead);
+	std::memcpy(p, &id, 8);
+	p += 8;
+	std::memcpy(p, kStubCall, sizeof(kStubCall));
+	p += sizeof(kStubCall);
+	const uint64_t function = reinterpret_cast<uint64_t>(&record_entry);
+	std::memcpy(p, &function, 8);
+	p += 8;
+	std::memcpy(p, kStubTail, sizeof(kStubTail));
+	p += sizeof(kStubTail);
+	std::memset(p, 0, 8);
+	return reinterpret_cast<void**>(p);
+}
+
 uintptr_t check_address(lua_State* L, int idx) {
 	const lua_Number value = luaL_checknumber(L, idx);
 	if (!(value > 0) || value >= 18446744073709551616.0 || value != static_cast<lua_Number>(static_cast<uint64_t>(value))) {
@@ -172,8 +230,41 @@ int l_hook_loading(lua_State* L) {
 	return 1;
 }
 
+// stellar.hook_entries(functions) -> results: hooks each function of the list (addresses) so that
+// entering it records the event "enter" with its index in the list; results[i] is true or the
+// reason it could not be hooked
+int l_hook_entries(lua_State* L) {
+	luaL_checktype(L, 1, LUA_TTABLE);
+	const int n = static_cast<int>(lua_objlen(L, 1));
+	uint8_t* block = n > 0 ? static_cast<uint8_t*>(VirtualAlloc(nullptr, kStubSize * static_cast<size_t>(n),
+		MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)) : nullptr;
+	if (n > 0 && block == nullptr) {
+		return luaL_error(L, "cannot allocate %d entry stubs", n);
+	}
+	lua_createtable(L, n, 0);
+	for (int i = 1; i <= n; ++i) {
+		lua_rawgeti(L, 1, i);
+		const lua_Number value = lua_tonumber(L, -1);
+		lua_pop(L, 1);
+		void* target = reinterpret_cast<void*>(static_cast<uintptr_t>(value));
+		uint8_t* stub = block + kStubSize * static_cast<size_t>(i - 1);
+		void** original = write_stub(stub, static_cast<uint64_t>(i));
+		FlushInstructionCache(GetCurrentProcess(), stub, kStubSize);
+		const char* error = nullptr;
+		if (!(value > 0)) {
+			lua_pushliteral(L, "not an address");
+		} else if (!install_code_hook(target, stub, original, &error)) {
+			lua_pushstring(L, error);
+		} else {
+			lua_pushboolean(L, 1);
+		}
+		lua_rawseti(L, -2, i);
+	}
+	return 1;
+}
+
 // stellar.loading_events() -> the events since the last call:
-// { time, thread, kind, a, b, line, flag, text }
+// { time, thread, kind, a, b, c, line, flag, text, texts, tokens, bytes }
 int l_loading_events(lua_State* L) {
 	std::vector<LoadingEvent> taken;
 	{
@@ -202,6 +293,12 @@ int l_loading_events(lua_State* L) {
 		lua_setfield(L, -2, "flag");
 		lua_pushlstring(L, e.text.data(), e.text.size());
 		lua_setfield(L, -2, "text");
+		lua_pushnumber(L, static_cast<lua_Number>(e.texts));
+		lua_setfield(L, -2, "texts");
+		lua_pushnumber(L, static_cast<lua_Number>(e.tokens));
+		lua_setfield(L, -2, "tokens");
+		lua_pushnumber(L, static_cast<lua_Number>(e.bytes));
+		lua_setfield(L, -2, "bytes");
 		lua_rawseti(L, -2, static_cast<int>(i + 1));
 	}
 	return 1;
@@ -214,4 +311,6 @@ void stellar_loading_open(lua_State* L) {
 	lua_setfield(L, -2, "hook_loading");
 	lua_pushcfunction(L, l_loading_events);
 	lua_setfield(L, -2, "loading_events");
+	lua_pushcfunction(L, l_hook_entries);
+	lua_setfield(L, -2, "hook_entries");
 }
