@@ -57,6 +57,20 @@ else
     stellar.log("loader: " .. tostring(lexer_message))
 end
 
+-- the static lexer's token table, taken over (src/dll/database_workers.cpp): its id -> name lookup
+-- is kept up to date in place as tokens are added, and CStaticLexer::RebuildLookup (which emptied
+-- and refilled it under every reader) never runs again
+do
+    local t, message = loader.token_table(require("stellar.resolve").functions(image), lexer_where, stellar.read)
+    local ok
+    if t then
+        ok, message = stellar.token_table(t.add, t.find, t.rebuild, t.access, t.reserve, t.assign)
+    end
+    local s = ok and stellar.token_table_stats() or {}
+    stellar.log(ok and string.format("tokens: the token table is taken over: %d names of %d, room for %d; RebuildLookup is replaced",
+        s.size or 0, s.desired or 0, s.capacity or 0) or ("tokens: the token table is not taken over: " .. tostring(message)))
+end
+
 -- the load screen's stages and progress, logged from the heartbeat (stellar.loading)
 local loading = require("stellar.loading")
 local loading_where, loading_message = loading.locate(image, stellar.read)
@@ -119,27 +133,6 @@ if databases_where and database_mode == "parallel" then
     stellar.log(learned and string.format("databases: %d dependencies learned in a trace added", learned)
         or "databases: no dependencies learned yet (run once with databases.txt \"trace\"): one at a time")
     if not learned then
-        database_mode = "lua"
-    end
-end
-if databases_where and database_mode == "parallel" then
-    -- the token table, which the databases add to, is locked
-    local add = found["CStaticLexer::AddDynamicToken"]
-    local memory = require("stellar.script.memory")
-    local function pointer(address)
-        local bytes = address and address ~= 0 and stellar.read(address, 8)
-        return bytes and memory.u64(bytes, 0) or nil
-    end
-    -- the tree's find: the third slot of its vtable
-    local tree = lexer_where and lexer_where.token_tree and stellar.call(lexer_where.token_tree)
-    local vtable = pointer(tree)
-    local find = vtable and pointer(vtable + 16)
-    local locked, lock_message = nil, "AddDynamicToken or the token tree not found"
-    if add and find then
-        locked, lock_message = stellar.db_lock_tokens(add, find)
-    end
-    stellar.log("databases: the token table " .. (locked and "is locked" or ("is not locked: " .. tostring(lock_message))))
-    if not locked then
         database_mode = "lua"
     end
 end
@@ -384,6 +377,9 @@ stellar.heartbeat = function()
     -- parallel would take, from this load's times
     if databases_where and not schedule_logged and loading.loaded() then
         schedule_logged = true
+        local t = stellar.token_table_stats()
+        stellar.log(string.format("tokens: %d names added in place in %d updates, the lookup moved %d times; RebuildLookup called %d times (replaced); %d of %d names, room for %d",
+            t.names or 0, t.updates or 0, t.moves or 0, t.rebuild_calls or 0, t.size or 0, t.desired or 0, t.capacity or 0))
         local unknown = databases_unknown
         local seconds, count, sum = loading.database_seconds(), 0, 0
         for _, e in ipairs(databases_where.entries) do

@@ -65,6 +65,55 @@ function loader.locate(image, read)
         set_char = found["CToken::SetCharInString"] }
 end
 
+-- the targets of the direct calls in a function's first instructions, in order
+local function calls(read, address, count)
+    local fnmatch = require("fnmatch")
+    local out, bytes, pos = {}, read(address, 512), 1
+    while bytes and pos <= #bytes - 15 and #out < count do
+        local i = fnmatch.decode(bytes, address, pos)
+        if i == nil or i.flow == "return" then
+            break
+        end
+        if i.flow == "call" and i.target then
+            out[#out + 1] = i.target
+        end
+        pos = pos + i.length
+    end
+    return out
+end
+
+-- loader.token_table(found, where, read) -> addresses | nil, message: what src/dll/database_workers.cpp
+-- needs to take the static lexer's token table over (stellar.token_table): AddDynamicToken, the
+-- token tree's find (the third slot of its vtable), RebuildLookup, AccessStaticLexer (the
+-- lexer's token_tree), and, from RebuildLookup's calls (AccessStaticLexer, CPdxArray<CString>::
+-- SetSize, GetTokenArray, GetTokenArray, the CString's assign), the CString's assign and, from
+-- SetSize's first call, CPdxArray<CString>::Reserve.
+function loader.token_table(found, where, read)
+    local add, rebuild = found["CStaticLexer::AddDynamicToken"], found["CStaticLexer::RebuildLookup"]
+    if not (add and rebuild and where and where.token_tree) then
+        return nil, "AddDynamicToken, RebuildLookup or AccessStaticLexer not found"
+    end
+    local memory = require("stellar.script.memory")
+    local stellar = require("stellar")
+    local function pointer(address)
+        local bytes = address and address ~= 0 and read(address, 8)
+        return bytes and memory.u64(bytes, 0) or nil
+    end
+    local tree = stellar.call(where.token_tree)
+    local vtable = pointer(tree)
+    local find = vtable and pointer(vtable + 16)
+    local in_rebuild = calls(read, rebuild, 5)
+    if #in_rebuild < 5 or in_rebuild[1] ~= where.token_tree then
+        return nil, "RebuildLookup does not call what it calls in 4.5.2"
+    end
+    local reserve = calls(read, in_rebuild[2], 1)[1]
+    if not (find and reserve) then
+        return nil, "the token tree's find or CPdxArray<CString>::Reserve not found"
+    end
+    return { add = add, find = find, rebuild = rebuild, access = where.token_tree, reserve = reserve,
+        assign = in_rebuild[5] }
+end
+
 -- The structures the hook reads (4.5.2, from its PDB; docs/text_lexer.md)
 loader.layout = {
     lexer_file = 0x8,          -- CLexer::_File
