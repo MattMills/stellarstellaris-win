@@ -114,3 +114,9 @@ add_custom_command(TARGET stellar-injected POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/lib/stellar-lua-pdxscript/pdxscript.lua" "$<TARGET_FILE_DIR:stellar-injected>/lua/pdxscript.lua"
 	COMMENT "Copying the Lua scripts"
 )
+# install.ps1 (and the .bat files that run it) next to the DLL: they install it, with lua/ and
+# proxy/version.dll, into the Stellaris folder, and uninstall it
+add_custom_command(TARGET stellar-injected POST_BUILD
+	COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/install/install.ps1" "${CMAKE_CURRENT_SOURCE_DIR}/install/install.bat" "${CMAKE_CURRENT_SOURCE_DIR}/install/uninstall.bat" "$<TARGET_FILE_DIR:stellar-injected>"
+	COMMENT "Copying the install scripts"
+)

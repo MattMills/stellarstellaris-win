@@ -56,6 +56,7 @@ progress of the load screen.
 | `src/dll/lexer_hook.cpp` | the hook on the game's lexer: Lua's tokens (replace) or a comparison with them (shadow) |
 | `src/dll/loading_hook.cpp` | the load screen's events (phases, stages, progress) |
 | `src/proxy` | `version.dll` for the game's folder: loads StellarStellaris with the game |
+| `install/` | `install.ps1` and the `.bat` files that run it: install into the Stellaris folder, uninstall |
 | `lua/init.lua` | the first script |
 | `lua/stellar/script/lexer.lua` | the game's tokenizer in Lua ([docs/text_lexer.md](docs/text_lexer.md)) |
 | `lua/stellar/script/loader.lua` | locates the lexer and hooks it |
@@ -106,13 +107,30 @@ its `msvcbuild.bat`).
 
 ## Install/Using:
 
- Compiled windows executables are available in Github workflows/actions as build artifacts, download the zip file, extract it somewhere (keep the `lua` folder next to the DLL), start Stellaris and run stellar-loader.exe 
+Compiled Windows builds are available as build artifacts of the GitHub workflow. Download the zip
+file, extract it, close Stellaris and run `install.bat`. Then start Stellaris as usual.
 
- This will load the DLL into the currently running game, it must be run every time the game is restarted to use it.
+`install.bat` (`install.ps1`) finds Stellaris (Steam, every library, or GOG); pass
+`-GameDir <the folder of stellaris.exe>` when it is somewhere else. It copies:
 
- It loads once per game: if the DLL is already in the game, the loader says so and does nothing (restart Stellaris to load a new build).
+| from the archive | to the Stellaris folder |
+|---|---|
+| `proxy\version.dll` | `version.dll` |
+| `stellar-injected.dll`, `stellar-injected.pdb`, `lua\` | `stellarstellaris\` |
 
- To load StellarStellaris with the game instead, before the game reads its script: copy `proxy/version.dll` into the game's folder (next to stellaris.exe), with a `stellarstellaris.txt` there whose first line is the full path of stellar-injected.dll (without it, stellar-injected.dll is looked for in the game's folder). Windows loads a version.dll in the application's folder before the one in System32; this one forwards the real one's functions and starts stellar-injected.dll. Remove the two files to start the game without StellarStellaris.
+Windows loads a `version.dll` in the game's folder before the one in System32. This one forwards
+the real one's functions and starts `stellarstellaris\stellar-injected.dll` with the game, before
+the game reads its script. The installer does not replace a `version.dll` of anything else.
+
+`uninstall.bat` (`install.ps1 -Uninstall`) removes the three: `version.dll` (only
+StellarStellaris's), the `stellarstellaris` folder (with its `cache` and settings such as
+`lexer.txt`), and a `stellarstellaris.txt` if there is one.
+
+For development, a `stellarstellaris.txt` next to `version.dll` names another stellar-injected.dll
+(its first line: a full path, or one relative to the game's folder).
+
+`stellar-loader.exe` is still in the archive: started while the game runs, it loads the DLL into
+the running game, once per game. Then the game has already read its script with its own lexer.
 
 ## Compatibility:
 

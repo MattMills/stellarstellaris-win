@@ -3,10 +3,13 @@
 // stellaris.exe imports VERSION.dll, and Windows looks for it in the application's folder first: a
 // version.dll there is loaded with the game, before any of the game's code runs. This one forwards
 // the 17 functions of the real version.dll (System32) and, in a thread of its own, loads
-// stellar-injected.dll and calls its stellar_start. The path of stellar-injected.dll is the first
-// line of stellarstellaris.txt next to this file (default: stellar-injected.dll next to it).
+// stellar-injected.dll and calls its stellar_start. stellar-injected.dll is:
+//   - the first line of stellarstellaris.txt next to this file, if there is one (a full path, or a
+//     path relative to this file's folder);
+//   - else stellarstellaris\stellar-injected.dll next to this file (where install.ps1 puts it);
+//   - else stellar-injected.dll next to this file.
 //
-// Removing version.dll (and stellarstellaris.txt) from the game's folder removes StellarStellaris.
+// Removing version.dll from the game's folder removes StellarStellaris (uninstall.ps1).
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -51,9 +54,14 @@ DWORD WINAPI start_stellar(void*) {
 		slash[1] = L'\0';
 	}
 
-	// stellarstellaris.txt: the path of stellar-injected.dll (UTF-8, first line)
+	// the installed place, else next to this file
 	wchar_t dll[MAX_PATH];
-	swprintf_s(dll, L"%sstellar-injected.dll", here);
+	swprintf_s(dll, L"%sstellarstellaris\\stellar-injected.dll", here);
+	if (GetFileAttributesW(dll) == INVALID_FILE_ATTRIBUTES) {
+		swprintf_s(dll, L"%sstellar-injected.dll", here);
+	}
+	// stellarstellaris.txt: the path of stellar-injected.dll (UTF-8, first line), full or relative
+	// to this file's folder
 	wchar_t config[MAX_PATH];
 	swprintf_s(config, L"%sstellarstellaris.txt", here);
 	FILE* f = nullptr;
@@ -64,8 +72,14 @@ DWORD WINAPI start_stellar(void*) {
 			while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r' || line[len - 1] == ' ')) {
 				line[--len] = '\0';
 			}
-			if (len > 0) {
-				MultiByteToWideChar(CP_UTF8, 0, line, -1, dll, MAX_PATH);
+			wchar_t path[MAX_PATH] = {};
+			if (len > 0 && MultiByteToWideChar(CP_UTF8, 0, line, -1, path, MAX_PATH) > 0) {
+				const bool full = (path[0] != L'\0' && path[1] == L':') || (path[0] == L'\\' && path[1] == L'\\');
+				if (full) {
+					wcscpy_s(dll, path);
+				} else {
+					swprintf_s(dll, L"%s%s", here, path);
+				}
 			}
 		}
 		fclose(f);
