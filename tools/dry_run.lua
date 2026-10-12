@@ -64,4 +64,21 @@ else
     print("game: " .. message)
     missing = missing + 1
 end
+
+-- the script engine's tables (stellar.script.catalog): only their addresses, without a process
+local script, script_message = require("stellar.script.catalog").locate(image, file_reader(exe, base))
+if script then
+    for _, k in ipairs({ "lexer", "trigger_database", "effect_database" }) do
+        print(string.format("script: %-18s rva %s", k, hex(script[k] - base)))
+    end
+    local methods = {}
+    for address, kind in pairs(script.methods) do
+        methods[#methods + 1] = kind .. " " .. hex(address - base)
+    end
+    table.sort(methods)
+    print(string.format("script: %d structural class methods: %s", #methods, table.concat(methods, ", ")))
+else
+    print("script: " .. script_message)
+    missing = missing + 1
+end
 os.exit(missing == 0 and 0 or 1)

@@ -127,8 +127,10 @@ add_dependencies(stellar-injected stellar_luajit)
 target_compile_features(stellar-injected PRIVATE cxx_std_14)
 target_compile_features(stellar-loader PRIVATE cxx_std_14)
 
-# The Lua scripts go next to stellar-injected.dll, which runs lua/init.lua
+# The Lua scripts go next to stellar-injected.dll, which runs lua/init.lua, with the Lua modules of
+# the submodules (pdxscript: lib/stellar-lua-pdxscript)
 add_custom_command(TARGET stellar-injected POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/lua" "$<TARGET_FILE_DIR:stellar-injected>/lua"
+	COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/lib/stellar-lua-pdxscript/pdxscript.lua" "$<TARGET_FILE_DIR:stellar-injected>/lua/pdxscript.lua"
 	COMMENT "Copying the Lua scripts"
 )

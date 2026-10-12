@@ -19,3 +19,6 @@
 [submodule "lib/lua_fnmatch"]
 	path = lib/lua_fnmatch
 	url = https://github.com/MattMills/lua_fnmatch.git
+[submodule "lib/stellar-lua-pdxscript"]
+	path = lib/stellar-lua-pdxscript
+	url = https://github.com/MattMills/stellar-lua-pdxscript.git
