@@ -158,7 +158,10 @@ comments blanked and inline math skipped, which gives the same result.
 
 Inline scripts are not templates (`CreateInlineScriptReader`): the game replaces `$NAME$` with each
 parameter in turn (`CString::ReplaceAll`) in the script's text and reads that; no blocks, no
-defaults.
+defaults. Their content is located `file: events/x.txt:135(inline_script)
+common/inline_scripts/y.txt line: 2` (a chain when inline scripts call others), where 135 is the
+line where the `inline_script` statement ends: the `}` of `inline_script = { ... }`
+(pdxscript blocks record it, `last`).
 
 ### Everything the game compiled (`shadow.everything`)
 
@@ -179,6 +182,9 @@ own and compared at their own place. What the comparison had to learn about the 
   appends the second;
 - an event's `immediate` and option blocks are read without a location (their children have one);
 - a block in a list (`{ name = x trigger = { } }` in ship_sizes) is read like any block;
+- an event's `picture` reads a `picture = { ... }` inside its block as more of itself, and all its
+  `trigger` blocks into one (at the first): vanilla puts inline scripts of whole picture blocks
+  inside a picture block (`events/biogenesis_event_art`);
 - the identical code folding of the linker gives every `CPdxArray<T *>` one vtable: an array of
   tags (`trait_has_any_tag`) at the children's offset is not children; triggers and effects are
   recognized by being named.
@@ -193,27 +199,37 @@ Result, Steam 4.5.2 vanilla (1,318,141 compiled triggers, 424,716 effects; `dev\
 
 | | roots | compared | identical | nodes | mismatches |
 |---|---|---|---|---|---|
-| placed in a file (1,215 files: common/*, events, gfx, ...) | 111,616 | 111,616 | 111,615 | 354,982 | 1 |
+| placed in a file (1,222 files: common/*, events, gfx, ...) | 111,616 | 111,616 | 111,616 | 354,984 | 0 |
+| inline script content | 25,830 | 25,830 | 25,830 | 76,524 | 0 |
 | scripted trigger instances (the bodies) | 114,353 | 114,353 | 114,353 | 403,125 | 0 |
 | scripted effect instances (the bodies) | 13,852 | 13,852 | 13,852 | 135,438 | 0 |
 | roots inside scripted triggers / effects | 52,893 | 52,893 | 52,893 | 133,777 | 0 |
 | empty blocks every object of a database has | 222,568 | | | | |
-| not compared yet | 64,499 | | | | |
+| not compared yet | 38,669 | | | | |
 
-The one difference is a vanilla oddity: `events/terraforming_events.txt` puts an `inline_script`
-that makes whole `picture = { trigger = { } }` blocks inside a `picture` block; the game reads the
-inner trigger into the outer picture's.
+Every compiled tree that was compared, 1,103,848 nodes, is identical.
 
 Not compared yet:
-- the content of inline scripts (25,984 roots, located
-  `file: x.txt:889(inline_script) common/inline_scripts/z.txt line: 3`);
-- script values (22,941, and 15,226 more reached through scripted triggers and effects);
+- script values (22,941, and 15,226 more reached through scripted triggers and effects): their
+  content is located `file: script value x at <the call's location> line: 5`;
+- inline scripts inside scripted triggers and effects (502), located `file: scripted effect x at
+  <the call's location>:193(inline_script) ...`;
 - 348 effect blocks without a location whose first child has none either.
+
+### Mods
+
+`source.filesystem(game_dir, mods)` is the game's view of the files: the game directory, then the
+mods in load order. A file of a later mod replaces the file with the same path, a mod's
+`replace_path` hides the files before it in that directory, and a directory is read in name order
+over all of them. `source.enabled_mods` reads the mods the launcher enabled
+(`Documents/Paradox Interactive/Stellaris/dlc_load.json` and the `.mod` descriptors, which are
+script too); `init.lua` and the comparison use them, so a modded game is compared with its mods.
+The locations do not say which mod a file came from (`file: events/x.txt line: 3`): the path is
+resolved like the game does.
 
 Then:
 
-- **Mods.** The game's file overlay (load order, replaced files and paths) has to be reproduced,
-  and the comparison run on modded games.
+- **Mods.** The comparison run on modded games.
 
 Then Lua takes over building the script: the same trees, constructed in parallel from the Lua
 reading instead of by the game's single-threaded reader.

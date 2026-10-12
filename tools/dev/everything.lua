@@ -25,7 +25,15 @@ state.catalog, state.census = c, census
 print(string.format("dev: catalog and census in %.1fs", util.now() - t0))
 
 t0 = util.now()
-local r = shadow.everything({ catalog = c, read = stellar.read, game_dir = util.dirname(stellar.module_path),
+-- the game's files with the mods the launcher enabled
+local fs, mods, mods_message = require("stellar.script.source").game_filesystem(util.dirname(stellar.module_path))
+for _, mod in ipairs(mods) do
+    print("dev: mod " .. tostring(mod.name) .. " at " .. mod.path)
+end
+if mods_message then
+    print("dev: mods not read: " .. mods_message)
+end
+local r = shadow.everything({ catalog = c, read = stellar.read, game_dir = fs,
     triggers = census.triggers.all, effects = census.effects.all, max_examples = 100000,
     log = function(line) print("dev: " .. line .. string.format(" (%.1fs)", util.now() - t0)) end })
 print(string.format("dev: everything in %.1fs: %d files, %d nodes match, %d mismatches, %d roots not compared yet, %d file errors",

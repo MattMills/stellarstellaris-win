@@ -48,7 +48,7 @@ end)
 | `lua/stellar/game.lua` | the turn tick hook, the game state and the date |
 | `lua/stellar/script/catalog.lua` | the script engine read from the game: every token, trigger and effect (with the vtable of its objects), and a census of the compiled script ([docs/script_engine.md](docs/script_engine.md)); written to `cache/script_catalog-<md5>.tsv` |
 | `lua/stellar/script/docs.lua` | the game's own documentation of triggers, effects, scope links and modifiers |
-| `lua/stellar/script/source.lua` | the game's script files read in Lua (load order, `inline_script` expanded) |
+| `lua/stellar/script/source.lua` | the game's script files read in Lua as the game reads them: the enabled mods over the game directory, load order, `inline_script` expanded, scripted triggers, effects and values instantiated |
 | `lua/stellar/script/native.lua` | the game's compiled triggers and effects read back as Lua trees |
 | `lua/stellar/script/shadow.lua` | the two compared node by node ([docs/script_engine.md](docs/script_engine.md)) |
 | `lua/stellar/script/memory.lua` | checked reads of the game's structures (strings, arrays) |

@@ -1,12 +1,15 @@
--- source.lua : the game's script files, read from the game directory and parsed with pdxscript
--- (lib/stellar-lua-pdxscript). Vanilla files only for now: mods and the game's virtual file
--- system are not handled.
+-- source.lua : the game's script files as the game reads them, parsed with pdxscript
+-- (lib/stellar-lua-pdxscript): the game directory with the enabled mods over it, inline scripts
+-- expanded, scripted triggers, effects and values instantiated.
 --
 --   local source = require("stellar.script.source")
---   local files = source.files(game_dir, "common/scripted_triggers", "txt")  -- sorted paths
---   local defs, errors = source.definitions(game_dir, "common/scripted_triggers")
---   defs[name] = { block, file, line }: the top-level `name = { ... }` of every file of the
+--   local fs = source.filesystem(game_dir, source.enabled_mods(documents_dir))
+--   local files = source.files(fs, "common/scripted_triggers", "txt")  -- sorted relative paths
+--   local tree = source.parse(fs, "events/x.txt")
+--   local defs, errors = source.definitions(fs, "common/scripted_triggers")
+--   defs[name] = { block, file, line, ... }: the top-level `name = { ... }` of every file of the
 --   directory, in load order (files sorted by name; a later definition replaces an earlier one).
+-- Where a function takes `fs`, the game directory (a string) means the game without mods.
 
 local pdxscript = require("pdxscript")
 
@@ -60,21 +63,133 @@ else
     end
 end
 
--- source.files(game_dir, subdir, extension) -> the paths of the subdir's files with the extension,
--- sorted (the game loads a directory in name order).
-function source.files(game_dir, subdir, extension)
-    local dir = game_dir .. "/" .. subdir
-    local paths = {}
-    for _, name in ipairs(list_directory(dir)) do
-        if extension == nil or name:lower():sub(-#extension - 1) == "." .. extension then
-            paths[#paths + 1] = name
+-- source.filesystem(game_dir [, mods]) -> fs: the files as the game sees them: the game directory,
+-- then each mod in load order ({ path = dir, replace = { ["common/x"] = true }, name }, from
+-- source.enabled_mods). A file of a later mod replaces the file with the same path, and a mod's
+-- replace_path hides the files before it in that directory.
+local FS = {}
+FS.__index = FS
+
+function source.filesystem(game_dir, mods)
+    local roots = { { path = game_dir, name = "vanilla" } }
+    for _, mod in ipairs(mods or {}) do
+        roots[#roots + 1] = mod
+    end
+    return setmetatable({ game_dir = game_dir, roots = roots }, FS)
+end
+
+-- a game directory (a string) is the filesystem of the game without mods
+local function filesystem_of(fs)
+    if type(fs) == "string" then
+        return source.filesystem(fs)
+    end
+    return fs
+end
+source.filesystem_of = filesystem_of
+
+local function exists(path)
+    local f = io.open(path, "rb")
+    if f then
+        f:close()
+        return true
+    end
+    return false
+end
+
+local function dirname(path)
+    return path:match("^(.*)/[^/]*$") or ""
+end
+
+-- fs:path(relative) -> the file the game reads for this path, or nil
+function FS:path(relative)
+    for i = #self.roots, 1, -1 do
+        local root = self.roots[i]
+        local path = root.path .. "/" .. relative
+        if exists(path) then
+            return path
+        end
+        if root.replace and root.replace[dirname(relative)] then
+            return nil
         end
     end
-    table.sort(paths)
-    for i, name in ipairs(paths) do
-        paths[i] = dir .. "/" .. name
+end
+
+-- fs:files(subdir [, extension]) -> the relative paths of the subdir's files (not recursive) with
+-- the extension, sorted by name (the game loads a directory in name order)
+function FS:files(subdir, extension)
+    local names, seen = {}, {}
+    for _, root in ipairs(self.roots) do
+        if root.replace and root.replace[subdir] then
+            names, seen = {}, {}
+        end
+        for _, name in ipairs(list_directory(root.path .. "/" .. subdir)) do
+            local key = name:lower()
+            if not seen[key] and (extension == nil or key:sub(-#extension - 1) == "." .. extension) then
+                seen[key] = true
+                names[#names + 1] = name
+            end
+        end
     end
-    return paths
+    table.sort(names)
+    for i, name in ipairs(names) do
+        names[i] = subdir .. "/" .. name
+    end
+    return names
+end
+
+-- source.enabled_mods(documents_dir) -> mods | nil, message: the mods the game loads, in order,
+-- from documents_dir/dlc_load.json (written by the launcher) and their descriptors
+-- (documents_dir/mod/*.mod: path, replace_path); for source.filesystem.
+function source.enabled_mods(documents_dir)
+    local f, message = io.open(documents_dir .. "/dlc_load.json", "rb")
+    if f == nil then
+        return nil, message
+    end
+    local json = f:read("*a")
+    f:close()
+    local list = json:match('"enabled_mods"%s*:%s*%[(.-)%]')
+    local mods = {}
+    for descriptor in (list or ""):gmatch('"([^"]+)"') do
+        local tree, err = source.parse(documents_dir, descriptor)
+        if tree == nil then
+            return nil, descriptor .. ": " .. tostring(err)
+        end
+        local mod = { descriptor = descriptor, replace = {} }
+        for _, e in ipairs(tree) do
+            local key, value = e.key and e.key.text, e.value and e.value.text
+            if key == "path" or key == "archive" then
+                mod[key] = value
+            elseif key == "name" then
+                mod.name = value
+            elseif key == "replace_path" and value then
+                mod.replace[(value:gsub("\\", "/"):gsub("/$", ""))] = true
+            end
+        end
+        if mod.path == nil then
+            return nil, descriptor .. ": no path" .. (mod.archive and " (zipped mods are not read)" or "")
+        end
+        mod.path = mod.path:gsub("\\", "/")
+        if not mod.path:find("^%a:") and not mod.path:find("^/") then
+            mod.path = documents_dir .. "/" .. mod.path
+        end
+        mods[#mods + 1] = mod
+    end
+    return mods
+end
+
+-- source.game_filesystem(game_dir [, documents_dir]) -> fs, mods, message: the game directory with
+-- the mods the launcher enabled (documents_dir: %USERPROFILE%/Documents/Paradox
+-- Interactive/Stellaris by default); without them (and a message) when they cannot be read.
+function source.game_filesystem(game_dir, documents_dir)
+    documents_dir = documents_dir or ((os.getenv("USERPROFILE") or ""):gsub("\\", "/")
+        .. "/Documents/Paradox Interactive/Stellaris")
+    local mods, message = source.enabled_mods(documents_dir)
+    return source.filesystem(game_dir, mods), mods or {}, message
+end
+
+-- source.files(fs, subdir, extension) -> fs:files(subdir, extension)
+function source.files(fs, subdir, extension)
+    return filesystem_of(fs):files(subdir, extension)
 end
 
 local function read_file(path)
@@ -87,13 +202,17 @@ local function read_file(path)
     return text
 end
 
--- source.parse(path [, name]) -> tree | nil, message
-function source.parse(path, name)
+-- source.parse(fs, relative) -> tree | nil, message: the file the game reads for this path
+function source.parse(fs, relative)
+    local path = filesystem_of(fs):path(relative)
+    if path == nil then
+        return nil, relative .. ": no such file"
+    end
     local text, message = read_file(path)
     if text == nil then
         return nil, message
     end
-    return pdxscript.parse(text, name or path)
+    return pdxscript.parse(text, relative)
 end
 
 -- Scripted triggers, effects and values are templates (CMetaScriptTemplate): the game reads the
@@ -281,17 +400,23 @@ local function replace_all(text, find, value)
     return table.concat(out)
 end
 
--- source.expand(game_dir, block) -> block: the block with its `inline_script` statements replaced
+-- source.expand(fs, block) -> block: the block with its `inline_script` statements replaced
 -- by the entries of the inline scripts, as the game reads them: common/inline_scripts/<script>.txt
 -- with `$NAME$` replaced by each parameter in turn (no parameter blocks, no defaults: the game
 -- does not handle them there), parsed, and expanded in turn.
 --   inline_script = "jobs/soldiers_add"
 --   inline_script = { script = jobs/soldiers_add  AMOUNT = 2  TRIGGER = "owner? = { ... }" }
--- Nested blocks are expanded too. The entries an inline script adds have `inline` = its name
--- (their lines are those of the inline script). Errors (a missing script, a parse error) are
--- collected in errors and the statement is dropped.
-function source.expand(game_dir, block, errors, depth)
+-- Nested blocks are expanded too. The entries an inline script adds have `inline`, the location
+-- the game gives that content without its line: where is that of the expanded text ("file:
+-- events/x.txt" for a file), and an inline script whose statement ends at line 12 of it (the '}'
+-- of `inline_script = { ... }`) adds `inline` = "file: events/x.txt:12(inline_script)
+-- common/inline_scripts/y.txt" (then " line: 3" in the game's locations; inline scripts in inline
+-- scripts make a chain). Errors (a missing script, a parse error) are collected in errors and the
+-- statement is dropped.
+function source.expand(fs, block, errors, depth, where)
+    fs = filesystem_of(fs)
     depth = depth or 0
+    where = where or "?"
     local out = { line = block.line, type = block.type, name = block.name, warnings = block.warnings }
     for _, e in ipairs(block) do
         if e.op and e.key and e.key.text:lower() == "inline_script" and depth < 32 then
@@ -311,7 +436,13 @@ function source.expand(game_dir, block, errors, depth)
                 end
             end
             local file = "common/inline_scripts/" .. tostring(script) .. ".txt"
-            local text, message = read_file(game_dir .. "/" .. file)
+            local path = fs:path(file)
+            local text, message
+            if path then
+                text, message = read_file(path)
+            else
+                message = "no such file"
+            end
             local tree
             if text then
                 for _, p in ipairs(params) do
@@ -325,15 +456,19 @@ function source.expand(game_dir, block, errors, depth)
                         tostring(script), tostring(message))
                 end
             else
-                for _, inner in ipairs(source.expand(game_dir, tree, errors, depth + 1)) do
+                -- the game places the call where its statement ends: `inline_script = { ... }` at
+                -- the line of its '}'
+                local call_line = e.value.text == nil and e.value.last or e.line
+                local inner_where = string.format("%s:%d(inline_script) %s", where, call_line, file)
+                for _, inner in ipairs(source.expand(fs, tree, errors, depth + 1, inner_where)) do
                     -- where it came from (its line numbers are those of the inline script)
-                    inner.inline = inner.inline or script
+                    inner.inline = inner.inline or inner_where
                     out[#out + 1] = inner
                 end
             end
         else
             if e.op and e.value and e.value.text == nil then
-                e.value = source.expand(game_dir, e.value, errors, depth)
+                e.value = source.expand(fs, e.value, errors, depth, where)
             end
             out[#out + 1] = e
         end
@@ -341,15 +476,16 @@ function source.expand(game_dir, block, errors, depth)
     return out
 end
 
--- source.definitions(game_dir, subdir) -> definitions, errors: the top-level `name = { ... }`
+-- source.definitions(fs, subdir) -> definitions, errors: the top-level `name = { ... }`
 -- statements of the subdir's .txt files.
 -- A definition also has `last`, the line before the next top-level entry of its file (or the last
 -- line of the file), and `path`, its file: what source.instantiate reads.
-function source.definitions(game_dir, subdir)
+function source.definitions(fs, subdir)
+    fs = filesystem_of(fs)
     local defs, errors = {}, {}
-    for _, path in ipairs(source.files(game_dir, subdir, "txt")) do
-        local short = path:sub(#game_dir + 2)
-        local tree, message = source.parse(path, short)
+    for _, short in ipairs(fs:files(subdir, "txt")) do
+        local path = fs:path(short)
+        local tree, message = source.parse(fs, short)
         if tree == nil then
             errors[#errors + 1] = message
         else
@@ -373,13 +509,13 @@ function source.definitions(game_dir, subdir)
     return defs, errors
 end
 
--- source.instantiate(game_dir, def, args [, errors]) -> block | nil, message: a scripted trigger,
+-- source.instantiate(fs, def, args [, errors]) -> block | nil, message: a scripted trigger,
 -- effect or value definition (from source.definitions) as the game reads it for a call with these
 -- arguments ({ { name, value }, ... }): its text (lines def.line to def.last of its file) as a
 -- template (source.template, kept in def.template), rewritten for the call (source.generate),
 -- parsed at its lines in its file, its inline scripts expanded. The file texts are cached.
 local texts = setmetatable({}, { __mode = "v" })
-function source.instantiate(game_dir, def, args, errors)
+function source.instantiate(fs, def, args, errors)
     if def.template == nil then
         local lines = texts[def.path]
         if lines == nil then
@@ -409,7 +545,7 @@ function source.instantiate(game_dir, def, args, errors)
     if not (e and e.op and e.value and e.value.text == nil) then
         return nil, def.file .. ":" .. def.line .. ": not a definition after substitution"
     end
-    return source.expand(game_dir, e.value, errors)
+    return source.expand(fs, e.value, errors)
 end
 
 return source

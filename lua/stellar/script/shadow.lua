@@ -179,9 +179,10 @@ compare_block = function(ctx, block, node, where)
 end
 
 -- Every scripted trigger or effect the game instantiated without arguments (from its calls), its
--- body compared with the definition parsed from the files.
+-- body compared with the definition read as the game does (source.instantiate, no arguments).
 local function scripted(kind, options)
-    local defs, errors = source.definitions(options.game_dir, kind.directory)
+    local fs = source.filesystem_of(options.game_dir)
+    local defs, errors = source.definitions(fs, kind.directory)
     local n = native.new(options.catalog, options.read)
     local decompile = n[kind.decompile]
     local ctx = { catalog = options.catalog, kind = kind, matched = 0, mismatches = 0, nullable_differences = 0,
@@ -207,11 +208,15 @@ local function scripted(kind, options)
             result.not_instantiated = result.not_instantiated + 1
         else
             local before = ctx.mismatches
-            local block = source.expand(options.game_dir, def.block, result.expand_errors)
-            compare_block(ctx, block, decompile(n, body), string.format("%s:%d %s", def.file, def.line, name))
-            result.compared = result.compared + 1
-            if ctx.mismatches == before then
-                result.identical = result.identical + 1
+            local block, message = source.instantiate(fs, def, {}, result.expand_errors)
+            if block == nil then
+                result.expand_errors[#result.expand_errors + 1] = name .. ": " .. tostring(message)
+            else
+                compare_block(ctx, block, decompile(n, body), string.format("%s:%d %s", def.file, def.line, name))
+                result.compared = result.compared + 1
+                if ctx.mismatches == before then
+                    result.identical = result.identical + 1
+                end
             end
         end
     end
@@ -223,8 +228,8 @@ local function scripted(kind, options)
 end
 
 -- shadow.scripted_triggers(options), shadow.scripted_effects(options) -> result
---   options: catalog (after a census), read, game_dir, calls (the CScriptedTrigger /
---   CScriptedEffect objects of the census)
+--   options: catalog (after a census), read, game_dir (the game directory, or a source.filesystem
+--   with mods), calls (the CScriptedTrigger / CScriptedEffect objects of the census)
 function shadow.scripted_triggers(options)
     return scripted(KINDS.trigger, options)
 end
@@ -235,42 +240,85 @@ end
 
 -- Everything the game compiled ------------------------------------------------------------------
 
--- The place of a location: " file: events/x.txt line: 123". Other locations are inside scripted
--- triggers or effects (" path:line @ scripted effect x at ...") or inline scripts.
-local function place(location)
-    local file, line = (location or ""):match("^%s*file: (%S+) line: (%d+)%s*$")
-    if file then
-        return file, tonumber(line)
+-- An event's picture reads a `picture = { ... }` inside its block as more of itself: vanilla puts
+-- inline scripts that make whole picture blocks inside a picture block, and the game reads all
+-- their triggers into one (the first, then the others appended, merged_siblings). The nested blocks'
+-- entries are spliced in place; entries from an inline script keep its location.
+local function flatten_pictures(block)
+    for _, e in ipairs(block) do
+        if e.op and e.key and is_block(e) then
+            if e.key.text:lower() == "picture" then
+                local out, nested = {}, false
+                for _, inner in ipairs(e.value) do
+                    if inner.op and inner.key and inner.key.text:lower() == "picture" and is_block(inner) then
+                        nested = true
+                        for _, x in ipairs(inner.value) do
+                            x.inline = x.inline or inner.inline
+                            out[#out + 1] = x
+                        end
+                    else
+                        out[#out + 1] = inner
+                    end
+                end
+                if nested then
+                    for i = #e.value, 1, -1 do
+                        e.value[i] = nil
+                    end
+                    for i, x in ipairs(out) do
+                        e.value[i] = x
+                    end
+                end
+            end
+            flatten_pictures(e.value)
+        end
     end
 end
 
--- The statements of an expanded tree by line (of the key, and of the `{` when it is on another
--- line), outer ones first, each with its parent block. Entries from inline scripts are not indexed:
--- their lines are those of the inline script.
-local function index_lines(block, by_line)
-    local function add(line, e)
-        local list = by_line[line]
+-- The place of a location: its file and its key in that file's index (index_lines). The key is
+-- the line for " file: events/x.txt line: 123", and the whole location for the content of inline
+-- scripts, " file: events/x.txt:12(inline_script) common/inline_scripts/y.txt line: 3" (a chain
+-- when inline scripts include others). Other locations are inside scripted triggers or effects
+-- (" path:line @ scripted effect x at ...") or script values.
+local function place(location)
+    location = location or ""
+    local file, line = location:match("^%s*file: (%S+) line: (%d+)%s*$")
+    if file then
+        return file, tonumber(line)
+    end
+    file = location:match("^%s*file: (%S-):%d+%(inline_script%) ")
+    if file and location:find("^%s*file: [^@]- line: %d+%s*$") then
+        return file, (location:gsub("^%s+", ""):gsub("%s+$", ""))
+    end
+end
+
+-- The statements of an expanded tree by place (of the key, and of the `{` when it is on another
+-- line), outer ones first, each with its parent block. The place is the line, or for the content
+-- of an inline script the location the game gives it (source.expand's `inline` and the line in the
+-- inline script, place's key).
+local function index_lines(block, by_line, where)
+    local function add(line, e, w)
+        local key = w and (w .. " line: " .. line) or line
+        local list = by_line[key]
         if list == nil then
             list = {}
-            by_line[line] = list
+            by_line[key] = list
         end
         list[#list + 1] = e
     end
     for _, e in ipairs(block) do
-        if e.inline then
-            -- from an inline script
-        elseif e.op and e.key then
+        local w = e.inline or where
+        if e.op and e.key then
             e.parent = block
-            add(e.line, e)
+            add(e.line, e, w)
             if is_block(e) then
                 if e.value.line and e.value.line ~= e.line then
-                    add(e.value.line, e)
+                    add(e.value.line, e, w)
                 end
-                index_lines(e.value, by_line)
+                index_lines(e.value, by_line, w)
             end
         elseif e.param or e.text == nil then
             -- a parameter block, or a block in a list (`{ name = x trigger = { } }` in ship_sizes)
-            index_lines(e, by_line)
+            index_lines(e, by_line, w)
         end
     end
 end
@@ -409,8 +457,9 @@ end
 -- shadow.everything(options) -> result: every compiled trigger and effect tree the game read from a
 -- file (not from a scripted trigger or effect or an inline script, which are the content of a tree),
 -- compared with the statement at its place in our reading of that file.
---   options: catalog (after a census), read, game_dir, triggers, effects (every object: the
---   census' all lists), log (progress), max_examples
+--   options: catalog (after a census), read, game_dir (the game directory, or a source.filesystem
+--   with mods), triggers, effects (every object: the census' all lists), log (progress),
+--   max_examples
 -- The roots are the objects no other object points to (native:links); members a trigger or effect
 -- keeps outside its children (the limit of count_*, ...) are roots of their own, compared at their
 -- own place. result.directories[dir] = { roots, compared, identical, matched, mismatches,
@@ -471,8 +520,9 @@ function shadow.everything(options)
     -- scripted calls: an instance is a definition read with a call's arguments, shared by the calls
     -- with the same arguments; by_call finds the instance of the content placed
     -- `@ scripted effect x at <the call's location>`
-    local defs = { trigger = source.definitions(options.game_dir, "common/scripted_triggers"),
-        effect = source.definitions(options.game_dir, "common/scripted_effects") }
+    local fs = source.filesystem_of(options.game_dir)
+    local defs = { trigger = source.definitions(fs, "common/scripted_triggers"),
+        effect = source.definitions(fs, "common/scripted_effects") }
     local by_call, by_body, instances = {}, {}, {}
     for _, kind in ipairs({ "trigger", "effect" }) do
         local scripted = KINDS[kind].scripted
@@ -566,7 +616,8 @@ function shadow.everything(options)
         for _, root in ipairs(list) do
             local kind = KINDS[root.kind]
             local node = (root.kind == "trigger" and n.trigger or n.effect)(n, root.object)
-            local where = string.format("%s:%d", label, root.line)
+            -- root.line: a line of the source, or the game's location of inline script content
+            local where = type(root.line) == "number" and (label .. ":" .. root.line) or root.line
             local ctx
             if by_line == nil then
                 ctx = nil
@@ -590,16 +641,26 @@ function shadow.everything(options)
 
     -- each file: read, index, compare its roots
     for _, file in ipairs(files) do
-        local tree, message = source.parse(options.game_dir .. "/" .. file, file)
+        local tree, message = source.parse(fs, file)
         result.files = result.files + 1
         local by_line
         if tree == nil then
             result.file_errors[#result.file_errors + 1] = message
         else
             by_line = {}
-            index_lines(source.expand(options.game_dir, tree, result.expand_errors), by_line)
+            local expanded = source.expand(fs, tree, result.expand_errors, 0, "file: " .. file)
+            flatten_pictures(expanded)
+            index_lines(expanded, by_line)
         end
-        compare_roots(by_file[file], by_line, directory(file:match("^(common/[^/]+)/") or file:match("^([^/]+)/") or file), file)
+        -- the file's own statements, and the content of the inline scripts it calls
+        local own, inline = {}, {}
+        for _, root in ipairs(by_file[file]) do
+            local list = type(root.line) == "number" and own or inline
+            list[#list + 1] = root
+        end
+        local dir = file:match("^(common/[^/]+)/") or file:match("^([^/]+)/") or file
+        compare_roots(own, by_line, directory(dir), file)
+        compare_roots(inline, by_line, directory("(inline script content)"), file)
         by_file[file] = nil
     end
 
@@ -613,7 +674,7 @@ function shadow.everything(options)
         local label = string.format("%s %s%s", def and def.file or "?", instance.tag, #instance.args > 0 and " (with arguments)" or "")
         local block, message
         if def then
-            block, message = source.instantiate(options.game_dir, def, instance.args, result.expand_errors)
+            block, message = source.instantiate(fs, def, instance.args, result.expand_errors)
         end
         if block == nil and #result.instance_errors < 50 then
             result.instance_errors[#result.instance_errors + 1] = instance.tag .. ": " .. tostring(message or "no definition")

@@ -152,15 +152,21 @@ local function read_catalog(waited)
     stellar.log(string.format("script: census in %.2fs", util.now() - t2))
 
     -- shadow: the scripted triggers and effects read from the files in Lua, next to what the game
-    -- compiled from them
+    -- compiled from them; the files are the game's with the mods the launcher enabled
     local shadow = require("stellar.script.shadow")
+    local fs, mods, mods_message = require("stellar.script.source").game_filesystem(util.dirname(stellar.module_path))
+    local names = {}
+    for _, mod in ipairs(mods) do
+        names[#names + 1] = mod.name or mod.descriptor
+    end
+    stellar.log(string.format("script: %d mods enabled%s%s", #mods, #names > 0 and ": " .. table.concat(names, ", ") or "",
+        mods_message and (" (" .. mods_message .. ")") or ""))
     for _, s in ipairs({
         { what = "scripted triggers", run = shadow.scripted_triggers, calls = census.triggers.objects["(scripted trigger)"] },
         { what = "scripted effects", run = shadow.scripted_effects, calls = census.effects.objects["(scripted effect)"] },
     }) do
         local t3 = util.now()
-        local done, result = pcall(s.run, { catalog = c, read = stellar.read,
-            game_dir = util.dirname(stellar.module_path), calls = s.calls or {} })
+        local done, result = pcall(s.run, { catalog = c, read = stellar.read, game_dir = fs, calls = s.calls or {} })
         if not done then
             stellar.log("script: shadow of " .. s.what .. " failed: " .. tostring(result))
         else
