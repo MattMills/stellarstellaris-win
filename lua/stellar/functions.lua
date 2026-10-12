@@ -29,6 +29,11 @@ return {
     { name = "SPushLoadScreenState::~SPushLoadScreenState", what = "a loading stage ends" },
     { name = "RenderLoadScreen", what = "draws the load screen at a progress (0 to 100)" },
     { name = "CGameApplication::LoadingScreenCallback", what = "a step of a phase of the startup load (current of total, the phase's start and span of the bar)" },
+    -- the read: files listed, read and parsed (stellar.loading)
+    { name = "CLexer::CLexer", what = "the first overload, CLexer(const CString& path, EFileType, ELexerFileType): reads a file into memory to lex it" },
+    { name = "CMemoryFile::~CMemoryFile", what = "a file in memory goes away: for a file a lexer read, the end of its parse (the lexer's destructor is often inlined)" },
+    { name = "VFSGetEnumeratedFiles", what = "the files of a folder (game and mods), from the lists VFSPreEnumerateFiles made" },
+    { name = "VFSPreEnumerateFiles", what = "starts listing a folder in a task" },
     -- the game databases (stellar.databases)
     { name = "NNullObjAndDatabaseInitUtil::SetupDatabases", what = "initializes the game databases: their table is in its code" },
     -- the steps of CGameApplication::InitGame around the databases (stellar.loading milestones)

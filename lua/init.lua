@@ -92,6 +92,10 @@ end
 local marks_hooked, marks_failed = loading.hook_marks(marks)
 stellar.log(string.format("load: %d marks hooked%s", marks_hooked,
     #marks_failed > 0 and ("; not hooked: " .. table.concat(marks_failed, "; ")) or ""))
+-- the read: the files listed, read and parsed
+local reads_hooked, reads_failed = loading.hook_reads(found)
+stellar.log(string.format("load: read hooks: %d of 4%s", reads_hooked,
+    #reads_failed > 0 and ("; not hooked: " .. table.concat(reads_failed, "; ")) or ""))
 
 -- the turn tick reaches Lua: log the first ticks, then each new month, with how long the tick that
 -- started it took (the tick that runs MonthlyUpdate) and the ticks of the month

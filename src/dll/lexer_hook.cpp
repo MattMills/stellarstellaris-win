@@ -585,6 +585,17 @@ int l_lexer_mismatches(lua_State* L) {
 
 } // namespace
 
+int64_t stellar_lexer_file_size(void* lexer_pointer) {
+	if (layout.memory_file_vtable == 0 || lexer_pointer == nullptr) {
+		return -1;
+	}
+	uint8_t* const file = *reinterpret_cast<uint8_t* const*>(static_cast<uint8_t*>(lexer_pointer) + layout.lexer_file);
+	if (file == nullptr || *reinterpret_cast<const uintptr_t*>(file) != layout.memory_file_vtable) {
+		return -1;
+	}
+	return memory_size(file);
+}
+
 void stellar_lexer_counts(uint64_t* texts, uint64_t* tokens, uint64_t* bytes) {
 	*texts = stats.texts.load();
 	*tokens = stats.compared.load() + stats.replaced.load();

@@ -141,6 +141,59 @@ function loading.hook_marks(list)
     return hooked, failures
 end
 
+-- The read (stellar.hook_reads): every file in the order it was read, and the folder lists
+local files, lists, prelists = {}, {}, 0
+local opened, opened_order = {}, {}     -- files whose lexer was made (path -> count), in order
+
+-- loading.hook_reads(found) -> hooked, failures: the read hooks, from the functions found
+function loading.hook_reads(found)
+    local names = { "CLexer::CLexer", "CMemoryFile::~CMemoryFile", "VFSGetEnumeratedFiles", "VFSPreEnumerateFiles" }
+    local results = stellar.hook_reads(found[names[1]] or 0, found[names[2]] or 0, found[names[3]] or 0,
+        found[names[4]] or 0)
+    local hooked, failures = 0, {}
+    for i, name in ipairs(names) do
+        if results[i] == true then
+            hooked = hooked + 1
+        else
+            failures[#failures + 1] = name .. ": " .. tostring(results[i])
+        end
+    end
+    return hooked, failures
+end
+
+-- the path of the TSV of the files read (next to the log)
+local function files_path()
+    return (os.getenv("USERPROFILE") or ".") .. "\\Documents\\Paradox Interactive\\Stellaris\\logs\\stellarstellaris-files.tsv"
+end
+
+-- writes every file read: the order, when, the thread, the database, the path, its bytes and
+-- tokens, the milliseconds to read and to parse it
+local function write_files()
+    local f = io.open(files_path(), "w")
+    if f == nil then
+        return nil
+    end
+    f:write("order\ttime\tthread\tdatabase\tpath\tbytes\ttokens\tread_ms\tparse_ms\n")
+    for i, r in ipairs(files) do
+        f:write(string.format("%d\t%s\t%d\t%s\t%s\t%d\t%d\t%.3f\t%.3f\n", i, clock(r.time), r.thread, r.database,
+            r.path, r.bytes, r.tokens, r.read * 1000, r.parse * 1000))
+    end
+    f:close()
+    -- and the folder lists: when, the thread, the database, the folder (|filter|filter), the files
+    -- in it, the milliseconds it took
+    local lists_path = files_path():gsub("files%.tsv$", "folders.tsv")
+    f = io.open(lists_path, "w")
+    if f then
+        f:write("order\ttime\tthread\tdatabase\tfolder\tfiles\tms\n")
+        for i, l in ipairs(lists) do
+            f:write(string.format("%d\t%s\t%d\t%s\t%s\t%d\t%.3f\n", i, clock(l.time), l.thread, l.database, l.folder,
+                l.count, l.seconds * 1000))
+        end
+        f:close()
+    end
+    return files_path()
+end
+
 -- the post read running on the thread of e ends at e
 local function end_post_read(e)
     if post_read and post_read.thread == e.thread then
@@ -245,16 +298,39 @@ function loading.poll(read)
                 d.seconds, d.texts, d.tokens, d.bytes = e.time - d.time, e.texts - d.texts, e.tokens - d.tokens,
                     e.bytes - d.bytes
                 databases_done[#databases_done + 1] = d
-                log(e, string.format("database %d/%d %s: %.3fs, %d texts (%.2f MB), %d tokens", e.a, e.b, d.name,
-                    d.seconds, d.texts, d.bytes / 1e6, d.tokens))
+                log(e, string.format("database %d/%d %s: %.3fs, %d texts (%.2f MB), %d tokens; %d files read in %.3fs, parsed in %.3fs; %d folder lists in %.3fs",
+                    e.a, e.b, d.name, d.seconds, d.texts, d.bytes / 1e6, d.tokens, d.files, d.read, d.parse, d.lists,
+                    d.list_seconds))
                 database = nil
             end
+        elseif e.kind == "file" then
+            local d = database and database.thread == e.thread and database or nil
+            files[#files + 1] = { time = e.time, thread = e.thread, database = d and d.name or "(outside the databases)",
+                path = e.text, bytes = e.a, tokens = e.b, read = e.d1, parse = e.d2 }
+            if d then
+                d.files, d.read, d.parse = d.files + 1, d.read + e.d1, d.parse + e.d2
+            end
+        elseif e.kind == "list" then
+            local d = database and database.thread == e.thread and database or nil
+            lists[#lists + 1] = { time = e.time, thread = e.thread, folder = e.text, count = e.a, seconds = e.d1,
+                database = d and d.name or "(outside the databases)" }
+            if d then
+                d.lists, d.list_seconds = d.lists + 1, d.list_seconds + e.d1
+            end
+        elseif e.kind == "prelist" then
+            prelists = prelists + 1
+        elseif e.kind == "open" then
+            -- a file's lexer made: until its "file" (when it goes), it is open
+            local path = e.text:match("^(.*)|") or e.text
+            opened[path] = (opened[path] or 0) + 1
+            opened_order[#opened_order + 1] = { path = path, lexer = e.text:match("|(.*)$"), thread = e.thread,
+                database = database and database.thread == e.thread and database.name or "(outside the databases)" }
         elseif e.kind == "enter" then
             local m = marks[e.a] or { kind = "?", name = "#" .. e.a }
             end_post_read(e)
             if m.kind == "create" then
                 database = { name = m.name, time = e.time, thread = e.thread, texts = e.texts, tokens = e.tokens,
-                    bytes = e.bytes }
+                    bytes = e.bytes, files = 0, read = 0, parse = 0, lists = 0, list_seconds = 0 }
             elseif m.kind == "post_read" then
                 post_read = { name = m.name, time = e.time, thread = e.thread }
             elseif m.kind == "milestone" then
@@ -303,6 +379,58 @@ function loading.poll(read)
             end
             stellar.log(string.format("load:   %d databases initialized in %.1fs: %d texts (%.1f MB), %d tokens; the longest: %s",
                 #databases_done, seconds, texts, bytes / 1e6, tokens, table.concat(top, ", ")))
+        end
+        if #files > 0 then
+            -- the read: in the databases and outside them
+            local sums = {}
+            for _, r in ipairs(files) do
+                local key = r.database == "(outside the databases)" and r.database or "(in the databases)"
+                local s = sums[key] or { files = 0, bytes = 0, read = 0, parse = 0, threads = {} }
+                sums[key] = s
+                s.files, s.bytes, s.read, s.parse = s.files + 1, s.bytes + math.max(r.bytes, 0), s.read + r.read,
+                    s.parse + r.parse
+                s.threads[r.thread] = true
+            end
+            for key, s in pairs(sums) do
+                local threads = 0
+                for _ in pairs(s.threads) do
+                    threads = threads + 1
+                end
+                stellar.log(string.format("load:   files %s: %d (%.1f MB) on %d thread(s), read in %.2fs, parsed in %.2fs",
+                    key, s.files, s.bytes / 1e6, threads, s.read, s.parse))
+            end
+            local list_seconds = 0
+            for _, l in ipairs(lists) do
+                list_seconds = list_seconds + l.seconds
+            end
+            stellar.log(string.format("load:   %d folder lists (%d started ahead), %.2fs waiting for them; every file: %s",
+                #lists, prelists, list_seconds, tostring(write_files())))
+            local ctor, dtor, matched = stellar.read_counts()
+            stellar.log(string.format("load:   CLexer from a path: %d made; CMemoryFile: %d destroyed, %d of them files of those lexers",
+                ctor, dtor, matched))
+            -- the files opened that never closed, by database, with examples
+            local closed_count = {}
+            for _, r in ipairs(files) do
+                closed_count[r.path] = (closed_count[r.path] or 0) + 1
+            end
+            local by_database, examples = {}, {}
+            for _, o in ipairs(opened_order) do
+                if (closed_count[o.path] or 0) > 0 then
+                    closed_count[o.path] = closed_count[o.path] - 1
+                else
+                    by_database[o.database] = (by_database[o.database] or 0) + 1
+                    if #examples < 12 then
+                        examples[#examples + 1] = string.format("%s (lexer %s, thread %d)", o.path, tostring(o.lexer), o.thread)
+                    end
+                end
+            end
+            local list = {}
+            for name, n in pairs(by_database) do
+                list[#list + 1] = name .. " " .. n
+            end
+            table.sort(list)
+            stellar.log("load:   opened, never closed: " .. table.concat(list, ", "))
+            stellar.log("load:   for example: " .. table.concat(examples, "; "))
         end
         if #post_reads > 0 then
             local by_time, seconds = {}, 0

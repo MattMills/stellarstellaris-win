@@ -11,3 +11,7 @@ void stellar_lexer_open(lua_State* L);
 // The lexer hook's counts so far: texts started, tokens (compared or given by Lua), bytes of the
 // texts started
 void stellar_lexer_counts(uint64_t* texts, uint64_t* tokens, uint64_t* bytes);
+
+// The size of the text of a lexer whose file is a CMemoryFile, or -1 (or before the lexer is
+// hooked, when the layout is not known)
+int64_t stellar_lexer_file_size(void* lexer);

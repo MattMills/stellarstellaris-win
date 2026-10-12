@@ -34,8 +34,9 @@ struct LoadingEvent {
 	                      // enter: the id of the function entered
 	int c;                // step: span
 	bool flag;            // push: the state was pushed; pop: it had been
-	std::string text;     // push: the file; render: the text drawn
+	std::string text;     // push: the file; render: the text drawn; file: its path; list: the folder
 	uint64_t texts, tokens, bytes;  // the lexer hook's counts at that moment
+	double d1 = 0, d2 = 0;          // file: seconds to read it, to parse it; list: seconds
 };
 
 std::mutex events_lock;
@@ -49,8 +50,9 @@ double now() {
 	return static_cast<double>(t - 116444736000000000ULL) / 1e7;
 }
 
-void record(const char* kind, int a, int b, int line, bool flag, std::string text, int c = 0) {
-	LoadingEvent e{now(), GetCurrentThreadId(), kind, a, b, line, c, flag, std::move(text), 0, 0, 0};
+void record(const char* kind, int a, int b, int line, bool flag, std::string text, int c = 0, double d1 = 0,
+	double d2 = 0) {
+	LoadingEvent e{now(), GetCurrentThreadId(), kind, a, b, line, c, flag, std::move(text), 0, 0, 0, d1, d2};
 	stellar_lexer_counts(&e.texts, &e.tokens, &e.bytes);
 	std::lock_guard<std::mutex> guard(events_lock);
 	if (events.size() < kMaxEvents) {
@@ -58,12 +60,22 @@ void record(const char* kind, int a, int b, int line, bool flag, std::string tex
 	}
 }
 
-// A C string of the game, read with checks (at most `max` bytes)
+// A C string of the game, read with checks (at most `max` bytes): at once, or byte by byte when the
+// bytes run into memory that cannot be read
 std::string read_string(const char* p, size_t max) {
 	std::string out;
-	char c = 0;
+	if (p == nullptr || max == 0) {
+		return out;
+	}
+	out.resize(max);
 	SIZE_T read = 0;
-	for (size_t i = 0; p != nullptr && i < max; ++i) {
+	if (ReadProcessMemory(GetCurrentProcess(), p, &out[0], max, &read) && read == max) {
+		out.resize(std::strlen(out.c_str()));
+		return out;
+	}
+	out.clear();
+	char c = 0;
+	for (size_t i = 0; i < max; ++i) {
 		if (!ReadProcessMemory(GetCurrentProcess(), p + i, &c, 1, &read) || read != 1 || c == '\0') {
 			break;
 		}
@@ -90,7 +102,7 @@ std::string read_cstring(const void* s) {
 	}
 	const char* data = nullptr;
 	std::memcpy(&data, raw + 16, 8);
-	return read_string(data, static_cast<size_t>(size < 200 ? size : 200));
+	return read_string(data, static_cast<size_t>(size));
 }
 
 // SPushLoadScreenState::SPushLoadScreenState(this, int start, int end, const char* file, int line)
@@ -187,6 +199,101 @@ void** write_stub(uint8_t* stub, uint64_t id) {
 	return reinterpret_cast<void**>(p);
 }
 
+// The read. CLexer::CLexer(const CString& path, EFileType, ELexerFileType) reads a file into a
+// CMemoryFile (VFSOpenFile, PHYSFS_readBytes) that the lexer owns; the reader then parses it until
+// the lexer goes, which deletes the CMemoryFile. (The lexer's destructor is often inlined, the
+// file's is not: CMemoryFile::~CMemoryFile marks the end.) Each file is one event "file" then: its
+// path, size (a), tokens (b), the seconds to read it (d1) and to parse it (d2).
+// VFSGetEnumeratedFiles(folder, files, ...) lists a folder from the list a task made
+// (VFSPreEnumerateFiles): "list" with the folder, the count (a) and the seconds it took (d1);
+// "prelist" when a list is started.
+struct OpenFile {
+	void* file;  // the lexer's CMemoryFile
+	std::string path;
+	double start, read;
+	uint64_t tokens;
+	int64_t size;
+};
+thread_local std::vector<OpenFile>* open_files = nullptr;  // a reader may open a file while parsing one
+
+using lexer_ctor_function = void* (*)(void* self, const void* path, int file_type, int lexer_type);
+lexer_ctor_function original_lexer_ctor = nullptr;
+
+std::atomic<uint64_t> lexer_ctor_calls{0}, lexer_dtor_calls{0}, lexer_dtor_matched{0};
+
+void* lexer_ctor_hook(void* self, const void* path, int file_type, int lexer_type) {
+	++lexer_ctor_calls;
+	const double start = now();
+	void* result = original_lexer_ctor(self, path, file_type, lexer_type);
+	uint64_t texts = 0, tokens = 0, bytes = 0;
+	stellar_lexer_counts(&texts, &tokens, &bytes);
+	if (open_files == nullptr) {
+		open_files = new std::vector<OpenFile>();
+	}
+	void* file = *reinterpret_cast<void* const*>(static_cast<uint8_t*>(self) + 8);  // CLexer::_File
+	std::string name = read_cstring(path);
+	char file_address[32];
+	std::snprintf(file_address, sizeof(file_address), "%p", file);
+	record("open", 0, 0, 0, false, name + "|" + file_address);
+	open_files->push_back(OpenFile{file, std::move(name), start, now(), tokens, stellar_lexer_file_size(self)});
+	return result;
+}
+
+// CMemoryFile::~CMemoryFile(this): the end of the parse of a file read by a lexer
+using file_dtor_function = void (*)(void* self);
+file_dtor_function original_file_dtor = nullptr;
+
+void file_dtor_hook(void* self) {
+	++lexer_dtor_calls;
+	if (open_files != nullptr) {
+		for (size_t i = open_files->size(); i-- > 0;) {
+			OpenFile& f = (*open_files)[i];
+			if (f.file == self) {
+				++lexer_dtor_matched;
+				uint64_t texts = 0, tokens = 0, bytes = 0;
+				stellar_lexer_counts(&texts, &tokens, &bytes);
+				record("file", static_cast<int>(f.size), static_cast<int>(tokens - f.tokens), 0, false, std::move(f.path), 0,
+					f.read - f.start, now() - f.read);
+				open_files->erase(open_files->begin() + static_cast<std::ptrdiff_t>(i));
+				break;
+			}
+		}
+	}
+	original_file_dtor(self);
+}
+
+// void VFSGetEnumeratedFiles(const char* folder, CPdxArray<CString>& files, const char*, const char*, int)
+using enumerated_function = void (*)(const char* folder, void* files, const char* a, const char* b, int flag);
+enumerated_function original_enumerated = nullptr;
+
+void enumerated_hook(const char* folder, void* files, const char* a, const char* b, int flag) {
+	const double start = now();
+	original_enumerated(folder, files, a, b, flag);
+	int32_t count = 0;
+	std::memcpy(&count, static_cast<const uint8_t*>(files) + 20, 4);  // CPdxArray: count at +20
+	// the folder and the filter (the next argument is not set by every caller)
+	(void)b;
+	std::string text = read_string(folder, 512);
+	if (a != nullptr) {
+		text += "|" + read_string(a, 64);
+	}
+	record("list", count, flag, 0, false, std::move(text), 0, now() - start);
+}
+
+// void VFSPreEnumerateFiles(const char* folder, const char*, const char*, int)
+using pre_enumerate_function = void (*)(const char* folder, const char* a, const char* b, int flag);
+pre_enumerate_function original_pre_enumerate = nullptr;
+
+void pre_enumerate_hook(const char* folder, const char* a, const char* b, int flag) {
+	(void)b;
+	std::string text = read_string(folder, 512);
+	if (a != nullptr) {
+		text += "|" + read_string(a, 64);
+	}
+	record("prelist", flag, 0, 0, false, std::move(text));
+	original_pre_enumerate(folder, a, b, flag);
+}
+
 uintptr_t check_address(lua_State* L, int idx) {
 	const lua_Number value = luaL_checknumber(L, idx);
 	if (!(value > 0) || value >= 18446744073709551616.0 || value != static_cast<lua_Number>(static_cast<uint64_t>(value))) {
@@ -263,6 +370,49 @@ int l_hook_entries(lua_State* L) {
 	return 1;
 }
 
+// stellar.hook_reads(lexer_ctor, file_dtor, enumerated, pre_enumerate) -> results: hooks the read
+// (see above: file_dtor is CMemoryFile::~CMemoryFile); results[i] is true or why the i-th could
+// not be hooked
+int l_hook_reads(lua_State* L) {
+	const struct {
+		void* hook;
+		void** original;
+	} hooks[] = {
+		{reinterpret_cast<void*>(&file_dtor_hook), reinterpret_cast<void**>(&original_file_dtor)},
+		{reinterpret_cast<void*>(&lexer_ctor_hook), reinterpret_cast<void**>(&original_lexer_ctor)},
+		{reinterpret_cast<void*>(&enumerated_hook), reinterpret_cast<void**>(&original_enumerated)},
+		{reinterpret_cast<void*>(&pre_enumerate_hook), reinterpret_cast<void**>(&original_pre_enumerate)},
+	};
+	// the destructor first: a file read after the constructor is hooked must be seen going
+	const int order[] = {2, 1, 3, 4};
+	lua_createtable(L, 4, 0);
+	for (int k = 0; k < 4; ++k) {
+		const int i = order[k];
+		const lua_Number value = luaL_optnumber(L, i, 0);
+		const char* error = nullptr;
+		if (*hooks[k].original != nullptr) {
+			lua_pushliteral(L, "hooked already");
+		} else if (!(value > 0)) {
+			lua_pushliteral(L, "not found");
+		} else if (!install_code_hook(reinterpret_cast<void*>(static_cast<uintptr_t>(value)), hooks[k].hook, hooks[k].original, &error)) {
+			lua_pushstring(L, error);
+		} else {
+			lua_pushboolean(L, 1);
+		}
+		lua_rawseti(L, -2, i);
+	}
+	return 1;
+}
+
+// stellar.read_counts() -> CLexer constructor calls (from a path), CMemoryFile destructor calls,
+// those of files of lexers made from a path
+int l_read_counts(lua_State* L) {
+	lua_pushnumber(L, static_cast<lua_Number>(lexer_ctor_calls.load()));
+	lua_pushnumber(L, static_cast<lua_Number>(lexer_dtor_calls.load()));
+	lua_pushnumber(L, static_cast<lua_Number>(lexer_dtor_matched.load()));
+	return 3;
+}
+
 // stellar.loading_events() -> the events since the last call:
 // { time, thread, kind, a, b, c, line, flag, text, texts, tokens, bytes }
 int l_loading_events(lua_State* L) {
@@ -299,6 +449,10 @@ int l_loading_events(lua_State* L) {
 		lua_setfield(L, -2, "tokens");
 		lua_pushnumber(L, static_cast<lua_Number>(e.bytes));
 		lua_setfield(L, -2, "bytes");
+		lua_pushnumber(L, e.d1);
+		lua_setfield(L, -2, "d1");
+		lua_pushnumber(L, e.d2);
+		lua_setfield(L, -2, "d2");
 		lua_rawseti(L, -2, static_cast<int>(i + 1));
 	}
 	return 1;
@@ -313,4 +467,8 @@ void stellar_loading_open(lua_State* L) {
 	lua_setfield(L, -2, "loading_events");
 	lua_pushcfunction(L, l_hook_entries);
 	lua_setfield(L, -2, "hook_entries");
+	lua_pushcfunction(L, l_hook_reads);
+	lua_setfield(L, -2, "hook_reads");
+	lua_pushcfunction(L, l_read_counts);
+	lua_setfield(L, -2, "read_counts");
 }
