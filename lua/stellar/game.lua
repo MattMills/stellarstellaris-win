@@ -19,8 +19,7 @@
 -- the game waits for them. In multiplayer, what they change stays in sync only if it is
 -- deterministic. A callback that raises an error is logged and removed.
 
-local fnmatch = require("fnmatch")
-local signatures = require("stellar.signatures")
+local resolve = require("stellar.resolve")
 local util = require("stellar.util")
 local hex = util.hex
 
@@ -32,23 +31,12 @@ game.layout = {
     current_date = 0xc0,  -- CGameDate _CurrentDate: int _nUniversalDate, in hours
 }
 
--- The functions, found by their signatures from signatures.lua (listed in functions.lua).
+-- The functions, found by their signatures (stellar.resolve; listed in functions.lua).
 local FUNCTIONS = {
     "CGameState::HandleTurnTick",
     "CGameApplication::Update",
     "CInGameIdler::CheckTick",
 }
-
-local function alternatives(name)
-    local list = {}
-    local overloads = signatures.functions[name]
-    for _, from in ipairs(overloads and overloads[1] or {}) do
-        for _, sig in ipairs(from.signatures) do
-            list[#list + 1] = sig
-        end
-    end
-    return list
-end
 
 -- Offsets (from 0) of the matches of a pattern ("c6 05 ?? ?? ?? ?? 01") in a string of bytes.
 local function search(bytes, pattern)
@@ -81,14 +69,13 @@ end
 -- where has the functions (handle_turn_tick, update, check_tick) and the globals (gate, which is
 -- g_AllowGlobalGameStateAccess, allow_get_player, current_game_state).
 function game.locate(image, read)
-    local bundle = fnmatch.bundle(image)
+    local found = resolve.functions(image)
     local entries = {}
     for _, name in ipairs(FUNCTIONS) do
-        entries[name] = bundle:register({ name = name, signatures = alternatives(name) })
-    end
-    local run = bundle:run()
-    if not run.ok then
-        return nil, "fnmatch: " .. tostring(run.error)
+        if not found[name] then
+            return nil, "fnmatch: " .. name .. " not found"
+        end
+        entries[name] = { address = found[name] }
     end
     local where = {
         handle_turn_tick = entries["CGameState::HandleTurnTick"].address,

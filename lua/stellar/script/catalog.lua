@@ -22,9 +22,8 @@
 -- crash. The trigger and effect tables do not change once the game has started; the lexer grows
 -- while the game loads, so read it again from the main thread (a tick) for a consistent view.
 
-local fnmatch = require("fnmatch")
 local ffi = require("ffi")
-local signatures = require("stellar.signatures")
+local resolve = require("stellar.resolve")
 local memory = require("stellar.script.memory")
 
 local catalog = {}
@@ -70,17 +69,6 @@ local TOKEN_NAME = 16      -- CToken: int _LexerToken, ..., CPdxHybridArray<char
 local TRIGGER_ENTRIES = 0x88 -- CTriggerDatabase: std::map<int, CTriggerEntryBase *> _TriggerEntries
 local EFFECT_ENTRIES = 0x18  -- CEffectDatabase: std::map<int, CEffectEntryBase *> _EffectEntries
 
-local function alternatives(name)
-    local list = {}
-    local overloads = signatures.functions[name]
-    for _, from in ipairs(overloads and overloads[1] or {}) do
-        for _, sig in ipairs(from.signatures) do
-            list[#list + 1] = sig
-        end
-    end
-    return list
-end
-
 -- Little-endian values in a string of bytes (offsets from 0), checked reads
 local u8, i32, u32, u64 = memory.u8, memory.i32, memory.u32, memory.u64
 local strict = memory.strict
@@ -95,18 +83,17 @@ end
 -- static pointers CTriggerDatabase::_pTriggerDatabase and CEffectDatabase::_pEffectDatabase), and
 -- methods: the methods of the STRUCTURAL classes that were found (address -> kind).
 function catalog.locate(image, read)
-    local bundle = fnmatch.bundle(image)
+    local found = resolve.functions(image)
     local entries = {}
     for key, name in pairs(FUNCTIONS) do
-        entries[key] = bundle:register({ name = name, signatures = alternatives(name) })
+        if not found[name] then
+            return nil, "fnmatch: " .. name .. " not found"
+        end
+        entries[key] = { address = found[name] }
     end
     local structural = {}
     for i, s in ipairs(STRUCTURAL) do
-        structural[i] = bundle:register({ name = s.method, signatures = alternatives(s.method), required = false })
-    end
-    local run = bundle:run()
-    if not run.ok then
-        return nil, "fnmatch: " .. tostring(run.error)
+        structural[i] = { found = found[s.method] ~= nil, address = found[s.method] }
     end
     local ok, result = pcall(function()
         local r = strict(read)

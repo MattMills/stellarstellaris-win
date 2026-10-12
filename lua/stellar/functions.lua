@@ -20,4 +20,7 @@ return {
     { name = "CContextEffect::ReadMember", what = "a scope change in an effect (CContextEffect)" },
     { name = "CRandomListEffect::CEntryEffect::ReadMember", what = "an entry of random_list" },
     { name = "CEffect::ReadMember", what = "a block of effects (immediate, option, ...)" },
+    -- the text lexer: the game's PDXScript tokenizer (stellar.script.lexer replaces it)
+    { name = "CTextLexer::GetTok", what = "the next token of a script text: the lexer hook" },
+    { name = "CMemoryFile::CMemoryFile", what = "names the vtable of CMemoryFile: a lexer's file whose text is in memory" },
 }
