@@ -18,6 +18,7 @@
 #include <lua_fnmatch.h>
 #include <lua_sigmatch.h>
 
+#include <atomic>
 #include <cstring>
 
 extern HMODULE hModule;
@@ -151,11 +152,22 @@ int l_thread_id(lua_State* L) {
 	return 1;
 }
 
+// turn tick calls skipped because another thread was running Lua (see call_turn_tick)
+std::atomic<uint64_t> skipped_ticks{0};
+
+// stellar.skipped_ticks() -> how many turn tick calls (before or after a tick) Lua missed because
+// another thread was running Lua
+int l_skipped_ticks(lua_State* L) {
+	lua_pushnumber(L, static_cast<lua_Number>(skipped_ticks.load()));
+	return 1;
+}
+
 // The turn tick (docs/main_loop.md, lua/stellar/game.lua). CGameState::HandleTurnTick runs one tick
 // (10 per game day) on the main thread. Once stellar.hook_turn_tick has hooked it, it calls
 // stellar.turn_tick("before" | "after", game_state, gate_was_open) around the tick, with
 // g_AllowGlobalGameStateAccess open, as the game's own helpers open it around code that uses the
-// game state.
+// game state. The main thread never waits for Lua: while another thread runs Lua (the heartbeat, a
+// long dev\run.lua), the tick goes on without the call, and stellar.skipped_ticks() counts it.
 
 // void CGameState::HandleTurnTick(CGameState *this, const CPdxArray<uint64_t, int> &checksums)
 using handle_turn_tick_function = void (*)(void* game_state, const void* checksums);
@@ -165,7 +177,11 @@ volatile bool* game_state_gate = nullptr;
 bool call_protected(lua_State* L, int nargs);
 
 void call_turn_tick(const char* phase, void* game_state) {
-	std::lock_guard<std::recursive_mutex> guard(stellar_lua_lock());
+	std::unique_lock<std::recursive_mutex> guard(stellar_lua_lock(), std::try_to_lock);
+	if (!guard.owns_lock()) {
+		++skipped_ticks;
+		return;
+	}
 	if (L == nullptr) {
 		return;
 	}
@@ -235,6 +251,7 @@ int luaopen_stellar(lua_State* L) {
 		{"read", l_read},
 		{"patch", l_patch},
 		{"thread_id", l_thread_id},
+		{"skipped_ticks", l_skipped_ticks},
 		{"hook_turn_tick", l_hook_turn_tick},
 		{nullptr, nullptr},
 	};

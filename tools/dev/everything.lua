@@ -28,7 +28,7 @@ t0 = util.now()
 local r = shadow.everything({ catalog = c, read = stellar.read, game_dir = util.dirname(stellar.module_path),
     triggers = census.triggers.all, effects = census.effects.all, max_examples = 100000,
     log = function(line) print("dev: " .. line .. string.format(" (%.1fs)", util.now() - t0)) end })
-print(string.format("dev: everything in %.1fs: %d files, %d nodes match, %d mismatches, %d roots inside scripted or inline content, %d file errors",
+print(string.format("dev: everything in %.1fs: %d files, %d nodes match, %d mismatches, %d roots not compared yet, %d file errors",
     util.now() - t0, r.files, r.matched, r.mismatches, r.indirect, #r.file_errors))
 
 -- the report
@@ -50,7 +50,11 @@ end
 out[#out + 1] = string.format("%-45s %8d %8d %9d %9d %10d %12d", "all", totals.roots, totals.compared, totals.identical, totals.matched, totals.mismatches, totals.no_statement)
 out[#out + 1] = ""
 out[#out + 1] = "empty blocks without a location: " .. r.empty
-out[#out + 1] = "roots inside scripted or inline content: " .. r.indirect
+out[#out + 1] = "scripted instances: " .. r.instances .. ", errors reading them: " .. #r.instance_errors
+for _, e in ipairs(r.instance_errors) do
+    out[#out + 1] = "  " .. e
+end
+out[#out + 1] = "roots not compared yet: " .. r.indirect
 for kind, k in pairs(r.indirect_kinds) do
     out[#out + 1] = string.format("  %-25s %8d   e.g. %s", kind, k.count, k.example:sub(1, 300))
     local names = {}

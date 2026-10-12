@@ -440,10 +440,67 @@ function shadow.everything(options)
         log(string.format("shadow: %d %s objects, %d roots", #objects, kind, count))
     end
 
-    -- their places, by file
-    local by_file, result = {}, { directories = {}, indirect = 0, indirect_kinds = {}, files = 0,
-        file_errors = {}, expand_errors = {} }
-    result.empty = 0
+    local result = { directories = {}, indirect = 0, indirect_kinds = {}, files = 0, file_errors = {},
+        expand_errors = {}, empty = 0, instances = 0, instance_errors = {} }
+    local total = new_ctx(catalog, nil, options.max_examples or 200)
+    local function directory(dir)
+        local d = result.directories[dir]
+        if d == nil then
+            d = { roots = 0, compared = 0, identical = 0, matched = 0, mismatches = 0, no_statement = 0 }
+            result.directories[dir] = d
+        end
+        return d
+    end
+    local function account(d, ctx, what)
+        if ctx == nil then
+            d.no_statement = d.no_statement + 1
+            if #total.examples < total.max_examples then
+                total.examples[#total.examples + 1] = what
+            end
+        else
+            d.compared = d.compared + 1
+            d.matched = d.matched + ctx.matched
+            d.mismatches = d.mismatches + ctx.mismatches
+            if ctx.mismatches == 0 then
+                d.identical = d.identical + 1
+            end
+            merge(total, ctx)
+        end
+    end
+
+    -- scripted calls: an instance is a definition read with a call's arguments, shared by the calls
+    -- with the same arguments; by_call finds the instance of the content placed
+    -- `@ scripted effect x at <the call's location>`
+    local defs = { trigger = source.definitions(options.game_dir, "common/scripted_triggers"),
+        effect = source.definitions(options.game_dir, "common/scripted_effects") }
+    local by_call, by_body, instances = {}, {}, {}
+    for _, kind in ipairs({ "trigger", "effect" }) do
+        local scripted = KINDS[kind].scripted
+        local lower = {}
+        for name, def in pairs(defs[kind]) do
+            lower[name:lower()] = def
+        end
+        for _, object in ipairs(kind == "trigger" and options.triggers or options.effects) do
+            if n:name(object) == scripted then
+                local call = n[kind](n, object, 64)
+                if call.tag and call.body ~= 0 then
+                    local instance = by_body[call.body]
+                    if instance == nil then
+                        instance = { kind = kind, tag = call.tag, body = call.body, def = lower[call.tag:lower()],
+                            args = n:arguments(object, kind) or {}, roots = {} }
+                        by_body[call.body] = instance
+                        instances[#instances + 1] = instance
+                    end
+                    by_call[call.tag .. " at " .. (call.location or ""):gsub("^%s+", "")] = instance
+                end
+            end
+        end
+    end
+    by_body = nil
+    log(string.format("shadow: %d scripted instances", #instances))
+
+    -- the places of the roots: a file, or the instance of a scripted call
+    local by_file, files = {}, {}
     for _, root in ipairs(roots) do
         local decompile = root.kind == "trigger" and n.trigger or n.effect
         local location = decompile(n, root.object, 64).location
@@ -461,10 +518,24 @@ function shadow.everything(options)
                 root.via_child = file ~= nil
             end
         end
+        if file == nil then
+            -- inside a scripted trigger or effect: `<definition file>:<line> @ scripted effect <tag> at <the call's location>`
+            local def_line, tag, rest = tostring(location):match("^%s*%S+:(%d+) @ [%a ]-scripted %a+ (%S+) at (.*)$")
+            local instance = tag and by_call[tag .. " at " .. rest]
+            if instance then
+                root.line = tonumber(def_line)
+                instance.roots[#instance.roots + 1] = root
+                file = false
+            end
+        end
         if file then
             root.line = line
-            local list = by_file[file] or {}
-            by_file[file] = list
+            local list = by_file[file]
+            if list == nil then
+                list = {}
+                by_file[file] = list
+                files[#files + 1] = file
+            end
             list[#list + 1] = root
         elseif file == nil then
             result.indirect = result.indirect + 1
@@ -484,66 +555,86 @@ function shadow.everything(options)
             k.names[name] = (k.names[name] or 0) + 1
         end
     end
-    local files = {}
-    for file in pairs(by_file) do
-        files[#files + 1] = file
-    end
+    roots, by_call = nil, nil
     table.sort(files)
-    log(string.format("shadow: roots in %d files, %d inside scripted or inline content", #files, result.indirect))
+    collectgarbage()
+    log(string.format("shadow: roots in %d files and %d instances, %d elsewhere", #files, #instances, result.indirect))
 
-    -- each file: parse, index, expand, compare its roots
-    local total = new_ctx(catalog, nil, options.max_examples or 200)
-    for _, file in ipairs(files) do
-        local dir = file:match("^(common/[^/]+)/") or file:match("^([^/]+)/") or file
-        local d = result.directories[dir]
-        if d == nil then
-            d = { roots = 0, compared = 0, identical = 0, matched = 0, mismatches = 0, no_statement = 0 }
-            result.directories[dir] = d
+    -- compares the roots of a source with its reading, indexed by line
+    local function compare_roots(list, by_line, d, label)
+        d.roots = d.roots + #list
+        for _, root in ipairs(list) do
+            local kind = KINDS[root.kind]
+            local node = (root.kind == "trigger" and n.trigger or n.effect)(n, root.object)
+            local where = string.format("%s:%d", label, root.line)
+            local ctx
+            if by_line == nil then
+                ctx = nil
+            elseif root.via_child then
+                -- the block of the statement at its first child's line
+                for _, e in ipairs(by_line[root.line] or {}) do
+                    if e.parent then
+                        local try = new_ctx(catalog, kind, 10)
+                        compare_block(try, e.parent, node, where .. " (the block of its first child)")
+                        if ctx == nil or try.mismatches < ctx.mismatches then
+                            ctx = try
+                        end
+                    end
+                end
+            else
+                ctx = compare_root(catalog, kind, node, by_line[root.line] or {}, where)
+            end
+            account(d, ctx, string.format("%s: no statement for the game's %s %s", where, root.kind, describe(node)))
         end
+    end
+
+    -- each file: read, index, compare its roots
+    for _, file in ipairs(files) do
         local tree, message = source.parse(options.game_dir .. "/" .. file, file)
         result.files = result.files + 1
-        local list = by_file[file]
-        d.roots = d.roots + #list
+        local by_line
         if tree == nil then
             result.file_errors[#result.file_errors + 1] = message
         else
-            local by_line = {}
+            by_line = {}
             index_lines(source.expand(options.game_dir, tree, result.expand_errors), by_line)
-            for _, root in ipairs(list) do
-                local kind = KINDS[root.kind]
-                local node = (root.kind == "trigger" and n.trigger or n.effect)(n, root.object)
-                local where = string.format("%s:%d", file, root.line)
-                local ctx
-                if root.via_child then
-                    -- the block of the statement at its first child's line
-                    for _, e in ipairs(by_line[root.line] or {}) do
-                        if e.parent then
-                            local try = new_ctx(catalog, kind, 10)
-                            compare_block(try, e.parent, node, where .. " (the block of its first child)")
-                            if ctx == nil or try.mismatches < ctx.mismatches then
-                                ctx = try
-                            end
-                        end
-                    end
-                else
-                    ctx = compare_root(catalog, kind, node, by_line[root.line] or {}, where)
-                end
-                if ctx == nil then
-                    d.no_statement = d.no_statement + 1
-                    if #total.examples < total.max_examples then
-                        total.examples[#total.examples + 1] = string.format("%s:%d: no statement for the game's %s %s",
-                            file, root.line, root.kind, describe(node))
-                    end
-                else
-                    d.compared = d.compared + 1
-                    d.matched = d.matched + ctx.matched
-                    d.mismatches = d.mismatches + ctx.mismatches
-                    if ctx.mismatches == 0 then
-                        d.identical = d.identical + 1
-                    end
-                    merge(total, ctx)
-                end
+        end
+        compare_roots(by_file[file], by_line, directory(file:match("^(common/[^/]+)/") or file:match("^([^/]+)/") or file), file)
+        by_file[file] = nil
+    end
+
+    -- each instance: read the definition with its arguments, compare its body and its roots
+    for i, instance in ipairs(instances) do
+        local kind = KINDS[instance.kind]
+        local d = directory("(scripted " .. instance.kind .. " instances)")
+        d.roots = d.roots + 1
+        result.instances = result.instances + 1
+        local def = instance.def
+        local label = string.format("%s %s%s", def and def.file or "?", instance.tag, #instance.args > 0 and " (with arguments)" or "")
+        local block, message
+        if def then
+            block, message = source.instantiate(options.game_dir, def, instance.args, result.expand_errors)
+        end
+        if block == nil and #result.instance_errors < 50 then
+            result.instance_errors[#result.instance_errors + 1] = instance.tag .. ": " .. tostring(message or "no definition")
+        end
+        local ctx
+        if block then
+            ctx = new_ctx(catalog, kind, 10)
+            compare_block(ctx, block, n[kind.decompile](n, instance.body), string.format("%s:%d", label, def.line))
+        end
+        account(d, ctx, label .. ": no definition, or it cannot be read")
+        if #instance.roots > 0 then
+            local by_line
+            if block then
+                by_line = {}
+                index_lines(block, by_line)
             end
+            compare_roots(instance.roots, by_line, directory("(content of scripted " .. instance.kind .. "s)"), label)
+        end
+        instances[i] = nil
+        if i % 2000 == 0 then
+            collectgarbage("step", 0)
         end
     end
     result.examples, result.skipped, result.skipped_at = total.examples, total.skipped, total.skipped_at

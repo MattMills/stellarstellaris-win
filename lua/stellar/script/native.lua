@@ -197,6 +197,13 @@ function native:effect(object, depth)
     return node
 end
 
+-- native:arguments(object, kind) -> { { name, value }, ... } | nil: the arguments of a scripted
+-- trigger or effect call (_Args), as written in the call.
+function native:arguments(object, kind)
+    local at = kind == "trigger" and SCRIPTED_TRIGGER.args or SCRIPTED_EFFECT.args
+    return memory.string_pairs(self.read, object + at)
+end
+
 -- native:learn(triggers): the vtable of CPdxArray<CTrigger *> that marks a collection, from the
 -- first `and` or block among the trigger objects (n:trigger learns it too, from its first one).
 function native:learn(triggers)

@@ -100,4 +100,27 @@ function memory.pointer_array(read, address, max)
     return list
 end
 
+-- A CPdxArray<std::pair<CString, CString>, int> (vtable, _pData at +8, _nSize at +20; pairs of two
+-- 48-byte strings): its pairs as { first, second }, or nil.
+function memory.string_pairs(read, address, max)
+    local b = read(address, 24)
+    if b == nil then
+        return nil
+    end
+    local data, size = memory.u64(b, 8), memory.i32(b, 20)
+    if size < 0 or size > (max or 10000) then
+        return nil
+    end
+    local list = {}
+    for i = 0, size - 1 do
+        local first = memory.cstring_object(read, data + i * 96)
+        local second = memory.cstring_object(read, data + i * 96 + 48)
+        if first == nil or second == nil then
+            return nil
+        end
+        list[#list + 1] = { first, second }
+    end
+    return list
+end
+
 return memory

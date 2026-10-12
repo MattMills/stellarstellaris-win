@@ -86,9 +86,9 @@ script: census in 2.80s
 
 The first step toward Lua building the script itself: Lua reads the script files
 (`stellar.script.source`: the files of a directory in load order, parsed with `pdxscript`, with
-`inline_script` expanded as the game does: the script's text with `$PARAM$` / `$PARAM|default$`
-substituted, parsed, its `[[PARAM] ]` blocks resolved), and `stellar.script.native` reads back
-what the game compiled from them. The two are compared node by node: every native child must be
+`inline_script` expanded and scripted definitions instantiated as the game does, see
+[Templates](#templates-scripted-triggers-effects-and-values)), and `stellar.script.native` reads
+back what the game compiled from them. The two are compared node by node: every native child must be
 made, in order, by a statement of the same block (the same trigger or effect class, scope chain or
 scripted name), with the same children; statements that make no node are counted by key, so that
 the members of a trigger or effect (`limit`, `count`, `text` in `custom_tooltip`) are visible,
@@ -112,13 +112,53 @@ arguments with its definition:
 | scripted triggers | 1,684 | 1,423 | 1,423 | 9,167 | 0 | `text`, `fail_text` in `custom_tooltip` (members) |
 | scripted effects | 1,687 | 1,249 | 1,248 | 16,742 | 1 | none |
 
-The one difference: in `country_defaulted_effect`, an `else = { log = ... }` after an `if` inside
-`hidden_effect` is not in the game's chain (and the next effect's source line is that of the
-`else`); not explained yet. The definitions not compared are only instantiated with arguments.
+The one difference was `country_defaulted_effect`, explained since: its unescaped
+`[This.GetName]` in a `log` string starts a parameter block (see
+[Templates](#templates-scripted-triggers-effects-and-values)). The definitions not compared are
+only instantiated with arguments.
 
 For developing this, `stellar.dev` runs `dev\run.lua` next to the DLL in the running game (when
-`dev\enabled` exists): no restart to try a change. While a game is loaded, a long run holds the
-Lua lock and the turn tick waits for it.
+`dev\enabled` exists): no restart to try a change. A long run holds the Lua lock; the turn tick
+hook never waits for it (it skips Lua for that tick and counts it, `stellar.skipped_ticks()`), so
+a loaded game keeps running.
+
+### Templates: scripted triggers, effects and values
+
+A scripted trigger, effect or script value is a template (`CMetaScriptTemplate`, shared by
+`CScriptedTriggerTemplate`, `CScriptedEffectTemplate` and `CScriptValueTemplate`). Its `Read` keeps
+the definition's text, and each call builds its own object from that text rewritten with the call's
+arguments (`GenerateSource`, then a new reader on the result). From the disassembly of 4.5.2:
+
+- **The kept text** is not the file's: `Read` writes the definition's tokens out again, each
+  followed by a space, quoted strings quoted again, and newlines inserted so that every token stays
+  on its line. Comments are gone; a token starting with `@` (inline math, `@var`) goes through
+  `CReader::ParseAdvancedStatementWithVariables` first. The lexer makes `!` a token of its own, so
+  `[[!NAME]` is kept as `[[ ! NAME]`.
+- **Parameter blocks** (`ParseForMacrosArguments`, once at `Read`): `FindNonEscapedChar` finds the
+  next `[` that does not follow a backslash (a plain `memchr`: quoted strings are not skipped), then
+  the next `]` (end of the name), then the next `]` (end of the block). The name is the text from
+  two characters after the `[` to the first `]`; if its second character is `!` the block is
+  negated and the name starts three characters in (`[[ ! NAME]` -> `NAME`). The search for the next
+  block starts after the end of this one: blocks do not nest, and any `[`, not only `[[`, starts
+  one. A block without its closing `]` logs "Invalid macro entry" and ends the search.
+- **Per call** (`ProcessSourceForMacros`, last block first): a block becomes its content (the text
+  between the name's `]` and the closing `]`) when the call has an argument of that name (exact,
+  case-sensitive) and the block is not negated, or has none and it is; otherwise it is removed,
+  newlines and all, so the lines after it move up.
+- **Arguments** (`ParseForArguments`, `ProcessSourceForArguments`): `$` pair up in order (not
+  escaped by a backslash), whatever is between them; `|` inside the pair separates the default.
+- **Escapes**: finally `\[`, `\]`, `\|` and `\$` become `[`, `]`, `|` and `$`.
+
+So a bracket in a string is a block: `log = "AI [This.GetName] defaulted ... [Root.GetName] in
+[GetYear]"` in `country_defaulted_effect` loses `[This.GetName] defaulted ... [Root.GetName]`
+(a block named "his.GetName") and `[GetYear]"` up to the next string's `[This.GetName]`, which
+takes the `else` between them and its three lines. Vanilla otherwise writes `\[` in such strings.
+`stellar.script.source` does the same (`source.template`, `source.generate`), on the file text with
+comments blanked and inline math skipped, which gives the same result.
+
+Inline scripts are not templates (`CreateInlineScriptReader`): the game replaces `$NAME$` with each
+parameter in turn (`CString::ReplaceAll`) in the script's text and reads that; no blocks, no
+defaults.
 
 ### Everything the game compiled (`shadow.everything`)
 
@@ -143,24 +183,32 @@ own and compared at their own place. What the comparison had to learn about the 
   tags (`trait_has_any_tag`) at the children's offset is not children; triggers and effects are
   recognized by being named.
 
-Result, Steam 4.5.2 vanilla with a loaded save (1,318,777 compiled triggers, 424,716 effects;
-`dev\parity.txt`):
+Scripted calls are compared too. Each distinct body the game built (an instance) is our
+`source.instantiate` of the definition with the call's arguments (`_Args`, a
+`CPdxArray<pair<CString, CString>>`), compared with that body. The roots inside it (located
+`common/scripted_effects/x.txt:12 @ scripted effect x at <the call's location>`) are compared
+with the statements at their lines in that instance.
+
+Result, Steam 4.5.2 vanilla (1,318,141 compiled triggers, 424,716 effects; `dev\parity.txt`):
 
 | | roots | compared | identical | nodes | mismatches |
 |---|---|---|---|---|---|
 | placed in a file (1,215 files: common/*, events, gfx, ...) | 111,616 | 111,616 | 111,615 | 354,982 | 1 |
-| empty blocks every object of a database has | 222,652 | | | | |
-| inside parameterized content | 117,650 | not yet | | | |
+| scripted trigger instances (the bodies) | 114,353 | 114,353 | 114,353 | 403,125 | 0 |
+| scripted effect instances (the bodies) | 13,852 | 13,852 | 13,852 | 135,438 | 0 |
+| roots inside scripted triggers / effects | 52,893 | 52,893 | 52,893 | 133,777 | 0 |
+| empty blocks every object of a database has | 222,568 | | | | |
+| not compared yet | 64,499 | | | | |
 
 The one difference is a vanilla oddity: `events/terraforming_events.txt` puts an `inline_script`
 that makes whole `picture = { trigger = { } }` blocks inside a `picture` block; the game reads the
 inner trigger into the outer picture's.
 
-The content not compared yet is what is read with parameters: scripted effects and triggers
-called with arguments (66,862 and 1,515 roots), inline scripts (25,984) and script values
-(22,941). Their locations name the call (`... @ scripted effect x at file: events/y.txt line: 12`,
-`file: x.txt:889(inline_script) common/inline_scripts/z.txt line: 3`): the comparison needs our
-reading of each with the call's arguments.
+Not compared yet:
+- the content of inline scripts (25,984 roots, located
+  `file: x.txt:889(inline_script) common/inline_scripts/z.txt line: 3`);
+- script values (22,941, and 15,226 more reached through scripted triggers and effects);
+- 348 effect blocks without a location whose first child has none either.
 
 Then:
 
