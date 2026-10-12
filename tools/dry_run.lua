@@ -1,6 +1,5 @@
--- dry_run.lua : runs lua/stellar/report.lua and the lookups of lua/stellar/game.lua against an
--- executable file, outside the game (no process memory to search with sigmatch: the code is read
--- from the file).
+-- dry_run.lua : runs the lookups of lua/stellar/game.lua and lua/stellar/script/catalog.lua against
+-- an executable file, outside the game (the code is read from the file).
 --
 -- Usage: luajit tools/dry_run.lua <stellaris.exe> [<cache dir>]
 -- The fnmatch module (lua_fnmatch) must be on package.cpath (LUA_CPATH).
@@ -45,13 +44,7 @@ local function file_reader(path, base)
 end
 
 local image = assert(fnmatch.file(exe, { cache = cache }))
-local results = assert(require("stellar.report").run({ image = image }))
 local missing = 0
-for _, r in ipairs(results) do
-    if not r.address then
-        missing = missing + 1
-    end
-end
 
 local base = image:base()
 local where, message = require("stellar.game").locate(image, file_reader(exe, base))

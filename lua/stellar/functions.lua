@@ -1,5 +1,5 @@
--- functions.lua : game functions the Lua side uses itself (hook points, and functions whose code
--- names a global), as opposed to targets.lua, the functions the C++ patches target.
+-- functions.lua : game functions the Lua side uses (hook points, functions whose code names a
+-- global, and methods that identify the script engine's classes).
 --
 -- Plain data, also read by tools/make_signatures.lua (outside the game). See docs/main_loop.md.
 

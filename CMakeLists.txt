@@ -36,21 +36,12 @@ ExternalProject_Add(stellar_luajit
 )
 
 #
-# Lua bindings for sigmatch (byte signatures) and stellar-fnmatch (function signatures), as static
-# libraries built against the LuaJIT headers above
+# Lua bindings for stellar-fnmatch (function signatures, instruction decoding), as a static library
+# built against the LuaJIT headers above
 #
-set(LUA_SIGMATCH_LUA_INCLUDE_DIR "${luajit_include_dir}" CACHE PATH "" FORCE)
-set(LUA_SIGMATCH_BUILD_MODULE OFF CACHE BOOL "" FORCE)
 set(LUA_FNMATCH_LUA_INCLUDE_DIR "${luajit_include_dir}" CACHE PATH "" FORCE)
 set(LUA_FNMATCH_BUILD_MODULE OFF CACHE BOOL "" FORCE)
-add_subdirectory(lib/lua_sigmatch)
 add_subdirectory(lib/lua_fnmatch)
-
-# capstone asks for CMake 2.8.12, and CMake 4 no longer accepts a minimum below 3.5
-set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
-add_subdirectory(lib/capstone)
-unset(CMAKE_POLICY_VERSION_MINIMUM)
-add_subdirectory(lib/sigmatch)
 
 
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
@@ -71,22 +62,8 @@ add_executable	( stellar-loader
 )
 add_library		( stellar-injected SHARED 
 					"src/dll/dllmain.cpp" 
-					"src/dll/hooking_common.cpp"
-					"src/dll/address_helper.cpp"
-					"src/dll/assembly_patches.cpp"
-					"src/dll/ceffect.cpp"
-					"src/dll/cevent.cpp"
-					"src/dll/crandominlisteffect.cpp"
-					"src/dll/ceveryinlisteffect.cpp"
-					"src/dll/conactiondatabase.cpp"
-					"src/dll/ceventscope.cpp"
-					"src/dll/ctrigger.cpp"
-					"src/dll/ctoken.cpp"
-					"src/dll/cship.cpp"
-					"src/dll/limit_once_in_x_seconds.cpp"
 					"src/dll/lua.cpp"
 					"src/dll/code_hook.cpp"
-					"src/hooking/asm.cpp"
 					"src/hooking/error.cpp" 
 					"src/hooking/shared.cpp"
 					"src/hooking/windows.cpp"  
@@ -98,33 +75,19 @@ add_library		( stellar-injected SHARED
 target_include_directories(stellar-loader PUBLIC 
 										"${CMAKE_CURRENT_SOURCE_DIR}"
 										"${CMAKE_CURRENT_SOURCE_DIR}/include/"
-										#"${CMAKE_CURRENT_SOURCE_DIR}/include/dll/"
-										#"${CMAKE_CURRENT_SOURCE_DIR}/include/hooking/"
-										"lib/eigen/Eigen/"
-										"lib/eigen/"
 										)
 
 target_include_directories(stellar-injected PUBLIC 
 										"${CMAKE_CURRENT_SOURCE_DIR}"
 										"${CMAKE_CURRENT_SOURCE_DIR}/include/"
 										"${CMAKE_CURRENT_SOURCE_DIR}/include/dll/"
-										#"${CMAKE_CURRENT_SOURCE_DIR}/include/hooking/"
-										#"${CMAKE_CURRENT_SOURCE_DIR}/include/stellaris/"
-										#"${CMAKE_CURRENT_SOURCE_DIR}/include/util/"
-										"lib/eigen/Eigen/"
-										"lib/eigen/"
-										"lib/libzmq/include/"
-										"lib/capstone/include/"
-										#"lib/sigmatch/include/"
-										#"lib/sigmatch/"
 										)
 
 
 target_link_libraries(stellar-loader git_version)
 target_link_libraries(stellar-injected git_version)
-target_link_libraries(stellar-injected capstone-static)
-target_link_libraries(stellar-injected sigmatch)
-target_link_libraries(stellar-injected lua_sigmatch::static lua_fnmatch::static "${luajit_library}")
+# lua_fnmatch_engine: fnmatch_engine.h (fnme_decode, for code_hook.cpp)
+target_link_libraries(stellar-injected lua_fnmatch::static lua_fnmatch_engine "${luajit_library}")
 add_dependencies(stellar-injected stellar_luajit)
 
 target_compile_features(stellar-injected PRIVATE cxx_std_14)

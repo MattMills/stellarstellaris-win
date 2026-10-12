@@ -1,29 +1,24 @@
 // lua.cpp : the Lua runtime of stellar-injected.
 //
-// One LuaJIT state, created by the init thread once the C++ hooks are installed. Scripts get the
-// standard libraries (with the LuaJIT FFI), `sigmatch` and `fnmatch` (lua_sigmatch and lua_fnmatch:
-// finding code by byte patterns and by stellar-fnmatch function signatures), and `stellar`, this
-// DLL: logging, what the loader found, thread suspension, memory patching and the turn tick hook.
-// lua/init.lua, next to stellar-injected.dll, runs first.
+// One LuaJIT state, created by the init thread. Scripts get the standard libraries (with the LuaJIT
+// FFI), `fnmatch` (lua_fnmatch: finding code by stellar-fnmatch function signatures, decoding
+// instructions), and `stellar`, this DLL: logging, the game module, thread suspension, memory
+// patching and the turn tick hook. lua/init.lua, next to stellar-injected.dll, runs first.
 //
 // Lua errors are raised only while no C++ object that owns resources is alive in the calling
 // frame; scratch memory is Lua userdata.
 
 #include "dll/lua_runtime.h"
+#include "dll/dllmain.h"
 #include "dll/code_hook.h"
-#include "dll/hooking_common.h"
+#include "util/logging.h"
 #include "git_version.h"
 
 #include <lua.hpp>
 #include <lua_fnmatch.h>
-#include <lua_sigmatch.h>
 
 #include <atomic>
 #include <cstring>
-
-extern HMODULE hModule;
-extern CApplication* p_CApplication;
-extern void* p_CApplication_Base;
 
 namespace {
 
@@ -270,11 +265,6 @@ int luaopen_stellar(lua_State* L) {
 		lua_pushstring(L, path);
 		lua_setfield(L, -2, "module_path");
 	}
-	// what the loader found: the CApplication object and the "augustus" string in the image
-	push_address(L, p_CApplication);
-	lua_setfield(L, -2, "application");
-	push_address(L, p_CApplication_Base);
-	lua_setfield(L, -2, "application_base");
 	lua_pushnumber(L, static_cast<lua_Number>(GetCurrentProcessId()));
 	lua_setfield(L, -2, "process_id");
 
@@ -354,7 +344,6 @@ void stellar_lua_start() {
 	}
 	luaL_openlibs(L);
 	preload(L, "stellar", luaopen_stellar);
-	preload(L, "sigmatch", luaopen_sigmatch);
 	preload(L, "fnmatch", luaopen_fnmatch);
 
 	// scripts come from lua/, print() writes to the log
@@ -382,7 +371,7 @@ void stellar_lua_start() {
 	call_protected(L, 0);
 }
 
-void stellar_lua_heartbeat(uint64_t frame) {
+void stellar_lua_heartbeat(uint64_t count) {
 	std::lock_guard<std::recursive_mutex> guard(stellar_lua_lock());
 	if (L == nullptr) {
 		return;
@@ -399,7 +388,7 @@ void stellar_lua_heartbeat(uint64_t frame) {
 		lua_pop(L, 4);
 		return;
 	}
-	lua_pushnumber(L, static_cast<lua_Number>(frame));
+	lua_pushnumber(L, static_cast<lua_Number>(count));
 	if (!call_protected(L, 1)) {
 		// a failing heartbeat is reported once
 		lua_pushnil(L);

@@ -1,9 +1,8 @@
 // code_hook.cpp : function hooks that can be installed while the game runs.
 //
-// Unlike installHook (hooking_common.cpp), which rewrites the start of the target in several steps
-// and needs the other threads suspended, the target changes in one atomic 8-byte store: its first
-// 5 bytes become a jmp to a relay next to it, which jumps to the replacement. The instructions the
-// jmp covers move unchanged to a trampoline, followed by a jump back to the rest of the target.
+// The target changes in one atomic 8-byte store: its first 5 bytes become a jmp to a relay next to
+// it, which jumps to the replacement. The instructions the jmp covers move unchanged to a
+// trampoline, followed by a jump back to the rest of the target; the other threads keep running.
 //
 // A thread that is between two of the moved instructions when the jmp lands would resume in the
 // middle of the jmp, so the moved instructions should be one instruction of 5 bytes or more (a
@@ -11,49 +10,41 @@
 // thread is there at that moment.
 
 #include "dll/code_hook.h"
-#include "hooking/asm.h"
 #include "hooking/windows.h"
+
+#include <fnmatch_engine.h>
 
 #include <cstdint>
 #include <cstring>
 
 namespace {
 
-// Instructions the trampoline cannot run from another address.
-bool movable(csh cs, cs_insn& instruction) {
-	return !(cs_insn_group(cs, &instruction, CS_GRP_JUMP) || cs_insn_group(cs, &instruction, CS_GRP_CALL)
-		|| cs_insn_group(cs, &instruction, CS_GRP_RET) || cs_insn_group(cs, &instruction, CS_GRP_INT)
-		|| cs_insn_group(cs, &instruction, CS_GRP_IRET) || cs_insn_group(cs, &instruction, CS_GRP_BRANCH_RELATIVE)
-		|| IsRIPRelativeInstr(instruction));
+// How many bytes of whole instructions at the start of `code` (at `address`) cover 5 bytes, or 0.
+// Instructions that transfer control or are relative to RIP cannot run from the trampoline.
+size_t bytes_to_move(const uint8_t* code, size_t size, uint64_t address, const char** error) {
+	size_t moved = 0;
+	while (moved < 5) {
+		fnme_instruction instruction{};
+		const uint32_t length = fnme_decode(code + moved, size - moved, address + moved, &instruction, nullptr, 0);
+		if (length == 0) {
+			*error = "cannot decode the first instructions of the target";
+			return 0;
+		}
+		if (instruction.flow != FNME_FLOW_NEXT || instruction.rip_relative) {
+			*error = "the first instructions of the target are relative to RIP or transfer control";
+			return 0;
+		}
+		moved += length;
+	}
+	return moved;
 }
 
-// How many bytes of whole instructions at the start of `code` (at `address`) cover 5 bytes, or 0.
-size_t bytes_to_move(const uint8_t* code, size_t size, uint64_t address, const char** error) {
-	csh cs;
-	if (cs_open(CS_ARCH_X86, CS_MODE_64, &cs) != CS_ERR_OK) {
-		*error = "capstone: cs_open failed";
-		return 0;
-	}
-	cs_option(cs, CS_OPT_DETAIL, CS_OPT_ON);
-	cs_insn* instructions = nullptr;
-	const size_t count = cs_disasm(cs, code, size, address, 0, &instructions);
-	size_t moved = 0;
-	for (size_t i = 0; i < count && moved < 5; ++i) {
-		if (!movable(cs, instructions[i])) {
-			*error = "the first instructions of the target are relative to RIP or transfer control";
-			moved = 0;
-			break;
-		}
-		moved += instructions[i].size;
-	}
-	if (count > 0) {
-		cs_free(instructions, count);
-	}
-	cs_close(&cs);
-	if (moved < 5 && *error == nullptr) {
-		*error = "cannot decode the first instructions of the target";
-	}
-	return moved >= 5 ? moved : 0;
+// `jmp [rip+0]` followed by the address: 14 bytes.
+void write_absolute_jump(uint8_t* at, const void* to) {
+	const uint8_t jmp[] = {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00};
+	const uint64_t target = reinterpret_cast<uint64_t>(to);
+	std::memcpy(at, jmp, sizeof(jmp));
+	std::memcpy(at + sizeof(jmp), &target, sizeof(target));
 }
 
 } // namespace
@@ -97,10 +88,10 @@ bool install_code_hook(void* target_pointer, void* replacement, void** original,
 		*error = "the page near the target is out of reach";
 		return false;
 	}
-	WriteAbsoluteJump64(page, replacement);
+	write_absolute_jump(page, replacement);
 	uint8_t* trampoline = page + 16;
 	std::memcpy(trampoline, code, moved);
-	WriteAbsoluteJump64(trampoline + moved, target + moved);
+	write_absolute_jump(trampoline + moved, target + moved);
 	DWORD protect = 0;
 	VirtualProtect(page, 4096, PAGE_EXECUTE_READ, &protect);
 	FlushInstructionCache(GetCurrentProcess(), page, 4096);

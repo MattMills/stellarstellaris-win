@@ -1,7 +1,20 @@
 
 #include "util/logging.h"
 
+#include <cstdlib>
+#include <cstring>
 
+CLog* getLogger() {
+	static CLog* logger = nullptr;
+	if (logger == nullptr) {
+		const char* profile = std::getenv("USERPROFILE");
+		const std::string path = std::string(profile != nullptr ? profile : ".")
+			+ "\\Documents\\Paradox Interactive\\Stellaris\\logs\\stellarstellaris-debug.log";
+		// CLog keeps the pointer
+		logger = new CLog(_strdup(path.c_str()));
+	}
+	return logger;
+}
 
 CLog::CLog(const char * filename) {
 	this->log_filename = filename;

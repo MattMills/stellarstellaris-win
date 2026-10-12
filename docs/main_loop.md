@@ -127,7 +127,8 @@ Other places, and why not:
 
 The globals have no signatures of their own. Find a function that uses them with lua_fnmatch (for
 example `CGameApplication::Update` or `CTurnTickCommand::Execute`), then decode the RIP-relative
-operand of the instruction that uses the global inside it (sigmatch over the function's range):
+operand of the instruction that uses the global inside it (a byte pattern searched in the
+function's code, `stellar.game`):
 
 | global | instruction in `CGameApplication::Update` |
 |---|---|
@@ -144,6 +145,5 @@ twelve 30-day months: `days = floor((date - 43800000) / 24)`, `year = floor(days
 
 ## Also in this pass
 
-The `CApplication` layout in `include/stellaris/CApplication.h` is from 3.7.4. In 4.5.2 the idler
-is at `+0x8` and the frame counter at `+0x420`, which is why the heartbeat in dllmain.cpp reads them
-with checked reads.
+In 4.5.2 `CApplication`'s idler is at `+0x8` and its frame counter at `+0x420` (the 3.7.4 layouts
+the C++ side used to read them with are gone).
