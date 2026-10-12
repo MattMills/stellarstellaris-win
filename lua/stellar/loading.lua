@@ -107,11 +107,11 @@ local post_read, post_reads = nil, {}          -- the PostReadInitInstance runni
 local milestone                                -- the last milestone
 
 -- The steps of CGameApplication::InitGame that are milestones (stellar.functions), in its order
--- (NNullObjAndDatabaseInitUtil::SetupDatabases has a hook of its own, stellar.hook_setup_databases;
--- loading.milestone records it)
+-- (NNullObjAndDatabaseInitUtil::SetupDatabases and CModifier::InitDefinitionIcons have hooks of
+-- their own, stellar.hook_setup_databases and stellar.hook_before; loading.milestone records them)
 loading.MILESTONES = {
     "CGlobalScriptedVariablesDatabase::InitializeWithDirectory", "CModifier::InitDefinitions",
-    "CModifier::InitDefinitionIcons", "CGameRules::InitInstance",
+    "CGameRules::InitInstance",
     "CAchievementsManager::InitFromFile", "CApplication::CalculateGameFilesChecksum", "CStaticModifierDatabase::Init",
     "CTriggerDatabase::PostInit", "CTriggerDatabase::PostValidate", "CEffectDatabase::PostInit",
     "CEffectDatabase::PostValidate", "CEventManager::InitEventConnectivityMaps", "CModifier::LogDefinitions",

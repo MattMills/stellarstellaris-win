@@ -36,6 +36,10 @@ return {
     { name = "VFSPreEnumerateFiles", what = "starts listing a folder in a task" },
     { name = "CStaticLexer::AddDynamicToken", what = "adds a token to the static lexer's table: the table is taken over (src/dll/database_workers.cpp)" },
     { name = "CStaticLexer::RebuildLookup", what = "rebuilds the id -> name lookup in place: replaced by an update that never moves or empties it" },
+    -- the modifier definitions found by token through an index (stellar.modifier_index)
+    { name = "CModifier::GetTypeFromToken", what = "a modifier type from its token (a linear scan): replaced by the index" },
+    { name = "CModifier::TryAddDynamicModifier", what = "adds a generated modifier type (after a linear scan): the scan is replaced" },
+    { name = "CPdxModifier<enum ModifierType,enum ModifierCategory,CModifier,CDefaultPdxModifierValueReader>::TryReadMember", what = "reads a modifier key from script (after a linear scan): the scan is replaced" },
     -- the game databases (stellar.databases)
     { name = "NNullObjAndDatabaseInitUtil::SetupDatabases", what = "initializes the game databases: their table is in its code" },
     -- the steps of CGameApplication::InitGame around the databases (stellar.loading milestones)

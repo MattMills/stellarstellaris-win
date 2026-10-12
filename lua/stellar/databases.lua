@@ -340,9 +340,11 @@ function databases.run_parallel(where, progress, read, workers)
         end
         return true
     end
+    where.done_order = {}
     local function finish(i, thread, start, finish_time)
         local e, p = entries[i], plan[i]
         state[e] = "done"
+        where.done_order[#where.done_order + 1] = e
         if p.create_mark then
             stellar.set_entry_skip(p.create_mark.id, true)
         end
@@ -397,6 +399,33 @@ function databases.run_parallel(where, progress, read, workers)
         count, n_threads, util.now() - t0, sum), timeline
 end
 
+-- databases.skip_post_reads(where) -> list: after Lua's loop, the PostReadInitInstance of every
+-- database Lua initialized, in that order, that the game's loop will skip (the skip flags of their
+-- marks set): databases.run_post_reads calls them in that order, as the game would have
+function databases.skip_post_reads(where)
+    local stellar = require("stellar")
+    local list = {}
+    for _, e in ipairs(where.done_order or {}) do
+        local m = e.post_mark
+        if m and m.trampoline then
+            stellar.set_entry_skip(m.id, true)
+            list[#list + 1] = e
+        end
+    end
+    return list
+end
+
+-- databases.run_post_reads(list): their PostReadInitInstance, in order (through the trampolines,
+-- with the event of their mark for the logs), then their skip flags cleared
+function databases.run_post_reads(list)
+    local stellar = require("stellar")
+    for _, e in ipairs(list) do
+        stellar.mark(e.post_mark.id)
+        stellar.call(e.post_mark.trampoline)
+        stellar.set_entry_skip(e.post_mark.id, false)
+    end
+end
+
 -- databases.run(where, progress, read) -> initialized, stopped: the loop of SetupDatabases, in
 -- Lua, before the game's: the first database left (in the table's order) whose CanInitialize is
 -- true, or that has none, then its CreateInstance and InitInstance, then progress (the game's
@@ -406,6 +435,8 @@ end
 -- that way, the loop stops (stopped says why), and the game's loop does the rest in its order.
 function databases.run(where, progress, read, trace)
     local stellar = require("stellar")
+    -- the databases in the order they are initialized (the game's PostReadInitInstance order)
+    where.done_order = {}
     local left = {}
     for i = 1, #where.entries do
         left[i] = i
@@ -459,6 +490,7 @@ function databases.run(where, progress, read, trace)
         end
         table.remove(left, pick)
         initialized = initialized + 1
+        where.done_order[#where.done_order + 1] = e
         stellar.call_progress(progress, initialized, total)
     end
     if trace then

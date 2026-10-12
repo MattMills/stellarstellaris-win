@@ -465,6 +465,77 @@ int l_hook_setup_databases(lua_State* L) {
 	return 1;
 }
 
+// Before hooks (stellar.hook_before(address, name)): the function at address (at most four integer
+// or pointer arguments) first calls stellar[name]() in the main state, on its own thread, then
+// runs. A few slots, one function each.
+void call_lua_named(const std::string& name) {
+	std::lock_guard<std::recursive_mutex> guard(stellar_lua_lock());
+	lua_State* L = stellar_lua_state();
+	if (L == nullptr) {
+		return;
+	}
+	const int top = lua_gettop(L);
+	lua_getglobal(L, "package");
+	lua_getfield(L, -1, "loaded");
+	lua_getfield(L, -1, "stellar");
+	if (lua_istable(L, -1)) {
+		lua_getfield(L, -1, name.c_str());
+		if (lua_isfunction(L, -1)) {
+			stellar_lua_call(L, 0, 0);
+		}
+	}
+	lua_settop(L, top);
+}
+
+using before_function = uintptr_t (*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+
+template <int Slot>
+struct Before {
+	static before_function original;
+	static std::string name;
+	static uintptr_t hook(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d) {
+		call_lua_named(name);
+		return original(a, b, c, d);
+	}
+};
+template <int Slot> before_function Before<Slot>::original = nullptr;
+template <int Slot> std::string Before<Slot>::name;
+
+struct BeforeSlot {
+	void* hook;
+	before_function* original;
+	std::string* name;
+};
+BeforeSlot before_slots[] = {
+	{reinterpret_cast<void*>(&Before<0>::hook), &Before<0>::original, &Before<0>::name},
+	{reinterpret_cast<void*>(&Before<1>::hook), &Before<1>::original, &Before<1>::name},
+	{reinterpret_cast<void*>(&Before<2>::hook), &Before<2>::original, &Before<2>::name},
+	{reinterpret_cast<void*>(&Before<3>::hook), &Before<3>::original, &Before<3>::name},
+};
+
+// stellar.hook_before(address, name) -> true | nil, message
+int l_hook_before(lua_State* L) {
+	void* target = reinterpret_cast<void*>(check_address(L, 1));
+	const char* name = luaL_checkstring(L, 2);
+	for (BeforeSlot& slot : before_slots) {
+		if (*slot.original == nullptr) {
+			*slot.name = name;
+			const char* error = nullptr;
+			if (!install_code_hook(target, slot.hook, reinterpret_cast<void**>(slot.original), &error)) {
+				*slot.original = nullptr;
+				lua_pushnil(L);
+				lua_pushstring(L, error);
+				return 2;
+			}
+			lua_pushboolean(L, 1);
+			return 1;
+		}
+	}
+	lua_pushnil(L);
+	lua_pushliteral(L, "no before hook left");
+	return 2;
+}
+
 // stellar.mark(id): records "enter" with this id, as entering a hooked function does (for a
 // function that Lua calls through its trampoline)
 int l_mark(lua_State* L) {
@@ -575,6 +646,8 @@ void stellar_loading_open(lua_State* L) {
 	lua_setfield(L, -2, "hook_setup_databases");
 	lua_pushcfunction(L, l_mark);
 	lua_setfield(L, -2, "mark");
+	lua_pushcfunction(L, l_hook_before);
+	lua_setfield(L, -2, "hook_before");
 	lua_pushcfunction(L, l_hook_reads);
 	lua_setfield(L, -2, "hook_reads");
 	lua_pushcfunction(L, l_read_counts);

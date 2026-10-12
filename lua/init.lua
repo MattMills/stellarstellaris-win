@@ -71,6 +71,20 @@ do
         s.size or 0, s.desired or 0, s.capacity or 0) or ("tokens: the token table is not taken over: " .. tostring(message)))
 end
 
+-- the modifier definitions found by token through an index (stellar.modifier_index): the game's
+-- linear scans of them (about 10^9 compares at load) replaced
+-- (modifiers.txt next to the DLL: "off" to leave the game's scans)
+if setting("modifiers.txt", "index") == "off" then
+    stellar.log("modifiers: no index (modifiers.txt)")
+else
+    local modifier_index = require("stellar.modifier_index")
+    local where, message = modifier_index.locate(require("stellar.resolve").functions(image), stellar.read)
+    local results = where and modifier_index.install(where)
+    stellar.log(results and string.format("modifiers: the definitions' index: GetTypeFromToken %s, TryAddDynamicModifier %s, TryReadMember %s",
+        tostring(results.get_type), tostring(results.add), tostring(results.read))
+        or ("modifiers: no index: " .. tostring(message)))
+end
+
 -- the load screen's stages and progress, logged from the heartbeat (stellar.loading)
 local loading = require("stellar.loading")
 local loading_where, loading_message = loading.locate(image, stellar.read)
@@ -107,7 +121,10 @@ if databases_where then
         marks[#marks + 1] = e.init_mark
     end
     for _, e in ipairs(databases_where.entries) do
-        marks[#marks + 1] = { address = e.post_read, kind = "post_read", name = e.name }
+        if e.post_read then
+            e.post_mark = { address = databases.follow(stellar.read, e.post_read), kind = "post_read", name = e.name }
+            marks[#marks + 1] = e.post_mark
+        end
     end
     stellar.log(string.format("databases: SetupDatabases %s, %d databases", hex(databases_where.setup),
         #databases_where.entries))
@@ -127,6 +144,7 @@ stellar.log(string.format("load: %d marks hooked%s", marks_hooked,
 -- "parallel N" (databases.run_parallel on N workers, default 4, with the dependencies learned: an
 -- experiment, the game's databases share tables that are not all locked yet) or "game"
 local database_mode, database_workers = setting("databases.txt", "lua")
+local post_reads  -- the PostReadInitInstance Lua runs (databases.skip_post_reads)
 local dependencies_path = util.dirname(stellar.dll_path) .. "\\cache\\database_dependencies-" .. image:md5() .. ".tsv"
 if databases_where and database_mode == "parallel" then
     local learned = databases.load(databases_where, dependencies_path)
@@ -170,9 +188,26 @@ if databases_where and (database_mode == "lua" or database_mode == "parallel" or
         stellar.log(string.format("databases: Lua initialized %d of %d databases in %.1fs%s%s", n,
             #databases_where.entries, util.now() - t0, stopped and ("; the game does the rest from " .. stopped) or "",
             report and ("; " .. report) or ""))
+        -- their PostReadInitInstance in the order they were initialized, as in the game's loop: the
+        -- game's own pass would call them in the table's order (every database is ready by then)
+        post_reads = databases.skip_post_reads(databases_where)
+    end
+    -- InitDefinitionIcons comes right after the game's PostReadInitInstance loop (which skips
+    -- those): they run here, in their order
+    stellar.before_definition_icons = function()
+        loading.milestone("CModifier::InitDefinitionIcons")
+        if post_reads then
+            databases.run_post_reads(post_reads)
+            post_reads = nil
+        end
+    end
+    local icons_hooked, icons_message = nil, "CModifier::InitDefinitionIcons not found"
+    if found["CModifier::InitDefinitionIcons"] then
+        icons_hooked, icons_message = stellar.hook_before(found["CModifier::InitDefinitionIcons"], "before_definition_icons")
     end
     local hooked, message = stellar.hook_setup_databases(databases_where.setup)
-    stellar.log("databases: the loop runs in Lua" .. (hooked and "" or (": not hooked: " .. tostring(message))))
+    stellar.log("databases: the loop runs in Lua" .. (hooked and "" or (": not hooked: " .. tostring(message)))
+        .. (icons_hooked and "" or ("; the PostReadInitInstance order is the game's pass: " .. tostring(icons_message))))
 else
     stellar.log("databases: the loop is the game's (" .. database_mode .. ")")
 end
@@ -377,6 +412,10 @@ stellar.heartbeat = function()
     -- parallel would take, from this load's times
     if databases_where and not schedule_logged and loading.loaded() then
         schedule_logged = true
+        local lookups, hits, indexed = stellar.modifier_index_stats()
+        lookups, hits, indexed = lookups or 0, hits or 0, indexed or 0
+        stellar.log(string.format("modifiers: %d lookups through the index (%d found), %d definitions indexed",
+            lookups, hits, indexed))
         local t = stellar.token_table_stats()
         stellar.log(string.format("tokens: %d names added in place in %d updates, the lookup moved %d times; RebuildLookup called %d times (replaced); %d of %d names, room for %d",
             t.names or 0, t.updates or 0, t.moves or 0, t.rebuild_calls or 0, t.size or 0, t.desired or 0, t.capacity or 0))
