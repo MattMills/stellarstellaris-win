@@ -20,6 +20,7 @@
 #include "dll/code_hook.h"
 #include "dll/lexer_hook.h"
 #include "dll/loading_hook.h"
+#include "dll/database_workers.h"
 #include "util/logging.h"
 #include "git_version.h"
 
@@ -319,6 +320,8 @@ int luaopen_stellar(lua_State* L) {
 	stellar_lexer_open(L);
 	// hook_loading, loading_events (src/dll/loading_hook.cpp)
 	stellar_loading_open(L);
+	// db_workers, db_start, db_wait, db_lock_tokens (src/dll/database_workers.cpp)
+	stellar_database_workers_open(L);
 
 	// the game
 	push_address(L, hModule);

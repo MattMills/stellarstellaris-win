@@ -112,6 +112,143 @@ function databases.locate(image, read)
     return { setup = setup, entries = entries }
 end
 
+-- The globals a function reads or writes relative to RIP (its first `count` instructions, calls
+-- not followed): { [address] = "read" | "write" }
+local function globals(read, address, count)
+    local out = {}
+    local bytes = address and read(address, 256)
+    if bytes == nil then
+        return out
+    end
+    local pos = 1
+    for _ = 1, count do
+        local i = fnmatch.decode(bytes, address, pos)
+        if i == nil or i.flow == "return" then
+            break
+        end
+        if i.rip_relative and i.target then
+            local text = i.text
+            if text:match("^mov %[") then
+                out[i.target] = "write"
+            elseif not out[i.target] then
+                out[i.target] = "read"
+            end
+        end
+        pos = pos + i.length
+        if pos > #bytes - 15 then
+            break
+        end
+    end
+    return out
+end
+
+-- databases.dependencies(where, read) -> unknown: each entry gets instance (the global its
+-- CreateInstance stores the new database in: the first global it writes) and depends (the entries
+-- whose instance its CanInitialize reads: the databases that must exist first). unknown lists the
+-- globals a CanInitialize reads that are no database's instance.
+function databases.dependencies(where, read)
+    local by_instance = {}
+    for _, e in ipairs(where.entries) do
+        local create = databases.follow(read, e.create)
+        local bytes = read(create, 256)
+        local pos = 1
+        while bytes and pos <= #bytes - 15 do
+            local i = fnmatch.decode(bytes, create, pos)
+            if i == nil or i.flow == "return" then
+                break
+            end
+            if i.rip_relative and i.target and i.text:match("^mov %[") then
+                e.instance = i.target
+                by_instance[i.target] = e
+                break
+            end
+            pos = pos + i.length
+        end
+    end
+    local unknown = {}
+    for _, e in ipairs(where.entries) do
+        e.depends = {}
+        if e.can_initialize then
+            for address, how in pairs(globals(read, databases.follow(read, e.can_initialize), 64)) do
+                local d = how == "read" and by_instance[address]
+                if d and d ~= e then
+                    e.depends[#e.depends + 1] = d
+                elseif how == "read" and not d then
+                    -- something that is not a database: it waits for every database before it
+                    e.barrier = true
+                    unknown[#unknown + 1] = string.format("%s reads 0x%x", e.name, address)
+                end
+            end
+        end
+    end
+    return unknown
+end
+
+-- databases.schedule(where, seconds, workers) -> makespan, critical: the time to initialize every
+-- database with `workers` threads, each database starting when the databases it depends on are
+-- done (list scheduling, the longest first among the ready), from the times of one run
+-- (seconds[name]); critical is the longest chain of dependencies
+function databases.schedule(where, seconds, workers)
+    local finish, critical = {}, 0
+    local function chain(e)
+        if finish[e] == nil then
+            local start = 0
+            for _, d in ipairs(e.depends or {}) do
+                start = math.max(start, chain(d))
+            end
+            finish[e] = start + (seconds[e.name] or 0)
+        end
+        return finish[e]
+    end
+    for _, e in ipairs(where.entries) do
+        critical = math.max(critical, chain(e))
+    end
+    -- simulate workers
+    local done, start_of, free = {}, {}, {}
+    for w = 1, workers do
+        free[w] = 0
+    end
+    local left = {}
+    for _, e in ipairs(where.entries) do
+        left[#left + 1] = e
+    end
+    local makespan = 0
+    while #left > 0 do
+        -- the earliest free worker; the ready database with the longest time
+        table.sort(free)
+        local now = free[1]
+        local best, best_k
+        for k, e in ipairs(left) do
+            local ready = 0
+            for _, d in ipairs(e.depends or {}) do
+                ready = done[d] and math.max(ready, done[d]) or math.huge
+            end
+            if ready <= now and (best == nil or (seconds[e.name] or 0) > (seconds[best.name] or 0)) then
+                best, best_k = e, k
+            end
+        end
+        if best == nil then
+            -- nothing ready at that time: the worker waits for the next database to finish
+            local next_done = math.huge
+            for _, t in pairs(done) do
+                if t > now and t < next_done then
+                    next_done = t
+                end
+            end
+            if next_done == math.huge then
+                break
+            end
+            free[1] = next_done
+        else
+            table.remove(left, best_k)
+            done[best] = now + (seconds[best.name] or 0)
+            free[1] = done[best]
+            makespan = math.max(makespan, done[best])
+        end
+    end
+    return makespan, critical
+end
+
 -- databases.follow(read, address) -> the function a thunk jumps to (`jmp x` as its first
 -- instruction, followed up to 4 times), or address itself
 function databases.follow(read, address)
@@ -145,6 +282,119 @@ local function callable(read, address, mark)
         return address, nil
     end
     return nil, mark and (mark.error or (mark.shared and "shared with another database")) or "not marked"
+end
+
+-- Databases that run on the game's thread in parallel mode (they may touch graphics, sounds or
+-- the interface, which the game makes on its main thread): by name
+databases.MAIN_THREAD = { "Gfx", "Graphic", "Portrait", "Color", "Flag", "Ambient", "Projectile", "Frontend",
+    "Advisor", "MapMode", "Sound", "Music", "Font", "Model", "Particle", "Background", "Destruction",
+    "Overlay", "Icon", "Shipview", "Message", "Alert", "Greeting" }
+
+local function on_main_thread(name)
+    for _, p in ipairs(databases.MAIN_THREAD) do
+        if name:find(p, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+-- databases.run_parallel(where, progress, read, workers) -> initialized, stopped, report: the
+-- loop of SetupDatabases in parallel. A database starts when the databases it depends on are done
+-- (their InitInstance too, not only their CreateInstance as CanInitialize checks), from
+-- databases.dependencies; one whose CanInitialize reads a global that is no database's waits for
+-- every database before it in the table. It runs on a worker (stellar.db_start), or on this thread
+-- (the game's) if it may need it (databases.MAIN_THREAD), meanwhile the workers go on. This
+-- thread reports the progress as databases are done. If a database cannot be given back to the
+-- game's loop (see databases.run), nothing runs in parallel: databases.run does the loop.
+function databases.run_parallel(where, progress, read, workers)
+    local stellar = require("stellar")
+    local entries, plan = where.entries, {}
+    for i, e in ipairs(entries) do
+        local create, create_mark = callable(read, e.create, e.create_mark)
+        local init, init_mark = callable(read, e.init, e.init_mark)
+        if create == nil or init == nil then
+            local n, stopped = databases.run(where, progress, read)
+            return n, stopped, "sequential: " .. e.name .. " cannot be given back to the game's loop"
+        end
+        plan[i] = { create = create, init = init, create_mark = create_mark, init_mark = init_mark,
+            main = on_main_thread(e.name), index = i }
+        e.index = i
+    end
+    local count = stellar.db_workers(workers)
+    local state, done, total, running = {}, 0, #entries, 0
+    local t0 = (require("stellar.util")).now()
+    local timeline = {}
+    local function ready(e)
+        for _, d in ipairs(e.depends or {}) do
+            if state[d] ~= "done" then
+                return false
+            end
+        end
+        if e.barrier then
+            for k = 1, e.index - 1 do
+                if state[entries[k]] ~= "done" then
+                    return false
+                end
+            end
+        end
+        return true
+    end
+    local function finish(i, thread, start, finish_time)
+        local e, p = entries[i], plan[i]
+        state[e] = "done"
+        if p.create_mark then
+            stellar.set_entry_skip(p.create_mark.id, true)
+        end
+        if p.init_mark then
+            stellar.set_entry_skip(p.init_mark.id, true)
+        end
+        done = done + 1
+        timeline[#timeline + 1] = { name = e.name, thread = thread, start = start, seconds = finish_time - start }
+        stellar.call_progress(progress, done, total)
+    end
+    local util = require("stellar.util")
+    while done < total do
+        local progressed = false
+        for i, e in ipairs(entries) do
+            if state[e] == nil and ready(e) then
+                local p = plan[i]
+                if p.main then
+                    state[e] = "running"
+                    local start = util.now()
+                    stellar.call(p.create)
+                    stellar.call(p.init)
+                    finish(i, stellar.thread_id(), start, util.now())
+                    progressed = true
+                elseif running < count then
+                    state[e] = "running"
+                    running = running + 1
+                    stellar.db_start(i, p.create, p.init)
+                    progressed = true
+                end
+            end
+        end
+        if running > 0 then
+            for _, r in ipairs(stellar.db_wait()) do
+                running = running - 1
+                finish(r.id, r.thread, r.start, r.finish)
+            end
+        elseif not progressed then
+            return done, "no database left can start", timeline
+        end
+    end
+    -- the report: the time on the clock against the sum of the databases' times
+    local sum, threads = 0, {}
+    for _, t in ipairs(timeline) do
+        sum = sum + t.seconds
+        threads[t.thread] = (threads[t.thread] or 0) + 1
+    end
+    local n_threads = 0
+    for _ in pairs(threads) do
+        n_threads = n_threads + 1
+    end
+    return done, nil, string.format("parallel on %d workers and this thread (%d threads used): %.1fs on the clock for %.1fs of databases",
+        count, n_threads, util.now() - t0, sum), timeline
 end
 
 -- databases.run(where, progress, read) -> initialized, stopped: the loop of SetupDatabases, in

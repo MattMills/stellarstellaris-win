@@ -262,6 +262,16 @@ function loading.hook(where, read)
     return true
 end
 
+-- loading.database_seconds() -> { [database name] = seconds to create and initialize it }, from
+-- this load
+function loading.database_seconds()
+    local seconds = {}
+    for _, d in ipairs(databases_done) do
+        seconds[d.name] = d.seconds
+    end
+    return seconds
+end
+
 -- loading.loaded() -> whether the load is done: the load screen was up and is gone (always true
 -- when the load screen is not hooked)
 function loading.loaded()

@@ -34,6 +34,7 @@ return {
     { name = "CMemoryFile::~CMemoryFile", what = "a file in memory goes away: for a file a lexer read, the end of its parse (the lexer's destructor is often inlined)" },
     { name = "VFSGetEnumeratedFiles", what = "the files of a folder (game and mods), from the lists VFSPreEnumerateFiles made" },
     { name = "VFSPreEnumerateFiles", what = "starts listing a folder in a task" },
+    { name = "CStaticLexer::AddDynamicToken", what = "adds a token to the static lexer's table: locked when databases are initialized in parallel" },
     -- the game databases (stellar.databases)
     { name = "NNullObjAndDatabaseInitUtil::SetupDatabases", what = "initializes the game databases: their table is in its code" },
     -- the steps of CGameApplication::InitGame around the databases (stellar.loading milestones)
