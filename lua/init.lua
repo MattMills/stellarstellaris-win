@@ -27,15 +27,27 @@ if image == nil then
 end
 stellar.log(string.format("%s analysed in %.1fs, %d functions, md5 %s", image:path(), util.now() - t0, #image, image:md5()))
 
--- first: the game's script lexer (stellar.script.loader), hooked in shadow mode before the game
--- reads its script: every token it reads is compared with the Lua lexer's
+-- first: the game's script lexer (stellar.script.loader), hooked before the game reads its script.
+-- The mode is the first word of lexer.txt next to the DLL: "replace" (the default: the game reads
+-- its script with the Lua lexer), "shadow" (the game's lexer reads, every token is compared with
+-- the Lua lexer's) or "off"
+local lexer_mode = "replace"
+do
+    local f = io.open(util.dirname(stellar.dll_path) .. "\\lexer.txt", "r")
+    if f then
+        lexer_mode = (f:read("*l") or ""):match("^%s*(%a+)") or lexer_mode
+        f:close()
+    end
+end
 local loader = require("stellar.script.loader")
 local lexer_where, lexer_message = loader.locate(image, stellar.read)
-if lexer_where then
-    local hooked, hook_message = loader.hook(lexer_where)
-    stellar.log(string.format("loader: CTextLexer::GetTok %s, CMemoryFile vtable %s, token tree %s: %s",
+if lexer_mode == "off" then
+    stellar.log("loader: the lexer hook is off (lexer.txt)")
+elseif lexer_where then
+    local hooked, hook_message = loader.hook(lexer_where, lexer_mode)
+    stellar.log(string.format("loader: CTextLexer::GetTok %s, CMemoryFile vtable %s, token tree %s, CToken::SetCharInString %s: %s",
         hex(lexer_where.get_tok), hex(lexer_where.memory_file_vtable), hex(lexer_where.token_tree),
-        hooked and "hooked (shadow)" or ("not hooked: " .. tostring(hook_message))))
+        lexer_where.set_char and hex(lexer_where.set_char) or "not found", hooked and ("hooked (" .. lexer_mode .. ")") or ("not hooked: " .. tostring(hook_message))))
 else
     stellar.log("loader: " .. tostring(lexer_message))
 end

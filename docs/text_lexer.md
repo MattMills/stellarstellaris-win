@@ -3,9 +3,10 @@
 The game reads all of its script text (files, inline scripts, the text of scripted triggers,
 effects and values rewritten with their arguments) with a `CTextLexer` over a `CMemoryFile`. The
 C++ readers call the lexer's virtual `GetTok` for each token. `lua/stellar/script/lexer.lua` is
-that tokenizer in Lua. `src/dll/lexer_hook.cpp` hooks `GetTok`: in shadow mode it compares every
-token the game reads with Lua's. Replace mode, where Lua gives the game its tokens, is the next
-step.
+that tokenizer in Lua. `src/dll/lexer_hook.cpp` hooks `GetTok`. In replace mode, the default, the
+game gets its tokens from Lua and its own `GetTok` never reads a script text. In shadow mode the
+game reads, and every token it reads is compared with Lua's. The mode is the first word of
+`lexer.txt` next to stellar-injected.dll: `replace`, `shadow` or `off`.
 
 Everything here is from Stellaris 4.5.2 (GOG and Steam builds, PDB of the GOG build). Addresses
 are GOG RVAs.
@@ -128,9 +129,37 @@ On a `GetTok` over a `CMemoryFile`:
 `lexer.tokenize` is the readable reference; `lexer.scan` gives the same calls without a Lua value
 per token: about 160 MB/s against 13 MB/s.
 
+In replace mode the hook writes what `GetTok` would have written:
+- `_CurrTok`: the id, the quoted flag, and the text with its NUL. When the text is longer than
+  `_Val`'s capacity, `_Val` grows through the game's `CToken::SetCharInString`.
+- the file's state: `_nPos`, the line, the last byte and the byte put back.
+
+It returns Lua's result. A peeked token is given back as `GetTok` does. The readers and
+`ReadUntilCharacter` carry on from the file's state, so the hook only has to notice that the file
+moved.
+
 ## Results (vanilla 4.5.2, Steam)
 
-Shadow mode, a whole startup load: 13,754,674 tokens compared in 148,819 texts, 0 mismatches. That
+**Replace mode** loads to the main menu, with every one of the 13,754,674 tokens from Lua (21.7
+million `GetTok` calls, the same counts as in shadow mode):
+
+- `error.log` is the same as without the hook.
+- The compiled script is the same:
+  - 1,318,141 trigger and 424,716 effect objects;
+  - `tools/dev/everything.lua`: 1,158,973 nodes match the files, 0 mismatches, 0 roots not
+    compared, in 1,222 files;
+  - the scripted triggers and effects instantiated without arguments are identical.
+
+On the same machine the load takes about 1.5s longer, all in the database phase (20.5s instead of
+17.6s):
+
+| | 0% to 100% | until the load screen is gone |
+|---|---|---|
+| no hook | 28.7s | 60.1s |
+| replace | 30.0s | 61.6s |
+| shadow | | 72.5s |
+
+**Shadow mode**, a whole startup load: 13,754,674 tokens compared in 148,819 texts, 0 mismatches. That
 is 21.7 million `GetTok` calls, 8 million of them returning a peeked token, and 21,078 restarts
 after the file moved between tokens. Lua tokenized 117.5 MB in about 7s, on the threads that read
 script and under the one Lua lock.

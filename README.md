@@ -40,11 +40,26 @@ game.after_day(function(gamestate, db)    -- CGameState, CGameStateDatabase (add
 end)
 ```
 
+The game reads its script through the Lua lexer. `lua/stellar/script/lexer.lua` is the game's
+tokenizer (`CTextLexer::GetTok`) in Lua. The hook gives the game Lua's tokens for every script text
+it reads, from the first file on: the proxy `version.dll` loads StellarStellaris before the game
+reads any. On vanilla 4.5.2 the game loads the same script from them: the same `error.log`, and
+every compiled trigger and effect matches the files. The load takes about 1.5s more
+([docs/text_lexer.md](docs/text_lexer.md)). `lexer.txt` next to the DLL can set `shadow` (the game
+reads, and every token is compared with Lua's) or `off`. The log also shows the phases and
+progress of the load screen.
+
 | File | |
 |---|---|
 | `src/dll/lua.cpp` | the Lua state and the `stellar` module |
 | `src/dll/code_hook.cpp` | function hooks installed while the game runs (the turn tick) |
+| `src/dll/lexer_hook.cpp` | the hook on the game's lexer: Lua's tokens (replace) or a comparison with them (shadow) |
+| `src/dll/loading_hook.cpp` | the load screen's events (phases, stages, progress) |
+| `src/proxy` | `version.dll` for the game's folder: loads StellarStellaris with the game |
 | `lua/init.lua` | the first script |
+| `lua/stellar/script/lexer.lua` | the game's tokenizer in Lua ([docs/text_lexer.md](docs/text_lexer.md)) |
+| `lua/stellar/script/loader.lua` | locates the lexer and hooks it |
+| `lua/stellar/loading.lua` | the load screen in the log: what "loaded" means |
 | `lua/stellar/game.lua` | the turn tick hook, the game state and the date |
 | `lua/stellar/script/catalog.lua` | the script engine read from the game: every token, trigger and effect (with the vtable of its objects), and a census of the compiled script ([docs/script_engine.md](docs/script_engine.md)); written to `cache/script_catalog-<md5>.tsv` |
 | `lua/stellar/script/docs.lua` | the game's own documentation of triggers, effects, scope links and modifiers |
@@ -73,6 +88,8 @@ The tools need the `fnmatch` module (`fnmatch.dll` / `fnmatch.so` from lua_fnmat
 | `thread_id()` | the id of the calling thread |
 | `heartbeat` | set it to a function: called every second (with 1, 2, ...) |
 | `hook_turn_tick(handle_turn_tick, gate)`, `turn_tick`, `skipped_ticks()` | used by `stellar.game` |
+| `hook_lexer(get_tok, layout, mode)`, `lexer_tokens`, `lexer_stats()`, `lexer_mismatches()` | used by `stellar.script.loader` |
+| `hook_loading(push, pop, render, step)`, `loading_events()` | used by `stellar.loading` |
 | `module_base`, `module_path` | stellaris.exe |
 | `dll_path`, `lua_dir`, `git_hash`, `process_id` | |
 

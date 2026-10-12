@@ -13,6 +13,11 @@
 // file after it) is compared with Lua's token, field by field. stellar.lexer_stats() and
 // stellar.lexer_mismatches() report.
 //
+// Replace mode: the game's GetTok does not run on a CMemoryFile. The hook writes Lua's token into
+// _CurrTok (growing its text with the game's CToken::SetCharInString) and the file's state after
+// it (_nPos, the line, the last byte, the byte put back), and returns Lua's result. The game's
+// readers, and CTextLexer::ReadUntilCharacter, carry on from there.
+//
 // The offsets of the structures come from Lua (`layout`, from the PDB of 4.5.2 for now).
 
 #define NOMINMAX
@@ -40,9 +45,12 @@ struct Layout {
 	// CLexer
 	int lexer_file = 0;        // CFile* _File
 	int lexer_peek = 0;        // bool _bPeek: the next GetTok returns the peeked token again
+	int lexer_peek_rc = 0;     // int _PeekRC: what it returns then
+	int lexer_token = 0;       // _CurrTok, a CToken
 	int token_type = 0;        // _CurrTok._LexerToken
 	int token_explicit = 0;    // _CurrTok._bExplicitString (a quoted string)
 	int token_text = 0;        // _CurrTok._Val: the text
+	int token_capacity = 0;    // _CurrTok._Val: its capacity
 	int token_size = 0;        // _CurrTok._Val: its size, the NUL included
 	// CFile
 	int file_line = 0;         // _LineNumber
@@ -58,9 +66,14 @@ struct Layout {
 	int memory_get_size = 0;   // the vtable slot of GetSize
 	// the token table: a function that returns it, find(name) is in its vtable's slot 2
 	void* (*token_tree)() = nullptr;
+	// CToken::SetCharInString(token, index, byte): writes a byte of the text, growing it
+	void (*set_char)(void* token, int index, char byte) = nullptr;
 };
 
 Layout layout;
+
+// Replace mode: the tokens of the CMemoryFiles are Lua's, the game's GetTok does not read them
+bool replace_mode = false;
 
 // int CLexer::GetTok(CLexer* this)
 using get_tok_function = int (*)(void* lexer);
@@ -130,7 +143,8 @@ struct Stats {
 	std::atomic<uint64_t> compared{0};     // tokens compared
 	std::atomic<uint64_t> lookups{0};      // of words in the token table
 	std::atomic<uint64_t> mismatches{0};
-	std::atomic<uint64_t> without_lua{0};  // calls without a Lua token to compare
+	std::atomic<uint64_t> without_lua{0};  // calls without a Lua token (the game's GetTok reads)
+	std::atomic<uint64_t> replaced{0};     // replace mode: tokens Lua gave the game
 };
 
 Stats stats;
@@ -376,11 +390,46 @@ void compare(const uint8_t* lexer, const uint8_t* file, const FileState& before,
 	mismatch_examples.emplace_back(line);
 }
 
+// Replace mode: what GetTok writes, from Lua's token: _CurrTok (unless the call wrote nothing) and
+// the file after it. Returns what GetTok returns.
+int deliver(uint8_t* lexer, uint8_t* file, const LuaToken& t, const Stream& s) {
+	if (t.filled) {
+		const char* text = token_text(s, t);
+		const size_t length = static_cast<size_t>(t.size - 1);
+		const int32_t type = t.type < 0 ? word_type(text, length, -t.type) : t.type;
+		int32_t capacity = 0;
+		std::memcpy(&capacity, lexer + layout.token_capacity, 4);
+		if (t.size > capacity) {
+			// the game's own growth of _Val (it sets the size to index + 1)
+			layout.set_char(lexer + layout.lexer_token, t.size - 1, '\0');
+		}
+		char* data = *reinterpret_cast<char* const*>(lexer + layout.token_text);
+		std::memcpy(data, text, length);
+		data[length] = '\0';
+		std::memcpy(lexer + layout.token_size, &t.size, 4);
+		std::memcpy(lexer + layout.token_type, &type, 4);
+		lexer[layout.token_explicit] = t.explicit_string;
+	}
+	std::memcpy(file + layout.memory_pos, &t.pos, 4);
+	std::memcpy(file + layout.file_line, &t.line, 4);
+	file[layout.file_last] = t.last;
+	file[layout.file_unget] = t.unget;
+	++stats.replaced;
+	return t.rc;
+}
+
 int get_tok_hook(void* lexer_pointer) {
 	uint8_t* const lexer = static_cast<uint8_t*>(lexer_pointer);
 	++stats.calls;
 	if (lexer[layout.lexer_peek] != 0) {
 		++stats.peeks;
+		if (replace_mode) {
+			// as GetTok: the peeked token again
+			lexer[layout.lexer_peek] = 0;
+			int32_t rc = 0;
+			std::memcpy(&rc, lexer + layout.lexer_peek_rc, 4);
+			return rc;
+		}
 		return original_get_tok(lexer_pointer);
 	}
 	uint8_t* const file = *reinterpret_cast<uint8_t* const*>(lexer + layout.lexer_file);
@@ -391,6 +440,14 @@ int get_tok_hook(void* lexer_pointer) {
 	const FileState before = file_state(file);
 	const Stream* stream = nullptr;
 	const LuaToken* expected = next_lua_token(file, before, &stream);
+	if (replace_mode) {
+		if (expected == nullptr) {
+			// no tokens from Lua for this text: the game reads it
+			++stats.without_lua;
+			return original_get_tok(lexer_pointer);
+		}
+		return deliver(lexer, file, *expected, *stream);
+	}
 	const int rc = original_get_tok(lexer_pointer);
 	if (expected != nullptr) {
 		compare(lexer, file, before, rc, *expected, *stream);
@@ -417,11 +474,17 @@ bool layout_field(lua_State* L, const char* name, lua_Number* value) {
 	return ok;
 }
 
-// stellar.hook_lexer(get_tok, layout) -> true | nil, message: hooks CTextLexer::GetTok in shadow
-// mode. layout: the offsets above, by name, and the addresses memory_file_vtable and token_tree.
+// stellar.hook_lexer(get_tok, layout, mode) -> true | nil, message: hooks CTextLexer::GetTok.
+// layout: the offsets above, by name, and the addresses memory_file_vtable, token_tree and (for
+// replace mode) set_char. mode: "shadow" (the default: compare) or "replace" (Lua's tokens).
 int l_hook_lexer(lua_State* L) {
 	void* target = reinterpret_cast<void*>(check_address(L, 1));
 	luaL_checktype(L, 2, LUA_TTABLE);
+	const char* mode = luaL_optstring(L, 3, "shadow");
+	const bool replace = std::strcmp(mode, "replace") == 0;
+	if (!replace && std::strcmp(mode, "shadow") != 0) {
+		return luaL_argerror(L, 3, "\"shadow\" or \"replace\" expected");
+	}
 	if (original_get_tok != nullptr) {
 		lua_pushnil(L);
 		lua_pushliteral(L, "the lexer is hooked already");
@@ -433,8 +496,10 @@ int l_hook_lexer(lua_State* L) {
 	};
 	const Offset offsets[] = {
 		{"lexer_file", &layout.lexer_file}, {"lexer_peek", &layout.lexer_peek},
+		{"lexer_peek_rc", &layout.lexer_peek_rc}, {"lexer_token", &layout.lexer_token},
 		{"token_type", &layout.token_type}, {"token_explicit", &layout.token_explicit},
-		{"token_text", &layout.token_text}, {"token_size", &layout.token_size},
+		{"token_text", &layout.token_text}, {"token_capacity", &layout.token_capacity},
+		{"token_size", &layout.token_size},
 		{"file_line", &layout.file_line}, {"file_last", &layout.file_last},
 		{"file_unget", &layout.file_unget}, {"file_name", &layout.file_name},
 		{"memory_holder", &layout.memory_holder}, {"memory_holder_data", &layout.memory_holder_data},
@@ -458,6 +523,14 @@ int l_hook_lexer(lua_State* L) {
 	}
 	layout.memory_file_vtable = static_cast<uintptr_t>(vtable);
 	layout.token_tree = reinterpret_cast<void* (*)()>(static_cast<uintptr_t>(tree));
+	lua_Number set_char = 0;
+	if (replace && (!layout_field(L, "set_char", &set_char) || !(set_char > 0))) {
+		lua_pushnil(L);
+		lua_pushliteral(L, "layout: set_char (CToken::SetCharInString) expected for replace mode");
+		return 2;
+	}
+	layout.set_char = reinterpret_cast<void (*)(void*, int, char)>(static_cast<uintptr_t>(set_char));
+	replace_mode = replace;
 	const char* error = nullptr;
 	if (!install_code_hook(target, reinterpret_cast<void*>(&get_tok_hook), reinterpret_cast<void**>(&original_get_tok), &error)) {
 		lua_pushnil(L);
@@ -480,7 +553,7 @@ int l_lexer_stats(lua_State* L) {
 		{"lua_calls", &stats.lua_calls}, {"lua_failures", &stats.lua_failures},
 		{"lua_microseconds", &stats.lua_microseconds}, {"lua_bytes", &stats.lua_bytes},
 		{"compared", &stats.compared}, {"lookups", &stats.lookups}, {"mismatches", &stats.mismatches},
-		{"without_lua", &stats.without_lua},
+		{"without_lua", &stats.without_lua}, {"replaced", &stats.replaced},
 	};
 	for (const auto& f : fields) {
 		lua_pushnumber(L, static_cast<lua_Number>(f.value->load()));
@@ -488,6 +561,8 @@ int l_lexer_stats(lua_State* L) {
 	}
 	lua_pushboolean(L, original_get_tok != nullptr);
 	lua_setfield(L, -2, "hooked");
+	lua_pushstring(L, replace_mode ? "replace" : "shadow");
+	lua_setfield(L, -2, "mode");
 	return 1;
 }
 

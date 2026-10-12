@@ -61,16 +61,20 @@ function loader.locate(image, read)
         return nil, "no token tree call in CTextLexer::GetTok"
     end
     return { get_tok = get_tok, memory_file_vtable = code.relative(read, last + 3, last + 7),
-        token_tree = code.relative(read, first_tree + 1, first_tree + 5) }
+        token_tree = code.relative(read, first_tree + 1, first_tree + 5),
+        set_char = found["CToken::SetCharInString"] }
 end
 
 -- The structures the hook reads (4.5.2, from its PDB; docs/text_lexer.md)
 loader.layout = {
     lexer_file = 0x8,          -- CLexer::_File
     lexer_peek = 0x13c,        -- CLexer::_bPeek
+    lexer_peek_rc = 0x10,      -- CLexer::_PeekRC
+    lexer_token = 0x18,        -- CLexer::_CurrTok, a CToken
     token_type = 0x18,         -- CLexer::_CurrTok._LexerToken
     token_explicit = 0x1c,     -- _CurrTok._bExplicitString
     token_text = 0x28,         -- _CurrTok._Val: the data
+    token_capacity = 0x30,     -- _CurrTok._Val: the capacity
     token_size = 0x34,         -- _CurrTok._Val: the size, NUL included
     file_line = 0x8,           -- CFile::_LineNumber
     file_last = 0x10,          -- CFile::_szLastChar
@@ -106,16 +110,18 @@ function loader.tokens(buffer, size, pos, last, unget, line)
     return nil
 end
 
--- loader.hook(where) -> true | nil, message: CTextLexer::GetTok hooked in shadow mode
-function loader.hook(where)
+-- loader.hook(where, mode) -> true | nil, message: CTextLexer::GetTok hooked; mode "shadow" (the
+-- game reads, Lua's tokens are compared with its) or "replace" (the game gets Lua's tokens)
+function loader.hook(where, mode)
     local stellar = require("stellar")
     stellar.lexer_tokens = loader.tokens
     local layout = {}
     for k, v in pairs(loader.layout) do
         layout[k] = v
     end
-    layout.memory_file_vtable, layout.token_tree = where.memory_file_vtable, where.token_tree
-    return stellar.hook_lexer(where.get_tok, layout)
+    layout.memory_file_vtable, layout.token_tree, layout.set_char = where.memory_file_vtable, where.token_tree,
+        where.set_char
+    return stellar.hook_lexer(where.get_tok, layout, mode or "shadow")
 end
 
 local reported, logged = nil, 0
@@ -132,10 +138,10 @@ function loader.report(force)
         return
     end
     reported = s.calls
-    stellar.log(string.format("loader: %d GetTok calls (%d peeks, %d on other files), %d texts (%d not from the start), "
-        .. "%d resyncs; Lua: %d calls (%d failed), %.2fs, %.1f MB; %d tokens compared, %d mismatches, %d without Lua, %d words looked up",
-        s.calls, s.peeks, s.other_files, s.texts, s.texts_not_at_start, s.resyncs, s.lua_calls, s.lua_failures,
-        s.lua_microseconds / 1e6, s.lua_bytes / 1e6, s.compared, s.mismatches, s.without_lua, s.lookups))
+    stellar.log(string.format("loader (%s): %d GetTok calls (%d peeks, %d on other files), %d texts (%d not from the start), "
+        .. "%d resyncs; Lua: %d calls (%d failed), %.2fs, %.1f MB; %d tokens from Lua, %d compared, %d mismatches, %d without Lua, %d words looked up",
+        s.mode, s.calls, s.peeks, s.other_files, s.texts, s.texts_not_at_start, s.resyncs, s.lua_calls, s.lua_failures,
+        s.lua_microseconds / 1e6, s.lua_bytes / 1e6, s.replaced, s.compared, s.mismatches, s.without_lua, s.lookups))
     local mismatches = stellar.lexer_mismatches()
     for i = logged + 1, #mismatches do
         stellar.log("loader:   " .. mismatches[i])
