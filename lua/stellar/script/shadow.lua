@@ -549,8 +549,10 @@ function shadow.everything(options)
     by_body = nil
     log(string.format("shadow: %d scripted instances", #instances))
 
-    -- the places of the roots: a file, or the instance of a scripted call
+    -- the places of the roots: a file, the instance of a scripted call, or a script value with the
+    -- call that read it
     local by_file, files = {}, {}
+    local values, value_list = {}, {}
     for _, root in ipairs(roots) do
         local decompile = root.kind == "trigger" and n.trigger or n.effect
         local location = decompile(n, root.object, 64).location
@@ -575,6 +577,22 @@ function shadow.everything(options)
             if instance then
                 root.line = tonumber(def_line)
                 instance.roots[#instance.roots + 1] = root
+                file = false
+            end
+        end
+        if file == nil then
+            -- inside a script value: `file: script value <name> at <the call's location> line: <line>`
+            local name, call, line = tostring(location):match("^%s*file: script value (%S+) at (.*) line: (%d+)%s*$")
+            if name then
+                local key = name .. " at " .. call
+                local value = values[key]
+                if value == nil then
+                    value = { name = name, call = call, roots = {} }
+                    values[key] = value
+                    value_list[#value_list + 1] = value
+                end
+                root.line = tonumber(line)
+                value.roots[#value.roots + 1] = root
                 file = false
             end
         end
@@ -605,10 +623,11 @@ function shadow.everything(options)
             k.names[name] = (k.names[name] or 0) + 1
         end
     end
-    roots, by_call = nil, nil
+    roots, by_call, values = nil, nil, nil
     table.sort(files)
     collectgarbage()
-    log(string.format("shadow: roots in %d files and %d instances, %d elsewhere", #files, #instances, result.indirect))
+    log(string.format("shadow: roots in %d files, %d scripted instances and %d script value calls, %d elsewhere",
+        #files, #instances, #value_list, result.indirect))
 
     -- compares the roots of a source with its reading, indexed by line
     local function compare_roots(list, by_line, d, label)
@@ -698,6 +717,102 @@ function shadow.everything(options)
             collectgarbage("step", 0)
         end
     end
+
+    -- each script value as a call read it: the definition with the call's arguments, which are in
+    -- the call's text (`value:name|PARAM|1|`): the line of the call's location, in its file
+    local value_defs = {}
+    for name, def in pairs(source.definitions(fs, "common/script_values")) do
+        value_defs[name:lower()] = def
+    end
+    local raw = {}
+    local function raw_line(path, line)
+        if path == nil or line == nil then
+            return nil
+        end
+        local lines = raw[path]
+        if lines == nil then
+            lines = false
+            local f = io.open(path, "rb")
+            if f then
+                lines = {}
+                for l in (f:read("*a") .. "\n"):gmatch("([^\n]*)\n") do
+                    lines[#lines + 1] = l
+                end
+                f:close()
+            end
+            raw[path] = lines
+        end
+        return lines and lines[line]
+    end
+    -- the text of the line a call's location names (in a script value, its lines count from its
+    -- definition's first line)
+    local function call_line(call)
+        local outer, line = call:match("^%s*file: script value (%S+) at .* line: (%d+)%s*$")
+        if outer then
+            local def = value_defs[outer:lower()]
+            return def and raw_line(def.path, def.line + tonumber(line) - 1)
+        end
+        local path, l = call:match("^%s*(%S+):(%d+) @ ")
+        if path then
+            return raw_line(fs:path(path), tonumber(l))
+        end
+        local file, l2 = call:match("(%S+) line: (%d+)%s*$")
+        if file then
+            return raw_line(fs:path(file), tonumber(l2))
+        end
+    end
+    -- `value:name|A|1|B|2|` in a text -> { { "A", "1" }, { "B", "2" } }, or nil
+    local function call_arguments(name, text)
+        local at = text and text:lower():find("value:" .. name:lower() .. "|", 1, true)
+        if at == nil then
+            return nil
+        end
+        local rest = text:sub(at + #name + 7):match("^([^%s}]*)")
+        local parts = {}
+        for p in rest:gmatch("([^|]*)|") do
+            parts[#parts + 1] = p
+        end
+        local args = {}
+        for k = 1, #parts - 1, 2 do
+            args[#args + 1] = { parts[k], parts[k + 1] }
+        end
+        return args
+    end
+    result.values, result.value_arguments_not_found = #value_list, 0
+    for i, value in ipairs(value_list) do
+        local def = value_defs[value.name:lower()]
+        local label = string.format("%s %s", def and def.file or "?", value.name)
+        local block
+        if def then
+            -- the game counts a script value's lines from its definition's first line (scripted
+            -- triggers and effects: from the top of the file)
+            for _, root in ipairs(value.roots) do
+                root.line = def.line + root.line - 1
+            end
+            block = source.instantiate(fs, def, {}, result.expand_errors)
+            local template = def.template
+            if block and template and (#template.blocks > 0 or template.text:find("$", 1, true)) then
+                -- a template with parameters: read it with the call's arguments (a call by the bare
+                -- name has none: its parameters take their defaults)
+                local text = call_line(value.call)
+                local args = call_arguments(value.name, text)
+                if args then
+                    block = source.instantiate(fs, def, args, result.expand_errors)
+                    label = label .. " (with arguments)"
+                elseif text == nil then
+                    result.value_arguments_not_found = result.value_arguments_not_found + 1
+                end
+            end
+        end
+        local by_line
+        if block then
+            by_line = {}
+            index_lines(block, by_line)
+        end
+        compare_roots(value.roots, by_line, directory("(content of script values)"), label)
+        value_list[i] = nil
+    end
+
     result.examples, result.skipped, result.skipped_at = total.examples, total.skipped, total.skipped_at
     result.matched, result.mismatches = total.matched, total.mismatches
     return result

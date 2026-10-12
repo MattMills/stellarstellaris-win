@@ -59,6 +59,8 @@ out[#out + 1] = string.format("%-45s %8d %8d %9d %9d %10d %12d", "all", totals.r
 out[#out + 1] = ""
 out[#out + 1] = "empty blocks without a location: " .. r.empty
 out[#out + 1] = "scripted instances: " .. r.instances .. ", errors reading them: " .. #r.instance_errors
+out[#out + 1] = "script value calls: " .. tostring(r.values) .. ", with parameters and a call line that "
+    .. "cannot be read: " .. tostring(r.value_arguments_not_found)
 for _, e in ipairs(r.instance_errors) do
     out[#out + 1] = "  " .. e
 end

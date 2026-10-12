@@ -147,6 +147,8 @@ arguments (`GenerateSource`, then a new reader on the result). From the disassem
   newlines and all, so the lines after it move up.
 - **Arguments** (`ParseForArguments`, `ProcessSourceForArguments`): `$` pair up in order (not
   escaped by a backslash), whatever is between them; `|` inside the pair separates the default.
+  Names match exactly (`$bonus$` is not `BONUS`), and an argument the call does not give, without
+  a default, becomes the empty string (`GetArgumentValue` returns `CString::_NullString`).
 - **Escapes**: finally `\[`, `\]`, `\|` and `\$` become `[`, `]`, `|` and `$`.
 
 So a bracket in a string is a block: `log = "AI [This.GetName] defaulted ... [Root.GetName] in
@@ -185,6 +187,9 @@ own and compared at their own place. What the comparison had to learn about the 
 - an event's `picture` reads a `picture = { ... }` inside its block as more of itself, and all its
   `trigger` blocks into one (at the first): vanilla puts inline scripts of whole picture blocks
   inside a picture block (`events/biogenesis_event_art`);
+- a key an effect block does not know is read as a call of a scripted effect of that name (left
+  unresolved if there is none): the docs' `stop_mission = { mission = x status = y }` makes two
+  calls, `mission` and `status`;
 - the identical code folding of the linker gives every `CPdxArray<T *>` one vtable: an array of
   tags (`trait_has_any_tag`) at the children's offset is not children; triggers and effects are
   recognized by being named.
@@ -194,6 +199,13 @@ Scripted calls are compared too. Each distinct body the game built (an instance)
 `CPdxArray<pair<CString, CString>>`), compared with that body. The roots inside it (located
 `common/scripted_effects/x.txt:12 @ scripted effect x at <the call's location>`) are compared
 with the statements at their lines in that instance.
+
+Script values are templates too (`CScriptValueTemplate`). Their content is located `file: script
+value x at <the call's location> line: 5`, the line counted from the definition's first line (not
+from the top of the file, as for scripted triggers and effects). The comparison groups those roots
+by call, reads the definition with the call's arguments (`value:x|PARAM|1|` in the text of the
+call's line; a call by the bare name has none, its parameters take their defaults) and compares
+them with the statements at their lines.
 
 Result, Steam 4.5.2 vanilla (1,318,141 compiled triggers, 424,716 effects; `dev\parity.txt`):
 
