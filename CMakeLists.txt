@@ -96,6 +96,15 @@ add_dependencies(stellar-injected stellar_luajit)
 target_compile_features(stellar-injected PRIVATE cxx_std_14)
 target_compile_features(stellar-loader PRIVATE cxx_std_14)
 
+# version.dll for the game's folder: the loader that runs before the game (src/proxy). In its own
+# directory, so that nothing next to the other outputs loads it by mistake.
+add_library(stellar-proxy SHARED "src/proxy/version_proxy.cpp" "src/proxy/version.def")
+set_target_properties(stellar-proxy PROPERTIES OUTPUT_NAME "version"
+	RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/proxy"
+	LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/proxy"
+	ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/proxy")
+target_compile_features(stellar-proxy PRIVATE cxx_std_14)
+
 # The Lua scripts go next to stellar-injected.dll, which runs lua/init.lua, with the Lua modules of
 # the submodules (pdxscript: lib/stellar-lua-pdxscript)
 add_custom_command(TARGET stellar-injected POST_BUILD

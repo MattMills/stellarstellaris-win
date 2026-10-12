@@ -39,3 +39,4 @@ jobs:
           ${{github.workspace}}/build/*.dll
           ${{github.workspace}}/build/*.pdb
           ${{github.workspace}}/build/lua/
+          ${{github.workspace}}/build/proxy/version.dll

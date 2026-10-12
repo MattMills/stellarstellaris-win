@@ -95,6 +95,8 @@ its `msvcbuild.bat`).
 
  It loads once per game: if the DLL is already in the game, the loader says so and does nothing (restart Stellaris to load a new build).
 
+ To load StellarStellaris with the game instead, before the game reads its script: copy `proxy/version.dll` into the game's folder (next to stellaris.exe), with a `stellarstellaris.txt` there whose first line is the full path of stellar-injected.dll (without it, stellar-injected.dll is looked for in the game's folder). Windows loads a version.dll in the application's folder before the one in System32; this one forwards the real one's functions and starts stellar-injected.dll. Remove the two files to start the game without StellarStellaris.
+
 ## Compatibility:
 
 Currently, there are no compatibility issues, the loader can be run at any time during a game, and can be removed by restarting the game without any issue.
