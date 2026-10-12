@@ -3,13 +3,14 @@
 // One LuaJIT state, created by the init thread once the C++ hooks are installed. Scripts get the
 // standard libraries (with the LuaJIT FFI), `sigmatch` and `fnmatch` (lua_sigmatch and lua_fnmatch:
 // finding code by byte patterns and by stellar-fnmatch function signatures), and `stellar`, this
-// DLL: logging, what the loader found, thread suspension and memory patching. lua/init.lua, next
-// to stellar-injected.dll, runs first.
+// DLL: logging, what the loader found, thread suspension, memory patching and the turn tick hook.
+// lua/init.lua, next to stellar-injected.dll, runs first.
 //
 // Lua errors are raised only while no C++ object that owns resources is alive in the calling
 // frame; scratch memory is Lua userdata.
 
 #include "dll/lua_runtime.h"
+#include "dll/code_hook.h"
 #include "dll/hooking_common.h"
 #include "git_version.h"
 
@@ -144,6 +145,88 @@ int l_patch(lua_State* L) {
 	return 1;
 }
 
+// stellar.thread_id() -> the id of the calling thread
+int l_thread_id(lua_State* L) {
+	lua_pushnumber(L, static_cast<lua_Number>(GetCurrentThreadId()));
+	return 1;
+}
+
+// The turn tick (docs/main_loop.md, lua/stellar/game.lua). CGameState::HandleTurnTick runs one tick
+// (10 per game day) on the main thread. Once stellar.hook_turn_tick has hooked it, it calls
+// stellar.turn_tick("before" | "after", game_state, gate_was_open) around the tick, with
+// g_AllowGlobalGameStateAccess open, as the game's own helpers open it around code that uses the
+// game state.
+
+// void CGameState::HandleTurnTick(CGameState *this, const CPdxArray<uint64_t, int> &checksums)
+using handle_turn_tick_function = void (*)(void* game_state, const void* checksums);
+handle_turn_tick_function handle_turn_tick = nullptr;
+volatile bool* game_state_gate = nullptr;
+
+bool call_protected(lua_State* L, int nargs);
+
+void call_turn_tick(const char* phase, void* game_state) {
+	std::lock_guard<std::recursive_mutex> guard(stellar_lua_lock());
+	if (L == nullptr) {
+		return;
+	}
+	const int top = lua_gettop(L);
+	lua_getglobal(L, "package");
+	lua_getfield(L, -1, "loaded");
+	lua_getfield(L, -1, "stellar");
+	if (lua_istable(L, -1)) {
+		lua_getfield(L, -1, "turn_tick");
+		if (lua_isfunction(L, -1)) {
+			const bool gate = *game_state_gate;
+			*game_state_gate = true;
+			lua_pushstring(L, phase);
+			push_address(L, game_state);
+			lua_pushboolean(L, gate);
+			if (!call_protected(L, 3)) {
+				// a failing handler is reported once
+				lua_pushnil(L);
+				lua_setfield(L, -2, "turn_tick");
+			}
+			*game_state_gate = gate;
+		}
+	}
+	lua_settop(L, top);
+}
+
+void turn_tick_hook(void* game_state, const void* checksums) {
+	call_turn_tick("before", game_state);
+	handle_turn_tick(game_state, checksums);
+	call_turn_tick("after", game_state);
+}
+
+// stellar.hook_turn_tick(handle_turn_tick, gate) -> true | nil, message: hooks
+// CGameState::HandleTurnTick at `handle_turn_tick`; `gate` is g_AllowGlobalGameStateAccess.
+int l_hook_turn_tick(lua_State* L) {
+	void* target = reinterpret_cast<void*>(check_address(L, 1));
+	volatile bool* gate = reinterpret_cast<volatile bool*>(check_address(L, 2));
+	if (handle_turn_tick != nullptr) {
+		lua_pushnil(L);
+		lua_pushliteral(L, "the turn tick is hooked already");
+		return 2;
+	}
+	char value = 0;
+	SIZE_T read = 0;
+	if (!ReadProcessMemory(GetCurrentProcess(), const_cast<bool*>(gate), &value, 1, &read) || read != 1) {
+		lua_pushnil(L);
+		lua_pushfstring(L, "cannot read the gate at %p", const_cast<bool*>(gate));
+		return 2;
+	}
+	game_state_gate = gate;
+	// handle_turn_tick is set before the jmp is written: the game can call the hook right away
+	const char* error = nullptr;
+	if (!install_code_hook(target, reinterpret_cast<void*>(&turn_tick_hook), reinterpret_cast<void**>(&handle_turn_tick), &error)) {
+		lua_pushnil(L);
+		lua_pushstring(L, error);
+		return 2;
+	}
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
 int luaopen_stellar(lua_State* L) {
 	const luaL_Reg functions[] = {
 		{"log", l_log},
@@ -151,6 +234,8 @@ int luaopen_stellar(lua_State* L) {
 		{"resume_threads", l_resume_threads},
 		{"read", l_read},
 		{"patch", l_patch},
+		{"thread_id", l_thread_id},
+		{"hook_turn_tick", l_hook_turn_tick},
 		{nullptr, nullptr},
 	};
 	lua_newtable(L);

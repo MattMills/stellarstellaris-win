@@ -124,6 +124,9 @@ void thread_idler_testing() {
 	stellar_lua_start();
 
 	while (1) {
+		// Lua logs from the main thread too (the turn tick), and the logger is not thread-safe
+		std::unique_lock<std::recursive_mutex> log_guard(stellar_lua_lock());
+
 		// The CApplication / CGameIdler layouts (include/stellaris, from 3.7.4) do not match current
 		// versions, so these fields are read with checked reads: a wrong offset gives a wrong value,
 		// not a crash.
@@ -156,6 +159,7 @@ void thread_idler_testing() {
 		}
 
 		logger.endl();
+		log_guard.unlock();
 
 		stellar_lua_heartbeat(frame);
 

@@ -52,8 +52,8 @@ function report.run(options)
             return nil, message
         end
         opened = image
+        log(string.format("report: %s analysed in %.1fs, %d functions, md5 %s", image:path(), util.now() - t0, #image, image:md5()))
     end
-    log(string.format("report: %s analysed in %.1fs, %d functions, md5 %s", image:path(), util.now() - t0, #image, image:md5()))
     for i, r in ipairs(signatures.references) do
         log(string.format("report: reference %d: %s, %s%s", i, r.id, r.build, r.md5 == image:md5() and " (this build)" or ""))
     end

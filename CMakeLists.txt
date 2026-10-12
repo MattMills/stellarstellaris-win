@@ -82,6 +82,7 @@ add_library		( stellar-injected SHARED
 					"src/dll/cship.cpp"
 					"src/dll/limit_once_in_x_seconds.cpp"
 					"src/dll/lua.cpp"
+					"src/dll/code_hook.cpp"
 					"src/hooking/asm.cpp"
 					"src/hooking/error.cpp" 
 					"src/hooking/shared.cpp"

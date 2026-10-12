@@ -16,9 +16,9 @@ CApplication::Run                                     loop until quit ([this+0xC
         CSession::Update
           CSession::ProcessSynchronousCommands        every queued command, one at a time
             command->Execute()                        e.g. player actions, and:
-            CTurnTickCommand::Execute                 one per game day, tail-jumps to
-              CGameState::HandleTurnTick              MicroUpdate, ProcessAI, DailyUpdate,
-                                                      MonthlyUpdate, YearlyUpdate, autosave, ...
+            CTurnTickCommand::Execute                 one per tick (10 per game day), tail-jumps to
+              CGameState::HandleTurnTick              MicroUpdate, ProcessAI; every 10th tick: the
+                                                      date, DailyUpdate, MonthlyUpdate, YearlyUpdate
       CInGameIdler::UpdateInternal
         CInGameIdler::CheckTick                       decides a day is due: posts a CTurnTickCommand
                                                       and runs CSession::Update itself (same gate)
@@ -81,17 +81,22 @@ also keeps arrays of references for iteration (`_FleetArray +0x4f8`, `_ShipArray
 
 ## Where to hook: `CGameState::HandleTurnTick`
 
-`void CGameState::HandleTurnTick(CGameState *this, CTurnTickCommand *command)`:
-GOG 4.5.2 `0x252830`, Steam 4.5.2 `0x251800`.
+`void CGameState::HandleTurnTick(CGameState *this, const CPdxArray<uint64_t, int> &checksums)`:
+GOG 4.5.2 `0x252830`, Steam 4.5.2 `0x251800`. `checksums` are the out-of-sync checks the tick
+command carries (`CTurnTickCommand::_Checksums`, at `+0x20` of the command).
 
 - It runs exactly where the game itself changes the database: inside
   `CSession::ProcessSynchronousCommands` (from `CheckTick` or `CGameApplication::Update`), on the
   main thread, with the gate open, posting disabled, `CSession::_IsInExecution` set and no parallel
   phase active (`g_nThreadSafetyState` is 1, the serial main-thread value).
+- Its other caller is `NUtil::FastForwardDays` (the `fast_forward` console command and the game's
+  own test mode), which opens the gate itself and calls it once per tick.
 - It is the body of a synchronized command, so every multiplayer client runs it at the same point:
   changes made from it stay in sync if they are deterministic.
-- `this` is the game state (`this->_pDB` is the database). Before the original runs, the new day has
-  not started; after it returns, the day, month and year updates are done.
+- `this` is the game state (`this->_pDB` is the database). It increments `_nTickCount` (`+0x8`);
+  when that reaches 10 it resets it, adds 24 hours to `_CurrentDate` and runs the daily, monthly and
+  yearly updates. The other ticks run `MicroUpdate` and the AI. In 4.5.2 on Steam a tick takes
+  2-10 ms early in a game, the tick that starts a month about 120 ms.
 - It is never re-entered: nested frames inside the tick cannot execute commands.
 - Its first instruction (`mov [rsp+0x10], rbx`, 5 bytes) moves to a trampoline as is, and it is
   identical in the GOG and Steam builds.
@@ -99,6 +104,14 @@ GOG 4.5.2 `0x252830`, Steam 4.5.2 `0x251800`.
 A wrapper should do what the game's own helpers do around code that touches the game state: save
 `g_AllowGlobalGameStateAccess`, set it to 1, call Lua, restore it. A frame rendered during the day
 can leave it at 0 when `HandleTurnTick` returns.
+
+This is what `lua/stellar/game.lua` does (`game.before_tick`, `game.after_tick`), with the hook in
+`src/dll/lua.cpp` (`stellar.hook_turn_tick`) and `src/dll/code_hook.cpp`: the first 5 bytes of
+`HandleTurnTick` become a jmp in one atomic 8-byte store, so the game does not have to be stopped.
+`game.locate` finds the three functions by their signatures and the globals as described below;
+`tools/dry_run.lua` runs it on an executable file. It finds the same functions and globals as the
+PDBs in GOG 3.7.4, 4.5.1 and 4.5.2, and resolves in Steam 4.5.2 (`gate` `0x3114dec`,
+`g_CurrentGameState` `0x3114700`).
 
 Other places, and why not:
 
@@ -118,9 +131,16 @@ operand of the instruction that uses the global inside it (sigmatch over the fun
 
 | global | instruction in `CGameApplication::Update` |
 |---|---|
-| `g_AllowGlobalGameStateAccess` | `c6 05 ?? ?? ?? ?? 01` (first `mov byte ptr [rip+x], 1`) |
-| `g_AllowGetPlayer` | `c6 05 ?? ?? ?? ?? 00` (the instruction before it) |
-| `g_CurrentGameState` | `48 39 3d ?? ?? ?? ??` / `4c 39 3d ?? ?? ?? ??` (`cmp [rip+x], r15`) |
+| `g_AllowGetPlayer`, `g_AllowGlobalGameStateAccess` | `c6 05 ?? ?? ?? ?? 00 c6 05 ?? ?? ?? ?? 01` (`mov byte ptr [rip+x], 0`, then `mov byte ptr [rip+y], 1`) |
+| `g_CurrentGameState` | the next `48 39 ..` / `4c 39 ..` with a `[rip+x]` operand (`cmp [rip+x], r15`) |
+
+`CInGameIdler::CheckTick` also writes 1 to the gate (`c6 05 ?? ?? ?? ?? 01`), which confirms it.
+
+## Dates
+
+`CGameState::_CurrentDate` (`+0xc0`) is a `CDate`: `int _nUniversalDate`, hours from 5000 years of
+365 days before year 0. `CStellarisDate::GetYear` subtracts `43800000` and counts 360-day years of
+twelve 30-day months: `days = floor((date - 43800000) / 24)`, `year = floor(days / 360)`.
 
 ## Also in this pass
 
