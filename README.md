@@ -54,6 +54,7 @@ the instructions the assembly patches rewrite are still there.
 | `lua/stellar/report.lua` | the report |
 | `tools/make_signatures.lua` | `luajit tools/make_signatures.lua lua/stellar/signatures.lua gog-4.5.2.sig gog-4.5.1.sig ...` (newest first, `.sig` files from stellar-fnmatch) |
 | `tools/dry_run.lua` | `luajit tools/dry_run.lua stellaris.exe`: the fnmatch part of the report, on a file, outside the game |
+| `docs/main_loop.md` | the main loop, how the game guards its state, and where to hook to use it |
 
 The tools need the `fnmatch` module (`fnmatch.dll` / `fnmatch.so` from lua_fnmatch) on `LUA_CPATH`.
 
