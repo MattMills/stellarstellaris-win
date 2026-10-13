@@ -25,6 +25,7 @@ fn main() {
     drop(gamestate);
     // the stockpiles at the start, to compare their change with the game's
     let before: mlua::Table = runtime.lua.load("return require('engine.diff').snapshot_stockpiles()").eval().expect("snapshot");
+    let research_before: mlua::Table = runtime.lua.load("return require('engine.diff').snapshot_research()").eval().expect("snapshot");
     let mut sim = Simulation::new(runtime);
     let t0 = std::time::Instant::now();
     sim.run_days(days);
@@ -40,6 +41,10 @@ fn main() {
     let report: String = run.call((text.clone(), top)).expect("diff");
     println!("{report}");
     let stockpiles: mlua::Function = sim.runtime.lua.load("return require('engine.diff').stockpiles").eval().expect("engine.diff");
-    let report: String = stockpiles.call((text, before)).expect("stockpiles");
+    let report: String = stockpiles.call((text.clone(), before)).expect("stockpiles");
     println!("{report}");
+    let research: mlua::Function = sim.runtime.lua.load("return require('engine.diff').research").eval().expect("engine.diff");
+    let report: String = research.call((text, research_before)).expect("research");
+    println!("{report}");
+    println!("{}", sim.runtime.report());
 }

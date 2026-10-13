@@ -43,14 +43,10 @@ function systems.effects.add_modifier(t)
 end
 
 function systems.effects.give_technology(t)
-    local c = t.kind == "country" and world.object("country", t.id)
-    if not c then
+    if t.kind ~= "country" or not world.object("country", t.id) then
         return nil
     end
-    local status = world.child(c, "tech_status")
-    world.append(status, "technology", tostring(t.tech), true)
-    world.append(status, "level", 1)
-    return true
+    return require("engine.research").add_technology(t.id, tostring(t.tech))
 end
 
 function systems.effects.kill_leader(t)
@@ -175,8 +171,11 @@ end
 P["daily.galaxy"] = function()
     each_object(other_stores(), count_down_modifiers)
 end
-P["daily.countries_serial"] = function(host)
+-- CCountry::DailyUpdateSerial: the country's events, then (after diplomacy and elections) its
+-- research (engine.research)
+P["daily.countries_serial"] = function(host, date)
     each_country(function(id) host.scope_daily_events("country", id) end)
+    require("engine.research").daily(host, date)
 end
 P["daily.colonies_serial"] = function(host)
     for _, id in ipairs(world.all("planet")) do

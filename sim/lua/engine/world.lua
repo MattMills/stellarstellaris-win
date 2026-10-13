@@ -146,7 +146,9 @@ local function fields(obj)
                     list = {}
                     f[e.key.text] = list
                 end
-                list[#list + 1] = e.value.text or e.value
+                -- the value itself (a token or a block), so that a token changed in place (a
+                -- countdown, a progress) reads back as it is now
+                list[#list + 1] = e.value
             end
         end
         fields_of[obj] = f
@@ -155,20 +157,24 @@ local function fields(obj)
 end
 
 -- world.field(obj, key) -> the first value of key: a number when it is one, else the text or the
--- block; world.fields(obj, key) -> all of them
+-- block; world.fields(obj, key) -> all of them (texts or blocks)
 function world.field(obj, key)
     if obj == nil then
         return nil
     end
     local l = fields(obj)[key]
     local v = l and l[1]
-    if type(v) == "string" then
-        return tonumber(v) or v
+    if v and v.text then
+        return tonumber(v.text) or v.text
     end
     return v
 end
 function world.fields(obj, key)
-    return obj and fields(obj)[key] or {}
+    local out = {}
+    for i, v in ipairs(obj and fields(obj)[key] or {}) do
+        out[i] = v.text or v
+    end
+    return out
 end
 
 -- the bare values of a list block (`civics = { "a" "b" }`), as text
@@ -238,6 +244,15 @@ function world.append(obj, key, value, quoted)
     local v = type(value) == "table" and value
         or { text = type(value) == "number" and number_text(value) or tostring(value), quoted = quoted or nil }
     obj[#obj + 1] = { key = { text = key }, op = "=", value = v }
+    fields_of[obj] = nil
+end
+
+-- world.insert(obj, pos, key, value[, quoted]): `key = value` at position pos of obj (the save's
+-- order kept: e.g. a technology after the others)
+function world.insert(obj, pos, key, value, quoted)
+    local v = type(value) == "table" and value
+        or { text = type(value) == "number" and number_text(value) or tostring(value), quoted = quoted or nil }
+    table.insert(obj, pos, { key = { text = key }, op = "=", value = v })
     fields_of[obj] = nil
 end
 
