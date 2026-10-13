@@ -319,6 +319,16 @@ end
 -- the relations the script layer walks, from the objects' own fields
 function world.index()
     world.planets_of, world.pop_groups_of, world.leaders_of = {}, {}, {}
+    -- a colony (the `colony` store) is the colony of the planet whose `colony` field names it; in
+    -- 4.5 a pop group's `planet`, a pop job's `planet` and a country's `capital` and
+    -- `owned_planets` are colony ids
+    world.colony_planet, world.planet_colony = {}, {}
+    for _, pid in ipairs(world.all("planet")) do
+        local c = tonumber(world.field(world.object("planet", pid), "colony"))
+        if c then
+            world.colony_planet[c], world.planet_colony[pid] = pid, c
+        end
+    end
     local function push(t, k, v)
         if k then
             local l = t[k]
@@ -333,7 +343,8 @@ function world.index()
         push(world.planets_of, tonumber(world.field(world.object("planet", id), "owner")), id)
     end
     for _, id in ipairs(world.all("pop_group")) do
-        push(world.pop_groups_of, tonumber(world.field(world.object("pop_group", id), "planet")), id)
+        local colony = tonumber(world.field(world.object("pop_group", id), "planet"))
+        push(world.pop_groups_of, colony and world.colony_planet[colony], id)
     end
     for _, id in ipairs(world.all("leader")) do
         push(world.leaders_of, tonumber(world.field(world.object("leader", id), "country")), id)

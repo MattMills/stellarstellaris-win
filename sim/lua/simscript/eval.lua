@@ -112,18 +112,22 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- scope links
 
+-- a country id as the save writes it: 0 is a country (the first one); 4294967295 is none
+local NO_ID = 4294967295
+local function country(o)
+    o = tonumber(o)
+    return (o and o ~= NO_ID) and S("country", o) or nil
+end
+
 local function owner_of(sc)
     sync()
     if sc.kind == "planet" then
-        local o = E.get("planet", sc.id, "owner")
-        return o and o ~= 0 and S("country", o) or nil
+        return country(E.get("planet", sc.id, "owner"))
     elseif sc.kind == "pop_group" then
-        local c = E.get("pop_group", sc.id, "colony")
-        local o = c and E.get("planet", c, "owner")
-        return o and S("country", o) or nil
+        local p = E.get("pop_group", sc.id, "colony")
+        return p and country(E.get("planet", p, "owner")) or nil
     elseif sc.kind == "leader" then
-        local o = E.get("leader", sc.id, "country")
-        return o and S("country", o) or nil
+        return country(E.get("leader", sc.id, "country"))
     end
     return nil
 end
@@ -295,18 +299,51 @@ local function mathexpr(text, ctx, e)
     return 0
 end
 
-local function getvar(sc, name)
-    local t = state.vars[sc.key]
-    return t and t[name]
-end
-local function setvar(sc, name, v)
-    local t = state.vars[sc.key]
-    if not t then
-        t = {}
-        state.vars[sc.key] = t
-    end
-    t[name] = v
-end
+-- Where the script state lives (M.store): by default in this module's own tables; a world loaded
+-- from a save installs a store over the save's objects (engine/scriptstate.lua), so the flags and
+-- variables are the save's, and saved with it.
+M.store = {
+    getvar = function(sc, name)
+        local t = state.vars[sc.key]
+        return t and t[name]
+    end,
+    setvar = function(sc, name, v)
+        local t = state.vars[sc.key]
+        if not t then
+            t = {}
+            state.vars[sc.key] = t
+        end
+        t[name] = v
+    end,
+    -- has_flag(sc, name) / set_flag(sc, name, days | nil for ever) / remove_flag(sc, name);
+    -- sc == nil: the global flags
+    has_flag = function(sc, name)
+        local t = sc and state.flags[sc.key] or (sc == nil and state.global_flags)
+        local v = t and t[name]
+        if v == nil then return false end
+        if v == true then return true end
+        return v > M.today()
+    end,
+    set_flag = function(sc, name, days)
+        local t
+        if sc == nil then
+            t = state.global_flags
+        else
+            t = state.flags[sc.key]
+            if not t then
+                t = {}
+                state.flags[sc.key] = t
+            end
+        end
+        t[name] = days and (M.today() + days) or true
+    end,
+    remove_flag = function(sc, name)
+        local t = sc and state.flags[sc.key] or (sc == nil and state.global_flags)
+        if t then t[name] = nil end
+    end,
+}
+local function getvar(sc, name) return M.store.getvar(sc, name) end
+local function setvar(sc, name, v) return M.store.setvar(sc, name, v) end
 M.getvar, M.setvar = getvar, setvar
 
 function value_text(t, ctx, e)
@@ -507,22 +544,6 @@ local function flag_name(text, ctx, e)
     return text
 end
 
-local function flags_of(key)
-    local t = state.flags[key]
-    if not t then
-        t = {}
-        state.flags[key] = t
-    end
-    return t
-end
-
-local function has_flag(key, name)
-    local t = state.flags[key]
-    local v = t and t[name]
-    if v == nil then return false end
-    if v == true then return true end
-    return v > M.today() -- timed: the last day
-end
 
 -- ---------------------------------------------------------------------------------------------
 -- lists (iterators)
@@ -662,11 +683,12 @@ local function trigger1(e, ctx)
         return r
     end
     local fk = lk:match("^has_(.+)_flag$")
+    if fk == "policy" then fk = nil end   -- has_policy_flag: the country's policies, not a script flag
     if fk and e.value.text then
         if fk == "global" then
-            return state.global_flags[flag_name(e.value.text, ctx, e)] == true
+            return M.store.has_flag(nil, flag_name(e.value.text, ctx, e))
         end
-        return has_flag(ctx.this.key, flag_name(e.value.text, ctx, e))
+        return M.store.has_flag(ctx.this, flag_name(e.value.text, ctx, e))
     end
     if M.property(lk) and e.value.text then
         return M.property(lk)(e, ctx, lk)
@@ -754,7 +776,7 @@ TRIG["is_same_value"] = function(e, ctx)
     return f and sc == ctx.this
 end
 TRIG["is_same_empire"] = TRIG["is_same_value"]
-TRIG["has_global_flag"] = function(e, ctx) return state.global_flags[flag_name(e.value.text, ctx, e)] == true end
+TRIG["has_global_flag"] = function(e, ctx) return M.store.has_flag(nil, flag_name(e.value.text, ctx, e)) end
 TRIG["is_variable_set"] = function(e, ctx)
     local name = e.value.text or ""
     local found, sc = false, ctx.this
@@ -863,7 +885,7 @@ local PROP_ATTR = {
     is_hive_empire = true, is_megacorp = true, is_planet_class = true, is_capital = true,
     is_homeworld = true, has_owner = true, is_colony = true, is_primitive = true,
     is_fallen_empire = true, is_crisis_faction = true, is_pirate = true, is_galactic_custodian = true,
-    is_galactic_emperor = true, is_lithoid_empire = true, is_regular_empire = true,
+    is_galactic_emperor = true, is_lithoid_empire = true,
     -- engine state the sample world does not have (no wars, federations, subjects): absent = no
     is_at_war = true, is_subject = true, is_overlord = true, has_federation = true, is_nomadic = true,
     is_councilor = true, is_galactic_community_member = true, is_ruler = true, is_in_federation = true,
@@ -998,10 +1020,11 @@ local function effect1(e, ctx)
     if verb and e.value.text then
         local name = flag_name(e.value.text, ctx, e)
         count_script()
-        if fk == "global" then
-            state.global_flags[name] = verb == "set" or nil
+        local sc = fk ~= "global" and ctx.this or nil
+        if verb == "set" then
+            M.store.set_flag(sc, name, nil)
         else
-            flags_of(ctx.this.key)[name] = verb == "set" or nil
+            M.store.remove_flag(sc, name)
         end
         return
     end
@@ -1019,8 +1042,7 @@ local function effect1(e, ctx)
         end
         if name then
             count_script()
-            local t = fk == "global" and state.global_flags or flags_of(ctx.this.key)
-            t[name] = fk == "global" and true or (M.today() + days)
+            M.store.set_flag(fk ~= "global" and ctx.this or nil, name, days)
         end
         return
     end

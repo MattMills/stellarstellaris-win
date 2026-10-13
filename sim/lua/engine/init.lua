@@ -29,6 +29,10 @@ function engine.load(game_dir, gamestate, docs_dir)
     if gamestate then
         local ok, message = engine.world.load(gamestate)
         lines[#lines + 1] = ok and ("world: " .. engine.world.summary()) or ("world: not loaded: " .. tostring(message))
+        if ok then
+            -- the script's flags and variables are the save's
+            require("engine.scriptstate").install()
+        end
     end
     return table.concat(lines, "\n")
 end

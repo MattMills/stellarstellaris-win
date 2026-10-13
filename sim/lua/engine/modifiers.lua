@@ -269,62 +269,7 @@ function S:trigger(block, kind, id, file)
     end
     self.stats.triggers = self.stats.triggers + 1
     local ctx = self.eval.new_ctx(self.eval.S(kind, id), nil, nil, file)
-    -- WORKAROUND (engine/interface.lua, not ours to edit): a 4.5 pop group's `planet` field is its
-    -- colony's id (the `colony` store), which E.get("pop_group", id, "colony") hands to the script
-    -- layer as a planet id. While a trigger is evaluated here it is mapped to the colony's planet.
-    -- Remove once the interface answers the planet.
-    -- Also answered here, for the same reason, what the triggers of modifier blocks read most and
-    -- the interface does not answer yet: is_regular_empire (a property in the script layer, so its
-    -- scripted trigger is not used) and a pop group's has_trait (its species' traits).
-    local get, has = E.get, E.has
-    local poc, w = self.planet_of_colony, self.world
-    E.get = function(k, i, name)
-        local v = get(k, i, name)
-        if k == "pop_group" and name == "colony" and v ~= nil then
-            return poc[v]
-        elseif k == "country" and name == "is_regular_empire" and v == nil then
-            local ty = unq(w.field(w.object("country", i), "type"))
-            local regular = ty == "default" or ty == "awakened_marauders" or ty == "fallen_empire"
-                or ty == "awakened_fallen_empire" or ty == "exiled"
-            return (regular and get(k, i, "is_gestalt") ~= "yes") and "yes" or "no"
-        end
-        return v
-    end
-    E.has = function(k, i, set, member)
-        if k == "pop_group" and set == "has_trait" then
-            local key = w.field(w.object("pop_group", i), "key")
-            local sp = type(key) == "table" and w.object("species", w.field(key, "species"))
-            local traits = sp and w.field(sp, "traits")
-            for _, e in ipairs(type(traits) == "table" and traits or {}) do
-                if e.op and unq(e.value.text) == member then
-                    return true
-                end
-            end
-            return false
-        end
-        return has(k, i, set, member)
-    end
-    -- WORKAROUND (simscript/eval.lua): its owner link takes owner id 0 for "no owner", but 0 is
-    -- a country (the player's, in this save); the link is answered here while evaluating
-    local links = self.eval.LINKS
-    local owner_link, controller_link = links.owner, links.controller
-    local S_ = self.eval.S
-    local function owner(cur)
-        local o
-        if cur.kind == "planet" then
-            o = E.get("planet", cur.id, "owner")
-        elseif cur.kind == "pop_group" then
-            local p = E.get("pop_group", cur.id, "colony")
-            o = p and E.get("planet", p, "owner")
-        elseif cur.kind == "leader" then
-            o = E.get("leader", cur.id, "country")
-        end
-        return type(o) == "number" and w.object("country", o) and S_("country", o) or nil
-    end
-    links.owner, links.controller = owner, owner
     local ok, r = pcall(self.eval.trigger, block, ctx)
-    links.owner, links.controller = owner_link, controller_link
-    E.get, E.has = get, has
     if not ok then
         self.stats.trigger_errors = self.stats.trigger_errors + 1
         return nil
