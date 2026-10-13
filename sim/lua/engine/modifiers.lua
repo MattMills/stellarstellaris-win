@@ -50,7 +50,8 @@ M.FILTER = {
     PopGroup = 688130,
     Ship = 49276,
 }
-M.CATEGORIES = { "Country", "Planet", "Colony", "PopGroup", "Ship" }
+M.CATEGORIES = { "Country", "Planet", "Colony", "PopGroup", "Ship", "Starbase", "StarbaseCountry", "StarbaseExternal",
+    "StarbaseSystem", "StarbaseDefensePlatform", "Orbital" }
 
 -- A key of a modifier block that is not a modifier type but names a static modifier
 -- (`researcher_jobs_bonus_workforce_mult = 0.1`, common/static_modifiers/24_static_modifiers_jobs.txt)
@@ -717,23 +718,7 @@ function S:contributions(parts, id)
     end
     parts.add("jobs#country", jobs)
     parts.add("buildings#country", buildings)
-    -- starbases: their modules and buildings (`modules = { 0 = shipyard ... }`)
-    self.structure = self.structure or require("engine.modifiers.structure").new(w, self.defs)
-    local sb_sum = {}
-    for _, sb in ipairs(self.structure.starbases_of[id] or {}) do
-        local o = w.object("starbases", sb)
-        for _, key in ipairs({ "modules", "buildings" }) do
-            local b = w.field(o, key)
-            local folder = key == "modules" and "common/starbase_modules" or "common/starbase_buildings"
-            for _, e in ipairs(type(b) == "table" and b or {}) do
-                local ty = e.op and e.value and unq(e.value.text)
-                if ty then
-                    sum_into(sb_sum, self:def_values(folder, ty, "country_modifier"))
-                end
-            end
-        end
-    end
-    parts.add("starbases#country", sb_sum)
+    -- (the starbases' country_modifier reach the country through their StarbaseCountry nodes)
     local mega = {}
     for _, mid in ipairs(w.all("megastructures")) do
         local o = w.object("megastructures", mid)
@@ -1118,9 +1103,67 @@ function S:ship(id)
     return parts
 end
 
+-- starbases -------------------------------------------------------------------------------------
+
+-- A starbase's nodes take their parts from its level and its modules and buildings (`modules = {
+-- 0 = shipyard ... }`, `buildings = { ... }`), each block to its node, with the filters the captures
+-- show:
+--   Starbase                 its level's ship size's `modifier` (sensor range, capacities), and the
+--                            station_modifier (and the active triggered_station_modifier) blocks
+--   StarbaseCountry          country_modifier, triggered_country_modifier (its country reads it)
+--   StarbaseExternal         planet_modifier, triggered_planet_modifier
+--   StarbaseSystem           system_modifier, triggered_system_modifier
+--   StarbaseDefensePlatform  defense_platform_modifier (its defense platforms read it)
+--   Orbital                  orbit_modifier (the fleets docked at it read it)
+local STARBASE_BLOCKS = {
+    Starbase = { "station_modifier", 1076806270 },
+    StarbaseCountry = { "country_modifier", -1 },
+    StarbaseExternal = { "planet_modifier", 1076806270 },
+    StarbaseSystem = { "system_modifier", 1074317566 },
+    StarbaseDefensePlatform = { "defense_platform_modifier", 540796 },
+    Orbital = { "orbit_modifier", 1074282750 },
+}
+M.STARBASE_CATEGORIES = { "Starbase", "StarbaseCountry", "StarbaseExternal", "StarbaseSystem",
+    "StarbaseDefensePlatform", "Orbital" }
+
+function S:starbase_node(category, id)
+    local w = self.world
+    local o = w.object("starbases", id)
+    local block, filter = STARBASE_BLOCKS[category][1], STARBASE_BLOCKS[category][2]
+    local parts = new_parts(filter)
+    if o == nil then
+        return parts
+    end
+    if category == "Starbase" then
+        local level = unq(w.field(o, "level"))
+        local ld = level and self.defs.get("common/starbase_levels", level)
+        local size = ld and unq(self.defs.field(ld.block, "ship_size"))
+        if size then
+            parts.filter = 1345241726
+            parts.add("level:" .. level, self:def_values("common/ship_sizes", size, "modifier"))
+            parts.filter = filter
+        end
+    end
+    for _, key in ipairs({ "modules", "buildings" }) do
+        local b = w.field(o, key)
+        local folder = key == "modules" and "common/starbase_modules" or "common/starbase_buildings"
+        for _, e in ipairs(type(b) == "table" and b or {}) do
+            local ty = e.op and e.value and unq(e.value.text)
+            if ty then
+                parts.add(key .. ":" .. ty, self:def_values(folder, ty, block))
+                self:triggered(parts, key .. ":" .. ty, folder, ty, "triggered_" .. block, "starbase", id)
+            end
+        end
+    end
+    return parts
+end
+
 -- ---------------------------------------------------------------------------------------------
 
 local BY_CATEGORY = { Country = S.country, Planet = S.planet, Colony = S.colony, PopGroup = S.pop_group, Ship = S.ship }
+for _, c in ipairs(M.STARBASE_CATEGORIES) do
+    BY_CATEGORY[c] = function(self, id) return self:starbase_node(c, id) end
+end
 
 -- src:parts(category, owner) -> the node's own parts ({ name, mult, filter, values }), or nil for a
 -- category not modelled
