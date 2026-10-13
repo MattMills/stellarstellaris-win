@@ -232,6 +232,16 @@ P["monthly.colonies"] = function(host, date)
         systems.not_modelled["monthly.colonies"] = (systems.not_modelled["monthly.colonies"] or 0) + 1
     end
 end
+-- CPopGroup::DailyUpdate*: the day's housing of the pop groups and colonies (engine.pops; no random
+-- draws, so it keeps to the game's parallel phase)
+P["daily.pop_groups"] = function(host, date)
+    local pops = optional("engine.pops")
+    if pops and pops.daily then
+        pops.daily(host, date)
+    else
+        systems.not_modelled["daily.pop_groups"] = (systems.not_modelled["daily.pop_groups"] or 0) + 1
+    end
+end
 -- CGameState::ProcessAI: the AI's decisions (engine.ai, once it is there; docs/ai.md)
 P["ai.process"] = function(host, date)
     local ai = optional("engine.ai")

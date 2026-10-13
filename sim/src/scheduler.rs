@@ -17,6 +17,9 @@
 
 use crate::date::Date;
 use crate::rng::DAILY_POOL_SIZE;
+
+/// Values drawn at the start of `MonthlyUpdate` for the colonies' demography.
+pub const MONTHLY_POOL_SIZE: usize = 1000;
 use crate::runtime::Runtime;
 
 /// A synchronized command (`CCommand`), executed before the next tick.
@@ -199,8 +202,11 @@ impl Simulation {
         }
     }
 
-    /// `CGameState::MonthlyUpdate` (`0x261620`).
+    /// `CGameState::MonthlyUpdate` (`0x261620`): first the month's pool of 1,000 draws (`0x26169a`),
+    /// read by the colonies' demography (docs/pops.md), then the phases.
     fn monthly_update(&mut self) {
+        let pool = self.runtime.rng.borrow_mut().draw_pool(MONTHLY_POOL_SIZE);
+        *self.runtime.monthly_pool.borrow_mut() = pool;
         for name in MONTHLY_PHASES {
             self.mark(Phase::Monthly(name));
             self.phase("monthly", name, name == "modifiers");
