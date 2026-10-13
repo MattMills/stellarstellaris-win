@@ -28,6 +28,26 @@ function M.category_of(n)
     end
     return n.category
 end
+
+-- mw.mark_megastructures(snap, world): name the megastructures' Orbital nodes of a capture
+-- OrbitalMegaStructure in place (their ids, 0..14, are also starbases'). By their filter (-1);
+-- in a capture without the categories column (2210), the second Orbital node of an owner (the
+-- megastructures' come after the starbases') or one whose owner is not a starbase
+function M.mark_megastructures(snap, world)
+    local seen = {}
+    for _, n in ipairs(snap.nodes) do
+        if n.category == "Orbital" then
+            if n.categories == -1 then
+                n.category = "OrbitalMegaStructure"
+            elseif n.categories == nil then
+                if seen[n.owner] or (world and world.object("starbases", n.owner) == nil) then
+                    n.category = "OrbitalMegaStructure"
+                end
+                seen[n.owner] = true
+            end
+        end
+    end
+end
 local category_of = M.category_of
 
 -- mw.build(g, defs, st, parts_of) -> { tree, holders, holder(category, owner), links, stats }

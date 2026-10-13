@@ -86,6 +86,8 @@ print(string.format("capture %d nodes (children: %s); read in %.1f s", #snap.nod
 local t1 = os.clock()
 local cap = nodes.build(core.new(), defs, snap)
 cap:materialize()
+-- (the megastructures' Orbital nodes, named after the capture's graph is built from it)
+mw.mark_megastructures(snap, world)
 local captured = {}
 for _, n in ipairs(snap.nodes) do
     local h = cap.holders[n.id]

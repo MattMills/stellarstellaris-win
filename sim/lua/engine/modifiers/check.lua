@@ -155,6 +155,8 @@ function M.run(opts)
     local snap = nodes.read_capture(read(opts.nodes_tsv))
     local mirror = nodes.build(core.new(), defs, snap)
     mirror:materialize()
+    -- the megastructures' Orbital nodes, OrbitalMegaStructure (their ids are also starbases')
+    require("engine.modifiers.world").mark_megastructures(snap, require("engine.world"))
     p("capture: %d nodes; graph built in %.1f s", #snap.nodes, clock() - t0)
     local src = opts.src or modifiers.new({ types = defs, game_dir = opts.game_dir, fs = opts.fs })
     local cats = opts.categories or modifiers.CATEGORIES

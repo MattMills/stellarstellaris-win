@@ -1262,8 +1262,18 @@ function S:country(id)
             end
         end
     end
-    -- naval capacity exceeded: navy_coverage_shortage times the shortage
+    -- a navy short of its coverage: navy_coverage_shortage times the shortage, 1 - coverage. The
+    -- coverage is the used naval capacity over half the empire size, at most 1: the target the
+    -- navy_coverage of every country of both captures has (54 -> 27, 107 -> 53.5, 164 -> 82), where
+    -- the save's own field can be the day before's (a country on 2210.01.01: 0.86956 saved, 75 /
+    -- (161 / 2) = 0.93167 in the game). (empire_base's country_naval_coverage_mult, 1 for every
+    -- country, may enter it: the captures do not tell how.) The save's field without an empire size
     local cov = w.field(c, "navy_coverage")
+    local used, size = tonumber(w.field(c, "used_naval_capacity")), tonumber(w.field(c, "empire_size"))
+    if used and size and size > 0 then
+        -- (truncated to the fixed point, as the game keeps it: 15 / 27 is 0.55555)
+        cov = math.min(1, math.floor(used / (size / 2) * 100000 + 1e-7) / 100000)
+    end
     if type(cov) == "number" and cov < 1 then
         add("static:navy_coverage_shortage", self:static("navy_coverage_shortage"), 100000 - fixed(cov))
     end
@@ -1650,7 +1660,8 @@ function S:colony_stability(id, get)
                     math.min(def("MAX_POLITICAL_POWER_POSITIVE_STABILITY_IMPACT", 20), pw))
             end
             sp = sp + pw
-            sph = sph + pw * h
+            -- (each product truncated to the fixed point, as the game's is)
+            sph = sph + math.floor(pw * h * 100000 + 1e-7) / 100000
         end
     end
     if sp > 0 then
@@ -1745,24 +1756,65 @@ function S:colony(id)
         end
     end
     -- (CColony::GetAmenitiesEffectScale: above, (r - 1) / (MAX_PLANET_AMENITIES - 1); below,
-    -- (1 - r) / (1 - MIN_PLANET_AMENITIES), MIN 0.25: the engine session's docs/colonies.md 3.5)
-    if amenities and ausage and ausage > 0 then
-        local r = amenities / ausage
-        local amax = tonumber(self:define("MAX_PLANET_AMENITIES")) or 2
-        local amin = tonumber(self:define("MIN_PLANET_AMENITIES")) or 0.25
-        status("planet_amenities" .. nh .. "_high", (r - 1) / (amax - 1))
-        status("planet_amenities" .. nh .. "_low", (1 - r) / (1 - amin))
+    -- 1 - (r - MIN_PLANET_AMENITIES) / (1 - MIN), MIN 0.25: the engine session's
+    -- docs/colonies.md 3.5; in the fixed point, the ratio and the division truncated: 1 -
+    -- 0.69614 is 0.30386, where (1 - r) / 0.75 truncated is 0.30385)
+    local function trunc(x)
+        return math.floor(x * 100000 + 1e-7) / 100000
     end
+    local function scales(r, lo, hi)
+        return (r - 1) / (hi - 1), 1 - trunc((r - lo) / (1 - lo))
+    end
+    if amenities and ausage and ausage > 0 then
+        local high, low = scales(trunc(amenities / ausage), tonumber(self:define("MIN_PLANET_AMENITIES")) or 0.25,
+            tonumber(self:define("MAX_PLANET_AMENITIES")) or 2)
+        status("planet_amenities" .. nh .. "_high", high)
+        status("planet_amenities" .. nh .. "_low", low)
+    end
+    -- the housing: its usage the sum of the pop groups' (a colony's own field can be one more:
+    -- 5883 saved, 5882 the groups', as the game has it), the scale as the amenities' with
+    -- MIN/MAX_PLANET_RELATIVE_HOUSING (0.5, 4), the ratio not truncated (a 2210.01.01 colony: 1300 /
+    -- 1422 gives the game's 0.17159 only so)
     local housing, husage = num("total_housing"), num("housing_usage")
+    local gsum, groups = 0, 0
+    for _, gid in ipairs(list_of(w, col, "pop_groups")) do
+        local g = w.object("pop_group", tonumber(gid))
+        local u = g and w.field(g, "killed") ~= "yes" and tonumber(w.field(g, "housing_usage"))
+        if u then
+            gsum, groups = gsum + u, groups + 1
+        end
+    end
+    if groups > 0 then
+        husage = gsum
+    end
     if housing and husage and husage > 0 then
-        local r = housing / husage
-        status("planet_housing" .. nh .. "_high", (r - 1) / 3)
-        status("planet_housing" .. nh .. "_low", (1 - r) / 0.5)
+        local high, low = scales(housing / husage, tonumber(self:define("MIN_PLANET_RELATIVE_HOUSING")) or 0.5,
+            tonumber(self:define("MAX_PLANET_RELATIVE_HOUSING")) or 4)
+        status("planet_housing" .. nh .. "_high", high)
+        status("planet_housing" .. nh .. "_low", low)
         if housing < husage then
             parts.add("status:planet_overcrowded", self:static("planet_overcrowded"))
         end
     end
+    -- the unemployed: the pops of its groups of a category with is_unemployment_job
+    -- (common/pop_categories: slave_unemployment, ...), where the save's unemploy_pop can be the
+    -- day before's (799 saved, 801 in the groups: the game's 8 steps)
     local unemployed = num("unemploy_pop")
+    local usum, ugroups = 0, 0
+    for _, gid in ipairs(list_of(w, col, "pop_groups")) do
+        local g = w.object("pop_group", tonumber(gid))
+        local cat = g and w.field(g, "killed") ~= "yes" and unq(w.field(w.field(g, "key") or {}, "category"))
+        local cd = type(cat) == "string" and self.defs.get("common/pop_categories", cat)
+        if cd then
+            ugroups = ugroups + 1
+            if self.defs.field(cd.block, "is_unemployment_job") == "yes" then
+                usum = usum + (tonumber(w.field(g, "size")) or 0)
+            end
+        end
+    end
+    if ugroups > 0 then
+        unemployed = usum
+    end
     if unemployed and unemployed >= 100 then
         status("planet_employment" .. nh .. "_low", math.floor(unemployed / 100), false)
     end
