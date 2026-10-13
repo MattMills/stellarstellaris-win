@@ -157,16 +157,41 @@ local function other_stores()
 end
 
 local P = systems.phases
+
+-- a module of the engine that may not be written yet: the module, or nil when there is no such file
+-- (an error inside one that is there is raised as usual)
+local present = {}
+local function optional(name)
+    if present[name] == nil then
+        present[name] = package.searchpath(name, package.path) ~= nil
+    end
+    return present[name] and require(name) or nil
+end
+-- a function of an optional module, called when it is there
+local function call_optional(name, fn, ...)
+    local m = optional(name)
+    if m and m[fn] then
+        return true, m[fn](...)
+    end
+    return false
+end
+
 P["daily.script_state_expiry"] = function(host)
     each_object({ "country", "planet" }, count_down_flags)
     each_object(other_stores(), count_down_flags)
     host.daily_script_state()
 end
-P["daily.countries_parallel"] = function()
+-- CCountry::DailyUpdateSelfDontReadOthers: the timed modifiers; the AI's attitudes (engine.ai.attitudes,
+-- once it is there: CCountryAI::UpdateAttitudesThreaded, docs/ai.md section 3)
+P["daily.countries_parallel"] = function(host, date)
     each_object({ "country" }, count_down_modifiers)
+    call_optional("engine.ai.attitudes", "daily", host, date)
 end
-P["daily.colonies_parallel"] = function()
+-- NColonyUpdate::DailyParallelUpdate: the timed modifiers; the colonies' own day (engine.colonies,
+-- once it is there: stability, amenities, happiness, crime, ...)
+P["daily.colonies_parallel"] = function(host, date)
     each_object({ "planet" }, count_down_modifiers)
+    call_optional("engine.colonies", "daily_parallel", host, date)
 end
 P["daily.galaxy"] = function()
     each_object(other_stores(), count_down_modifiers)
@@ -181,12 +206,15 @@ P["daily.countries_serial"] = function(host, date)
     each_country(function(id) host.scope_daily_events("country", id) end)
     require("engine.research").daily(host, date)
 end
-P["daily.colonies_serial"] = function(host)
+-- NColonyUpdate::DailySerialUpdate: the planets' daily events; the colonies' serial day
+-- (engine.colonies, once it is there)
+P["daily.colonies_serial"] = function(host, date)
     for _, id in ipairs(world.all("planet")) do
         if world.pop_groups_of[id] then
             host.scope_daily_events("planet", id)
         end
     end
+    call_optional("engine.colonies", "daily_serial", host, date)
 end
 -- CModifierNodeManager::Update in the monthly update: the world's modifier graph built again (when
 -- the modifiers come from the world: engine.economy.world_source)
@@ -212,15 +240,6 @@ end
 P["monthly.countries_serial"] = function(host)
     require("engine.leaders").monthly()
     each_country(function(id) host.on_action("on_monthly_pulse_country", "country", id) end)
-end
--- a module of the engine that may not be written yet: the module, or nil when there is no such file
--- (an error inside one that is there is raised as usual)
-local present = {}
-local function optional(name)
-    if present[name] == nil then
-        present[name] = package.searchpath(name, package.path) ~= nil
-    end
-    return present[name] and require(name) or nil
 end
 -- NColonyUpdate::MonthlyUpdate: growth and decline of the colonies' pops (engine.pops, once it is
 -- there)
