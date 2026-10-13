@@ -20,7 +20,15 @@ local ai = {
     stats = { days = 0, countries = 0, commands = 0, executed = 0 },
 }
 
--- the country type's AI settings (SCountryAISettings): a flag is on unless the type says no
+-- the country type's AI settings (SCountryAISettings flags, CCountryType +0x8c, docs/ai.md section
+-- 1): the constructor sets them to 36798, then `ai = { <flag> = yes/no }` sets or clears each
+local SETTING_BITS = {
+    enabled = 0, declare_war = 1, colonizer = 2, internal_policies = 3, modification = 4,
+    government = 5, traditions = 6, construction = 7, limited_construction = 8, starbase_upgrade = 9,
+    diplomacy = 10, tech = 11, follow = 12, avoid_enemies = 13, can_use_market = 14, espionage = 15,
+    ascension_perks = 16, limited_military_construction = 17, limited_leaders = 18,
+}
+local SETTING_DEFAULT = 36798
 local settings_cache = {}
 local function setting(country, key)
     local ty = world.field(world.object("country", country), "type")
@@ -29,12 +37,12 @@ local function setting(country, key)
     if v == nil then
         local d = ty and defs.get("common/country_types", ty)
         local block = d and defs.field(d.block, "ai")
-        if type(block) ~= "table" then
-            v = false
-        elseif key == "enabled" then
-            v = defs.field(block, "enabled") == "yes"
+        local given = type(block) == "table" and defs.field(block, key) or nil
+        if given == "yes" or given == "no" then
+            v = given == "yes"
         else
-            v = defs.field(block, key) ~= "no"
+            local bit = SETTING_BITS[key]
+            v = bit ~= nil and math.floor(SETTING_DEFAULT / 2 ^ bit) % 2 == 1
         end
         settings_cache[k] = v
     end

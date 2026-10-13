@@ -1017,15 +1017,55 @@ TRIG["check_modifier_value"] = function(e, ctx)
     sync()
     return compare(E.modifier(ctx.this.kind, ctx.this.id, name) or 0, op, want)
 end
--- is_same_species = <target>: both scopes' species are the same
-TRIG["is_same_species"] = function(e, ctx)
-    if not E.species_of or not e.value.text then return false end
+-- the species of this scope and of the target scope `<trigger> = <target>` (nil when either has none)
+local function species_pair(e, ctx)
+    if not E.species_of or not e.value.text then return nil end
     local found, other = M.resolve(e.value.text, ctx, e)
-    if not found or not other or ctx.this == NONE then return false end
+    if not found or not other or other == NONE or ctx.this == NONE then return nil end
     sync()
     local a = E.species_of(ctx.this.kind, ctx.this.id)
     local b = E.species_of(other.kind, other.id)
+    if a == nil or b == nil then return nil end
+    return a, b
+end
+-- is_same_species = <target>: both scopes' species are the same
+TRIG["is_same_species"] = function(e, ctx)
+    local a, b = species_pair(e, ctx)
     return a ~= nil and a == b
+end
+-- is_same_species_class = <target>: both species have the same class
+TRIG["is_same_species_class"] = function(e, ctx)
+    local a, b = species_pair(e, ctx)
+    if a == nil or not E.species_field then return false end
+    local ca = E.species_field(a, "class")
+    return ca ~= nil and ca == E.species_field(b, "class")
+end
+-- is_subspecies = <target>: a different species of the same line (`base_ref`)
+TRIG["is_subspecies"] = function(e, ctx)
+    local a, b = species_pair(e, ctx)
+    if a == nil or a == b or not E.base_species then return false end
+    return E.base_species(a) == E.base_species(b)
+end
+-- is_in_federation_with = <country>: both in the same federation
+TRIG["is_in_federation_with"] = function(e, ctx)
+    if not E.federation_of or not e.value.text or ctx.this == NONE or ctx.this.kind ~= "country" then return false end
+    local found, other = M.resolve(e.value.text, ctx, e)
+    if not found or not other or other == NONE or other.kind ~= "country" then return false end
+    sync()
+    local f = E.federation_of(ctx.this.id)
+    return f ~= nil and f == E.federation_of(other.id)
+end
+-- opinion = { who = <country> value > x }: the AI's opinion of who (engine.ai.opinion)
+TRIG["opinion"] = function(e, ctx)
+    if not E.opinion_trigger then return false end
+    sync()
+    return E.opinion_trigger(e, ctx)
+end
+-- has_unlocked_all_traditions = yes/no (engine.traditions)
+TRIG["has_unlocked_all_traditions"] = function(e, ctx)
+    if not E.unlocked_all_traditions or ctx.this == NONE or ctx.this.kind ~= "country" then return false end
+    sync()
+    return (E.unlocked_all_traditions(ctx.this.id) and true or false) == (e.value.text ~= "no")
 end
 -- has_citizenship_type = { country = <who> type = <type> } and has_population_control = { country
 -- = <who> type = bool/<type> }: the country's species rights for the scope's species (the scope's
@@ -1094,6 +1134,7 @@ local PROP_ATTR = {
     is_sapient = true, is_infertile = true, is_robotic = true, is_robotic_species = true, is_archetype = true,
     last_increased_tech = true, is_megastructure_type = true,
     leader_class = true, is_leader_tier = true, is_hidden = true, is_being_assimilated = true,
+    is_criminal_syndicate = true,
 }
 local PROP_SET = {
     has_ethic = true, has_civic = true, has_valid_civic = true, has_authority = true, has_origin = true,
@@ -1101,6 +1142,7 @@ local PROP_SET = {
     has_tradition = true, has_ascension_perk = true, has_edict = true, has_building = true,
     is_species_class = true, is_species = true, has_covenant = true, has_crisis_level = true,
     has_ai_personality = true, has_active_tradition = true, has_deposit = true, has_event_chain = true,
+    has_ai_personality_behaviour = true, species_portrait = true,
 }
 local function property_trigger(e, ctx, lk)
     local sc = ctx.this

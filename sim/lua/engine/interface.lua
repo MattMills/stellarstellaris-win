@@ -361,6 +361,61 @@ SETS.species.is_species_class = function(sp, m) return world.field(sp, "class") 
 SETS.pop_group.is_species_class = species_class_is("pop_group")
 SETS.country = SETS.country or {}
 SETS.country.is_species_class = species_class_is("country")
+-- species_portrait: the species' portrait (a pop group's, a leader's, a country's founder species')
+local function species_field_is(kind, key)
+    return function(o, m, id)
+        local sid = E.species_of(kind, id)
+        local sp = sid and obj("species", sid)
+        return sp ~= nil and world.field(sp, key) == m
+    end
+end
+for _, kind in ipairs({ "species", "pop_group", "leader", "country" }) do
+    SETS[kind] = SETS[kind] or {}
+    SETS[kind].species_portrait = species_field_is(kind, "portrait")
+end
+-- E.species_field(species id, key): a field of the species
+E.species_field = function(sid, key)
+    local sp = sid and obj("species", sid)
+    return sp and world.field(sp, key)
+end
+-- E.base_species(species id): the first of its line (`base_ref` followed while there is one)
+E.base_species = function(sid)
+    for _ = 1, 16 do
+        local base = tonumber(E.species_field(sid, "base_ref"))
+        if not base or base == 4294967295 or base == sid then
+            return sid
+        end
+        sid = base
+    end
+    return sid
+end
+
+-- the AI personality (`personality`) and its definition's behaviour (`behaviour = { conqueror =
+-- yes ... }`, SPersonalityBehaviour)
+SETS.country.has_ai_personality = function(c, m) return world.field(c, "personality") == m end
+SETS.country.has_ai_personality_behaviour = function(c, m)
+    local p = world.field(c, "personality")
+    local d = p and defs().get("common/personalities", p)
+    local b = d and defs().field(d.block, "behaviour")
+    return type(b) == "table" and defs().field(b, m) == "yes"
+end
+-- is_criminal_syndicate: the government's criminal heritage civic
+DERIVED.country.is_criminal_syndicate = function(c)
+    return SETS.country.has_civic(c, "civic_criminal_heritage") and "yes" or "no"
+end
+-- E.federation_of(country id): its federation's id, or nil
+E.federation_of = function(id)
+    local f = tonumber(world.field(obj("country", id), "federation"))
+    return f ~= 4294967295 and f or nil
+end
+-- the `opinion = { who = <country> value > x }` trigger: the AI's opinion (engine.ai.opinion)
+E.opinion_trigger = function(e, ctx)
+    return require("engine.ai.opinion").trigger(e, ctx)
+end
+-- has_unlocked_all_traditions (engine.traditions)
+E.unlocked_all_traditions = function(id)
+    return require("engine.traditions").unlocked_all(id)
+end
 
 E.has = function(kind, id, set, member)
     local o = obj(kind, id)

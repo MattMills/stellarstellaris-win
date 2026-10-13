@@ -176,16 +176,19 @@ local function call_optional(name, fn, ...)
     return false
 end
 
+-- CCountryAI::UpdateAttitudesThreaded, first in the day: the AIs' attitudes (engine.ai.attitudes,
+-- docs/ai.md section 3)
+P["daily.ai_attitudes"] = function(host, date)
+    call_optional("engine.ai.attitudes", "daily", host, date)
+end
 P["daily.script_state_expiry"] = function(host)
     each_object({ "country", "planet" }, count_down_flags)
     each_object(other_stores(), count_down_flags)
     host.daily_script_state()
 end
--- CCountry::DailyUpdateSelfDontReadOthers: the timed modifiers; the AI's attitudes (engine.ai.attitudes,
--- once it is there: CCountryAI::UpdateAttitudesThreaded, docs/ai.md section 3)
+-- CCountry::DailyUpdateSelfDontReadOthers: the timed modifiers
 P["daily.countries_parallel"] = function(host, date)
     each_object({ "country" }, count_down_modifiers)
-    call_optional("engine.ai.attitudes", "daily", host, date)
 end
 -- NColonyUpdate::DailyParallelUpdate: the timed modifiers; the colonies' own day (engine.colonies,
 -- once it is there: stability, amenities, happiness, crime, ...)

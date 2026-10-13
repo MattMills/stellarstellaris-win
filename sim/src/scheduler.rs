@@ -43,7 +43,8 @@ pub enum Phase {
 }
 
 /// The daily phases, in order (`CGameState::DailyUpdate`, `0x25cde0`).
-pub const DAILY_PHASES: [&str; 13] = [
+pub const DAILY_PHASES: [&str; 14] = [
+    "ai_attitudes",         // CCountryAI::UpdateAttitudesThreaded (each AI every 10 days)
     "script_state_expiry",  // the daily task graph: CPdxIntegerFlags::UpdateFlags
     "construction_manager", // CConstructionManager::DailyUpdate
     "random_pool",          // 1,000 x CRandom::GetIntegerForMacro (0x25e6a0)
@@ -60,7 +61,7 @@ pub const DAILY_PHASES: [&str; 13] = [
 ];
 
 /// The daily phases that run in parallel in the game: no random draws (they use the pool).
-const PARALLEL: [&str; 5] = ["modifiers_1", "countries_parallel", "modifiers_2", "colonies_parallel", "pop_groups"];
+const PARALLEL: [&str; 6] = ["ai_attitudes", "modifiers_1", "countries_parallel", "modifiers_2", "colonies_parallel", "pop_groups"];
 
 /// The monthly phases, in order (`CGameState::MonthlyUpdate`, `0x261620`).
 pub const MONTHLY_PHASES: [&str; 5] = [

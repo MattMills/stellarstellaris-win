@@ -489,6 +489,127 @@ surrender [I]). The forced peace at full war exhaustion is the war's own logic
   **[V]** (calls).
 - Federation laws and votes go through `WillFederationAccept` (`0xb88d20`).
 
+### Opinion and attitudes in Lua (`engine/ai/opinion.lua`, `engine/ai/attitudes.lua`)
+
+Read in full from the GOG build **[V]** and checked against the saves. Neither draws a random
+number.
+
+**Opinion**: `opinion.of(us, other)` is `CCountry::CalcOurOpinionOfOther` (`0x704c20`; the scope
+this = us, from = other) -> `CalcOurOpinionOfOtherNoScopeCopy` (`0x705110`). In order:
+
+| | term |
+|---|---|
+| | `us == other`: `OPINION_MAX`; our personality's behaviour `enigmatic`: 0; our country type `custom_opinion = yes`: the trust of our relation to them, truncated; either country invalid or dead, or our type without `relations = yes`: 0 |
+| timed | the relation's `modifier = { }` values summed (`CRelation::_CachedSum`, `+0x28`), truncated, as an int16 |
+| policies | for each policy group of `common/policies`, the modifier `opinion_policy_<group>` if it exists (bound in `CPolicyGroup::PostReadInit`; vanilla: interference, slavery, orbital_bombardment), whatever the countries' policies (its triggers read them) |
+| hardcoded | `COpinionModifierDatabase` cached modifiers (offsets `+0x0`..`+0x248`, the keys in `COpinionModifierDatabase::Init`): `opinion_in_war` (at war), `opinion_from_personality`, `opinion_crime_corp_branch_offices` (its trigger, x our colonies with their branch office), the fanatic purifier / zealot / honor-bound / democratic crusader / holy world / encroaching borders modifiers, `opinion_relative_power` (we are their subject: x % of relative power above 1, `CalcRelativePowerOfSubjects`), `opinion_trust` x trust (truncated, > 0), `opinion_threat` x threat (rounded, > 0), `opinion_guarantees_independence` (they guarantee us), `opinion_closed_borders` (they have borders, closed them to us, their type `playable`), `opinion_rivalry` (we rival them) else `opinion_declared_rival` (they rival us), `opinion_mutual_threat` x the shared threat factor, `opinion_ally_of_ally` (a defensive pact partner in common), `opinion_mutual_rival` x rivals in common, `opinion_rivals_with_ally` x their rivals that are our allies, `opinion_allied_to_rival` x our rivals that are their allies, `opinion_federation`, `opinion_federation_associate`, `opinion_defensive_pact`, `opinion_subject` (fellow subjects), `opinion_is_subject` (they are our overlord) |
+| triggered | each modifier with a `trigger` and not `block_triggered` (`_TriggeredModifiers`) whose trigger holds |
+| envoys | trunc(`envoy_opinion_positive`) + trunc(`envoy_opinion_negative`) + trunc(`accumulated_authority_envoy_effect`) |
+| | clamped to `OPINION_MIN`, `OPINION_MAX` |
+
+A modifier's value is its `opinion` block as a `CMeanTimeToHappen` (base, then `modifier = { add
+factor <triggers> }`), rounded half away from zero (`CFixedPoint::GetRounded`), except the subject
+ones and the triggered ones, truncated. The rivals are the diplomacy module's `rivals` list.
+
+The save holds a check: each relation's `relation_current` (`_nCachedRelationValue`) is
+`CCountry::CalcRelationValue(owner, country)` = our opinion of them + theirs of us (with a
+`custom_opinion` owner: the rounded trust), written in the month's `CCountry::MonthlyUpdateSerial`
+(a parallel lambda over the relations: `MonthlyUpdateEnvoyOpinionEffect`, the imperial authority
+envoy effect, then the value) **[V]**. Against it: 172 of 178 relations equal in the 2210.01.01
+save, 175 of 178 in 2210.07.01. The rest are the month's own order: the envoy effects and trust
+change in that update after one side's value was taken (2 to 4 points; the two relations of a
+pair can differ by as much).
+
+The script layer answers the triggers the opinion modifiers use: `has_ai_personality`,
+`has_ai_personality_behaviour` (the country's `personality`), `is_same_species_class`,
+`is_subspecies`, `species_portrait` (the founder species' `class`, `base_ref`, `portrait`),
+`is_in_federation_with`, `is_criminal_syndicate`. Without `is_same_species_class` 13 relations of
+the 2210.01.01 save were wrong (the xenophile and selective kinship modifiers). The `opinion = {
+who = <scope> value > x }` trigger (`COpinionTrigger::GetTriggerValue`: this scope's opinion of
+`who`) is `opinion.trigger`, registered in simscript. Still missing there:
+`has_menace_perk`, `has_relic`, `any_owned_species`, `any_situation`, `any_subject`,
+`any_system_within_border` (false; nothing in the 2210 saves depends on them).
+
+**The attitude update, corrected**: `CGameState::DailyUpdate` (`0x25d280`) does not update every AI
+every day. It lists the countries with an AI (every country of the save has an `ai = { }` block,
+players included: there is no human check) whose type has `relations = yes`, on the days where
+`(country id + _CurrentDateInDays) % 10 == 0` (`CGameState +0xc4`, year x 360 + day of year, the
+`eval.today()` count; unsigned), so each AI every 10 days. The functor (`0xb7a2f0`) then, for each
+relation (in the relations manager's order) with contact:
+
+- the AI's entry for them; a `forced` one is skipped;
+- `opinion` = our opinion of them (`GetSecondsOpinionOfFirst(them, us)`);
+- the bar: with an entry, `CalcAIWeight` of its attitude + `ATTITUDE_CHANGE_BUFFER`; else -1.0 and
+  the best is the null object (not the database's `null` attitude);
+- every attitude of `common/attitudes` in database order other than the best so far: `friendly`,
+  `protective`, `wary`, `receptive` weigh 0 without `HasDiplomaticInterest`, the others
+  `CalcAIWeight`; a weight strictly above the bar becomes the best;
+- an entry whose best changed gets the new attitude and weight; its weight is not refreshed when
+  the attitude stays, and its priority and date are never touched here;
+- no entry: `{ country attitude weight priority = 0 date = 0.01.01 }` appended after the parallel
+  part, in relation order.
+
+`CAIAttitude::CalcAIWeight` (`0xb3a060`), by attitude `type` (weights; "gates" = not a fallen empire
+(`fallen_empire = yes`), neither one the other's overlord, and the relation has no rivalry;
+"current" = our current attitude of them; "p" = our entry's priority):
+
+| type | weight |
+|---|---|
+| neutral | 100 |
+| wary | 200, unless associates, a defensive pact, alliance or NAP (flags 32, 64, 1024), a migration pact, fighting the crisis, or p 3 |
+| receptive | 200 if one of those (or p 3), and p is not 2 |
+| unfriendly | gates; 1000 if opinion <= -50 (-40 if current; 50 if p 2; -100 if p 3) |
+| cordial | gates; 1000 if opinion >= 50 (40 if current; 100 if p 2) |
+| friendly | gates; 2000 if opinion >= 100 (80 if current; 200 if p 2) |
+| rival | 500 if we rival them (`is_rival`) |
+| hostile | `NAttitude::CalcHostileAIWeight` (`0xb39b50`), as above (section 3) with: allied (`CCountry::IsAllied`) only blocks without a `cb_secession` casus belli |
+| threatened | gates; bordering; threat >= `HIGH_THREAT_THRESHOLD`; 2000 if opinion <= -100 (-80 if current) |
+| protective | `CalcProtectiveAIWeight` (`0xb39820`): not FE, no overlord link, no rivalry, not fighting the crisis, not a crisis, `can_subjugate_empires`; relative power >= 3.0 (2.5 if current); associates, a defensive pact, alliance, guarantee or NAP (1376), a migration pact, or p 3; opinion >= 0 (-10 if current): 3000, x `CRISIS_EMPIRE_PROTECTIVE_MULT` if they border a crisis |
+| domineering | not FE, not allied, they not FE; bordering when both have borders; personality `subjugator`; `can_subjugate_empires`; relative power >= 3.0 (2.5 if current); 4000 if opinion <= -100 (-80 if current) |
+| overlord / loyal / disloyal | they are our subject (not at war): 10000 / we are theirs: 20000 by the sign of `loyalty` |
+| dismissive / patronizing / angry | fallen empire, not awakened, no overlord link: 500 / 1000 if opinion >= 50 / 1000 if opinion <= -150, or <= -100 towards a player (`enigmatic` personality: 10000 with `opinion_angered_fallen_machine_empire`) |
+| arrogant / imperious / belligerent | awakened, no overlord link: 500 unless fighting the crisis / bordering, 1000 unless fighting the crisis / 2000 if opinion <= -100 |
+| custodial / enigmatic / berserker | personality `custodian` 10000 (or awakened, fighting the crisis, opinion > -100: 1000) / `enigmatic` 5000 / `berserker` 10000 |
+| null | -1 |
+
+`CCountry::CalcRelativePower` (`0x727480`): the three ratios (power + 1, fp15) of
+`military_power`, `economy_power`, `tech_power`, weighted by `RELATIVE_POWER_FLEET_MULT` (2),
+`_ECONOMY_MULT` (3), `_TECH_MULT` (1). `HasDiplomaticInterest` (`0x72c700`): fighting the crisis,
+either rivals the other, `border_range` < `RELEVANT_DISTANCE` (400), a shared rival, an allied
+rival either way, allied, or a third country that rivals both.
+
+**The priority** (`EAIPriority` 0..3 and its date) is not the attitude update's: it is
+`CCountryAI::RandomizePriority` (`0xb7b310`), called by the military minister's
+`FillOffensiveStrategy`; an entry is eligible 1800 days after its last change, the scores read
+opinion, relative power, shared and allied rivals, and the pick draws the **synced** AI random
+(`GetRandomIntSynced`) **[V]** (calls). Not ported: the Lua keeps the saved priorities, which the
+thresholds above read.
+
+**Checks** (probes run by `examples/run` with `STELLAR_LUA`, against the game's autosaves in `/opt/stellaris-saves`):
+
+- the update on a loaded save (as if every AI's day had come) changes nothing and appends nothing
+  in all six saves 2210.01.01 to 2212.07.01: the saved attitudes are a fixed point of the Lua's;
+- a new entry for every relation (no entry, p 0) gives the saved attitude except where the saved
+  priority (2 or 3) or the hysteresis decides: 67 of 70 relations (2210.01.01) .. 70 of 76
+  (2212.07.01), every difference one of those;
+- 180 days from each save against the next: every entry the game changed while the Lua did not is
+  explained by an input the simulation does not update yet: new contacts (2210.07.01: 4 new
+  entries; later 1 and 2), `borders` turning on (6 -> 0 and 0 -> 6 become hostile in 2211), a
+  `border_range` falling under 400 (16777218 -> 16777226 becomes receptive), and priorities
+  (RandomizePriority: 1 to 3 entries per interval; 16777218 -> 27 becomes unfriendly in 2212 once
+  its priority is 2). Loaded with those inputs, the Lua gives the game's
+  new attitude (6 -> 0 hostile 3000 on the 2211.07.01 save, receptive 200 on 2212.01.01).
+
+**Left**: `RandomizePriority` (needs the military minister and the synced random's other draws);
+the inputs, which are the engine's monthly and daily work and not the AI's: the timed modifiers'
+growth and decay (`CRelation::UpdateOpinions` `0x66af60`, from `CDiplomacyCountryModule::
+UpdateRelations` in the month), the envoy effects (`MonthlyUpdateEnvoyOpinionEffect`), trust and
+threat, friction and claims (their unique timed modifiers), borders and border distances,
+contacts; `CalcRelativePowerOfSubjects` (no subjects in the 2210 saves); the nomads' waystation
+bordering; `ShouldFightCrisis` and the crisis flags (false: no crisis modelled). The game runs the
+update in phase 2 of `DailyUpdate`, before the flags, construction and the first modifier update;
+the simulation runs it in its first daily phase, `ai_attitudes`.
+
 ## 4. Research **[V]**
 
 `CAIInteriorMinister::DailyUpdate` (`0xbb39a0`), if the country type has `ai.tech`: for the areas
