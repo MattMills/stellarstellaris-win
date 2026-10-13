@@ -73,6 +73,7 @@ add_library		( stellar-injected SHARED
 					"src/dll/access_trace.cpp"
 					"src/dll/modifier_index.cpp"
 					"src/dll/modifier_stats.cpp"
+					"src/dll/modifier_shadow.cpp"
 					"src/hooking/error.cpp" 
 					"src/hooking/shared.cpp"
 					"src/hooking/windows.cpp"  

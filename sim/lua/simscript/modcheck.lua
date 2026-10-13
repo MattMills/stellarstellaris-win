@@ -93,7 +93,8 @@ local function load_nodes(path)
             first = false
         else
             line = line:gsub("\r$", "")
-            local id, cat, owner, invalid, values, parts = line:match("^([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t?(.*)$")
+            -- (newer captures add children, depth and categories after the parts)
+            local id, cat, owner, invalid, values, parts = line:match("^([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t?([^\t]*)")
             if id then
                 local vlist, vmap = parse_values(values)
                 local node = { id = tonumber(id), cat = cat, owner = owner, values = vmap, vlist = vlist, parts = {} }

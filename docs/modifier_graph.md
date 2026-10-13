@@ -4,7 +4,8 @@ The design of `lua/stellar/graph/`: the Lua replacement of the game's modifier a
 computations as one standing graph of cached numbers, with lazy chunked invalidation and a
 per-frame schedule driven by deadlines. What the game does is in [modifiers.md](modifiers.md).
 It runs offline (LuaJIT, no game): `tools/graph_test.lua`, `tools/graph_bench.lua`,
-`tools/graph_mapping.lua`. It is not hooked into the game yet.
+`tools/graph_mapping.lua`, `tools/graph_nodes.lua`. In the game it runs beside the node system, in
+shadow mode (below); nothing of the game's is replaced yet.
 
 ## Why
 
@@ -180,6 +181,76 @@ in game units), so storing raw fixed-point integers keeps sums exact; products a
 additions need the game's rounding to match to the last digit. Parity is a shadow-mode question
 (compare with the game's values) before anything is switched over.
 
+## The game's nodes, all of them: `stellar.graph.nodes`
+
+The modifier surface is small: in a 2210 game, 15,700-16,000 registered nodes, of which about 5,800
+hold values (110,000-117,000 values), built from about 13,000 parts. So the graph does not serve
+hot spots next to the node system: it holds every node.
+
+- A game node is a holder (kind = its `EModifierNodeCategory`, key = its registry index).
+- Its parts (`_Added`) are of two kinds. A parent node's part is a clone of the parent's whole value
+  set (`AddModifierNode`), with the call's multiplier and the filter `_Categories & mask`: a link,
+  `tree:link_fixed(child, parent, mult, filter)`, which truncates each entry as
+  `CModifier::AddModifierEntry` does. Every other part is one of the node's own sources (static,
+  timed and triggered modifiers, traits, technologies, a ship's component set, colony
+  contributions): `tree:add`, folded with its multiplier and filter.
+- The parents are the nodes whose `_ChildNodes` hold the node (read by `stellar.modifier_capture`).
+  The part that is each one's clone is found by content. A parent that added nothing has no part.
+  Its link takes the filter of its kind as seen on other parts, or, for a kind never seen with a
+  part, the child's own `_Categories`. In the 2210 capture, 17 of the 22 kinds that have parts use
+  exactly that filter, i.e. their call passes no mask. The five with a mask of their own:
+  Fleet < Sector, Planet < Country (two masks), PopGroup < Country (Habitability),
+  Ship < StarbaseDefensePlatform, Starbase < Sector.
+- `_ChildNodes` keeps stale edges. The game drops a child only when that parent invalidates it, so a
+  child invalidated otherwise (a ship moved to another fleet) stays listed. A parent with no part
+  whose values would pass the link's filter is such an edge, and it is left out.
+- The real structure is much denser than the parts show: 32,798 edges, 5,893 of them with a part.
+  Every planet reads its system's GalacticObjectLeader, -CosmicStorm and -PsionicAura nodes, and
+  every fleet its system's nodes, which are empty in this game. A capture without children (the
+  first one) finds parents by content, among the categories each category declares it reads
+  (`nodes.READS`). That gives the right values but guesses wrong edges: fleets "read" planets whose
+  values equal their sector's.
+
+`tools/graph_nodes.lua <capture> <modifiers.log>` builds the tree from a capture, materializes
+every value the game holds and compares each with the game's, exactly:
+
+| capture | nodes | values | exact | graph |
+|---|---|---|---|---|
+| `modifier-nodes-2210.tsv` (no children) | 15,678 | 109,934 | all | 117,619 nodes, 142,373 edges |
+| `modifier-nodes-2210-midload-edges.tsv` (the game's edges) | 15,953 | 116,898 | all | 234,078 nodes, 483,946 edges |
+
+A clean read of every value takes 120-270 ns a value (through the type name). One type changed on a
+country marks 38-43 nodes in the graph; the game rebuilds the 81-102 nodes below it whole
+(1,950-2,170 values). Graph invariants hold, and after the changes and their undo every node is
+exact again.
+
+### Shadow mode
+
+`modifier_graph.txt` next to the DLL: `shadow` (`stellar.modifier_shadow`; it hooks what
+`modifier_stats.txt` hooks, so only one of the two runs). `src/dll/modifier_shadow.cpp` records the
+id of every node `CModifierNodeBase::Update` rebuilds, from any thread. After each
+`CModifierNodeManager::Update` pass it hands them to Lua on the thread that ran the pass, never
+waiting: while Lua is busy, they wait for the next pass. At the first tick of a game the mirror is
+built from every node and checked whole, and the snapshot is written to
+`logs/stellarstellaris-modifier-nodes-shadow.tsv`. After each pass:
+
+1. the recomputed nodes are read again, with their parents;
+2. `mirror:assign` gives each to the mirror. A node whose own parts changed is a root of the
+   change. The others the game recomputed only because something above them changed, and the
+   graph must arrive at their values by itself;
+3. the graph's values are compared with the game's for every recomputed node, every node the graph
+   marked that the game did not recompute, and a window of 400 other nodes in turn.
+
+The counts (passes, recomputed nodes, roots, relinks, the graph's marks and computes, mismatches
+by category) are logged every game month, and the first 60 mismatches as they are found.
+
+Status: built and installed in the game. It has not run over game time yet: the one load so far
+ran the machine out of commit memory (a `std::bad_alloc` in the game's `CBordersGraphics` on the
+first frame after the load, with 17 of 24.9 GB committed before the game started), with a capture
+running in the middle of the load. The `-continuelastsave` argument needs the launcher, and `quick=<save>`
+(RunGame -> `CFrontEndIdler::LaunchSave`) did not load the save either, so the save is loaded by
+hand.
+
 ## Status
 
 Implemented and tested offline:
@@ -191,11 +262,14 @@ Implemented and tested offline:
 | `stellar.graph.schedule` | frame / tick / day / month deadlines, quotas, work-ahead, barrier, end-of-tick report |
 | `stellar.graph.modifiers` | definitions (modifiers.log, ModifierCategory), holders, sources, links with scale and mask, values on demand |
 | `stellar.graph.economy` | categories (pdxscript), generated names, the game's entry formula, triggers as inputs, units and totals |
+| `stellar.graph.nodes` | the game's whole node tree: captures read and written, holders, links with the game's fixed-point truncation, own sources, a node given again after a pass (`mirror:assign`), exact comparison |
+| `stellar.modifier_shadow` | the mirror beside the game's node system, checked after every pass (built, not yet run over game time) |
 
-`tools/graph_test.lua`: 16 tests (formulas, laziness, cutoff, delta drift, edges, cycles, needs,
+`tools/graph_test.lua`: 19 tests (formulas, laziness, cutoff, delta drift, edges, cycles, needs,
 budgeted level order, the pending list, a randomized test of graph changes against a naive
-evaluation with every invariant checked, the modifier tree, the economy formula, the scheduler).
-All pass for every seed tried.
+evaluation with every invariant checked, the modifier tree, fixed-point links, the node tree from a
+capture with and without children, passes given to the mirror, the economy formula, the
+scheduler). All pass for every seed tried.
 
 `tools/graph_mapping.lua` on vanilla 4.5.2: 45,583 definitions, 26 resources, 270 economic
 categories (deepest chain 8), 7,758 generated names all found in `modifiers.log`, 3,095 static
@@ -226,14 +300,17 @@ Lua, which is the first thing to reduce.
 1. **Memory**: per-node clamp bounds and capacities in side tables or smaller types (85 -> about 50
    bytes), holders as flat arrays instead of Lua tables, sources stored once per static modifier
    (a ship's components are shared by its design), types shared by all ships of a design.
-2. **Read the game's data in memory**: `_Definitions`, the economic categories, the node tree
-   (registry, `_ChildNodes`, each object's node), so that the graph is built from the running
-   game, not from files.
-3. **Shadow mode**: hook `CModifierNodeBase::Update` and `ApplyModifiersToTable<N>`, compare the
-   game's values with the graph's (fixed point), count calls per frame and tick.
-4. **Feed it**: observers on the invalidation points (modifiers.md lists them) as graph inputs at
-   the tick barrier; triggers from the Lua script layer.
-5. **Serve the hot spots**: the planet view and its tooltips, `GetLatestShipDesign` (design upkeep
-   per candidate design, per country: a handful of cached nodes), fleet and ship tooltips; the
-   tooltip breakdown read from the graph's edges instead of cloned parents.
-6. **Then replace**: node rebuilds and the monthly budget as engine effects through the barrier.
+2. **Read the game's data in memory**: `_Definitions` and the node tree are read
+   (`stellar.modifier_capture`); the economic categories are next.
+3. **Shadow mode over game time** (built): months of a game, mismatches by category; then
+   `ApplyModifiersToTable<N>` the same way.
+4. **Replace the node system**: the manager's passes and `InvalidateChildren` off. A node marked
+   invalid is rebuilt by its own `CalculateModifier` with `AddModifierNode` reduced to recording
+   the edge, so only its own parts are computed. The graph propagates, and Lua writes the values
+   that changed into the nodes' `CModifier`s, which the game keeps reading as before. Then the own
+   sources move from `CalculateModifier` to Lua category by category (the save-source attribution
+   of `sim/lua/simscript/modcheck.lua` is the start for countries).
+5. **The economy and the views**: the planet view and its tooltips, `GetLatestShipDesign` (design
+   upkeep per candidate design, per country: a handful of cached nodes), fleet and ship tooltips;
+   the tooltip breakdown read from the graph's edges instead of cloned parents.
+6. **The monthly budget** as an engine effect through the barrier.
