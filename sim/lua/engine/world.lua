@@ -256,6 +256,18 @@ function world.remove_value(block, text)
     end
 end
 
+-- world.remove_entry(block, entry): one entry taken out of a block (a statement or a list element)
+function world.remove_entry(block, entry)
+    for i = #block, 1, -1 do
+        if block[i] == entry then
+            table.remove(block, i)
+            fields_of[block] = nil
+            return true
+        end
+    end
+    return false
+end
+
 -- world.remove(kind, id): the object taken out of its store
 function world.remove(kind, id)
     local name = world.KINDS[kind] or kind
