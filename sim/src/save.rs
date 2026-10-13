@@ -5,8 +5,16 @@ use std::io::Read;
 
 use crate::date::Date;
 
-/// The `gamestate` of a save.
+/// The `gamestate` of a save, or a plain gamestate file (what `headless/run.sh` writes).
 pub fn read_gamestate(save: &str) -> Result<String, String> {
+    let mut f = std::fs::File::open(save).map_err(|e| format!("{save}: {e}"))?;
+    let mut magic = [0u8; 2];
+    let zipped = f.read_exact(&mut magic).is_ok() && &magic == b"PK";
+    drop(f);
+    if !zipped {
+        let bytes = std::fs::read(save).map_err(|e| format!("{save}: {e}"))?;
+        return String::from_utf8(bytes).map_err(|e| format!("{save}: {e}"));
+    }
     let f = std::fs::File::open(save).map_err(|e| format!("{save}: {e}"))?;
     let mut z = zip::ZipArchive::new(f).map_err(|e| format!("{save}: {e}"))?;
     let mut entry = z.by_name("gamestate").map_err(|e| format!("{save}: gamestate: {e}"))?;

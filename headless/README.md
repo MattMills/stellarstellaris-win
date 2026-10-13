@@ -66,8 +66,10 @@ Two things make a run vary, and `run.sh` turns both off:
   2210.01.01; 64429129 at 2210.07.01, 2211.01.01, 2211.07.01; -324498909 at 2212.01.01 and .07.01).
 - With several task threads, the AIs' own generators (`random_seed` / `random_count` inside each
   country's AI block, separate from `synced_random_*`) are drawn in a varying order, and runs drift
-  apart. `-threads=1` fixes it; one such counter can still differ by a few (it changed nothing
-  else in 360 days).
+  apart. `-threads=1` fixes it in practice. `InitTaskSystem(int)` (`0x4294ea0`) clamps the count to
+  [4, the usable threads], so that is 4 threads, against 23 by default on the 24-thread box; one
+  AI counter can still differ by a few (it changed nothing else in 360 days), the ordering left
+  over.
 
 The generator is `CRandom::_Random`, a `CNoiseRandom { uint32 position; uint32 seed }`: a value is
 a hash of (seed, position), so the state is exactly the save's `random_seed` and `random_count`.
