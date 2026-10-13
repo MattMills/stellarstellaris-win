@@ -642,6 +642,8 @@ image:close()
 local dev = require("stellar.dev")
 dev.state.where = script_where
 dev.state.found = found
+dev.state.databases = databases_where   -- the databases and their instances (stellar.spider roots)
+dev.state.script_globals = script_globals
 -- the modifier nodes, captured on demand (stellar.modifier_capture; a game loaded)
 do
     local capture_where, why = require("stellar.modifier_capture").locate(found, stellar.read)

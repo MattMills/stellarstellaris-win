@@ -18,6 +18,8 @@ from collections import Counter, defaultdict, deque
 
 types_path, out_dir = sys.argv[1:3]
 roots = sys.argv[3:] or ["CGameStateDatabase"]
+# @file: the roots listed in a file, one a line
+roots = [r for arg in roots for r in ([l.strip() for l in open(arg[1:]) if l.strip()] if arg.startswith("@") else [arg])]
 recs, byname = pickle.load(open(types_path, "rb"))
 
 SIMPLE = {0x03: "void", 0x10: "char", 0x20: "uint8", 0x68: "int8", 0x70: "char", 0x11: "short", 0x21: "uint16",
