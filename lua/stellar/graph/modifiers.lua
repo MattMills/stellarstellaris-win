@@ -19,6 +19,7 @@
 --   local modifiers = require("stellar.graph.modifiers")
 --   local defs = modifiers.definitions()
 --   defs:read_log(text)                            -- modifiers.log (logs/script_documentation)
+--   defs:read_game(folder)                         -- or the same from the game's databases
 --   local tree = modifiers.new(g, defs)
 --   local country = tree:holder("country", 1)
 --   local fleet = tree:holder("fleet", 7)
@@ -125,6 +126,25 @@ function M.definitions()
         return count
     end
 
+    -- the game's types made from its databases, without its log (stellar.graph.modifier_types):
+    -- the same definitions as read_log of the modifiers.log of the same files. folder(name) -> the
+    -- definitions of a database folder (stellar.script.source.definitions, engine.defs.folder);
+    -- -> number of definitions made
+    function d:read_game(folder)
+        local list = require("stellar.graph.modifier_types").generate(folder)
+        for _, t in ipairs(list) do
+            self:add(t[1], t[2])
+        end
+        return #list
+    end
+
+    return d
+end
+
+-- modifiers.game_definitions(folder) -> defs: definitions():read_game(folder)
+function M.game_definitions(folder)
+    local d = M.definitions()
+    d:read_game(folder)
     return d
 end
 

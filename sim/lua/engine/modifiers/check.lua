@@ -140,7 +140,8 @@ local function compare(mirror, snap, cats, defs, detail)
     return out
 end
 
--- check.run(opts) -> report text. opts: nodes_tsv, types_log (the capture and its modifiers.log),
+-- check.run(opts) -> report text. opts: nodes_tsv, types_log (the capture and its modifiers.log;
+-- without one, the types are made from engine.defs: stellar.graph.modifier_types),
 -- categories (default engine.modifiers.CATEGORIES), src (engine.modifiers sources, default made
 -- from engine.defs and engine.world, which must be loaded), samples (lines of detail per category)
 function M.run(opts)
@@ -151,7 +152,11 @@ function M.run(opts)
         lines[#lines + 1] = string.format(...)
     end
     local defs = gmod.definitions()
-    defs:read_log(read(opts.types_log))
+    if opts.types_log then
+        defs:read_log(read(opts.types_log))
+    else
+        defs:read_game(require("engine.defs").folder)
+    end
     local snap = nodes.read_capture(read(opts.nodes_tsv))
     local mirror = nodes.build(core.new(), defs, snap)
     mirror:materialize()
