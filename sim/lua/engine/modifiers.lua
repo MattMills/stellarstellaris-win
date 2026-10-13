@@ -1653,10 +1653,11 @@ function S:colony(id)
         status("planet_stability" .. nh .. "_high", (stability - 50) / 50)
         status("planet_stability" .. nh .. "_low", (50 - stability) / 50)
     end
-    -- the amenities: the colony node's planet_amenities_add x (1 + planet_amenities_mult), and its
-    -- _no_happiness_ pair for a colony without happiness, read from the graph (self.resolve_ref)
-    -- where it can be: exact on every colony of the 2211.07.01 capture, where the save's field is
-    -- not (the save's is the end of the previous day); else the save's
+    -- the amenities: the colony node's (planet_amenities_add + planet_amenities_no_happiness_add) x
+    -- (1 + planet_amenities_mult + planet_amenities_no_happiness_mult), read from the graph
+    -- (self.resolve_ref) where it can be: exact on every colony of the 2211.07.01 capture, where
+    -- the save's field is not (the save's is the end of the previous day); else the save's. (A
+    -- fallen empire's colony with both mults at 0.05: 18000 x 1.1 = 19800, as the save has it)
     local amenities, ausage = num("amenities"), num("amenities_usage")
     if self.resolve_ref and planet then
         local function get(t)
@@ -1664,11 +1665,8 @@ function S:colony(id)
         end
         local add, mult = get("planet_amenities_add"), get("planet_amenities_mult")
         if add and mult then
-            amenities = add / 100000 * (1 + mult / 100000)
-            if nh ~= "" then
-                local nadd, nmult = get("planet_amenities_no_happiness_add"), get("planet_amenities_no_happiness_mult")
-                amenities = amenities + (nadd or 0) / 100000 * (1 + (nmult or 0) / 100000)
-            end
+            local nadd, nmult = get("planet_amenities_no_happiness_add"), get("planet_amenities_no_happiness_mult")
+            amenities = (add + (nadd or 0)) / 100000 * (1 + (mult + (nmult or 0)) / 100000)
         end
     end
     if amenities and ausage and ausage > 0 then
