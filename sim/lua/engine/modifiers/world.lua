@@ -73,22 +73,11 @@ function M.build(g, defs, st, parts_of)
 end
 
 -- the holder a modifier's value is read from for a multiplier (`mult = modifier:x`, `planet.`,
--- `owner.`) of a part of an object (ref: { scope, type, kind, id }, engine.modifiers S:active)
+-- `owner.`, a job's output modifier) of a part of an object (ref: { scope, type, kind, id },
+-- engine.modifiers S:active; the node: S:ref_node)
 local function ref_holder(wg, src, ref)
-    local w = src.world
-    if ref.scope == "this" then
-        local c = ({ pop_group = "PopGroup", planet = "Planet", country = "Country" })[ref.kind]
-        return c and wg.holder(c, ref.id)
-    elseif ref.kind == "pop_group" then
-        local colony = w.field(w.object("pop_group", ref.id), "planet")
-        if ref.scope == "planet" then
-            return wg.holder("Colony", colony)
-        elseif ref.scope == "owner" then
-            local planet = src.planet_of_colony[colony]
-            return wg.holder("Country", planet and w.field(w.object("planet", planet), "owner"))
-        end
-    end
-    return nil
+    local c, owner = src:ref_node(ref)
+    return c and owner ~= nil and wg.holder(c, owner) or nil
 end
 
 -- mw.world_graph(opts) -> wg: the modifier graph of the world from the world alone (what the engine

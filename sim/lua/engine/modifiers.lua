@@ -465,9 +465,12 @@ function S:active(folder, name, key, kind, id, from)
                     local ref
                     if type(mult) == "string" then
                         local link, ty = mult:match("^([%w_]*)%.?modifier:([%w_]+)$")
+                        local vlink, spec = mult:match("^([%w_]*)%.?value:(.+)$")
                         if ty then
                             ref = { scope = link ~= "" and link or "this", type = self.canon[ty:lower()] or ty, kind = kind, id = id }
                             mult = self.resolve_ref and self.resolve_ref(ref)
+                        elseif spec then
+                            mult = self:script_mult(spec, vlink, kind, id, d.file)
                         else
                             mult = self:number(mult, d.file)
                             mult = mult and fixed(mult) or 100000
@@ -483,6 +486,111 @@ function S:active(folder, name, key, kind, id, from)
         end
     end
     return out
+end
+
+-- the economic categories a category's production multipliers come from: itself and its parents
+-- (common/economic_categories `parent`), those that generate `produces` mult modifiers
+function S:produces_chain(category)
+    local key = "chain|" .. tostring(category)
+    local chain = self.cache[key]
+    if chain == nil then
+        chain = {}
+        local seen = {}
+        local c = category
+        while c and not seen[c] do
+            seen[c] = true
+            local d = self.defs.get("common/economic_categories", c)
+            if d == nil then
+                break
+            end
+            local gen = self.defs.field(d.block, "generate_mult_modifiers")
+            for _, e in ipairs(type(gen) == "table" and gen or {}) do
+                if e.text == "produces" then
+                    chain[#chain + 1] = c
+                end
+            end
+            c = unq(self.defs.field(d.block, "parent"))
+        end
+        self.cache[key] = chain
+    end
+    return chain
+end
+
+-- a block's multiplier that is a script value (`mult = value:x|P|v|`, or `owner.value:x`), in the
+-- fixed point, nil when it cannot be read yet:
+-- - job_total_output_modifier|JOB|j|RESOURCE|r|: 1 + the production multipliers of the job's
+--   economic category chain for the resource on its colony's node (<category>_produces_mult and
+--   <category>_<r>_produces_mult), rounded to 0.01 as the script value is; read from the graph
+--   through self.resolve_ref (scope colony), as `mult = modifier:x` is
+-- - any other: the script layer's script value in the object's scope (or its link's)
+function S:script_mult(spec, link, kind, id, file)
+    local p = {}
+    for x in (spec .. "|"):gmatch("([^|]*)|") do
+        p[#p + 1] = x
+    end
+    if p[1] == "job_total_output_modifier" then
+        local args = {}
+        for i = 2, #p - 1, 2 do
+            args[p[i]] = p[i + 1]
+        end
+        local job, res = args.JOB, args.RESOURCE
+        local jd = job and self:def_block("common/pop_jobs", job)
+        local rb = jd and self.defs.field(jd.block, "resources")
+        local category = type(rb) == "table" and unq(self.defs.field(rb, "category"))
+        if not (category and res and self.resolve_ref) then
+            return nil
+        end
+        local sum = 0
+        for _, c in ipairs(self:produces_chain(category)) do
+            for _, t in ipairs({ c .. "_produces_mult", c .. "_" .. res .. "_produces_mult" }) do
+                local v = self.resolve_ref({ scope = "colony", type = self.canon[t:lower()] or t, kind = kind, id = id })
+                if v == nil then
+                    return nil
+                end
+                sum = sum + v
+            end
+        end
+        local v = 1 + sum / 100000
+        return math.floor(v * 100 + 0.5) * 1000
+    end
+    if self.eval == nil then
+        return nil
+    end
+    local ok, v = self:with_script(function()
+        local ctx = self.eval.new_ctx(self.eval.S(kind, id), nil, nil, file)
+        if link and link ~= "" then
+            local found, sc = self.eval.resolve(link, ctx)
+            if not (found and sc) then
+                return nil
+            end
+            ctx = self.eval.push(ctx, sc)
+        end
+        return self.eval.script_value(spec, ctx)
+    end)
+    return ok and type(v) == "number" and fixed(v) or nil
+end
+
+-- the node a multiplier that is another modifier's value is read from (ref: { scope, kind, id,
+-- type }): -> category, owner. scope this: the object's own node; planet (a pop group's): its
+-- colony's; colony (a planet's or a pop group's): its colony's; owner (a pop group's): its
+-- country's
+function S:ref_node(ref)
+    local w = self.world
+    if ref.scope == "this" then
+        local cat = ({ pop_group = "PopGroup", planet = "Planet", country = "Country" })[ref.kind]
+        return cat, ref.id
+    elseif ref.kind == "pop_group" then
+        local colony = w.field(w.object("pop_group", ref.id), "planet")
+        if ref.scope == "planet" or ref.scope == "colony" then
+            return "Colony", colony
+        elseif ref.scope == "owner" then
+            local planet = self.planet_of_colony[colony]
+            return "Country", planet and w.field(w.object("planet", planet), "owner")
+        end
+    elseif ref.scope == "colony" and ref.kind == "planet" then
+        return "Colony", w.field(w.object("planet", ref.id), "colony")
+    end
+    return nil
 end
 
 -- the active triggered blocks as parts of their own
@@ -1280,7 +1388,24 @@ function S:colony(id)
         status("planet_stability" .. nh .. "_high", (stability - 50) / 50)
         status("planet_stability" .. nh .. "_low", (50 - stability) / 50)
     end
+    -- the amenities: the colony node's planet_amenities_add x (1 + planet_amenities_mult), and its
+    -- _no_happiness_ pair for a colony without happiness, read from the graph (self.resolve_ref)
+    -- where it can be: exact on every colony of the 2211.07.01 capture, where the save's field is
+    -- not (the save's is the end of the previous day); else the save's
     local amenities, ausage = num("amenities"), num("amenities_usage")
+    if self.resolve_ref and planet then
+        local function get(t)
+            return self.resolve_ref({ scope = "colony", kind = "planet", id = planet, type = self.canon[t] or t })
+        end
+        local add, mult = get("planet_amenities_add"), get("planet_amenities_mult")
+        if add and mult then
+            amenities = add / 100000 * (1 + mult / 100000)
+            if nh ~= "" then
+                local nadd, nmult = get("planet_amenities_no_happiness_add"), get("planet_amenities_no_happiness_mult")
+                amenities = amenities + (nadd or 0) / 100000 * (1 + (nmult or 0) / 100000)
+            end
+        end
+    end
     if amenities and ausage and ausage > 0 then
         local r = amenities / ausage
         status("planet_amenities" .. nh .. "_high", r - 1)
@@ -1337,6 +1462,101 @@ function S:rights(country, species, explicit)
     end
     local default = w.field(mod, "default")
     return type(default) == "table" and default or nil
+end
+
+-- the blocks of a colony's buildings (each building) and worked jobs (times the job's amount)
+-- shared between its pop groups, divided in proportion to size (common/buildings/00_example.txt):
+-- triggered_planet_pop_group_modifier_for_species (potential in each pop group's scope; between
+-- the pop groups of the same species for which it holds) and _for_all (potential in the planet's;
+-- between all its pop groups). -> { [pop group] = { { name, values, mult } } }, cached per colony;
+-- the share truncated to the fixed point (4167 of 7384 pops: 56432)
+function S:shared_pop_parts(colony)
+    self.shared = self.shared or {}
+    local out = self.shared[colony]
+    if out then
+        return out
+    end
+    out = {}
+    self.shared[colony] = out
+    local w = self.world
+    local col = w.object("colony", colony)
+    local planet = self.planet_of_colony[colony]
+    if not (col and planet) then
+        return out
+    end
+    local groups = {}
+    for _, gid in ipairs(list_of(w, col, "pop_groups")) do
+        local g = w.object("pop_group", tonumber(gid))
+        local size = g and w.field(g, "size")
+        if g and w.field(g, "killed") ~= "yes" and type(size) == "number" and size > 0 then
+            groups[#groups + 1] = { id = tonumber(gid), size = size, species = w.field(w.field(g, "key") or {}, "species") }
+        end
+    end
+    local function share(label, block, file, mult)
+        local values = self:values(block, file)
+        if not values or next(values) == nil then
+            return
+        end
+        local pot = self.defs.field(block, "potential")
+        local eligible, total = {}, {}
+        for _, g in ipairs(groups) do
+            local ok = pot == nil or self:trigger(pot, "pop_group", g.id, file)
+            if ok then
+                eligible[#eligible + 1] = g
+                local k = tostring(g.species)
+                total[k] = (total[k] or 0) + g.size
+            end
+        end
+        for _, g in ipairs(eligible) do
+            local frac = math.floor(g.size / total[tostring(g.species)] * 100000 + 1e-6)
+            local l = out[g.id] or {}
+            out[g.id] = l
+            l[#l + 1] = { name = label, values = values, mult = scale(frac, mult) }
+        end
+    end
+    local function share_all(label, block, file, mult)
+        local values = self:values(block, file)
+        local pot = self.defs.field(block, "potential")
+        if not values or next(values) == nil or (pot ~= nil and not self:trigger(pot, "planet", planet, file)) then
+            return
+        end
+        local total = 0
+        for _, g in ipairs(groups) do
+            total = total + g.size
+        end
+        for _, g in ipairs(groups) do
+            local l = out[g.id] or {}
+            out[g.id] = l
+            l[#l + 1] = { name = label, values = values, mult = scale(math.floor(g.size / total * 100000 + 1e-6), mult) }
+        end
+    end
+    local function scan(folder, ty, label, mult)
+        local d = self:def_block(folder, ty)
+        for _, e in ipairs(d and d.block or {}) do
+            if e.op and e.key and type(e.value) == "table" then
+                if e.key.text == "triggered_planet_pop_group_modifier_for_species" then
+                    share(label, e.value, d.file, mult)
+                elseif e.key.text == "triggered_planet_pop_group_modifier_for_all" then
+                    share_all(label, e.value, d.file, mult)
+                end
+            end
+        end
+    end
+    for _, bid in ipairs(list_of(w, col, "buildings_cache")) do
+        local ty = unq(w.field(w.object("buildings", tonumber(bid)), "type"))
+        if ty then
+            scan("common/buildings", ty, "shared:" .. ty, 100000)
+        end
+    end
+    for _, jid in ipairs(list_of(w, col, "pop_jobs")) do
+        local o = w.object("pop_jobs", tonumber(jid))
+        local ty = o and unq(w.field(o, "type"))
+        local wf, bonus = w.field(o, "workforce"), w.field(o, "bonus_workforce")
+        if ty and type(wf) == "number" and wf > 0 then
+            scan("common/pop_jobs", ty, "shared:" .. ty, fixed((wf + (type(bonus) == "number" and bonus or 0)) / 100))
+        end
+    end
+    return out
 end
 
 function S:pop_group(id)
@@ -1427,6 +1647,12 @@ function S:pop_group(id)
     local hab = w.field(g, "habitability")
     if type(hab) == "number" and hab < 1 then
         add("static:pop_low_habitability", self:static("pop_low_habitability"), 100000 - fixed(hab))
+    end
+    -- its share of the colony's shared blocks (S:shared_pop_parts)
+    if type(colony) == "number" then
+        for _, p in ipairs(self:shared_pop_parts(colony)[id] or {}) do
+            add(p.name, p.values, p.mult)
+        end
     end
     return parts
 end

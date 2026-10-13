@@ -160,30 +160,17 @@ function M.run(opts)
     local cats = opts.categories or modifiers.CATEGORIES
     local nsamples = opts.samples or 12
 
-    -- a multiplier that is another modifier's value (`mult = modifier:x`, `planet.modifier:x`), read
-    -- from the graph as the capture has it: the object's own node, or its planet's (a pop group's
-    -- colony node)
+    -- a multiplier that is another modifier's value (`mult = modifier:x`, `planet.modifier:x`, a
+    -- job's output modifier), read from the graph as the capture has it, on the node S:ref_node
+    -- names
     local node_of = {}
     for _, n in ipairs(snap.nodes) do
         node_of[n.category .. ":" .. tostring(n.owner)] = n.id
     end
-    local world = src.world
     src.resolve_ref = function(ref)
-        local key
-        if ref.scope == "this" then
-            local cat = ({ pop_group = "PopGroup", planet = "Planet", country = "Country" })[ref.kind]
-            key = cat and (cat .. ":" .. tostring(ref.id))
-        elseif ref.scope == "planet" and ref.kind == "pop_group" then
-            local colony = world.field(world.object("pop_group", ref.id), "planet")
-            key = "Colony:" .. tostring(colony)
-        elseif ref.scope == "owner" and ref.kind == "pop_group" then
-            local colony = world.field(world.object("pop_group", ref.id), "planet")
-            local planet = src.planet_of_colony[colony]
-            local owner = planet and world.field(world.object("planet", planet), "owner")
-            key = "Country:" .. tostring(owner)
-        end
-        local id = key and node_of[key]
-        if id == nil then
+        local cat, owner = src:ref_node(ref)
+        local id = cat and owner ~= nil and node_of[cat .. ":" .. tostring(owner)]
+        if not id then
             return nil
         end
         return mirror.tree:get(mirror.holders[id], ref.type)

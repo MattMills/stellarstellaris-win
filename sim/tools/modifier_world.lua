@@ -116,18 +116,8 @@ for _, n in ipairs(snap.nodes) do
 end
 -- a multiplier that is another modifier's value, read from the capture's graph (as check.lua does)
 src.resolve_ref = function(ref)
-    local key
-    if ref.scope == "this" then
-        local c = ({ pop_group = "PopGroup", planet = "Planet", country = "Country" })[ref.kind]
-        key = c and (c .. ":" .. tostring(ref.id))
-    elseif ref.scope == "planet" and ref.kind == "pop_group" then
-        key = "Colony:" .. tostring(world.field(world.object("pop_group", ref.id), "planet"))
-    elseif ref.scope == "owner" and ref.kind == "pop_group" then
-        local colony = world.field(world.object("pop_group", ref.id), "planet")
-        local planet = src.planet_of_colony[colony]
-        key = "Country:" .. tostring(planet and world.field(world.object("planet", planet), "owner"))
-    end
-    local id = key and node_of[key]
+    local c, owner = src:ref_node(ref)
+    local id = c and owner ~= nil and node_of[c .. ":" .. tostring(owner)]
     return id and cap.tree:get(cap.holders[id], ref.type) or nil
 end
 local modelled = {}
