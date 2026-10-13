@@ -35,6 +35,7 @@
 local bit = require("bit")
 
 local band, bor = bit.band, bit.bor
+local fmod = math.fmod
 
 local M = {}
 
@@ -131,7 +132,8 @@ end
 
 -- modifiers.new(g, defs) -> tree
 function M.new(g, defs)
-    local tree = { g = g, defs = defs, holders = {}, nholders = 0, nnodes = 0 }
+    -- owner[node], type_of[node]: the holder and the type of a value node
+    local tree = { g = g, defs = defs, holders = {}, nholders = 0, nnodes = 0, owner = {}, type_of = {} }
     local ALL = M.ALL
 
     local function passes(t, mask)
@@ -139,6 +141,40 @@ function M.new(g, defs)
             return true
         end
         return band(defs.cats[t] or 0, mask) ~= 0
+    end
+
+    -- the game's addition of an entry with a multiplier (CModifier::AddModifierEntry): value *
+    -- mult / 100000 in fixed point, truncated toward zero; exact in doubles below 2^53
+    local function fixed_scale(x, mult)
+        local p = x * mult
+        return (p - fmod(p, 100000)) / 100000
+    end
+
+    -- the edge of a link for type t: the parent's node pn into the child's node n. A fixed-point
+    -- link goes through a node of its own per type that truncates as the game does.
+    local function connect(link, pn, n, t)
+        if link.fixed == nil then
+            g:link(pn, n, link.scale)
+            return
+        end
+        local f = g:func(function(gr, x)
+            return fixed_scale(gr:in_value(x, 0), link.fixed)
+        end)
+        g:link(pn, f)
+        g:link(f, n)
+        link.via[t] = f
+    end
+
+    local function disconnect(link, pn, n, t)
+        if link.fixed == nil then
+            g:unlink(pn, n)
+            return
+        end
+        local f = link.via[t]
+        if f ~= nil then
+            g:remove(f)
+            link.via[t] = nil
+        end
     end
 
     -- the value node of type t (an id) on holder h, made on demand with its parents' nodes
@@ -149,10 +185,11 @@ function M.new(g, defs)
         end
         n = g:sum(h.values[t] or 0)
         h.nodes[t] = n
+        tree.owner[n], tree.type_of[n] = h, t
         tree.nnodes = tree.nnodes + 1
         for _, link in ipairs(h.parents) do
             if passes(t, link.mask) then
-                g:link(node(link.parent, t), n, link.scale)
+                connect(link, node(link.parent, t), n, t)
             end
         end
         return n
@@ -198,26 +235,56 @@ function M.new(g, defs)
         end
     end
 
+    -- the game's AddModifierNode(child, parent, mult, filter) with values in raw fixed point (1.0 =
+    -- 100000): child reads parent's values times mult / 100000, each entry truncated toward zero,
+    -- the types whose categories meet the filter (0 and -1: all). Unlike tree:link, a pair can be
+    -- linked more than once (the game adds some parents twice, with different filters); unlink
+    -- removes every link of the pair. -> the link
+    function tree:link_fixed(child, parent, mult, filter)
+        if filter == 0 or filter == -1 or filter == nil then
+            filter = ALL
+        end
+        local link = { parent = parent, scale = 1, mask = filter }
+        if mult ~= nil and mult ~= 100000 then
+            link.fixed, link.via = mult, {}
+        end
+        child.parents[#child.parents + 1] = link
+        parent.children[child] = link
+        for t, n in pairs(child.nodes) do
+            if passes(t, filter) then
+                connect(link, node(parent, t), n, t)
+            end
+        end
+        return link
+    end
+
     function tree:unlink(child, parent)
-        for i, link in ipairs(child.parents) do
+        local found = false
+        for i = #child.parents, 1, -1 do
+            local link = child.parents[i]
             if link.parent == parent then
                 for t, n in pairs(child.nodes) do
                     local pn = parent.nodes[t]
                     if pn ~= nil and passes(t, link.mask) then
-                        g:unlink(pn, n)
+                        disconnect(link, pn, n, t)
                     end
                 end
                 table.remove(child.parents, i)
-                parent.children[child] = nil
-                return true
+                found = true
             end
         end
-        return false
+        if found then
+            parent.children[child] = nil
+        end
+        return found
     end
 
     function tree:set_scale(child, parent, scale)
         for _, link in ipairs(child.parents) do
             if link.parent == parent then
+                if link.fixed ~= nil then
+                    error("stellar.graph.modifiers: set_scale of a fixed-point link (unlink and link it again)", 2)
+                end
                 link.scale = scale
                 for t, n in pairs(child.nodes) do
                     local pn = parent.nodes[t]
@@ -291,6 +358,7 @@ function M.new(g, defs)
         end
         for t, n in pairs(h.nodes) do
             g:remove(n)
+            tree.owner[n], tree.type_of[n] = nil, nil
             tree.nnodes = tree.nnodes - 1
         end
         h.nodes = {}

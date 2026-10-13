@@ -561,6 +561,137 @@ test("modifier tree: a change marks only its type below it", function()
     ok_check(g)
 end)
 
+test("modifier tree: fixed-point links truncate each entry, a pair linked twice", function()
+    local g = core.new()
+    local defs = modifiers.definitions()
+    defs:read_log("- a, Category: Ships\n- b, Category: Countries\n")
+    local tree = modifiers.new(g, defs)
+    local parent = tree:holder("country", 1)
+    local child = tree:holder("pop", 1)
+    tree:add(parent, "x", { a = 3, b = -3 })
+    tree:link_fixed(child, parent, 50000)          -- half, truncated toward zero
+    eq(tree:get(child, "a"), 1, "trunc(1.5)")
+    eq(tree:get(child, "b"), -1, "trunc(-1.5)")
+    tree:add(parent, "x", { a = 7, b = -7 })
+    eq(tree:get(child, "a"), 3, "trunc(3.5) after a change")
+    eq(tree:get(child, "b"), -3, "trunc(-3.5) after a change")
+    tree:link_fixed(child, parent, 100000, defs:mask("Ships"))  -- the same parent again, ship types only
+    eq(tree:get(child, "a"), 10, "both links")
+    eq(tree:get(child, "b"), -3, "the second link filters b out")
+    tree:unlink(child, parent)
+    eq(tree:get(child, "a"), 0, "unlink removes both")
+    eq(#child.parents, 0, "no link left")
+    ok_check(g)
+end)
+
+test("nodes: a capture rebuilt from its parts, with children and by content", function()
+    local nodes = require("stellar.graph.nodes")
+    local log = "- a, Category: Ships\n- b, Category: Countries\n- c, Category: Pops\n"
+    -- a country, two fleets with the same values, a ship in each (same values too), a pop group
+    -- reading the country at a third; the ships read their fleets' ship types only
+    local rows = {
+        "id\tcategory\towner\tinvalid\tvalues\tparts\tchildren\tdepth\tcategories",
+        "1\tCountry\t0\t0\ta=100,b=300\t100000|-1|a=100,b=300\t2,4,6\t1\t-1",
+        "2\tFleet\t10\t0\ta=100,b=300\t100000|-1|a=100,b=300\t3\t1\t-1",
+        "3\tShip\t20\t0\ta=150\t100000|16508|a=100,b=300;100000|-1|a=50\t\t1\t-1",
+        "4\tPopGroup\t30\t0\ta=33,b=99,c=-1\t33333|-1|a=100,b=300;50000|-1|c=-3\t\t1\t-1",
+        "5\tShip\t21\t0\ta=150\t100000|16508|a=100,b=300;100000|-1|a=50\t\t1\t-1",
+        "6\tFleet\t11\t0\ta=100,b=300\t100000|-1|a=100,b=300\t5\t1\t-1",
+    }
+    for _, children in ipairs({ true, false }) do
+        local text = table.concat(rows, "\n")
+        if not children then
+            text = text:gsub("\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\n", "\n"):gsub("\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*$", "")
+        end
+        local snap = nodes.read_capture(text)
+        eq(snap.has_children and 1 or 0, children and 1 or 0, "children read")
+        local g = core.new()
+        local defs = modifiers.definitions()
+        defs:read_log(log)
+        local mirror = nodes.build(g, defs, snap)
+        mirror:materialize()
+        local report = mirror:compare(snap)
+        if report.exact_nodes ~= 6 then
+            error(nodes.format_report(report))
+        end
+        eq(mirror.stats.local_parts, 4, "the country's, the two ships' own, the pop group's own")
+        if children then
+            eq(mirror.holders[5].parents[1].parent.key, 6, "ship 5 reads fleet 6 (the children say so)")
+            eq(mirror.stats.ambiguous, 0, "nothing guessed")
+        else
+            eq(mirror.stats.ambiguous > 0 and 1 or 0, 1, "fleets with the same values: a guess")
+        end
+        -- a technology on the country: both ships, the pop group at a third, truncated
+        mirror.tree:add(mirror.holders[1], "tech", { a = 1000 })
+        eq(mirror.tree:get(mirror.holders[3], "a"), 1150, "ship 3")
+        eq(mirror.tree:get(mirror.holders[5], "a"), 1150, "ship 5")
+        eq(mirror.tree:get(mirror.holders[4], "a"), 366, "trunc(1100 * 0.33333)")
+        eq(mirror.tree:get(mirror.holders[3], "b"), 0, "the ship's filter keeps b out")
+        ok_check(g)
+    end
+end)
+
+test("nodes: passes of the game given to the mirror (roots, cascades, a relink)", function()
+    local nodes = require("stellar.graph.nodes")
+    local function capture_text(country_a, ship3_fleet)
+        -- what the game holds after recomputing: a technology on the country (country_a), ship 3
+        -- in fleet 2 or fleet 6
+        local f = country_a
+        local rows = {
+            "id\tcategory\towner\tinvalid\tvalues\tparts\tchildren\tdepth\tcategories",
+            string.format("1\tCountry\t0\t0\ta=%d,b=300\t100000|-1|a=100,b=300%s\t2,4,6\t1\t-1", f,
+                f ~= 100 and string.format(";100000|-1|a=%d", f - 100) or ""),
+            string.format("2\tFleet\t10\t0\ta=%d,b=300\t100000|-1|a=%d,b=300\t%s\t1\t-1", f, f, ship3_fleet == 2 and "3" or ""),
+            string.format("3\tShip\t20\t0\ta=%d\t100000|16508|a=%d,b=300;100000|-1|a=50\t\t1\t-1", f + 50, f),
+            string.format("4\tPopGroup\t30\t0\ta=%d,b=99,c=-1\t33333|-1|a=%d,b=300;50000|-1|c=-3\t\t1\t-1",
+                nodes.fixed_scale(f, 33333), f),
+            string.format("5\tShip\t21\t0\ta=%d\t100000|16508|a=%d,b=300;100000|-1|a=50\t\t1\t-1", f + 50, f),
+            string.format("6\tFleet\t11\t0\ta=%d,b=300\t100000|-1|a=%d,b=300\t%s\t1\t-1", f, f, ship3_fleet == 6 and "3,5" or "5"),
+        }
+        return table.concat(rows, "\n")
+    end
+    local g = core.new()
+    local defs = modifiers.definitions()
+    defs:read_log("- a, Category: Ships\n- b, Category: Countries\n- c, Pops\n")
+    local mirror = nodes.build(g, defs, nodes.read_capture(capture_text(100, 2)))
+    mirror:materialize()
+    -- pass 1: a technology (+1000 a) on the country; the game recomputes everything below it
+    local snap = nodes.read_capture(capture_text(1100, 2))
+    local parents = nodes.parents(snap)
+    local roots, relinked = 0, 0
+    for _, n in ipairs(snap.nodes) do
+        local own, links = mirror:assign(n, parents[n.id] or {})
+        roots = roots + (own and 1 or 0)
+        relinked = relinked + (links and 1 or 0)
+    end
+    eq(roots, 1, "one root: the country")
+    eq(relinked, 0, "no link changed")
+    mirror:forget_types()
+    local report = mirror:compare(snap)
+    if report.exact_nodes ~= 6 then
+        error(nodes.format_report(report))
+    end
+    -- pass 2: ship 3 moves to fleet 6 (the game recomputes the ship only)
+    snap = nodes.read_capture(capture_text(1100, 6))
+    parents = nodes.parents(snap)
+    local ship = nil
+    for _, n in ipairs(snap.nodes) do
+        if n.id == 3 then
+            ship = n
+        end
+    end
+    local own, links = mirror:assign(ship, parents[3])
+    eq(own and 1 or 0, 0, "the ship's own parts did not change")
+    eq(links and 1 or 0, 1, "relinked")
+    eq(mirror.holders[3].parents[1].parent.key, 6, "ship 3 reads fleet 6 now")
+    mirror:forget_types()
+    report = mirror:compare(snap)
+    if report.exact_nodes ~= 6 then
+        error(nodes.format_report(report))
+    end
+    ok_check(g)
+end)
+
 -- economy -----------------------------------------------------------------------------------------
 
 test("economy: the game's formula", function()
