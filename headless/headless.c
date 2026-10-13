@@ -30,6 +30,7 @@
 #include <fcntl.h>
 #include <link.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -38,6 +39,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 // ---------------------------------------------------------------- log
@@ -156,6 +158,7 @@ static uintptr_t a_g_CurrentFrontEndIdler;  // CFrontEndIdler*
 static uintptr_t a_InGameRenderInternal;   // CInGameIdler::RenderInternal(bool)
 static uintptr_t a_Random;                  // CRandom::_Random: CNoiseRandom { uint32 position; uint32 seed }
 static uintptr_t a_nRandomCount;            // CSystem::_nRandomCount (the position CSetRandomSeed syncs from)
+static uintptr_t a_EnableTaskThreads;       // NPdxThreadUtilDetail::g_bEnableTaskThreads
 
 static struct symreq g_syms[] = {
 	{"_ZN11CDLCManager21VerifyAllDLCOwnershipEb", &a_VerifyAllDLCOwnership},
@@ -181,6 +184,7 @@ static struct symreq g_syms[] = {
 	{"_ZN12CInGameIdler14RenderInternalEb", &a_InGameRenderInternal},
 	{"_ZN7CRandom7_RandomE", &a_Random},
 	{"_ZN7CSystem13_nRandomCountE", &a_nRandomCount},
+	{"_ZN20NPdxThreadUtilDetail20g_bEnableTaskThreadsE", &a_EnableTaskThreads},
 	{NULL, NULL},
 };
 
@@ -208,11 +212,33 @@ static const char *cstring_ptr(const void *s, size_t *len) {
 // and returns to the real return address. The table (inclusive draws per call site) goes to
 // HEADLESS_PROFILE_OUT at the end of the run.
 
+// Three more uses of the same hook, for tracing where the random pools go:
+//
+// HEADLESS_OVERRIDE="<site>=<mode>[,...]": after the call at <site> (hex offset) returns, replace
+//   the values it produced: for CRandom::GetIntegersForMacro(name, line, int *out, count) the
+//   `count` ints at `out`, for any other callee the int it returns. Modes: zero, xor (each value
+//   ^ 0x5bd1e995), const:N. The generator itself advances as usual.
+// HEADLESS_TICKLOG=<file>, HEADLESS_WATCH="<site>,...": one line per tick (at the return of
+//   HandleTurnTick): the tick, the draws in it, and how many times each watched site was called.
+// HEADLESS_POOLTRACK=<file>: counts the reads of the daily pool (the 1,000 values DailyUpdate
+//   draws at HEADLESS_POOL_DAILY, default 1b1c948, kept at rbp-0x2420 of DailyUpdate's frame and
+//   copied to rbp-0x1478 for the pop groups) and of the monthly pool (the buffer of the
+//   GetIntegersForMacro at HEADLESS_POOL_MONTHLY, default 1b2d746). The values are mirrored into
+//   a page of our own (a memfd mapped twice: one view to write, one kept PROT_NONE); at every
+//   instrumented call an argument register that points into a live pool is switched to the
+//   mirror, so the callee and everything below it read the mirror: each read faults, is counted
+//   (by consumer site, by instruction, by index), and is single-stepped with the page open. Task
+//   threads are turned off (g_bEnableTaskThreads) so the reads happen on the main thread.
+
 struct site {
 	uintptr_t addr, target;
 	char *caller, *callee, kind[8];
+	int override_mode, override_const, pool_kind; // pool_kind: 1 daily fill, 2 monthly fill
+	int consumer;                                 // the callee takes an `int const*` / `int*`
 	uint64_t calls, draws;
+	uint64_t pool_reads[2], swapped_calls;
 };
+enum { OV_NONE, OV_ZERO, OV_XOR, OV_CONST };
 static struct site *g_sites;
 static int g_nsites;
 static int g_prof_on;
@@ -221,6 +247,8 @@ struct pframe {
 	void *ret;
 	uint32_t pos;
 	int site;
+	uint64_t a2, a3; // rdx, rcx at the call
+	int swapped;
 };
 static __thread struct pframe t_frames[256];
 static __thread int t_depth;
@@ -228,29 +256,277 @@ static __thread int t_depth;
 static inline uint32_t rng_pos(void) { return *(volatile uint32_t *)a_Random; }
 static inline uint32_t rng_seed(void) { return *(volatile uint32_t *)(a_Random + 4); }
 
+// --- pool tracking state
+#define NSLOT 2 // 0 the daily pool, 1 the monthly pool
+static int g_track;
+static uint8_t *g_rw, *g_view; // the two views of the mirror, NSLOT pages each
+struct prange {
+	uintptr_t base;
+	size_t len;
+	int slot;
+};
+static struct prange g_ranges[4];
+static int g_nranges;
+static uint32_t g_daily_k;
+static volatile int g_trk_lock;
+static __thread int t_stepping;
+static __thread int t_cons[64];
+static __thread int t_ncons;
+static uint64_t g_reads[NSLOT], g_writes[NSLOT], g_unattributed[NSLOT];
+static uint8_t g_seen[NSLOT][1024];
+static uint64_t g_distinct_sum[NSLOT], g_distinct_max[NSLOT];
+static int g_periods[NSLOT];
+#define NPC 4096
+static uintptr_t g_pc_key[NPC];
+static uint64_t g_pc_reads[NPC][NSLOT];
+
+static FILE *g_ticklog;
+static int g_watch[32], g_nwatch;
+static uint64_t g_watch_prev[32];
+static uint32_t g_tick_pos;
+// HEADLESS_TRACE=<from>-<to> (total ticks), HEADLESS_TRACE_OUT=<file>: every instrumented call
+// that draws, in the turns that start in that range, in order: the order of the draws in a tick.
+static long g_trace_from = -1, g_trace_to = -1;
+static FILE *g_trace;
+static int g_trace_turn, g_trace_tick;
+
+static void period_close(int slot) {
+	int n = 0;
+	for (int i = 0; i < 1024; i++) n += g_seen[slot][i];
+	if (g_periods[slot] || n) {
+		g_distinct_sum[slot] += n;
+		if ((uint64_t)n > g_distinct_max[slot]) g_distinct_max[slot] = n;
+	}
+	memset(g_seen[slot], 0, sizeof g_seen[slot]);
+}
+
+static void ranges_drop(int slot) {
+	int j = 0;
+	for (int i = 0; i < g_nranges; i++)
+		if (g_ranges[i].slot != slot) g_ranges[j++] = g_ranges[i];
+	g_nranges = j;
+}
+
+static void range_add(uintptr_t base, size_t len, int slot) {
+	if (len > 4096) len = 4096;
+	if (g_nranges < 4) g_ranges[g_nranges++] = (struct prange){base, len, slot};
+}
+
 #define HIDDEN __attribute__((visibility("hidden")))
 HIDDEN void hk_entry(void);
 HIDDEN void hk_post(void);
-HIDDEN void *hk_before(long site, void **retslot);
-HIDDEN void *hk_after(void);
+HIDDEN void *hk_before(long site, void **retslot, uintptr_t rbp);
+HIDDEN void *hk_after(uint64_t *rax_slot);
 
-void *hk_before(long site, void **retslot) {
+void *hk_before(long site, void **retslot, uintptr_t rbp) {
 	if (t_depth >= 256) die(5, "profiler: call depth");
 	struct pframe *f = &t_frames[t_depth++];
+	uintptr_t *regs = (uintptr_t *)retslot; // saved by hk_entry: [-1] rdi [-2] rsi [-3] rdx [-4] rcx [-5] r8 [-6] r9
 	f->ret = *retslot;
 	f->pos = rng_pos();
 	f->site = (int)site;
+	f->a2 = regs[-3];
+	f->a3 = regs[-4];
+	f->swapped = 0;
+	struct site *s = &g_sites[site];
+	if (g_track && g_prof_on) {
+		if (s->pool_kind == 1) {
+			if (g_daily_k == 0) { // the first of the day's 1,000
+				period_close(0);
+				g_periods[0]++;
+				ranges_drop(0);
+				range_add(rbp - 0x2420, 4000, 0); // the pool, in DailyUpdate's frame
+				range_add(rbp - 0x1478, 4000, 0); // its copy in the pop groups' functor (memcpy at 0x1b21e6a)
+			}
+		} else if (s->pool_kind == 2) {
+			period_close(1);
+			g_periods[1]++;
+			ranges_drop(1);
+			range_add(regs[-3], (size_t)(uint32_t)regs[-4] * 4, 1);
+		} else if (g_nranges && s->consumer) {
+			// Only calls to functions that take an int pointer: elsewhere a pointer into the
+			// pool's stack range may be another object that reuses the slot.
+			for (int r = 1; r <= 6; r++) {
+				uintptr_t v = regs[-r];
+				for (int k = 0; k < g_nranges; k++)
+					if (v >= g_ranges[k].base && v < g_ranges[k].base + g_ranges[k].len) {
+						regs[-r] = (uintptr_t)g_view + g_ranges[k].slot * 4096 + (v - g_ranges[k].base);
+						f->swapped = 1;
+						break;
+					}
+			}
+			if (f->swapped) {
+				if (t_ncons < 64) t_cons[t_ncons++] = (int)site;
+				__atomic_add_fetch(&s->swapped_calls, 1, __ATOMIC_RELAXED);
+			}
+		}
+	}
+	if (g_trace_turn && (int)site == g_site_htt) {
+		g_trace_tick = total_ticks(game_state());
+		fprintf(g_trace, "%d\t%u\t-\t%d\tHandleTurnTick begins\t\n", g_trace_tick, f->pos, t_depth - 1);
+	}
 	*retslot = (void *)hk_post;
-	return (void *)g_sites[site].target;
+	return (void *)s->target;
 }
 
-void *hk_after(void) {
+static long g_override_from = -1; // HEADLESS_OVERRIDE_FROM: only from this total tick count on
+
+static void apply_override(struct pframe *f, uint64_t *rax_slot) {
+	struct site *s = &g_sites[f->site];
+	if (g_override_from >= 0 && total_ticks(game_state()) < g_override_from) return;
+	int is_array = strstr(s->callee, "GetIntegersForMacro") != NULL;
+	int32_t *v = is_array ? (int32_t *)f->a2 : (int32_t *)rax_slot;
+	uint32_t n = is_array ? (uint32_t)f->a3 : 1;
+	for (uint32_t i = 0; i < n; i++) {
+		if (s->override_mode == OV_ZERO) v[i] = 0;
+		else if (s->override_mode == OV_XOR) v[i] ^= 0x5bd1e995;
+		else if (s->override_mode == OV_CONST) v[i] = s->override_const;
+	}
+}
+
+void *hk_after(uint64_t *rax_slot) {
 	struct pframe *f = &t_frames[--t_depth];
+	struct site *s = &g_sites[f->site];
 	if (g_prof_on) {
-		__atomic_add_fetch(&g_sites[f->site].calls, 1, __ATOMIC_RELAXED);
-		__atomic_add_fetch(&g_sites[f->site].draws, (uint32_t)(rng_pos() - f->pos), __ATOMIC_RELAXED);
+		__atomic_add_fetch(&s->calls, 1, __ATOMIC_RELAXED);
+		__atomic_add_fetch(&s->draws, (uint32_t)(rng_pos() - f->pos), __ATOMIC_RELAXED);
+		if (s->override_mode) apply_override(f, rax_slot);
+		if (g_track) {
+			if (s->pool_kind == 1) {
+				((uint32_t *)g_rw)[g_daily_k] = (uint32_t)*rax_slot; // the value the caller stores
+				g_daily_k = (g_daily_k + 1) % 1000;
+			} else if (s->pool_kind == 2) {
+				uint32_t n = (uint32_t)f->a3;
+				memcpy(g_rw + 4096, (void *)f->a2, n * 4 > 4096 ? 4096 : n * 4);
+			} else if (strstr(s->callee, "CGameState::DailyUpdate()") == s->callee) {
+				ranges_drop(0); // DailyUpdate's frame is gone
+			} else if (strstr(s->callee, "CGameState::MonthlyUpdate()") == s->callee) {
+				ranges_drop(1);
+			}
+			if (f->swapped && t_ncons) t_ncons--;
+		}
+		if (g_trace_turn) {
+			uint32_t d = rng_pos() - f->pos;
+			if (d || f->site == g_site_htt)
+				fprintf(g_trace, "%d\t%u\t%u\t%d\t%s\t%s\n", g_trace_tick, f->pos, d, t_depth, s->caller, s->callee);
+		}
+		if (f->site == g_site_htt && g_ticklog) {
+			void *gs = game_state();
+			uint32_t p = rng_pos();
+			fprintf(g_ticklog, "%d\t%u", total_ticks(gs), p - g_tick_pos);
+			g_tick_pos = p;
+			for (int i = 0; i < g_nwatch; i++) {
+				uint64_t c = g_sites[g_watch[i]].calls;
+				fprintf(g_ticklog, "\t%llu", (unsigned long long)(c - g_watch_prev[i]));
+				g_watch_prev[i] = c;
+			}
+			fputc('\n', g_ticklog);
+		}
 	}
 	return f->ret;
+}
+
+// A read (or write) of the mirror: count it, open the page, single-step the instruction.
+static struct sigaction g_old_segv, g_old_trap;
+
+static void chain(struct sigaction *old, int sig, siginfo_t *si, void *ctx) {
+	if (old->sa_flags & SA_SIGINFO) {
+		if (old->sa_sigaction) old->sa_sigaction(sig, si, ctx);
+	} else if (old->sa_handler == SIG_DFL || old->sa_handler == SIG_IGN) {
+		sigaction(sig, old, NULL); // returns, faults again, and the default action happens
+	} else {
+		old->sa_handler(sig);
+	}
+}
+
+static void segv_handler(int sig, siginfo_t *si, void *ctx) {
+	uintptr_t a = (uintptr_t)si->si_addr;
+	if (g_view && a >= (uintptr_t)g_view && a < (uintptr_t)g_view + NSLOT * 4096) {
+		ucontext_t *uc = ctx;
+		while (__atomic_exchange_n(&g_trk_lock, 1, __ATOMIC_ACQUIRE))
+			;
+		int slot = (int)((a - (uintptr_t)g_view) / 4096);
+		int idx = (int)(((a - (uintptr_t)g_view) % 4096) / 4);
+		if (uc->uc_mcontext.gregs[REG_ERR] & 2) g_writes[slot]++;
+		else g_reads[slot]++;
+		if (idx < 1024) g_seen[slot][idx] = 1;
+		if (t_ncons) g_sites[t_cons[t_ncons - 1]].pool_reads[slot]++;
+		else g_unattributed[slot]++;
+		uintptr_t pc = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP] - g_base;
+		for (uint32_t h = (uint32_t)(pc * 2654435761u) % NPC, n = 0; n < NPC; n++, h = (h + 1) % NPC)
+			if (g_pc_key[h] == pc || g_pc_key[h] == 0) {
+				g_pc_key[h] = pc;
+				g_pc_reads[h][slot]++;
+				break;
+			}
+		mprotect(g_view, NSLOT * 4096, PROT_READ | PROT_WRITE);
+		uc->uc_mcontext.gregs[REG_EFL] |= 0x100; // trap after this instruction
+		t_stepping = 1;
+		return;
+	}
+	chain(&g_old_segv, sig, si, ctx);
+}
+
+static void trap_handler(int sig, siginfo_t *si, void *ctx) {
+	if (t_stepping) {
+		ucontext_t *uc = ctx;
+		mprotect(g_view, NSLOT * 4096, PROT_NONE);
+		uc->uc_mcontext.gregs[REG_EFL] &= ~0x100;
+		t_stepping = 0;
+		__atomic_store_n(&g_trk_lock, 0, __ATOMIC_RELEASE);
+		return;
+	}
+	chain(&g_old_trap, sig, si, ctx);
+}
+
+static void track_start(void) {
+	int fd = memfd_create("headless_pools", 0);
+	if (fd < 0 || ftruncate(fd, NSLOT * 4096) != 0) die(2, "pooltrack: memfd");
+	g_rw = mmap(NULL, NSLOT * 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	g_view = mmap(NULL, NSLOT * 4096, PROT_NONE, MAP_SHARED, fd, 0);
+	if (g_rw == MAP_FAILED || g_view == MAP_FAILED) die(2, "pooltrack: mmap");
+	struct sigaction sa;
+	memset(&sa, 0, sizeof sa);
+	sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_sigaction = segv_handler;
+	sigaction(SIGSEGV, &sa, &g_old_segv);
+	sa.sa_sigaction = trap_handler;
+	sigaction(SIGTRAP, &sa, &g_old_trap);
+	U8(a_EnableTaskThreads) = 0;
+	g_track = 1;
+	hlog("pooltrack: mirror at %p, task threads off", (void *)g_view);
+}
+
+static void track_write(const char *path, int ticks) {
+	FILE *f = fopen(path, "w");
+	if (!f) return;
+	const char *name[NSLOT] = {"daily", "monthly"};
+	for (int s = 0; s < NSLOT; s++) {
+		period_close(s);
+		fprintf(f, "# %s pool: %d fills, %llu reads (%.1f a fill), %llu writes, %llu reads outside an "
+		           "instrumented call; distinct values read a fill: %.1f average, %llu max (of 1000)\n",
+		        name[s], g_periods[s], (unsigned long long)g_reads[s],
+		        g_periods[s] ? (double)g_reads[s] / g_periods[s] : 0.0, (unsigned long long)g_writes[s],
+		        (unsigned long long)g_unattributed[s], g_periods[s] ? (double)g_distinct_sum[s] / g_periods[s] : 0.0,
+		        (unsigned long long)g_distinct_max[s]);
+	}
+	fprintf(f, "# over %d ticks\n#\n# reads by consumer (the instrumented call the pointer went through)\n", ticks);
+	fprintf(f, "# (consumer sites called with no pool pointer are listed with 0 reads: they read a copy\n"
+	           "# this does not follow, or were called outside DailyUpdate / MonthlyUpdate)\n");
+	fprintf(f, "consumer_site\tcaller\tcallee\tcalls\tcalls_with_pool\tdaily_reads\tmonthly_reads\n");
+	for (int i = 0; i < g_nsites; i++)
+		if (g_sites[i].consumer && g_sites[i].calls)
+			fprintf(f, "%lx\t%s\t%s\t%llu\t%llu\t%llu\t%llu\n", (unsigned long)(g_sites[i].addr - g_base),
+			        g_sites[i].caller, g_sites[i].callee, (unsigned long long)g_sites[i].calls,
+			        (unsigned long long)g_sites[i].swapped_calls, (unsigned long long)g_sites[i].pool_reads[0],
+			        (unsigned long long)g_sites[i].pool_reads[1]);
+	fprintf(f, "#\n# reads by instruction (offset in the executable)\npc\tdaily_reads\tmonthly_reads\n");
+	for (int h = 0; h < NPC; h++)
+		if (g_pc_key[h])
+			fprintf(f, "%lx\t%llu\t%llu\n", (unsigned long)g_pc_key[h], (unsigned long long)g_pc_reads[h][0],
+			        (unsigned long long)g_pc_reads[h][1]);
+	fclose(f);
 }
 
 // Entered by jmp from a site stub with r11 = site and [rsp] = the return address (rsp = 8 mod 16).
@@ -267,6 +543,7 @@ __asm__(".text\n"
         "  movdqu %xmm6, 96(%rsp)\n  movdqu %xmm7, 112(%rsp)\n"
         "  mov %r11, %rdi\n"
         "  lea 200(%rsp), %rsi\n"
+        "  mov %rbp, %rdx\n"
         "  call hk_before\n"
         "  mov %rax, 136(%rsp)\n"
         "  movdqu 0(%rsp), %xmm0\n  movdqu 16(%rsp), %xmm1\n  movdqu 32(%rsp), %xmm2\n"
@@ -283,6 +560,7 @@ __asm__(".text\n"
         "  push %rax\n  push %rdx\n"
         "  sub $32, %rsp\n"
         "  movdqu %xmm0, 0(%rsp)\n  movdqu %xmm1, 16(%rsp)\n"
+        "  lea 40(%rsp), %rdi\n" // the saved rax, which an override may change
         "  call hk_after\n"
         "  mov %rax, %r11\n"
         "  movdqu 0(%rsp), %xmm0\n  movdqu 16(%rsp), %xmm1\n"
@@ -331,9 +609,68 @@ static void profile_install(const char *path) {
 		}
 		if (strstr(st->caller, "CTurnTickCommand::Execute") && strstr(st->callee, "HandleTurnTick"))
 			g_site_htt = g_nsites;
+		st->consumer = (strstr(st->callee, "int const*") || strstr(st->callee, "int*")) && !strstr(st->callee, "ForMacro");
 		g_nsites++;
 	}
 	fclose(f);
+
+	// HEADLESS_OVERRIDE, HEADLESS_WATCH, HEADLESS_POOL_DAILY / _MONTHLY: sites by hex offset.
+	const char *e;
+	unsigned long daily = 0x1b1c948, monthly = 0x1b2d746;
+	if ((e = getenv("HEADLESS_POOL_DAILY"))) daily = strtoul(e, NULL, 16);
+	if ((e = getenv("HEADLESS_POOL_MONTHLY"))) monthly = strtoul(e, NULL, 16);
+	for (int i = 0; i < g_nsites; i++) {
+		unsigned long off = g_sites[i].addr - g_base;
+		if (off == daily) g_sites[i].pool_kind = 1;
+		if (off == monthly) g_sites[i].pool_kind = 2;
+	}
+	if ((e = getenv("HEADLESS_OVERRIDE"))) {
+		char *spec = strdup(e), *tok, *save = NULL;
+		for (tok = strtok_r(spec, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+			char *eq = strchr(tok, '=');
+			if (!eq) continue;
+			*eq = 0;
+			unsigned long off = strtoul(tok, NULL, 16);
+			int mode = !strcmp(eq + 1, "zero") ? OV_ZERO : !strcmp(eq + 1, "xor") ? OV_XOR
+			           : !strncmp(eq + 1, "const:", 6) ? OV_CONST : OV_NONE;
+			int found = 0;
+			for (int i = 0; i < g_nsites; i++)
+				if (g_sites[i].addr - g_base == off) {
+					g_sites[i].override_mode = mode;
+					if (mode == OV_CONST) g_sites[i].override_const = atoi(eq + 7);
+					found = 1;
+					hlog("override: %lx (%s) -> %s", off, g_sites[i].callee, eq + 1);
+				}
+			if (!found) hlog("override: site %lx is not in the table", off);
+		}
+	}
+	if ((e = getenv("HEADLESS_OVERRIDE_FROM")) && *e) g_override_from = atol(e);
+	if ((e = getenv("HEADLESS_TRACE")) && *e && sscanf(e, "%ld-%ld", &g_trace_from, &g_trace_to) == 2) {
+		const char *o = getenv("HEADLESS_TRACE_OUT");
+		g_trace = o ? fopen(o, "w") : stderr;
+		if (g_trace)
+			fprintf(g_trace, "tick\tposition_before\tdraws\tdepth\tcaller\tcallee\n");
+	}
+	if ((e = getenv("HEADLESS_WATCH"))) {
+		char *spec = strdup(e), *tok, *save = NULL;
+		for (tok = strtok_r(spec, ",", &save); tok && g_nwatch < 32; tok = strtok_r(NULL, ",", &save)) {
+			unsigned long off = strtoul(tok, NULL, 16);
+			for (int i = 0; i < g_nsites; i++)
+				if (g_sites[i].addr - g_base == off) {
+					g_watch[g_nwatch++] = i;
+					break;
+				}
+		}
+	}
+	if ((e = getenv("HEADLESS_TICKLOG")) && *e) {
+		g_ticklog = fopen(e, "w");
+		if (g_ticklog) {
+			fprintf(g_ticklog, "total_ticks\tdraws");
+			for (int i = 0; i < g_nwatch; i++)
+				fprintf(g_ticklog, "\t%lx", (unsigned long)(g_sites[g_watch[i]].addr - g_base));
+			fputc('\n', g_ticklog);
+		}
+	}
 	size_t stub = 32, len = ((size_t)g_nsites * stub + 0xfff) & ~(size_t)0xfff;
 	uint8_t *mem = alloc_near(len);
 	if (!mem) die(2, "profile: no memory near the executable");
@@ -504,6 +841,15 @@ static void write_gamestate_and_exit(void *gs) {
 		profile_write(g_profile_out, draws, done);
 		hlog("profile -> %s", g_profile_out);
 	}
+	if (g_ticklog) fclose(g_ticklog), g_ticklog = NULL;
+	if (g_trace && g_trace != stderr) fclose(g_trace), g_trace = NULL;
+	const char *pt = getenv("HEADLESS_POOLTRACK");
+	if (g_track && pt) {
+		g_track = 0;
+		track_write(pt, done);
+		hlog("pooltrack: daily %llu reads in %d fills, monthly %llu reads in %d fills -> %s",
+		     (unsigned long long)g_reads[0], g_periods[0], (unsigned long long)g_reads[1], g_periods[1], pt);
+	}
 	// SaveGameCheckMakeSave(CString) writes CWriter::WriteTopLevelList(*g_CurrentGameState) to a
 	// CArchiveFile: the game's own gamestate writer, on this thread.
 	_Alignas(16) uint8_t path[0x30];
@@ -545,6 +891,9 @@ static void start_run(void *gs) {
 		hlog("random position set to %u", rng_pos());
 	}
 	g_pos0 = rng_pos();
+	g_tick_pos = g_pos0;
+	const char *pt = getenv("HEADLESS_POOLTRACK");
+	if (pt && *pt && g_nsites) track_start();
 	g_prof_on = 1;
 	g_run_t0 = now();
 }
@@ -583,7 +932,13 @@ static _Bool my_CheckTick(void *idler, float dt) {
 			if (k > left) k = left;
 			U8(a_g_AllowPostCommandToSession) = 1;
 			for (int i = 0; i < k; i++) post_tick();
+			g_trace_turn = g_trace && before >= g_trace_from && before < g_trace_to;
+			if (g_trace_turn)
+				fprintf(g_trace, "%d\t%u\t-\t-\tturn begins (session update: commands, then %d ticks)\t\n", before,
+				        rng_pos(), k);
 			app_update();
+			if (g_trace_turn) fprintf(g_trace, "%d\t%u\t-\t-\tturn ends\t\n", total_ticks(gs), rng_pos());
+			g_trace_turn = 0;
 			progress(gs);
 			if (total_ticks(gs) == before && ++stalls > 100) die(4, "ticks do not advance");
 		}

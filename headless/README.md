@@ -24,9 +24,11 @@ on the 24-core box were fine).
 | `run.sh` | one run: save, ticks, output |
 | `setup.sh` | builds the runtime directory `/opt/stellaris-headless/game` |
 | `dev/gsdiff.sh` | diff two gamestates with the one known noise line masked |
-| `dev/callsites.py` | the call-site table for the random-draw profiler |
+| `dev/callsites.py` | the call-site table for the profiler (by caller, or by callee over a full disassembly) |
+| `dev/pcfuncs.py` | a pool-read table's instructions, by function |
 | `dev/bg.sh`, `dev/xwd2png.py` | development: a game in the background, screenshots, gdb |
 | `results/profile_*.tsv` | random draws per call site (below) |
+| `results/ship_pool_*`, `pool_*`, `draw_order_*`, `synced_generator_callers.tsv` | the pools traced (below) |
 
 ## Results
 
@@ -142,6 +144,181 @@ The ~25,200 values a day the Lua simulation does not draw are the per-tick ship 
 `MicroUpdate`; the rest (~1,220 a day) is the daily pool, the serial country / planet / fleet
 updates and the monthly pool.
 
+## The random pools, traced: most of the 26,000 draws a day are never used
+
+Run from `autosave_2210.01.01`, `run.sh` defaults, 1,798 ticks (180 days), unless noted. Files are
+in `results/`.
+
+### The ship pool (MicroUpdate, 95 % of the draws)
+
+**What is drawn.** `CGameState::MicroUpdate` fills its static `ShipPtrArraySafe` from the game
+state's ship list (`CGameState+0x530`, count +0x53c). It keeps every id that still resolves through
+`TPdxRef<CShip>` (`CShip::IsValid()` is always true; a dead id resolves to the null object). That is
+every ship in the save's `ships=` section. At 2210.01.01 there are 2,504 entries, and the first
+tick's pool is 2,504 values; at the end the output has 2,546 entries and the last pool is 2,546.
+The 2,546 include:
+
+- mining stations (335), research stations (72) and starbases (outposts 95, starports 15,
+  citadels 10);
+- civilian ships: transports 136, science 44, constructors 33, a colonizer;
+- warships (corvettes 102, ...);
+- monsters (space whales, amoebas, crystals), marauders, caravaneers and fallen-empire ships and
+  stations.
+
+`(anonymous namespace)::UpdateShipParallel` then draws exactly that many values in one call,
+`CRandom::GetIntegersForMacro(..., buf, count)`:
+
+- once per tick (1,798 calls in 1,798 ticks);
+- into a zeroed stack array, with draws allowed and the random log off.
+
+The count is fixed when the array is built, before the draw, so it cannot change during the tick's
+draw. It comes after the tick's fleet phase (`CFleet::MicroCombatSerial`,
+`CFleet::MicroUpdateSerial`, `CFleetMovementManager::MicroUpdate`). Between ticks it changes as
+ships are built and destroyed: 36 different counts in 180 days, from 2,504 to 2,548
+(`ship_pool_per_tick_*.tsv`).
+
+**Where the values go.** `CShipUpdateParallelFunc::operator()` hands value i to ship i:
+`CShip::MicroUpdateParallel(unsigned seed, SCombatParticipants const&)`.
+
+- It seeds a local `CCrudeRandom(seed)`: a `CNoiseRandom` hashed from the seed and the constant
+  0x5ea6ba9f, nothing shared.
+- It returns at once unless the ship's fleet `CFleetCombatManager::HasCombat()`.
+- In combat it derives one seed per section, for `CSection::MicroUpdateCombatComponentsParallel`,
+  and from that one per weapon, for `CWeaponComponent::MicroUpdateTargetingParallel`. That function
+  does the targeting, and when a weapon fires it draws two values for
+  `CStatInterval<CFixedPoint>::GetRandom`: the weapon's cooldown or stat roll.
+
+All of this is game state (combat). No rendering, entity, particle, sound or GUI code reads the
+values. No rendering or visibility check stands in front of them: the only gate is `HasCombat`.
+
+| 180 days | values |
+|---|---:|
+| drawn | 4,535,156 |
+| handed to a ship | 4,535,156 (every one) |
+| to a ship whose fleet is in combat: the only ones that are used | **960** (0.021 %): 6 ships, in 160 ticks, the first 16 days |
+| derived section seeds / weapon updates | 960 / 2,400 |
+| weapon rolls (`CStatInterval::GetRandom`) | 18 |
+| ticks with no ship in combat | 1,638 of 1,798 |
+
+**Proof by experiment** (`HEADLESS_OVERRIDE`). The values handed to ships are replaced after the
+draw, and the generator advances as usual (`pool_override_experiments.tsv`):
+
+| ship pool values replaced | lines that differ from the normal run |
+|---|---:|
+| `^ 0x5bd1e995` from total tick 7956170 on (the last combat tick is 7956164): about 4.1 M values | **0**, and the same final `random_count` |
+| `^ 0x5bd1e995`, every tick | 7,131 after 180 days |
+| zero, every tick | 7,796 after 180 days |
+| `^ 0x5bd1e995` over the 170 ticks of the combat | 373 |
+
+In the last row, the fields that change are combat state: ship `x`, `y`, `rotation`, `forward_*`,
+`speed`, `action` and `post_move_angle`; weapon `cooldown` and `shots_fired`; `hitpoints` and
+`armor_hitpoints`; `last_damage`, `last_roll`, `last_combat_activity` and
+`disengagement_opportunities_used`. After those come knock-on changes (a country focus, a
+first-contact `clues` count) and a `random_count` 11 higher.
+
+So outside combat the ship pool's values are drawn and never used. A simulation stays on the
+game's stream by advancing the generator by the ship count (every entry of `ships=`, starbases and
+stations included) at that point of each tick. It has to produce the actual values only for ships
+whose fleet is in combat. The draw keeps the stream's position independent of which ships fight,
+and lets the ships update in parallel.
+
+**The order of the draws in a tick** (`HEADLESS_TRACE`, `draw_order_*.tsv`):
+
+1. Commands the session executes before the tick: 837 draws in 180 days, none in the traced turns.
+2. `HandleTurnTick`. On a day tick the date advances first; that draws nothing.
+3. `MicroUpdate`:
+   - first the fleet phase: `CFleet::MicroCombatSerial`, `CFleet::MicroUpdateSerial`,
+     `CFleetMovementManager::MicroUpdate` (5 to 10 draws a day in all, on a few ticks; e.g. 5 in
+     `CFleetMovementManager::MicroUpdate` right before tick 7956298's pool);
+   - then **the ship pool, N values**;
+   - then `CShip::MicroUpdateSerial` and `CFleet::PostShipMicroUpdate` (rare).
+4. `ProcessAI` (tick % 10 == 4): no draws.
+5. On a day tick, `DailyUpdate`: **the daily pool, 1,000 values, first** (nothing before it in
+   `DailyUpdate` draws), then `CCountry::DailyUpdateSerial` country by country,
+   `CPlanetManager::DailyUpdate`, `NColonyUpdate::DailySerialUpdate`,
+   `CArchaeologicalSiteManager::DailyUpdate` (its own 10-value pool)...
+6. On a month's first day, `MonthlyUpdate`: **the monthly pool, 1,000 values, first**, then
+   `CCountry::MonthlyUpdateSerial`, `NColonyUpdate::MonthlyUpdate`, then one `GetIntegerForMacro`.
+7. On a year's first day, `YearlyUpdate`.
+
+For example, the 2210.02.01 tick moves the generator from 14,832,476 to 14,837,507:
+
+| step | draws |
+|---|---:|
+| ship pool | 2,508 |
+| daily pool | 1,000 |
+| countries (daily) | 81 |
+| planets | 45 |
+| colonies (daily) | 36 |
+| archaeology | 10 |
+| monthly pool | 1,000 |
+| countries (monthly) | 201 |
+| colonies (monthly) | 149 |
+| last `GetIntegerForMacro` | 1 |
+
+### The daily and monthly pools
+
+Both pools are handed to the per-object updates as `int const*` (`CPlanet::...(CGameDate, int*)`,
+`CCountry::DailyUpdate...(int const*)`, ...). An object reads `pool[(id + K) % 1000]`, with a
+constant K per kind (2659 for an unhabitable planet). It passes the value to `CEventScope(int)`, the
+random seed of the scope its daily scripts run in (the `random={ 0 seed }` of saved scopes).
+
+`HEADLESS_POOLTRACK` counts the reads. The pool is mirrored on a page of our own, the
+`int const*` arguments are switched to it, and every read faults and is counted:
+
+| per fill | daily | monthly |
+|---|---:|---:|
+| reads | 13,605 | 1,195 |
+| distinct values read | **1,000 of 1,000**, every day | 217 of 1,000 (219 at most) |
+| writes | 0 | 0 |
+
+Who reads (`pool_reads_by_function_*.tsv`):
+
+- **Daily:**
+  - `CPlanet::DailyUpdateUnhabitable{OnlyChangeSafePrivate,SelfDontReadOthers}`: 5,955 planets,
+    one read each in both functions (11,911 a day);
+  - `CCountry::DailyUpdate{OnlyChangeSafePrivate,SelfDontReadOthers}`: about 10 reads each per
+    country (1,098 a day);
+  - the habitable planets: 249 a day;
+  - the colonies and their event lambda: 197 a day;
+  - `CPopGroup::DailyUpdateOnlyChangeSafePrivate`: one per pop group (145 a day), plus
+    `EthicChangeSafePrivate`.
+  - Ships, fleets, armies, leaders and bypasses get the pointer but read nothing in these 180 days.
+- **Monthly:** `CCountry::Monthly{OnlyChangeSafePrivate,SelfDontReadOthers}` (10 reads each per
+  country) and the colonies' monthly updates.
+
+All of these are game-state classes. Changing the values changes the game:
+
+- `^ 0x5bd1e995` on the daily pool: 6,713 lines differ after 180 days;
+- the same on the monthly pool: 8,129 lines.
+
+So, unlike the ship pool, these values are read every day and do matter. They seed scopes, so
+whether a given read changes anything depends on whether the scripts run in that scope use
+randomness.
+
+### Graphics and the synchronized generator
+
+The static search (`synced_generator_callers.tsv`) found 1,056 call sites in 599 functions:
+
+- `CRandom::GetIntegerForMacro`: 1,019;
+- `GetFixedPointForMacro`: 32;
+- `GetIntegersForMacro`: 5 (`UpdateShipParallel`, `MonthlyUpdate`,
+  `CArchaeologicalSiteManager::DailyUpdate`, `CEspionageOperationManager::DailyUpdate`,
+  `CFirstContact::DailyUpdateSerial`);
+- plus 15 direct uses of `CRandom::_Random`: the generator's own functions,
+  `CGameState::WriteMembers`, `CStartGameFromInGameLobby::Execute` and
+  `CCountry::CreateShipDesign`.
+
+None is in a rendering, entity, particle, sound, animation or GUI class. Three only sound like
+graphics:
+
+- `RandomizeShipGfxCulture(CEmpireDesign const&)` picks a generated empire's ship graphical
+  culture, a saved country field;
+- `CParagonsImGui::Update` and `CCosmicStormsImGui::...` are developer debug panels.
+
+So the synchronized draws are not there to keep visual effects in sync. The ship pool is combat
+state, and outside combat it is drawn only to keep the stream's position fixed.
+
 ## How it works
 
 `run.sh` makes a fresh HOME with `.local/share/Paradox Interactive/Stellaris/save games/headless/in.sav`,
@@ -176,6 +353,11 @@ itself (4 for `autosave_2210.01.01`).
 
 `HEADLESS_MODE=frame` posts one turn a frame and lets the main loop run instead; it works but is
 unusable under llvmpipe (the in-game frame, ship graphics included, takes about a minute).
+
+The site table for the pool traces was made with
+`dev/callsites.py game/stellaris sites_pools.tsv -f <the tick's phases> -f <the ship chain: CShipUpdateParallelFunc, CShip::MicroUpdateParallel, CSection::MicroUpdateCombatComponentsParallel, CWeaponComponent::MicroUpdateTargetingParallel> --callee "(Daily|Monthly)[A-Za-z]*\(.*int( const)?\*" --asm re/full.asm`,
+less the task-scheduler templates (`CreateTasks`, `AddTasks`, `std::__...`), which the callee
+pattern also matches.
 
 The profiler (`HEADLESS_PROFILE`) redirects each listed `call` / tail `jmp` (rel32) to a stub near
 the executable (`mov r11d, site; jmp hk_entry`). `hk_entry` saves the argument registers, records
@@ -220,6 +402,10 @@ after a successful run), `cache/` (Mesa shaders, the profiler's site table).
 | `HEADLESS_ARGS` | the game's command line, default `-loadrandomseed -threads=1`; e.g. `-rng_seed=64429129 -rng_pos=0 -threads=1` to replay a session that started from a load |
 | `HEADLESS_RNG_POS` | after the load, set the generator's position (a number, or `save` for the save's `random_count`, undoing the load's draws) |
 | `HEADLESS_PROFILE` | `1` for the default site table (made once by `dev/callsites.py`), or a table; the result goes to `<out>.profile.tsv` (or `HEADLESS_PROFILE_OUT`) |
+| `HEADLESS_OVERRIDE` | `<site>=<mode>[,...]` (hex offsets of instrumented calls): after the call returns, replace what it drew (the `count` ints of a `GetIntegersForMacro`, or the int returned): `zero`, `xor` (^ 0x5bd1e995), `const:N`; with `HEADLESS_OVERRIDE_FROM=<total ticks>` only from then on. Needs `HEADLESS_PROFILE` |
+| `HEADLESS_TICKLOG`, `HEADLESS_WATCH` | a line per tick: the draws in it and how many times each watched site (`hex,...`) was called |
+| `HEADLESS_TRACE`, `HEADLESS_TRACE_OUT` | `<from>-<to>` total ticks: every instrumented call that draws, in order, with the generator's position |
+| `HEADLESS_POOLTRACK` | a file: reads of the daily and monthly pools, by consumer, instruction and index (`HEADLESS_POOL_DAILY` / `_MONTHLY` give the pool sites, default `1b1c948` / `1b2d746`); turns task threads off and takes ~150 ms a day; the outputs are unchanged |
 | `HEADLESS_DLCS` | owned DLCs, `;`-separated names; default the save's `required_dlcs` |
 | `HEADLESS_KEEP=1` | keep the work dir (the game's logs) |
 | `HEADLESS_TIMEOUT` | seconds (default 1800) |
