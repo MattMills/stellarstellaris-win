@@ -58,6 +58,40 @@ local function add_store(name, block)
     world.store_blocks[name] = block
 end
 
+-- world.find_stores(tree, visit): every store of a gamestate tree, visit(name, block). A top-level
+-- store is named by its key (`country`); one inside a wrapper by the inner key (`planets = {
+-- planet = { } }` -> `planet`, `starbase_mgr = { starbases = { } }` -> `starbases`); one deeper by
+-- its path (`construction = { item_mgr = { items = { } } }` -> `construction.item_mgr.items`).
+-- Returns the top-level keys that held no store (plain values or blocks).
+function world.find_stores(tree, visit)
+    local plain = {}
+    local function walk(v, path, key, depth)
+        if is_store(v) then
+            visit(depth <= 2 and key or path, v)
+            return true
+        end
+        if depth >= 3 then
+            return false
+        end
+        local any = false
+        for _, inner in ipairs(v) do
+            if inner.op and inner.key and inner.value.text == nil then
+                any = walk(inner.value, path .. "." .. inner.key.text, inner.key.text, depth + 1) or any
+            end
+        end
+        return any
+    end
+    for _, e in ipairs(tree) do
+        if e.op and e.key then
+            local key, v = e.key.text, e.value
+            if v.text ~= nil or not walk(v, key, key, 1) then
+                plain[#plain + 1] = e
+            end
+        end
+    end
+    return plain
+end
+
 -- world.load(text) -> true | nil, message
 function world.load(text)
     local t0 = RUST.clock()
@@ -66,31 +100,37 @@ function world.load(text)
         return nil, message
     end
     world.tree = tree
-    for _, e in ipairs(tree) do
-        if e.op and e.key then
-            local key, v = e.key.text, e.value
-            if v.text ~= nil then
-                world.meta[key] = v.text
-            elseif is_store(v) then
-                add_store(key, v)
-            else
-                -- a wrapper of stores (`planets = { planet = { ... } }`), or a plain block
-                local wrapped = false
-                for _, inner in ipairs(v) do
-                    if inner.op and inner.key and inner.value.text == nil and is_store(inner.value) then
-                        add_store(inner.key.text, inner.value)
-                        wrapped = true
-                    end
-                end
-                if not wrapped then
-                    world.meta[key] = v
-                end
-            end
-        end
+    for _, e in ipairs(world.find_stores(tree, add_store)) do
+        world.meta[e.key.text] = e.value.text or e.value
     end
     world.seconds = RUST.clock() - t0
     world.index()
     return true
+end
+
+-- world.parse_stores(text) -> { name -> { [id] = block } } | nil, message: the stores of another
+-- gamestate, apart from this world (to compare with it: engine.diff)
+function world.parse_stores(text)
+    local tree, message = pdxscript.parse(text, "gamestate")
+    if not tree then
+        return nil, message
+    end
+    local stores = {}
+    world.find_stores(tree, function(name, block)
+        local store = stores[name] or {}
+        for _, e in ipairs(block) do
+            if e.value.text == nil then
+                store[tonumber(e.key.text)] = e.value
+            end
+        end
+        stores[name] = store
+    end)
+    for _, e in ipairs(tree) do
+        if e.op and e.key and e.value.text then
+            stores["@" .. e.key.text] = e.value.text
+        end
+    end
+    return stores
 end
 
 -- the fields of an object, indexed once: key -> { values } (tokens' text, or blocks)
