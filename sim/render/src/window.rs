@@ -38,22 +38,42 @@ struct Win {
     error: Option<String>,
     /// when the first frame was drawn (the first seconds after it are redrawn on a timer)
     first_frame: Option<std::time::Instant>,
+    /// fit the window to the screen (no size was asked for)
+    fit: bool,
 }
 
 impl Win {
     fn open(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
+        // the size asked for; the default one made to fit the screen (85% of its width, 80% of its
+        // height at most, leaving room for the title bar and the taskbar)
+        let (mut w, mut h) = self.app.size;
+        if self.fit {
+            if let Some(m) = event_loop.primary_monitor() {
+                let ms = m.size();
+                if ms.width > 0 && ms.height > 0 {
+                    let s = (ms.width as f32 * 0.85 / w as f32).min(ms.height as f32 * 0.8 / h as f32).min(1.0);
+                    (w, h) = ((w as f32 * s) as u32, (h as f32 * s) as u32);
+                    eprintln!("screen {}x{}: window {w}x{h}", ms.width, ms.height);
+                }
+            }
+        }
         let attrs = Window::default_attributes()
             .with_title("Stellaris")
-            .with_inner_size(winit::dpi::PhysicalSize::new(self.app.size.0, self.app.size.1));
+            .with_inner_size(winit::dpi::PhysicalSize::new(w, h));
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| format!("window: {e}"))?);
         let surface = self.instance.create_surface(window.clone()).map_err(|e| format!("surface: {e}"))?;
         let (adapter, device, queue) =
             pollster::block_on(render::open_device(&self.instance, self.backend, self.want.as_deref(), Some(&surface)))?;
         eprintln!("rendering on: {}", render::describe(&adapter.get_info()));
         let size = window.inner_size();
-        let config = surface
+        let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .ok_or("the surface is not supported by the adapter")?;
+        // a format that is not sRGB if the surface has one: colours blend as in the PNGs (and the
+        // game), in gamma space
+        if let Some(f) = surface.get_capabilities(&adapter).formats.iter().find(|f| !f.is_srgb()) {
+            config.format = *f;
+        }
         surface.configure(&device, &config);
         eprintln!("surface: {:?} {}x{}, {:?}", config.format, config.width, config.height, config.present_mode);
         let renderer = Renderer::new(&device, config.format);
@@ -229,8 +249,9 @@ impl ApplicationHandler for Win {
     }
 }
 
-/// Shows the app in a window until it is closed (or `frames` frames are drawn).
-pub fn run(app: App, backend: render::Backend, want: Option<String>, frames: Option<u32>) -> Result<(), String> {
+/// Shows the app in a window until it is closed (or `frames` frames are drawn); `fit`: make the
+/// window (the app's size) fit the screen.
+pub fn run(app: App, backend: render::Backend, want: Option<String>, frames: Option<u32>, fit: bool) -> Result<(), String> {
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     let mut win = Win {
         app,
@@ -243,6 +264,7 @@ pub fn run(app: App, backend: render::Backend, want: Option<String>, frames: Opt
         cursor: (0.0, 0.0),
         error: None,
         first_frame: None,
+        fit,
     };
     event_loop.run_app(&mut win).map_err(|e| format!("event loop: {e}"))?;
     win.flush_log();

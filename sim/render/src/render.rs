@@ -47,8 +47,8 @@ pub fn describe(info: &wgpu::AdapterInfo) -> String {
     )
 }
 
-/// The graphics API: Vulkan (the default), or DX12 on Windows with the crate's `dx12` feature
-/// (then the default there).
+/// The graphics API: DX12 on Windows (built only there; old Vulkan drivers crash or draw no
+/// hyperlanes), Vulkan elsewhere; `--backend` chooses the other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend {
     Vulkan,
@@ -57,7 +57,7 @@ pub enum Backend {
 
 impl Backend {
     pub fn platform_default() -> Backend {
-        if cfg!(all(windows, feature = "dx12")) {
+        if cfg!(windows) {
             Backend::Dx12
         } else {
             Backend::Vulkan

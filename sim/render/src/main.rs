@@ -1,6 +1,6 @@
 //! stellar-render: the game's front end (the main menu and the load game window, from its GUI
 //! files, localised) and the galaxy map of a save drawn with the game's own art under the main
-//! screen's top bar, with wgpu on Vulkan.
+//! screen's top bar, with wgpu on Vulkan (DX12 on Windows).
 //!
 //! The front end is laid out in Lua (`lua/render/frontend.lua`, `lua/render/gui.lua`) over the
 //! sprites and fonts of the .gfx files (`lua/render/gfx.lua`), its texts from
@@ -17,8 +17,8 @@
 //!
 //! Options: --save SAVE.sav (default STELLAR_SAVE, the 2210.01.01 autosave), --game DIR
 //! (default STELLARIS_DIR, the Steam install, /opt/stellaris), --size WxH (default 2048x2048 for
-//! --png, 1920x1080 for --menu-png, 1600x900 for the window), --backend vulkan|dx12 (dx12 with
-//! the crate's `dx12` feature, on Windows), --adapter NAME (an adapter whose name contains NAME,
+//! --png, 1920x1080 for --menu-png, 1600x900 for the window), --backend vulkan|dx12 (the default:
+//! DX12 on Windows, Vulkan elsewhere), --adapter NAME (an adapter whose name contains NAME,
 //! e.g. llvmpipe), --frames N (window: close after N frames), --dds OUT_DIR FILE.dds... (decode
 //! textures to PNGs), --dds-check DIR... (decode every .dds under the directories and count them
 //! by format). In the window: the mouse hovers and clicks the buttons, Escape goes back to the
@@ -284,7 +284,7 @@ fn run() -> Result<(), String> {
         for l in app.log.drain(..) {
             println!("{l}");
         }
-        return window::run(app, args.backend, args.adapter, args.frames);
+        return window::run(app, args.backend, args.adapter, args.frames, args.size.is_none());
     };
     println!("save: {save}");
     let mut map = Map::load(&game, &save)?;
