@@ -1,0 +1,23 @@
+[package]
+name = "stellar-render"
+version = "0.1.0"
+edition = "2021"
+description = "The renderer of the new Stellaris engine: the galaxy map of a save, read through the Lua runtime (stellar-sim), drawn with wgpu on Vulkan."
+license = "MIT"
+publish = false
+
+# Its own workspace: the renderer builds and locks apart from stellar-sim (sim/Cargo.toml is not a
+# workspace, and its lock file stays as it is). Run from sim/render:
+#   cargo run --release -p stellar-render -- --png out.png
+[workspace]
+
+[dependencies]
+stellar-sim = { path = ".." }
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl"] }
+winit = { version = "=0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
+pollster = "=1.0.1"
+bytemuck = { version = "=1.25.2", features = ["derive"] }
+png = "=0.18.1"
+
+[profile.release]
+debug = 1
