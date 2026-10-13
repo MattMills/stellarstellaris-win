@@ -48,8 +48,9 @@ M.FILTER = {
     Planet = 1074432514,
     Colony = 1074430466,
     PopGroup = 688130,
+    Ship = 49276,
 }
-M.CATEGORIES = { "Country", "Planet", "Colony", "PopGroup" }
+M.CATEGORIES = { "Country", "Planet", "Colony", "PopGroup", "Ship" }
 
 -- A key of a modifier block that is not a modifier type but names a static modifier
 -- (`researcher_jobs_bonus_workforce_mult = 0.1`, common/static_modifiers/24_static_modifiers_jobs.txt)
@@ -218,6 +219,42 @@ function S:def(folder, name)
         self.stats.missing[k] = (self.stats.missing[k] or 0) + 1
     end
     return d
+end
+
+-- the definitions of a folder whose entries are named by a `key = "X"` inside them (component and
+-- section templates: `utility_component_template = { key = "HYPER_DRIVE_1" ... }`; engine.defs
+-- keeps one per wrapper name): key -> { block (inline scripts expanded), file }, a later file's
+-- definition replacing an earlier one
+function S:keyed(folder)
+    local ck = "keyed|" .. folder
+    local index = self.cache[ck]
+    if index == nil then
+        index = {}
+        for _, file in ipairs(source.files(self.fs, folder, "txt")) do
+            for _, e in ipairs(source.parse(self.fs, file) or {}) do
+                if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
+                    local key = unq(self.defs.field(e.value, "key"))
+                    if key then
+                        index[key] = { block = source.expand(self.fs, e.value, nil, 0, "file: " .. file), file = file }
+                    end
+                end
+            end
+        end
+        self.cache[ck] = index
+    end
+    return index
+end
+
+-- the values of the block `field` of a keyed definition, cached
+function S:keyed_values(folder, key, field)
+    local ck = "kv|" .. folder .. "|" .. tostring(key) .. "|" .. field
+    local v = self.cache[ck]
+    if v == nil then
+        local d = key and self:keyed(folder)[key]
+        v = d and self:values(self.defs.field(d.block, field), d.file) or false
+        self.cache[ck] = v
+    end
+    return v or nil
 end
 
 -- a definition's block with its inline scripts expanded (a trait's or a pop category's modifier
@@ -1013,9 +1050,77 @@ function S:pop_group(id)
     return parts
 end
 
+-- ship ----------------------------------------------------------------------------------------
+
+-- A ship's own parts: the ship_modifier of each component of its design (the design's growth stage
+-- of the ship: its sections' components and its required components), and of its sections.
+function S:ship(id)
+    local w = self.world
+    local s = w.object("ships", id)
+    local parts = new_parts(M.FILTER.Ship)
+    if s == nil then
+        return parts
+    end
+    local impl = w.field(s, "ship_design_implementation")
+    local did = type(impl) == "table" and w.field(impl, "design")
+    local stage = type(impl) == "table" and tonumber(w.field(impl, "growth_stage")) or 0
+    local design = type(did) == "number" and w.object("ship_design", did)
+    local gs = design and blocks_of(w.field(design, "growth_stages"))[stage + 1]
+    if gs == nil then
+        return parts
+    end
+    local C, T = "common/component_templates", "common/section_templates"
+    -- the ship size's ship_modifier (a starport's armor, evasion, fire rate and range; its
+    -- `modifier`, the starbase's capacities and sensor range, is not the ship's). A starbase's
+    -- station is the size of the starbase's level, whatever its design says.
+    self.structure = self.structure or require("engine.modifiers.structure").new(w, self.defs)
+    local size = unq(w.field(gs, "ship_size"))
+    for sb, station in pairs(self.structure.station_of) do
+        if station == id then
+            local level = unq(w.field(w.object("starbases", sb), "level"))
+            local ld = level and self.defs.get("common/starbase_levels", level)
+            size = ld and unq(self.defs.field(ld.block, "ship_size")) or size
+        end
+    end
+    if size then
+        parts.add("ship_size:" .. size, self:def_values("common/ship_sizes", size, "ship_modifier"))
+    end
+    -- the auras the ship is in (the save keeps their sum: aura_modifier = { ... })
+    parts.add("auras", self:values(w.field(s, "aura_modifier"), nil))
+    -- repairs: ship_orbit_repair while its fleet is docked at a starbase of its own country (the
+    -- 289 ships of the 2211.07.01 capture that have it, and no other)
+    local fleet = tonumber(w.field(s, "fleet"))
+    local mm = fleet and self.structure:fleet_movement(fleet)
+    local orbit = mm and w.field(mm, "orbit")
+    local at = type(orbit) == "table" and w.field(orbit, "orbitable")
+    local sb = type(at) == "table" and tonumber(w.field(at, "starbase"))
+    if sb and self.structure.starbase_owner[sb] == self.structure.fleet_owner[fleet] then
+        parts.add("static:ship_orbit_repair", self:static("ship_orbit_repair"))
+    end
+    for _, e in ipairs(gs) do
+        if e.op and e.key then
+            local k = e.key.text
+            if k == "section" and type(e.value) == "table" then
+                local template = unq(w.field(e.value, "template"))
+                parts.add("section:" .. tostring(template), self:keyed_values(T, template, "ship_modifier"))
+                for _, c in ipairs(e.value) do
+                    if c.op and c.key and c.key.text == "component" and type(c.value) == "table" then
+                        local ct = unq(w.field(c.value, "template"))
+                        parts.add("component:" .. tostring(ct), self:keyed_values(C, ct, "ship_modifier"))
+                    end
+                end
+            elseif k == "required_component" and e.value.text then
+                local ct = unq(e.value.text)
+                parts.add("component:" .. ct, self:keyed_values(C, ct, "ship_modifier"))
+            end
+        end
+    end
+    return parts
+end
+
 -- ---------------------------------------------------------------------------------------------
 
-local BY_CATEGORY = { Country = S.country, Planet = S.planet, Colony = S.colony, PopGroup = S.pop_group }
+local BY_CATEGORY = { Country = S.country, Planet = S.planet, Colony = S.colony, PopGroup = S.pop_group, Ship = S.ship }
 
 -- src:parts(category, owner) -> the node's own parts ({ name, mult, filter, values }), or nil for a
 -- category not modelled
