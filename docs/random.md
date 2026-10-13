@@ -33,9 +33,13 @@ The AI draws nothing from the synchronized generator **[V]**.
 | `-loadrandomseed` | keep the save's `random_seed` / `random_count` (read in `CGameState::ReadMember`) instead of reseeding at load; it sets `g_bUseSavedRandom` (read at `0x15092e`), which also restores each AI's unsynced generator **[V]** |
 | `-rng_seed=N -rng_pos=N` | force the synchronized generator's seed and position (`CGameState::InitPostRead`) **[V]**. `-rng_seed=64429129 -rng_pos=0` reproduces a real play session from its starting save (below) |
 | `-random=N` | the seed `CFrontEndIdler::SetAsCurrentIdler` uses instead of the clock **[V]** |
-| `-threads=1` | one task thread. It isn't an RNG option, but with several threads the AIs' unsynced generators are drawn in a varying order and runs drift apart (4 to 1,568 lines in 180 days) **[V]** |
+| `-threads=N` | not an RNG option, but it matters for reproducibility. `InitTaskSystem(int)` (GOG `0x1b39aa0`, Linux `0x4294ea0`) clamps N to [4, the usable threads]; the default (-1) is the usable threads − 1. So `-threads=1` means 4 threads, not 1 **[V]**. With many threads the AIs' unsynced generators are drawn in a varying order and runs drift apart: 4 to 1,568 lines in 180 days with the default, 23 threads on the 24-thread test box **[V]** |
 
-With `-loadrandomseed -threads=1`, runs from a save are byte-identical **[V]**.
+With `-loadrandomseed -threads=1` (4 threads), runs from a save were byte-identical over 180 days.
+A 360-day pair differed in one AI's unsynced `random_count`, by 4: thread ordering left over **[V]**.
+Whether `-Threading.EnableTaskThreads=false` (`NPdxThreadUtilDetail::g_bEnableTaskThreads`, read by
+the task scheduler's parallel-fors) runs that work on the main thread, and so removes the rest, is
+untested.
 
 ## What a normal load does **[V]**
 
