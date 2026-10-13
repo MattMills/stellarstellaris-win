@@ -196,6 +196,7 @@ impl Simulation {
             self.mark(Phase::Daily(name));
             if name == "random_pool" {
                 self.pool = self.runtime.rng.borrow_mut().draw_pool(DAILY_POOL_SIZE);
+                *self.runtime.daily_pool.borrow_mut() = self.pool.clone();
             } else {
                 self.phase("daily", name, PARALLEL.contains(&name));
             }

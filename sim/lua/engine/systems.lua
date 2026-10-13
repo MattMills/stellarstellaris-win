@@ -255,9 +255,16 @@ end
 -- draws, so it keeps to the game's parallel phase)
 P["daily.pop_groups"] = function(host, date)
     local pops = optional("engine.pops")
+    local ran = false
     if pops and pops.daily then
         pops.daily(host, date)
-    else
+        ran = true
+    end
+    -- the pop groups' happiness, power, crime, amenities usage (engine.colonies; no random draws)
+    if call_optional("engine.colonies", "pop_groups_daily", host, date) then
+        ran = true
+    end
+    if not ran then
         systems.not_modelled["daily.pop_groups"] = (systems.not_modelled["daily.pop_groups"] or 0) + 1
     end
 end

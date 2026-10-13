@@ -88,6 +88,9 @@ pub struct Runtime {
     /// The month's pool of random draws (`CGameState::MonthlyUpdate` draws 1,000 at its start, read
     /// by the colonies' demography): `RUST.monthly_pool()`.
     pub monthly_pool: Rc<RefCell<Vec<i32>>>,
+    /// The day's pool of random draws (`DailyUpdate`'s 1,000, read by the parallel per-object
+    /// updates: ethics, factions, ...): `RUST.daily_pool()`.
+    pub daily_pool: Rc<RefCell<Vec<i32>>>,
 }
 
 impl Runtime {
@@ -123,8 +126,20 @@ impl Runtime {
                 Ok(mlua::Value::Table(lua.create_sequence_from(pool.iter().copied())?))
             })?,
         )?;
+        let daily_pool: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
+        let dp = daily_pool.clone();
+        rust.set(
+            "daily_pool",
+            lua.create_function(move |lua, ()| {
+                let pool = dp.borrow();
+                if pool.is_empty() {
+                    return Ok(mlua::Value::Nil);
+                }
+                Ok(mlua::Value::Table(lua.create_sequence_from(pool.iter().copied())?))
+            })?,
+        )?;
         let engine: Table = lua.load("return require('engine')").set_name("engine").eval()?;
-        Ok(Runtime { lua, engine, date, rng, monthly_pool })
+        Ok(Runtime { lua, engine, date, rng, monthly_pool, daily_pool })
     }
 
     /// Reads the vanilla file set from `game_dir` (the Stellaris install, in place) and the world

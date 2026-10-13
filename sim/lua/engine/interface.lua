@@ -332,6 +332,17 @@ for _, kind in ipairs({ "pop_group", "leader" }) do
         end
     end
 end
+-- is_being_assimilated (a pop group, CPopGroupIsBeingAssimilatedTrigger): the citizenship its owner
+-- gives its species has `is_assimilation = yes`
+DERIVED.pop_group.is_being_assimilated = function(g, id)
+    local cid = tonumber(world.field(g, "planet"))
+    local pid = cid and world.colony_planet[cid]
+    local owner = pid and tonumber(world.field(obj("planet", pid), "owner"))
+    local sid = E.species_of("pop_group", id)
+    local citizenship = owner and sid and E.species_right(owner, sid, "citizenship")
+    local d = citizenship and defs().get("common/species_rights/citizenship_types", citizenship)
+    return (d and defs().field(d.block, "is_assimilation") == "yes") and "yes" or "no"
+end
 -- is_species_class: the species' class (a pop group's, a country's founder species')
 local function species_class_is(kind)
     return function(o, m, id)

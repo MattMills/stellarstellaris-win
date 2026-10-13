@@ -1056,7 +1056,7 @@ local PROP_ATTR = {
     -- species (and pop groups, leaders: their species')
     is_sapient = true, is_infertile = true, is_robotic = true, is_robotic_species = true, is_archetype = true,
     last_increased_tech = true, is_megastructure_type = true,
-    leader_class = true, is_leader_tier = true, is_hidden = true,
+    leader_class = true, is_leader_tier = true, is_hidden = true, is_being_assimilated = true,
 }
 local PROP_SET = {
     has_ethic = true, has_civic = true, has_valid_civic = true, has_authority = true, has_origin = true,

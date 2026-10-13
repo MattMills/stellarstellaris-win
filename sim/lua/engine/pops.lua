@@ -1551,9 +1551,19 @@ function pops.total_housing(cid)
     return h
 end
 
--- pops.daily(host, date): the pop groups' housing usage, and their colonies' (housing, the sum of
--- the usage, the free housing left)
+-- the colonies' own day (engine.colonies: MicroUpdateCachedValues), when it is there
+local function colonies_module()
+    if pops.colonies == nil then
+        pops.colonies = package.searchpath("engine.colonies", package.path) and require("engine.colonies") or false
+    end
+    return pops.colonies or nil
+end
+
+-- pops.daily(host, date): the pop groups' housing usage, and (without engine.colonies, which
+-- computes them in the colonies' phase as the game does) their colonies' housing, the sum of the
+-- usage, the free housing left
 function pops.daily(host, date)
+    local own_colonies = colonies_module() == nil
     for _, cid in ipairs(world.all("colony")) do
         local c = world.object("colony", cid)
         if c and entry(c, "housing_usage") then
@@ -1566,16 +1576,24 @@ function pops.daily(host, date)
                     world.set(g, "housing_usage", num(u))
                 end
             end
-            world.set(c, "housing_usage", num(total))
-            local housing = pops.total_housing(cid)
-            if housing then
-                world.set(c, "total_housing", num(housing))
-            else
-                housing = fx(tonumber(world.field(c, "total_housing")))
+            if own_colonies then
+                pops.colony_housing(cid, c, total)
             end
-            world.set(c, "free_housing", num(housing - total))
         end
     end
+end
+
+-- a colony's housing from its groups' usage (the colonies' phase does it when engine.colonies is
+-- there)
+function pops.colony_housing(cid, c, total)
+    world.set(c, "housing_usage", num(total))
+    local housing = pops.total_housing(cid)
+    if housing then
+        world.set(c, "total_housing", num(housing))
+    else
+        housing = fx(tonumber(world.field(c, "total_housing")))
+    end
+    world.set(c, "free_housing", num(housing - total))
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -1645,10 +1663,16 @@ monthly = function(host, date)
         apply_decline(host, cid, demo[cid])
     end
     -- the caches that follow the pops, the month's growth
+    local col = colonies_module()
     for _, cid in ipairs(colonies) do
         local c = world.object("colony", cid)
         if touched[cid] then
             update_colony_caches(cid, c)
+            -- the game recomputes a colony's cached values after a size change
+            -- (MicroUpdateCachedValues: housing, amenities, stability, ...)
+            if col and col.micro_update then
+                col.micro_update(cid)
+            end
         end
         update_cached_growth(cid)
     end
