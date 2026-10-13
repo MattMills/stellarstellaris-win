@@ -377,6 +377,32 @@ federations, countries, sectors, armies, pop groups, fleets, starbases, planets,
 objects, ships), pop factions, species, pop jobs, galactic objects, the manager's `Update`, then
 starbases.
 
+### Measured (`modifier_stats.txt` "on", `src/dll/modifier_stats.cpp`)
+
+A vanilla 4.5.2 game in 2210 (55 countries; 15,678 registered nodes: 6,080 planets, 2,504 ships,
+804 fleets, 596 galactic objects x 6 categories, 422 armies, 403 leaders, 171 pop groups, ...),
+run six months after loading **[V]**:
+
+| per month | |
+|---|---|
+| `CModifierNodeManager::Update` passes | 460-485 (about 16 a day), 54-100 ms |
+| nodes recomputed | 150-270 (5-9 a day), 11-20 ms: colonies and planets 53-70 each, pop groups about 30, ships 2-43, countries 5-12 |
+| `CModifierNodeBase::Update` on valid nodes (parents pulled) | 41,000-50,000 |
+| marks (`MarkNodeAsInvalid`) | 4,300-7,100 |
+
+The marks, by caller: `CModifierNodeBase::Invalidate` (the recursion into children) 3,000-5,600;
+`CPopGroup::DailyUpdateSelfDoNotReadOthers` (two places) about 490; `CColony::InvalidateModifier`
+about 210; `CColony::DailyUpdateSerial` about 150; `CPopGroup::UpdateAutoModHabitabilityTrait` about
+145. So nearly every pass finds nothing to do, a node recomputed has been marked about 25 times, and
+each recompute pulls about 200 valid parents. The month of the load: 189,700 marks
+(`InvalidateAllModifiers` and the load's own recalculations). At this size the system costs 2-3 ms
+a game day; the first tick of a month takes 240-480 ms, mostly elsewhere.
+
+A capture of every node's values and breakdown (`stellar.modifier_capture.dump`, from the dev
+channel) is the reference a simulation is checked against (docs/simulation.md). The breakdown's
+parts have no names: 97.6% use `CPdxModifierNameEmptyImpl`; the rest are parent nodes passed down
+(`InternalCalculateTotalModifier` wrappers) and `CTrait::ApplyTriggeredModifiers`.
+
 Reads **[V]**: `GetModifier()` returns the node's `_Modifier` as it is (`CShip::GetModifier`
 `0x1b03f0`, `CPlanet::GetModifier` `0x2323a0`): possibly stale until the next update.
 `UpdateModifier()` (`CShip` `0x1b0500`, `CPlanet` `0x2323b0`) recomputes it first if invalid.
