@@ -159,17 +159,19 @@ function ai.process(host, date)
                 research.daily(country, today, commands)
             end
             local due = tick_counters(country)
-            -- CCountryAI::MonthlyUpdate: the AI's budget (engine.ai.budget, once it is there),
-            -- before the modules' monthly updates
-            if due.month then
-                local budget = optional("engine.ai.budget")
-                if budget and budget.monthly then
-                    budget.monthly(country, today, commands, host)
-                end
-            end
-            if interior then
-                for _, period in ipairs({ "week", "month", "year" }) do
-                    if due[period] then
+            -- the weekly updates, then the monthly (CCountryAI::MonthlyUpdate: the AI's budget,
+            -- engine.ai.budget, before the modules' monthly updates), then the yearly: on a day
+            -- where the week and the month are both due, the week's orders use last month's budget
+            -- and plan (docs/ai_economy.md section 1)
+            for _, period in ipairs({ "week", "month", "year" }) do
+                if due[period] then
+                    if period == "month" then
+                        local budget = optional("engine.ai.budget")
+                        if budget and budget.monthly then
+                            budget.monthly(country, today, commands, host)
+                        end
+                    end
+                    if interior then
                         local fn = ({ week = "weekly", month = "monthly", year = "yearly" })[period]
                         for _, name in ipairs(ai.INTERIOR) do
                             local m = optional("engine.ai." .. name)

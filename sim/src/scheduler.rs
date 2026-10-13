@@ -114,6 +114,17 @@ impl Simulation {
         self.runtime.date.get()
     }
 
+    /// Resumes at a save's tick within the day (`_nTickCount`, the save's `tick`, `save::tick_of`):
+    /// a save written at tick 4 or later already had that day's AI pass, so the next is the next
+    /// day's.
+    pub fn set_tick_count(&mut self, tick: i32) {
+        self.tick_count = tick.rem_euclid(10);
+    }
+
+    pub fn tick_count(&self) -> i32 {
+        self.tick_count
+    }
+
     /// Posts a command (`PostCommandToSession`); it runs before the next tick.
     pub fn post_command(&mut self, c: Command) {
         self.commands.push(c);

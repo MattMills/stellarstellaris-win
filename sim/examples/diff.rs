@@ -19,6 +19,9 @@ fn main() {
     let target_text = save::read_gamestate(to).expect("read the second save");
     let end = save::date_of(&target_text).expect("its date");
     let days = (end.days() - start.days()) as u64;
+    // from the first save's tick within the day to the second's (`tick`)
+    let (start_tick, end_tick) = (save::tick_of(&gamestate).unwrap_or(0), save::tick_of(&target_text).unwrap_or(0));
+    let ticks = (days as i64 * 10 + (end_tick - start_tick) as i64).max(0) as u64;
 
     let runtime = Runtime::new(start, 0).expect("the Lua runtime");
     println!("{}", runtime.load(&game_dir, Some(&gamestate), None).expect("load"));
@@ -27,9 +30,10 @@ fn main() {
     let before: mlua::Table = runtime.lua.load("return require('engine.diff').snapshot_stockpiles()").eval().expect("snapshot");
     let research_before: mlua::Table = runtime.lua.load("return require('engine.diff').snapshot_research()").eval().expect("snapshot");
     let mut sim = Simulation::new(runtime);
+    sim.set_tick_count(start_tick);
     let t0 = std::time::Instant::now();
-    sim.run_days(days);
-    println!("{days} days, {start:?} -> {:?}, in {:.1} s; {} phase errors", sim.date(), t0.elapsed().as_secs_f64(), sim.errors.len());
+    sim.run_ticks(ticks);
+    println!("{days} days, {start:?} tick {start_tick} -> {:?} tick {}, in {:.1} s; {} phase errors", sim.date(), sim.tick_count(), t0.elapsed().as_secs_f64(), sim.errors.len());
     for e in sim.errors.iter().take(5) {
         println!("error: {e}");
     }

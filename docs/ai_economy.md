@@ -37,7 +37,7 @@ section 1. The disassembly notes behind sections 4 and 5 are in `tmp_aieco/planr
   +51.9% of the game's change explained; of the game's 7 planet orders, 3 come out the same
   (country, item, colony and week), 3 more are the same item ordered one to three months early,
   and one is another item in the same week; the 11 AI empires' income target records equal the
-  game's but for a one-day offset of the AI's month.
+  game's, dates included, since the platform resumes at the save's tick (below).
 
 ## 1. Order of calls
 
@@ -435,7 +435,7 @@ modifiers, `CalculateEffectOfPopCategoryModifierOnColony`, rare resources (x10),
 | construction items in both saves | 7 | 15 |
 
 **Orders** (the game's from its 2210.07.01 queues, dated by progress / build speed; the
-simulation's dates are one day early, below):
+simulation's dates below were one day early, from the offset fixed since: see the records):
 
 | country | game | simulation |
 |---|---|---|
@@ -454,9 +454,12 @@ does not do yet, and two minerals entries depend on triggers not answered yet.
 
 **Income target records**: for the 11 AI empires, `ai_resource_target_records` and
 `last_valid_resource_targets` come out as in the game's 2210.07.01 save (the same resources
-renewed, the same targets), with every date one day early: the game renews 16777217's on
-2210.06.18 (`id % 30 = 17`), the simulation on 2210.06.17. The AI's month counter of
-`engine/ai/init.lua` runs a day ahead of the game's after a load (the weekly orders too).
+renewed, the same targets, the same dates: the game renews 16777217's on 2210.06.18, `id % 30
+= 17` AI days after the load). They first came out a day early: the 2210.01.01 save was written
+at tick 4 (`tick=4`, after that day's AI pass), and the platform restarted the day at tick 0, so it
+ran one AI pass more on the load day. It now resumes at the save's tick (`save::tick_of`,
+`Simulation::set_tick_count`) and the diff runs to the second save's (2210.07.01 is at tick 2):
+the records of all 53 countries of both saves then equal the game's.
 
 **The budget of unity** (used by `engine/ai/traditions.lua`): 83 of 88 category budgets equal
 its own split; the 5 others are fallen empires with 30,000 unity, within 0.05% (fixed point
