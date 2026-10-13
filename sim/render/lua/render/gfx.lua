@@ -64,7 +64,7 @@ end
 -- gfx.load(game_dir) -> { sprites, fonts, files, counts }
 function gfx.load(game_dir)
     local t0 = RUST.clock()
-    local db = { sprites = {}, fonts = {}, files = 0, counts = {}, errors = {} }
+    local db = { sprites = {}, fonts = {}, textcolors = {}, files = 0, counts = {}, errors = {} }
     local files = {}
     for _, dir in ipairs({ "gfx", "interface" }) do
         for _, f in ipairs(source.files(game_dir, dir, "gfx")) do
@@ -90,11 +90,27 @@ function gfx.load(game_dir)
                                     db.counts[s.kind] = (db.counts[s.kind] or 0) + 1
                                 end
                             elseif section == "bitmapfonts" and k == "bitmapfont" then
+                                -- the font's files: `fontfiles = { "gfx/fonts/x" }` or `path = "gfx/fonts/x"`
                                 local name = unquote(get(e.value, "name"))
                                 local ff = get(e.value, "fontfiles")
-                                local first = type(ff) == "table" and ff[1] and ff[1].text
-                                if name and first then
+                                local first = type(ff) == "table" and ff[1] and ff[1].text or get(e.value, "path")
+                                if name and type(first) == "string" then
                                     db.fonts[name] = { file = unquote(first), color = get(e.value, "color") }
+                                end
+                            elseif section == "bitmapfonts" and k == "textcolors" then
+                                -- the colours of §X codes: X = { r g b }
+                                for _, c in ipairs(e.value) do
+                                    if c.op and c.key and type(c.value) == "table" and c.value.text == nil then
+                                        local n = {}
+                                        for _, t in ipairs(c.value) do
+                                            if t.text then
+                                                n[#n + 1] = tonumber(t.text)
+                                            end
+                                        end
+                                        if #n >= 3 then
+                                            db.textcolors[c.key.text] = { n[1] / 255, n[2] / 255, n[3] / 255 }
+                                        end
+                                    end
                                 end
                             end
                         end

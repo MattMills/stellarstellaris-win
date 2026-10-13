@@ -47,11 +47,43 @@ pub fn describe(info: &wgpu::AdapterInfo) -> String {
     )
 }
 
-/// A Vulkan instance (wgpu's environment variables apply, e.g. WGPU_VALIDATION; the backend is
-/// always Vulkan).
-pub fn instance() -> wgpu::Instance {
+/// The graphics API: Vulkan (the default), or DX12 on Windows with the crate's `dx12` feature
+/// (then the default there).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    Vulkan,
+    Dx12,
+}
+
+impl Backend {
+    pub fn platform_default() -> Backend {
+        if cfg!(all(windows, feature = "dx12")) {
+            Backend::Dx12
+        } else {
+            Backend::Vulkan
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Backend> {
+        match s.to_ascii_lowercase().as_str() {
+            "vulkan" | "vk" => Some(Backend::Vulkan),
+            "dx12" | "d3d12" => Some(Backend::Dx12),
+            _ => None,
+        }
+    }
+
+    fn bits(self) -> wgpu::Backends {
+        match self {
+            Backend::Vulkan => wgpu::Backends::VULKAN,
+            Backend::Dx12 => wgpu::Backends::DX12,
+        }
+    }
+}
+
+/// An instance of one backend (wgpu's environment variables apply, e.g. WGPU_VALIDATION).
+pub fn instance(backend: Backend) -> wgpu::Instance {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
-    desc.backends = wgpu::Backends::VULKAN;
+    desc.backends = backend.bits();
     wgpu::Instance::new(desc)
 }
 
@@ -65,17 +97,18 @@ fn type_rank(t: wgpu::DeviceType) -> u32 {
     }
 }
 
-/// The Vulkan adapters, best first (hardware before software), those whose name contains `want`
-/// (any case) if given, and those that can present to `surface` if given; the first that gives a
-/// device is used.
+/// The backend's adapters, best first (hardware before software), those whose name contains
+/// `want` (any case) if given, and those that can present to `surface` if given; the first that
+/// gives a device is used.
 pub async fn open_device(
     instance: &wgpu::Instance,
+    backend: Backend,
     want: Option<&str>,
     surface: Option<&wgpu::Surface<'_>>,
 ) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), String> {
-    let mut adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN).await;
+    let mut adapters = instance.enumerate_adapters(backend.bits()).await;
     for a in &adapters {
-        eprintln!("vulkan adapter: {}", describe(&a.get_info()));
+        eprintln!("{backend:?} adapter: {}", describe(&a.get_info()));
     }
     if let Some(w) = want {
         let w = w.to_lowercase();
@@ -87,7 +120,7 @@ pub async fn open_device(
     adapters.sort_by_key(|a| type_rank(a.get_info().device_type));
     if adapters.is_empty() {
         return Err(format!(
-            "no Vulkan adapter{}{}",
+            "no {backend:?} adapter{}{}",
             want.map(|w| format!(" named like {w:?}")).unwrap_or_default(),
             if surface.is_some() { " that can present to the window" } else { "" }
         ));
@@ -109,7 +142,7 @@ pub async fn open_device(
             }
         }
     }
-    Err(format!("no Vulkan device: {}", errors.join("; ")))
+    Err(format!("no {backend:?} device: {}", errors.join("; ")))
 }
 
 struct GpuTexture {
@@ -453,18 +486,20 @@ pub struct Offscreen {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub adapter: String,
+    pub info: wgpu::AdapterInfo,
     pub renderer: Renderer,
 }
 
 pub const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 impl Offscreen {
-    pub fn new(want: Option<&str>) -> Result<Offscreen, String> {
-        let instance = instance();
-        let (adapter, device, queue) = pollster::block_on(open_device(&instance, want, None))?;
-        let adapter = describe(&adapter.get_info());
+    pub fn new(backend: Backend, want: Option<&str>) -> Result<Offscreen, String> {
+        let instance = instance(backend);
+        let (adapter, device, queue) = pollster::block_on(open_device(&instance, backend, want, None))?;
+        let info = adapter.get_info();
+        let adapter = describe(&info);
         let renderer = Renderer::new(&device, OFFSCREEN_FORMAT);
-        Ok(Offscreen { device, queue, adapter, renderer })
+        Ok(Offscreen { device, queue, adapter, info, renderer })
     }
 
     /// Renders the uploaded scene's layers in `mask` into a `width` x `height` RGBA8 image (rows

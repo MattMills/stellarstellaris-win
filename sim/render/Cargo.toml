@@ -22,5 +22,10 @@ png = "=0.18.1"
 # uncompressed DX9 layouts the game uses: A8R8G8B8, R8G8B8, A8B8G8R8, A1R5G5B5)
 image_dds = { version = "=0.7.2", default-features = false, features = ["ddsfile"] }
 
+[features]
+# DX12 on Windows (off by default; with it, DX12 is the default backend there and Vulkan stays
+# available with --backend vulkan)
+dx12 = ["wgpu/dx12"]
+
 [profile.release]
 debug = 1

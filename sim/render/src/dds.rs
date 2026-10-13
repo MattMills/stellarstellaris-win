@@ -47,8 +47,45 @@ impl Image {
     }
 }
 
-/// Reads a DDS file to RGBA8.
+/// Reads an uncompressed true-colour TGA (type 2, 24 or 32 bits: some of the game's font pages)
+/// to RGBA8.
+pub fn load_tga(path: &str) -> Result<Image, String> {
+    let d = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    if d.len() < 18 {
+        return Err(format!("{path}: not a TGA"));
+    }
+    let (id_len, cmap, kind) = (d[0] as usize, d[1], d[2]);
+    let (w, h) = (u16::from_le_bytes([d[12], d[13]]) as u32, u16::from_le_bytes([d[14], d[15]]) as u32);
+    let (bpp, desc) = (d[16] as usize, d[17]);
+    if cmap != 0 || kind != 2 || (bpp != 24 && bpp != 32) {
+        return Err(format!("{path}: TGA type {kind} with {bpp} bits is not read"));
+    }
+    let px = bpp / 8;
+    let data = &d[18 + id_len..];
+    if data.len() < (w * h) as usize * px {
+        return Err(format!("{path}: TGA too short"));
+    }
+    let top_down = desc & 0x20 != 0;
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    for y in 0..h as usize {
+        let src_row = if top_down { y } else { h as usize - 1 - y };
+        for x in 0..w as usize {
+            let s = (src_row * w as usize + x) * px;
+            let o = (y * w as usize + x) * 4;
+            rgba[o] = data[s + 2];
+            rgba[o + 1] = data[s + 1];
+            rgba[o + 2] = data[s];
+            rgba[o + 3] = if px == 4 { data[s + 3] } else { 255 };
+        }
+    }
+    Ok(Image { width: w, height: h, rgba, format: format!("TGA{bpp}") })
+}
+
+/// Reads a DDS file (or a .tga) to RGBA8.
 pub fn load(path: &str) -> Result<Image, String> {
+    if path.to_ascii_lowercase().ends_with(".tga") {
+        return load_tga(path);
+    }
     let file = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
     let dds = image_dds::ddsfile::Dds::read(std::io::BufReader::new(file)).map_err(|e| format!("{path}: {e}"))?;
     let format = match dds.get_d3d_format() {

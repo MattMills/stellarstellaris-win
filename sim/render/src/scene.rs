@@ -173,6 +173,8 @@ pub struct PlacedSprite {
     pub sprite: String,
     pub rect: [f32; 4],
     pub visible: bool,
+    /// the drawing order among the GUI's sprites and texts
+    pub order: usize,
 }
 
 /// A GUI text drawn: its element, text, font, box and where its pen started.
@@ -182,6 +184,7 @@ pub struct PlacedText {
     pub font: String,
     pub rect: [f32; 4],
     pub pen: (f32, f32),
+    pub order: usize,
 }
 
 pub struct Scene {
@@ -194,6 +197,14 @@ pub struct Scene {
     pub stars: Vec<PlacedStar>,
     pub sprites: Vec<PlacedSprite>,
     pub texts: Vec<PlacedText>,
+    pub buttons: Vec<PlacedButton>,
+}
+
+impl Scene {
+    /// The button on top under a point (the last drawn), if any.
+    pub fn button_at(&self, x: f32, y: f32) -> Option<&PlacedButton> {
+        self.buttons.iter().rev().find(|b| x >= b.rect[0] && x < b.rect[2] && y >= b.rect[1] && y < b.rect[3])
+    }
 }
 
 /// A small deterministic generator for the dust's placement.
@@ -313,22 +324,84 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
     }
 
     // ---- the top bar's sprites and texts
-    let mut sprites = Vec::new();
-    let mut texts = Vec::new();
-    for item in &inp.topbar.items {
+    let mut gui = Gui::default();
+    add_gui(&mut batches, &mut gui, &inp.topbar.items, inp.fonts, tex, cache, inp.game_dir, &HashMap::new());
+
+    let hc = g.hyperlane_colour;
+    Scene {
+        layout,
+        batches,
+        lanes,
+        lane_colour: hc,
+        clear: [0.0, 0.0, 0.0],
+        stars,
+        sprites: gui.sprites,
+        texts: gui.texts,
+        buttons: gui.buttons,
+    }
+}
+
+/// A button's state under the mouse: its sprite shows the matching frame (frame 1 normal, 2
+/// hover, 3 pressed, 4 disabled, as far as the sprite has frames).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ButtonState {
+    Hover,
+    Pressed,
+}
+
+/// The GUI drawn: sprites, texts and buttons, where they went.
+#[derive(Default)]
+pub struct Gui {
+    pub sprites: Vec<PlacedSprite>,
+    pub texts: Vec<PlacedText>,
+    pub buttons: Vec<PlacedButton>,
+}
+
+/// A button drawn: its element, its rectangle on screen, and what a click does.
+#[derive(Clone, Debug)]
+pub struct PlacedButton {
+    pub path: String,
+    pub rect: [f32; 4],
+    pub action: Option<String>,
+}
+
+/// Adds GUI items to the batches: sprites (button frames by state, cornered tiles as nine
+/// slices; a background still in the Background layer) and texts (span by span, in their
+/// colours, vertically centred when the box says so).
+#[allow(clippy::too_many_arguments)]
+pub fn add_gui(
+    batches: &mut Vec<Batch>,
+    gui: &mut Gui,
+    items: &[GuiItem],
+    fonts: &HashMap<String, Font>,
+    tex: &mut Textures,
+    cache: &mut Cache,
+    game_dir: &str,
+    states: &HashMap<String, ButtonState>,
+) {
+    for item in items {
         match item {
-            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, .. } => {
-                let Some(t) = tex.game(cache, inp.game_dir, texture) else { continue };
+            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action } => {
+                let Some(t) = tex.game(cache, game_dir, texture) else { continue };
                 let img = tex.images[t].clone();
                 let (tw, th) = (img.width as f32, img.height as f32);
-                let n = (*frames).max(1) as f32;
-                let f = ((*frame).max(1) - 1) as f32;
-                let (u0, u1) = (f / n, (f + 1.0) / n);
-                let fw = tw / n;
+                let n = (*frames).max(1);
+                let mut frame = (*frame).max(1);
+                if *button && n > 1 {
+                    frame = match states.get(path) {
+                        Some(ButtonState::Hover) => 2,
+                        Some(ButtonState::Pressed) => 3.min(n),
+                        None => frame,
+                    };
+                }
+                let (nf, f) = (n as f32, (frame.min(n) - 1) as f32);
+                let (u0, u1) = (f / nf, (f + 1.0) / nf);
+                let fw = tw / nf;
                 let visible = {
                     let (a, bx) = ((u0 * tw) as u32, (u1 * tw) as u32);
                     (0..img.height).any(|yy| (a..bx.min(img.width)).any(|xx| img.pixel(xx, yy)[3] > 0))
                 };
+                let layer = if kind == "still" { Layer::Background } else { Layer::Gui };
                 let quad = |rect: [f32; 4], uv: [f32; 4]| Quad { rect, uv, colour: [1.0; 4], rot: 0.0, screen: true };
                 match border {
                     Some((bx, by)) if *bx > 0.0 || *by > 0.0 => {
@@ -340,20 +413,26 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
                         let vs = [0.0, by / th, 1.0 - by / th, 1.0];
                         for r in 0..3 {
                             for c in 0..3 {
-                                push(&mut batches, Layer::Gui, Blend::Alpha, t, quad(
+                                push(batches, layer, Blend::Alpha, t, quad(
                                     [xs[c], ys[r], xs[c + 1], ys[r + 1]],
                                     [us[c], vs[r], us[c + 1], vs[r + 1]],
                                 ));
                             }
                         }
                     }
-                    _ => push(&mut batches, Layer::Gui, Blend::Alpha, t, quad([*x, *y, x + w, y + h], [u0, 0.0, u1, 1.0])),
+                    _ => push(batches, layer, Blend::Alpha, t, quad([*x, *y, x + w, y + h], [u0, 0.0, u1, 1.0])),
                 }
-                sprites.push(PlacedSprite { path: path.clone(), sprite: sprite.clone(), rect: [*x, *y, x + w, y + h], visible });
+                if layer == Layer::Gui {
+                    let order = gui.sprites.len() + gui.texts.len();
+                    gui.sprites.push(PlacedSprite { path: path.clone(), sprite: sprite.clone(), rect: [*x, *y, x + w, y + h], visible, order });
+                }
+                if *button {
+                    gui.buttons.push(PlacedButton { path: path.clone(), rect: [*x, *y, x + w, y + h], action: action.clone() });
+                }
             }
-            GuiItem::Text { path, font, text, x, y, w, h, format } => {
-                let Some(f) = inp.fonts.get(font) else { continue };
-                let Some(t) = tex.game(cache, inp.game_dir, &f.texture) else { continue };
+            GuiItem::Text { path, font, text, spans, x, y, w, h, format, valign } => {
+                let Some(f) = fonts.get(font) else { continue };
+                let Some(t) = tex.game(cache, game_dir, &f.texture) else { continue };
                 let tw = f.width(text);
                 let pen_x = match format.as_str() {
                     "center" | "centre" => x + (w - tw) / 2.0,
@@ -361,37 +440,64 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
                     _ => *x,
                 }
                 .round();
-                let pen_y = y.round();
-                let (aw, ah) = (f.image.width as f32, f.image.height as f32);
-                for (_, r, uv) in f.place(text, pen_x, pen_y) {
-                    push(&mut batches, Layer::Text, Blend::Alpha, t, Quad {
-                        rect: r,
-                        uv: [uv[0] / aw, uv[1] / ah, uv[2] / aw, uv[3] / ah],
-                        colour: [1.0; 4],
-                        rot: 0.0,
-                        screen: true,
-                    });
+                let pen_y = match valign.as_str() {
+                    "center" | "centre" => y + (h - f.line_height) / 2.0,
+                    "bottom" => y + h - f.line_height,
+                    _ => *y,
                 }
-                texts.push(PlacedText {
+                .round();
+                let (aw, ah) = (f.image.width as f32, f.image.height as f32);
+                let mut pen = pen_x;
+                for (s, colour) in spans {
+                    for (_, r, uv) in f.place(s, pen, pen_y) {
+                        push(batches, Layer::Text, Blend::Alpha, t, Quad {
+                            rect: r,
+                            uv: [uv[0] / aw, uv[1] / ah, uv[2] / aw, uv[3] / ah],
+                            colour: [colour[0], colour[1], colour[2], 1.0],
+                            rot: 0.0,
+                            screen: true,
+                        });
+                    }
+                    pen += f.width(s);
+                }
+                let order = gui.sprites.len() + gui.texts.len();
+                gui.texts.push(PlacedText {
                     path: path.clone(),
                     text: text.clone(),
                     font: font.clone(),
                     rect: [*x, *y, x + w, y + h],
                     pen: (pen_x, pen_y),
+                    order,
                 });
             }
         }
     }
+}
 
-    let hc = g.hyperlane_colour;
+/// A scene of GUI only (the front end), for a target of `width` x `height`.
+#[allow(clippy::too_many_arguments)]
+pub fn gui_scene(
+    width: u32,
+    height: u32,
+    items: &[GuiItem],
+    fonts: &HashMap<String, Font>,
+    tex: &mut Textures,
+    cache: &mut Cache,
+    game_dir: &str,
+    states: &HashMap<String, ButtonState>,
+) -> Scene {
+    let mut batches = Vec::new();
+    let mut gui = Gui::default();
+    add_gui(&mut batches, &mut gui, items, fonts, tex, cache, game_dir, states);
     Scene {
-        layout,
+        layout: Layout { width, height, world_to_ndc: [1.0, 1.0, 0.0, 0.0], scale: 1.0, lane_width: 1.0 },
         batches,
-        lanes,
-        lane_colour: hc,
+        lanes: Vec::new(),
+        lane_colour: [0.0; 4],
         clear: [0.0, 0.0, 0.0],
-        stars,
-        sprites,
-        texts,
+        stars: Vec::new(),
+        sprites: gui.sprites,
+        texts: gui.texts,
+        buttons: gui.buttons,
     }
 }

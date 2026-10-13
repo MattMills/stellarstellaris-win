@@ -89,7 +89,13 @@ impl Font {
         let dir = file.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
         let stem = page.as_deref().and_then(|p| p.rsplit_once('.').map(|(s, _)| s.to_string()));
         let mut tried = Vec::new();
-        for candidate in [Some(format!("{file}.dds")), stem.map(|s| format!("{dir}/{s}.dds"))].into_iter().flatten() {
+        let candidates = [
+            Some(format!("{file}.dds")),
+            stem.map(|s| format!("{dir}/{s}.dds")),
+            Some(format!("{file}.tga")),
+            page.as_ref().map(|p| format!("{dir}/{p}")),
+        ];
+        for candidate in candidates.into_iter().flatten() {
             if let Some(path) = dds::find_case_insensitive(game_dir, &candidate) {
                 if std::path::Path::new(&path).exists() {
                     font.image = dds::load(&path)?;

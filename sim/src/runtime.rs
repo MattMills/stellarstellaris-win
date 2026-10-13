@@ -24,15 +24,16 @@ pub fn repo_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
 }
 
-/// The `.txt` files under `root/sub`, recursively, as sorted relative paths with `/`.
-pub fn list_files(root: &str, sub: &str) -> Vec<String> {
-    fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) {
+/// The `.<ext>` files (`txt` by default) under `root/sub`, recursively, as sorted relative paths
+/// with `/`.
+pub fn list_files(root: &str, sub: &str, ext: Option<&str>) -> Vec<String> {
+    fn walk(base: &Path, dir: &Path, ext: &str, out: &mut Vec<String>) {
         let Ok(rd) = std::fs::read_dir(dir) else { return };
         for e in rd.flatten() {
             let p = e.path();
             if p.is_dir() {
-                walk(base, &p, out);
-            } else if p.extension().map_or(false, |x| x.eq_ignore_ascii_case("txt")) {
+                walk(base, &p, ext, out);
+            } else if p.extension().map_or(false, |x| x.eq_ignore_ascii_case(ext)) {
                 if let Ok(rel) = p.strip_prefix(base) {
                     out.push(rel.to_string_lossy().replace('\\', "/"));
                 }
@@ -41,7 +42,7 @@ pub fn list_files(root: &str, sub: &str) -> Vec<String> {
     }
     let base = Path::new(root);
     let mut out = Vec::new();
-    walk(base, &base.join(sub), &mut out);
+    walk(base, &base.join(sub), ext.unwrap_or("txt"), &mut out);
     out.sort();
     out
 }
@@ -60,7 +61,12 @@ pub fn new_lua() -> mlua::Result<Lua> {
         ),
     )?;
     let rust = lua.create_table()?;
-    rust.set("list_files", lua.create_function(|_, (root, sub): (String, String)| Ok(list_files(&root, &sub)))?)?;
+    rust.set(
+        "list_files",
+        lua.create_function(|_, (root, sub, ext): (String, String, Option<String>)| {
+            Ok(list_files(&root, &sub, ext.as_deref()))
+        })?,
+    )?;
     let start = std::time::Instant::now();
     rust.set("clock", lua.create_function(move |_, ()| Ok(start.elapsed().as_secs_f64()))?)?;
     lua.globals().set("RUST", rust)?;

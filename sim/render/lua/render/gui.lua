@@ -2,15 +2,19 @@
 -- Clausewitz GUI does it, into a flat list of sprites and texts for the renderer.
 --
 --   local gui = require("render.gui")
---   local items = gui.layout(game_dir, db, "interface/main.gui", "maingui", { width = w, height = h },
---                            { only = { topbar = true, ... }, hide = { ... }, text = { [path] = "..." } })
+--   local items, report = gui.layout(game_dir, db, "interface/main.gui", "maingui",
+--       { width = w, height = h }, { only = {...}, hide = {...}, text = {...}, texture_size = f })
 --
--- An element's rectangle: its parent's top left + the parent's anchor point (orientation) +
--- position - its own anchor point (origo). Sizes may be in % of the parent ("100%%" too). An
--- iconType or buttonType is the size of its sprite's frame times its scale; a window's
--- background is stretched to the window (a corneredTileSpriteType as nine slices). Scripted
--- variables (`@topbar_amount_pos_y = 17`) are the file's. What the game decides at run time (which
--- resource groups an empire shows, the paused or running speed button, texts) comes from `opts`.
+-- An element's rectangle: its parent's content area's top left (the parent's rectangle less its
+-- `margin`) + the parent's anchor point (`orientation`) + `position` - its own anchor point
+-- (`origo`). Sizes may be in % of the parent ("100%%" too). An iconType or buttonType without a
+-- size is the size of its sprite's frame times its `scale`. A window's background: a cornered
+-- tile fills the window (nine slices), a plain sprite keeps its size. `if_scaled_resolution =
+-- { min_height = 900 ... }` blocks replace the fields they give when the screen matches.
+-- Scripted variables (`@x = 17`) are scoped: a window's own apply to it and its children, the
+-- file's to all. Texts are localisation keys (engine.localisation), split at their colour codes
+-- into spans coloured with the fonts' textcolors; a button's `buttonText` is centred on it. What
+-- the game decides at run time (which elements show, texts, actions) comes from `opts`.
 
 local source = require("stellar.script.source")
 local gfx = require("render.gfx")
@@ -24,21 +28,47 @@ local ANCHOR = {
     center_left = { 0, 0.5 }, center_right = { 1, 0.5 },
 }
 
--- element kinds drawn, and kinds skipped (lists, scrollbars, edit boxes: filled at run time)
+-- element kinds drawn (lists, scrollbars, edit boxes are filled at run time: not drawn)
 local CONTAINERS = { containerwindowtype = true, windowtype = true, dropdownboxtype = true }
 local ICONS = { icontype = true, buttontype = true, effectbuttontype = true, guibuttontype = true }
 local TEXTS = { instanttextboxtype = true, textboxtype = true }
+-- lists: laid out (their rectangle is recorded, for the rows the caller places) but not drawn
+local LISTS = { smoothlistboxtype = true, listboxtype = true, gridboxtype = true, overlappingelementsboxtype = true }
+gui.CONTAINERS, gui.ICONS, gui.TEXTS, gui.LISTS = CONTAINERS, ICONS, TEXTS, LISTS
 
--- a number field, through the file's scripted variables; percent sizes against `of`
-local function number(v, vars, of)
-    if v == nil then
-        return nil
+local trees = {}   -- file -> tree, parsed once
+
+local function tree_of(game_dir, file)
+    local t = trees[file]
+    if not t then
+        local message
+        t, message = source.parse(game_dir, file)
+        if not t then
+            error(message)
+        end
+        trees[file] = t
     end
+    return t
+end
+
+-- the `@name = value` statements of a block, into a scope over `parent`
+local function scope_of(block, parent)
+    local s = setmetatable({}, { __index = parent })
+    for _, e in ipairs(block) do
+        if e.op and e.key and e.key.text:sub(1, 1) == "@" and e.value.text then
+            s[e.key.text] = e.value.text
+        end
+    end
+    return s
+end
+
+-- a number field through the scope's scripted variables; percent sizes against `of`
+local function number(v, vars, of)
     if type(v) ~= "string" then
         return nil
     end
     if v:sub(1, 1) == "@" then
-        v = vars[v] or vars[v:sub(2)] or v
+        v = vars[v] or v
     end
     local pct = v:match("^(-?[%d%.]+)%%+$")
     if pct then
@@ -48,116 +78,200 @@ local function number(v, vars, of)
 end
 
 local function anchor(name)
-    return ANCHOR[(name or "upper_left"):lower()] or ANCHOR.upper_left
+    return ANCHOR[(type(name) == "string" and name or "upper_left"):lower()] or ANCHOR.upper_left
 end
 
--- gui.layout(game_dir, db, file, window, screen, opts) -> items, report
---   items: { kind = "sprite", path, sprite, texture, frame, frames, x, y, w, h, border = {x,y}|nil,
---            sprite_kind } and { kind = "text", path, font, text, x, y, w, h, format }
---   opts.only: names of the window's children to lay out (all if nil)
---   opts.hide: element paths ("maingui/topbar_static/tb_biomass_group") or names not drawn
---   opts.text: element path -> text
---   opts.texture_size(path) -> w, h (the renderer's: the texture's pixels)
-function gui.layout(game_dir, db, file, window_name, screen, opts)
-    opts = opts or {}
-    local tree, message = source.parse(game_dir, file)
-    if not tree then
-        error(message)
-    end
-    local vars = {}
-    local window
+-- the window `name` of a .gui file (a containerWindowType or windowType at its top), and the
+-- file's scope
+function gui.find(game_dir, file, name)
+    local tree = tree_of(game_dir, file)
+    local scope = scope_of(tree, nil)
+    local found
     local function scan(block)
         for _, e in ipairs(block) do
-            if e.op and e.key then
-                local k = e.key.text
-                if k:sub(1, 1) == "@" and e.value.text then
-                    vars[k] = e.value.text
-                    vars[k:sub(2)] = e.value.text
-                elseif type(e.value) == "table" then
-                    local kl = k:lower()
-                    if kl == "guitypes" then
-                        scan(e.value)
-                    elseif CONTAINERS[kl] and get(e.value, "name") == window_name and not window then
-                        window = e.value
+            if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
+                local kl = e.key.text:lower()
+                if kl == "guitypes" then
+                    for k, v in pairs(scope_of(e.value, nil)) do
+                        rawset(scope, k, v)
                     end
+                    scan(e.value)
+                elseif CONTAINERS[kl] and get(e.value, "name") == name and not found then
+                    found = e.value
                 end
             end
         end
     end
     scan(tree)
+    return found, scope
+end
+
+-- gui.layout(game_dir, db, file, window, screen, opts) -> items, report
+--   items: { kind = "sprite", path, sprite, texture, frame, frames, x, y, w, h, border = {x,y}|nil,
+--            sprite_kind, button = { name, id, action } | nil }
+--          { kind = "text", path, font, text, spans = { { text, colour = {r,g,b} } }, x, y, w, h,
+--            format, valign }
+--   report: { sprites, texts, missing_sprites, skipped, rects = { [path] = {x,y,w,h} } }
+--   opts.only: names of the window's children to lay out (all if nil)
+--   opts.hide: element paths or names not drawn
+--   opts.text: element path -> text (else the element's text, localised)
+--   opts.actions: element path -> action (what a click on that button does)
+--   opts.parent: the rectangle the window is laid out in (else the screen)
+--   opts.prefix: a path prefix for the window's elements (else "")
+--   opts.texture_size(path) -> w, h (the renderer's: the texture's pixels)
+--   opts.loc: engine.localisation (texts are keys when it has them)
+function gui.layout(game_dir, db, file, window_name, screen, opts)
+    opts = opts or {}
+    local window, file_scope = gui.find(game_dir, file, window_name)
     if not window then
         error(file .. ": no window " .. window_name)
     end
+    local items = {}
+    local report = { sprites = 0, texts = 0, missing_sprites = {}, skipped = {}, rects = {} }
+    local loc = opts.loc
 
-    local items, report = {}, { sprites = 0, texts = 0, missing_sprites = {}, skipped = {} }
+    local function frame_size(sprite)
+        local s = db.sprites[sprite]
+        if not s or not s.texture then
+            return nil
+        end
+        local tw, th = opts.texture_size(s.texture)
+        if not tw then
+            return nil
+        end
+        return tw / math.max(1, s.frames), th
+    end
 
-    local function sprite_item(path, name, frame, x, y, w, h, stretch)
+    local function sprite_item(path, name, frame, x, y, w, h, button)
         local s = db.sprites[name]
         if not s or not s.texture then
             report.missing_sprites[#report.missing_sprites + 1] = tostring(name)
             return nil
         end
-        local tw, th = opts.texture_size(s.texture)
-        if not tw then
+        local fw, fh = frame_size(name)
+        if not fw then
             report.missing_sprites[#report.missing_sprites + 1] = tostring(name) .. " (" .. s.texture .. ")"
             return nil
         end
-        local fw = tw / math.max(1, s.frames)
-        if not stretch then
-            w, h = w or fw, h or th
-        end
         local item = {
             kind = "sprite", path = path, sprite = name, texture = s.texture, sprite_kind = s.kind,
-            frame = math.max(1, frame or 1), frames = s.frames, x = x, y = y, w = w or fw, h = h or th,
-            border = s.kind == "corneredTileSpriteType" and s.border or nil,
+            frame = math.max(1, frame or 1), frames = s.frames, x = x, y = y, w = w or fw, h = h or fh,
+            border = s.kind == "corneredTileSpriteType" and s.border or nil, button = button,
         }
         items[#items + 1] = item
         report.sprites = report.sprites + 1
         return item
     end
 
+    -- a text's spans: localised, split at colour codes, coloured
+    local function text_item(path, font, text, x, y, w, h, format, valign, colour_code)
+        local spans = {}
+        local base = db.textcolors[colour_code or ""] or { 1, 1, 1 }
+        if loc then
+            if loc.has(text) then
+                text = loc.get(text)
+            elseif text:find("$", 1, true) then
+                text = loc.resolve(text)
+            end
+            for _, s in ipairs(loc.spans(text)) do
+                if s.text then
+                    spans[#spans + 1] = { text = s.text, colour = db.textcolors[s.colour or ""] or base }
+                end
+            end
+        else
+            spans[1] = { text = text, colour = base }
+        end
+        local plain = {}
+        for _, s in ipairs(spans) do
+            plain[#plain + 1] = s.text
+        end
+        items[#items + 1] = {
+            kind = "text", path = path, font = font or "cg_16b", text = table.concat(plain), spans = spans,
+            x = x, y = y, w = w, h = h, format = (format or "left"):lower(), valign = valign or "top",
+        }
+        report.texts = report.texts + 1
+    end
+
     local function hidden(path, name)
         return opts.hide and (opts.hide[path] or opts.hide[name])
     end
 
-    local function element(kind, b, parent, parent_path, depth)
+    local function element(kind, b, parent, parent_path, depth, scope)
         local name = get(b, "name") or "?"
         local path = parent_path .. "/" .. name
         if hidden(path, name) or (depth == 1 and opts.only and not opts.only[name]) then
             return
         end
-        local pos = get(b, "position")
+        local vars = scope_of(b, scope)
+        -- the fields, with the if_scaled_resolution blocks that match the screen over them
+        local over = {}
+        for _, e in ipairs(b) do
+            if e.op and e.key and e.key.text:lower() == "if_scaled_resolution" and e.value.text == nil then
+                local c = e.value
+                local ok = true
+                local function bound(k, cmp)
+                    local v = number(get(c, k), vars)
+                    if v and not cmp(v) then
+                        ok = false
+                    end
+                end
+                bound("min_height", function(v) return screen.height >= v end)
+                bound("max_height", function(v) return screen.height <= v end)
+                bound("min_width", function(v) return screen.width >= v end)
+                bound("max_width", function(v) return screen.width <= v end)
+                if ok then
+                    over[#over + 1] = c
+                end
+            end
+        end
+        local function field(k)
+            for i = #over, 1, -1 do
+                local v = get(over[i], k)
+                if v ~= nil then
+                    return v
+                end
+            end
+            return get(b, k)
+        end
+
+        local pos = field("position")
         local px = number(type(pos) == "table" and get(pos, "x") or nil, vars) or 0
         local py = number(type(pos) == "table" and get(pos, "y") or nil, vars) or 0
-        local size = get(b, "size")
+        local size = field("size")
         local w = number(type(size) == "table" and (get(size, "width") or get(size, "x")) or nil, vars, parent.w)
         local h = number(type(size) == "table" and (get(size, "height") or get(size, "y")) or nil, vars, parent.h)
-        local scale = number(get(b, "scale"), vars) or 1
-        local sprite = get(b, "spriteType") or get(b, "quadTextureSprite")
-        local frame = number(get(b, "frame"), vars)
+        local scale = number(field("scale"), vars) or 1
+        local sprite = field("spriteType") or field("quadTextureSprite")
+        local frame = number(field("frame"), vars)
 
         if ICONS[kind] and sprite and (w == nil or h == nil) then
-            local s = db.sprites[sprite]
-            local tw, th
-            if s and s.texture then
-                tw, th = opts.texture_size(s.texture)
-            end
-            if tw then
-                w = w or tw / math.max(1, s.frames) * scale
-                h = h or th * scale
+            local fw, fh = frame_size(sprite)
+            if fw then
+                w = w or fw * scale
+                h = h or fh * scale
             end
         elseif TEXTS[kind] then
-            w = w or number(get(b, "maxWidth"), vars) or 100
-            h = h or number(get(b, "maxHeight"), vars) or 16
+            w = w or number(field("maxWidth"), vars) or 100
+            h = h or number(field("maxHeight"), vars) or 16
         end
         w, h = w or 0, h or 0
-        local a = anchor(get(b, "orientation"))
-        local o = anchor(get(b, "origo"))
+        local a = anchor(field("orientation"))
+        local o = anchor(field("origo"))
         local x = parent.x + a[1] * parent.w + px - o[1] * w
         local y = parent.y + a[2] * parent.h + py - o[2] * h
-        local rect = { x = x, y = y, w = w, h = h }
+        report.rects[path] = { x = x, y = y, w = w, h = h }
 
         if CONTAINERS[kind] then
+            -- children are laid out in the window less its margin
+            local m = field("margin")
+            local ml, mt, mr, mb = 0, 0, 0, 0
+            if type(m) == "table" then
+                ml = number(get(m, "left"), vars) or 0
+                mt = number(get(m, "top"), vars) or 0
+                mr = number(get(m, "right"), vars) or 0
+                mb = number(get(m, "bottom"), vars) or 0
+            end
+            local inner = { x = x + ml, y = y + mt, w = w - ml - mr, h = h - mt - mb }
             for _, e in ipairs(b) do
                 if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
                     local k = e.key.text:lower()
@@ -167,38 +281,70 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                         local s = bs and db.sprites[bs]
                         local fill = s and s.kind == "corneredTileSpriteType"
                         if bs and not hidden(path .. "/background", "") then
-                            sprite_item(path .. "/background", bs, number(get(e.value, "frame"), vars), x, y,
-                                fill and w or nil, fill and h or nil, fill)
+                            local bw, bh
+                            if fill then
+                                bw, bh = w, h
+                            end
+                            sprite_item(path .. "/background", bs, number(get(e.value, "frame"), vars), x, y, bw, bh)
                         end
-                    elseif CONTAINERS[k] or ICONS[k] or TEXTS[k] then
+                    elseif CONTAINERS[k] or ICONS[k] or TEXTS[k] or LISTS[k] then
                         -- a drop-down's expanded window is closed until it is clicked
                         if not (kind == "dropdownboxtype" and get(e.value, "name") == "expanded_window") then
-                            element(k, e.value, rect, path, depth + 1)
+                            element(k, e.value, inner, path, depth + 1, vars)
                         end
-                    elseif k ~= "position" and k ~= "size" and k ~= "hide_position" and k ~= "show_position" then
+                    elseif k ~= "position" and k ~= "size" and k ~= "hide_position" and k ~= "show_position"
+                        and k ~= "margin" and k ~= "if_scaled_resolution" then
                         report.skipped[k] = (report.skipped[k] or 0) + 1
                     end
                 end
             end
         elseif ICONS[kind] then
+            local button
+            if kind ~= "icontype" and field("alwaysTransparent") ~= "yes" then
+                button = { name = name, id = field("id"), action = opts.actions and opts.actions[path] }
+            end
             if sprite then
-                sprite_item(path, sprite, frame, x, y, w, h, true)
+                sprite_item(path, sprite, frame, x, y, w, h, button)
+            end
+            local bt = field("buttonText")
+            if bt and bt ~= "" then
+                local text = opts.text and opts.text[path] or bt
+                text_item(path .. "/text", field("buttonFont") or field("font"), text, x, y, w, h, "center", "center",
+                    field("text_color_code"))
             end
         elseif TEXTS[kind] then
             local text = opts.text and opts.text[path]
             if text == nil then
-                text = get(b, "text") or ""
+                text = field("text") or ""
             end
-            items[#items + 1] = {
-                kind = "text", path = path, font = get(b, "font") or "cg_16b", text = tostring(text),
-                x = x, y = y, w = w, h = h, format = (get(b, "format") or "left"):lower(),
-            }
-            report.texts = report.texts + 1
+            local valign = field("vertical_alignment")
+            text_item(path, field("font"), tostring(text), x, y, w, h, field("format"),
+                valign and valign:lower() or "top", field("text_color_code"))
         end
     end
 
-    element("containerwindowtype", window, { x = 0, y = 0, w = screen.width, h = screen.height }, "", 0)
+    local parent = opts.parent or { x = 0, y = 0, w = screen.width, h = screen.height }
+    element("containerwindowtype", window, parent, opts.prefix or "", 0, file_scope)
     return items, report
+end
+
+-- appends b's items to a's, and merges the reports
+function gui.merge(a, ra, b, rb)
+    for _, it in ipairs(b) do
+        a[#a + 1] = it
+    end
+    for _, m in ipairs(rb.missing_sprites) do
+        ra.missing_sprites[#ra.missing_sprites + 1] = m
+    end
+    ra.sprites = ra.sprites + rb.sprites
+    ra.texts = ra.texts + rb.texts
+    for k, n in pairs(rb.skipped) do
+        ra.skipped[k] = (ra.skipped[k] or 0) + n
+    end
+    for k, r in pairs(rb.rects) do
+        ra.rects[k] = r
+    end
+    return a, ra
 end
 
 return gui
