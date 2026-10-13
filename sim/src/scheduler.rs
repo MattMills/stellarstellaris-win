@@ -17,6 +17,9 @@
 
 use crate::date::Date;
 use crate::rng::DAILY_POOL_SIZE;
+
+/// Values drawn at the start of `MonthlyUpdate` for the colonies' demography.
+pub const MONTHLY_POOL_SIZE: usize = 1000;
 use crate::runtime::Runtime;
 
 /// A synchronized command (`CCommand`), executed before the next tick.
@@ -40,7 +43,8 @@ pub enum Phase {
 }
 
 /// The daily phases, in order (`CGameState::DailyUpdate`, `0x25cde0`).
-pub const DAILY_PHASES: [&str; 13] = [
+pub const DAILY_PHASES: [&str; 14] = [
+    "ai_attitudes",         // CCountryAI::UpdateAttitudesThreaded (each AI every 10 days)
     "script_state_expiry",  // the daily task graph: CPdxIntegerFlags::UpdateFlags
     "construction_manager", // CConstructionManager::DailyUpdate
     "random_pool",          // 1,000 x CRandom::GetIntegerForMacro (0x25e6a0)
@@ -57,7 +61,7 @@ pub const DAILY_PHASES: [&str; 13] = [
 ];
 
 /// The daily phases that run in parallel in the game: no random draws (they use the pool).
-const PARALLEL: [&str; 5] = ["modifiers_1", "countries_parallel", "modifiers_2", "colonies_parallel", "pop_groups"];
+const PARALLEL: [&str; 6] = ["ai_attitudes", "modifiers_1", "countries_parallel", "modifiers_2", "colonies_parallel", "pop_groups"];
 
 /// The monthly phases, in order (`CGameState::MonthlyUpdate`, `0x261620`).
 pub const MONTHLY_PHASES: [&str; 5] = [
@@ -108,6 +112,17 @@ impl Simulation {
 
     pub fn date(&self) -> Date {
         self.runtime.date.get()
+    }
+
+    /// Resumes at a save's tick within the day (`_nTickCount`, the save's `tick`, `save::tick_of`):
+    /// a save written at tick 4 or later already had that day's AI pass, so the next is the next
+    /// day's.
+    pub fn set_tick_count(&mut self, tick: i32) {
+        self.tick_count = tick.rem_euclid(10);
+    }
+
+    pub fn tick_count(&self) -> i32 {
+        self.tick_count
     }
 
     /// Posts a command (`PostCommandToSession`); it runs before the next tick.
@@ -193,14 +208,18 @@ impl Simulation {
             self.mark(Phase::Daily(name));
             if name == "random_pool" {
                 self.pool = self.runtime.rng.borrow_mut().draw_pool(DAILY_POOL_SIZE);
+                *self.runtime.daily_pool.borrow_mut() = self.pool.clone();
             } else {
                 self.phase("daily", name, PARALLEL.contains(&name));
             }
         }
     }
 
-    /// `CGameState::MonthlyUpdate` (`0x261620`).
+    /// `CGameState::MonthlyUpdate` (`0x261620`): first the month's pool of 1,000 draws (`0x26169a`),
+    /// read by the colonies' demography (docs/pops.md), then the phases.
     fn monthly_update(&mut self) {
+        let pool = self.runtime.rng.borrow_mut().draw_pool(MONTHLY_POOL_SIZE);
+        *self.runtime.monthly_pool.borrow_mut() = pool;
         for name in MONTHLY_PHASES {
             self.mark(Phase::Monthly(name));
             self.phase("monthly", name, name == "modifiers");

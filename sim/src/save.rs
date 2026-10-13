@@ -61,6 +61,13 @@ pub fn date_of(gamestate: &str) -> Option<Date> {
     Some(Date::from_ymd(y, m, d))
 }
 
+/// The tick within the day of a gamestate (its top-level `tick=n`, `CGameState::_nTickCount`, 0 to
+/// 9): a save written at tick 4 or later was written after that day's AI pass.
+pub fn tick_of(gamestate: &str) -> Option<i32> {
+    let line = gamestate.lines().take(200).find(|l| l.starts_with("tick") && l[4..].trim_start().starts_with('='))?;
+    line[4..].trim_start()[1..].trim().parse().ok()
+}
+
 /// The save of 2210.01.01 (the modifier capture's): `STELLAR_SAVE`, else the first of the known
 /// places that has it; None when none does.
 pub fn default_save() -> Option<String> {

@@ -157,19 +157,51 @@ local function other_stores()
 end
 
 local P = systems.phases
+
+-- a module of the engine that may not be written yet: the module, or nil when there is no such file
+-- (an error inside one that is there is raised as usual)
+local present = {}
+local function optional(name)
+    if present[name] == nil then
+        present[name] = package.searchpath(name, package.path) ~= nil
+    end
+    return present[name] and require(name) or nil
+end
+-- a function of an optional module, called when it is there
+local function call_optional(name, fn, ...)
+    local m = optional(name)
+    if m and m[fn] then
+        return true, m[fn](...)
+    end
+    return false
+end
+
+-- CCountryAI::UpdateAttitudesThreaded, first in the day: the AIs' attitudes (engine.ai.attitudes,
+-- docs/ai.md section 3)
+P["daily.ai_attitudes"] = function(host, date)
+    call_optional("engine.ai.attitudes", "daily", host, date)
+end
 P["daily.script_state_expiry"] = function(host)
     each_object({ "country", "planet" }, count_down_flags)
     each_object(other_stores(), count_down_flags)
     host.daily_script_state()
 end
-P["daily.countries_parallel"] = function()
+-- CCountry::DailyUpdateSelfDontReadOthers: the timed modifiers
+P["daily.countries_parallel"] = function(host, date)
     each_object({ "country" }, count_down_modifiers)
 end
-P["daily.colonies_parallel"] = function()
+-- NColonyUpdate::DailyParallelUpdate: the timed modifiers; the colonies' own day (engine.colonies,
+-- once it is there: stability, amenities, happiness, crime, ...)
+P["daily.colonies_parallel"] = function(host, date)
     each_object({ "planet" }, count_down_modifiers)
+    call_optional("engine.colonies", "daily_parallel", host, date)
 end
 P["daily.galaxy"] = function()
     each_object(other_stores(), count_down_modifiers)
+end
+-- CConstructionManager::DailyUpdate: the construction queues (engine.construction)
+P["daily.construction_manager"] = function(host, date)
+    require("engine.construction").daily(date)
 end
 -- CCountry::DailyUpdateSerial: the country's events, then (after diplomacy and elections) its
 -- research (engine.research)
@@ -177,17 +209,28 @@ P["daily.countries_serial"] = function(host, date)
     each_country(function(id) host.scope_daily_events("country", id) end)
     require("engine.research").daily(host, date)
 end
-P["daily.colonies_serial"] = function(host)
+-- NColonyUpdate::DailySerialUpdate: the planets' daily events; the colonies' serial day
+-- (engine.colonies, once it is there)
+P["daily.colonies_serial"] = function(host, date)
     for _, id in ipairs(world.all("planet")) do
         if world.pop_groups_of[id] then
             host.scope_daily_events("planet", id)
         end
     end
+    call_optional("engine.colonies", "daily_serial", host, date)
+end
+-- CModifierNodeManager::Update in the monthly update: the world's modifier graph built again (when
+-- the modifiers come from the world: engine.economy.world_source)
+P["monthly.modifiers"] = function()
+    local engine = package.loaded["engine"]
+    local source = engine and engine.modifier_source
+    if source and source.rebuild then
+        source.rebuild()
+    end
 end
 -- CEconomicUnitManager::CalculateTablesOrUpdateBudget<0>: every country's budget from its economic
 -- units through the modifiers, and the month's balance to its stockpile (engine.economy), once the
--- economy has a modifier source (engine.load: the capture in STELLAR_CAPTURE until the modifier
--- graph is built from the world)
+-- economy has a modifier source (engine.load: the graph built from the world, or the capture)
 P["monthly.budget"] = function()
     local economy = package.loaded["engine.economy"]
     if economy and economy.has_modifier_source and economy.has_modifier_source() then
@@ -199,6 +242,42 @@ end
 P["monthly.countries_serial"] = function(host)
     require("engine.leaders").monthly()
     each_country(function(id) host.on_action("on_monthly_pulse_country", "country", id) end)
+end
+-- NColonyUpdate::MonthlyUpdate: growth and decline of the colonies' pops (engine.pops, once it is
+-- there)
+P["monthly.colonies"] = function(host, date)
+    local pops = optional("engine.pops")
+    if pops then
+        pops.monthly(host, date)
+    else
+        systems.not_modelled["monthly.colonies"] = (systems.not_modelled["monthly.colonies"] or 0) + 1
+    end
+end
+-- CPopGroup::DailyUpdate*: the day's housing of the pop groups and colonies (engine.pops; no random
+-- draws, so it keeps to the game's parallel phase)
+P["daily.pop_groups"] = function(host, date)
+    local pops = optional("engine.pops")
+    local ran = false
+    if pops and pops.daily then
+        pops.daily(host, date)
+        ran = true
+    end
+    -- the pop groups' happiness, power, crime, amenities usage (engine.colonies; no random draws)
+    if call_optional("engine.colonies", "pop_groups_daily", host, date) then
+        ran = true
+    end
+    if not ran then
+        systems.not_modelled["daily.pop_groups"] = (systems.not_modelled["daily.pop_groups"] or 0) + 1
+    end
+end
+-- CGameState::ProcessAI: the AI's decisions (engine.ai, once it is there; docs/ai.md)
+P["ai.process"] = function(host, date)
+    local ai = optional("engine.ai")
+    if ai then
+        ai.process(host, date)
+    else
+        systems.not_modelled["ai.process"] = (systems.not_modelled["ai.process"] or 0) + 1
+    end
 end
 P["monthly.on_monthly_pulse"] = function(host)
     host.on_action("on_monthly_pulse", "none", 0)

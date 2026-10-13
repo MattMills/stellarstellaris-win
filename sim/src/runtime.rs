@@ -69,6 +69,11 @@ pub fn new_lua() -> mlua::Result<Lua> {
     )?;
     let start = std::time::Instant::now();
     rust.set("clock", lua.create_function(move |_, ()| Ok(start.elapsed().as_secs_f64()))?)?;
+    // the game's noise function, for generators kept in Lua (the AI's own, one per country)
+    rust.set(
+        "noise",
+        lua.create_function(|_, (position, seed): (u32, u32)| Ok(crate::rng::noise(position, seed)))?,
+    )?;
     lua.globals().set("RUST", rust)?;
     lua.globals().set("E", lua.create_table()?)?;
     Ok(lua)
@@ -80,6 +85,12 @@ pub struct Runtime {
     engine: Table,
     pub date: Rc<Cell<Date>>,
     pub rng: Rc<RefCell<NoiseRandom>>,
+    /// The month's pool of random draws (`CGameState::MonthlyUpdate` draws 1,000 at its start, read
+    /// by the colonies' demography): `RUST.monthly_pool()`.
+    pub monthly_pool: Rc<RefCell<Vec<i32>>>,
+    /// The day's pool of random draws (`DailyUpdate`'s 1,000, read by the parallel per-object
+    /// updates: ethics, factions, ...): `RUST.daily_pool()`.
+    pub daily_pool: Rc<RefCell<Vec<i32>>>,
 }
 
 impl Runtime {
@@ -103,8 +114,32 @@ impl Runtime {
                 Ok(r.next_int())
             })?,
         )?;
+        let monthly_pool: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
+        let mp = monthly_pool.clone();
+        rust.set(
+            "monthly_pool",
+            lua.create_function(move |lua, ()| {
+                let pool = mp.borrow();
+                if pool.is_empty() {
+                    return Ok(mlua::Value::Nil);
+                }
+                Ok(mlua::Value::Table(lua.create_sequence_from(pool.iter().copied())?))
+            })?,
+        )?;
+        let daily_pool: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
+        let dp = daily_pool.clone();
+        rust.set(
+            "daily_pool",
+            lua.create_function(move |lua, ()| {
+                let pool = dp.borrow();
+                if pool.is_empty() {
+                    return Ok(mlua::Value::Nil);
+                }
+                Ok(mlua::Value::Table(lua.create_sequence_from(pool.iter().copied())?))
+            })?,
+        )?;
         let engine: Table = lua.load("return require('engine')").set_name("engine").eval()?;
-        Ok(Runtime { lua, engine, date, rng })
+        Ok(Runtime { lua, engine, date, rng, monthly_pool, daily_pool })
     }
 
     /// Reads the vanilla file set from `game_dir` (the Stellaris install, in place) and the world

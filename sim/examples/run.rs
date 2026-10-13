@@ -18,6 +18,7 @@ fn main() {
     let t0 = std::time::Instant::now();
     let gamestate = save::read_gamestate(&save_path).expect("read the save");
     let date = save::date_of(&gamestate).expect("the save's date");
+    let tick = save::tick_of(&gamestate).unwrap_or(0);
     let runtime = Runtime::new(date, 0).expect("the Lua runtime");
     let loaded = runtime.load(&game_dir, Some(&gamestate), None).expect("load");
     drop(gamestate);
@@ -25,6 +26,7 @@ fn main() {
     println!("loaded in {:.1} s; running {days} days from {date:?}", t0.elapsed().as_secs_f64());
 
     let mut sim = Simulation::new(runtime);
+    sim.set_tick_count(tick);
     let t1 = std::time::Instant::now();
     sim.run_days(days);
     println!("{} ticks to {:?} in {:.1} s", sim.ticks, sim.date(), t1.elapsed().as_secs_f64());
