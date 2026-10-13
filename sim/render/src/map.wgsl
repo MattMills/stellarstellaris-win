@@ -1,23 +1,24 @@
-// The galaxy map: hyperlanes as quads around their segment, stars as discs, both antialiased by
-// their distance in pixels (no multisampling: a disc's inside is exactly its colour).
+// The galaxy map and the GUI: textured quads (in map units through the fitted view, or in screen
+// pixels), alpha-blended or added, and the hyperlanes as antialiased quads around their segment.
 
 struct View {
     // map units -> clip space: ndc = p * world_to_ndc.xy + world_to_ndc.zw
     world_to_ndc: vec4<f32>,
     // pixels -> clip space: 2 / width, 2 / height
     px_to_ndc: vec2<f32>,
-    // 1 when the target stores sRGB (the colours are given in sRGB and converted to linear)
+    // 1 when the target stores sRGB (colours are given in sRGB and converted to linear)
     srgb: u32,
     pad: u32,
 };
 
 @group(0) @binding(0) var<uniform> view: View;
+@group(1) @binding(0) var tex: texture_2d<f32>;
+@group(1) @binding(1) var samp: sampler;
 
 fn to_ndc(p: vec2<f32>) -> vec2<f32> {
     return p * view.world_to_ndc.xy + view.world_to_ndc.zw;
 }
 
-// the corners of a quad: two triangles
 fn corner(i: u32) -> vec2<f32> {
     var c = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
@@ -39,47 +40,54 @@ fn output(c: vec3<f32>, alpha: f32) -> vec4<f32> {
     return vec4<f32>(c, alpha);
 }
 
-// ---- stars
+// ---- quads
 
-struct StarOut {
+struct QuadOut {
     @builtin(position) pos: vec4<f32>,
-    @location(0) local: vec2<f32>,   // pixels from the centre
-    @location(1) radius: f32,        // pixels
-    @location(2) colour: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) colour: vec4<f32>,
 };
 
 @vertex
-fn vs_star(
+fn vs_quad(
     @builtin(vertex_index) vi: u32,
-    @location(0) centre: vec2<f32>,
-    @location(1) radius: f32,
+    @location(0) rect: vec4<f32>,
+    @location(1) uv: vec4<f32>,
     @location(2) colour: vec4<f32>,
-) -> StarOut {
-    let c = corner(vi);
-    let r = radius + 1.0;   // a pixel more for the edge
-    var o: StarOut;
-    o.pos = vec4<f32>(to_ndc(centre) + c * r * view.px_to_ndc, 0.0, 1.0);
-    o.local = c * r;
-    o.radius = radius;
+    @location(3) misc: vec4<f32>,   // rotation (radians), screen (1) or map (0)
+) -> QuadOut {
+    let t = corner(vi) * 0.5 + vec2<f32>(0.5);
+    let centre = 0.5 * (rect.xy + rect.zw);
+    let half = 0.5 * (rect.zw - rect.xy);
+    let local = (t * 2.0 - vec2<f32>(1.0)) * half;
+    let cs = cos(misc.x);
+    let sn = sin(misc.x);
+    let p = centre + vec2<f32>(local.x * cs - local.y * sn, local.x * sn + local.y * cs);
+    var ndc: vec2<f32>;
+    if (misc.y > 0.5) {
+        ndc = vec2<f32>(p.x * view.px_to_ndc.x - 1.0, 1.0 - p.y * view.px_to_ndc.y);
+    } else {
+        ndc = to_ndc(p);
+    }
+    var o: QuadOut;
+    o.pos = vec4<f32>(ndc, 0.0, 1.0);
+    o.uv = mix(uv.xy, uv.zw, t);
     o.colour = colour;
     return o;
 }
 
 @fragment
-fn fs_star(i: StarOut) -> @location(0) vec4<f32> {
-    let coverage = clamp(i.radius - length(i.local) + 0.5, 0.0, 1.0);
-    if (coverage <= 0.0) {
-        discard;
-    }
-    return output(i.colour.rgb, i.colour.a * coverage);
+fn fs_quad(i: QuadOut) -> @location(0) vec4<f32> {
+    let c = textureSample(tex, samp, i.uv) * i.colour;
+    return output(c.rgb, c.a);
 }
 
 // ---- hyperlanes
 
 struct LaneOut {
     @builtin(position) pos: vec4<f32>,
-    @location(0) across: f32,   // pixels from the lane's middle line
-    @location(1) half: f32,     // half the width, pixels
+    @location(0) across: f32,
+    @location(1) half: f32,
     @location(2) colour: vec4<f32>,
 };
 
@@ -92,7 +100,6 @@ fn vs_lane(
     @location(3) width: f32,
 ) -> LaneOut {
     let c = corner(vi);
-    // the segment in pixels
     let pa = to_ndc(a) / view.px_to_ndc;
     let pb = to_ndc(b) / view.px_to_ndc;
     var dir = pb - pa;

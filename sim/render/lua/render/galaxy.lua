@@ -1,47 +1,38 @@
--- render/galaxy.lua : the galaxy map of the world (engine.world, a save's gamestate): every
--- system's position, its hyperlanes, the country that owns it and that country's map colour.
--- Read by the renderer (sim/render/src/galaxy.rs) after Runtime::load.
+-- render/galaxy.lua : the galaxy map of the world (engine.world, a save's gamestate) and the game
+-- files it is drawn with: every system's position, star class and star sprite, its hyperlanes,
+-- the country that owns it and that country's colours; the map's settings from common/defines.
+-- Read by the renderer (sim/render/src/galaxy.rs) after Runtime::load_world.
 --
 --   local galaxy = require("render.galaxy")
---   return galaxy.extract(game_dir)   -- flat arrays, see galaxy.extract
+--   return galaxy.extract(game_dir)   -- a table, see galaxy.extract
 --
--- Where the save keeps these:
--- - position: galactic_object[id].coordinate = { x = .. y = .. } (map units; the galaxy's centre
---   is 0,0);
--- - hyperlanes: galactic_object[id].hyperlane = { { to = id length = n } ... }, written on both
---   ends of a lane;
--- - owner: a system has no owner field. It is owned by the owner of its starbase:
---   galactic_object.starbases = { id } (4294967295 when there is none) -> starbase_mgr.starbases
---   [id].station, a ship -> ships[id].fleet -> the country whose
---   fleets_manager.owned_fleets = { { fleet = id } ... } lists that fleet (fleets have no owner
---   field either);
--- - colour: country.flag.colors = { "teal" "dark_teal" ... }, colour names; the first is the
---   empire's colour. The galaxy map draws it with the `map` swatch of flags/colors.txt; where that
---   file has no such swatch, common/named_colors gives it (its `color = { r g b a }`).
+-- Where these are:
+-- - position: galactic_object[id].coordinate = { x = .. y = .. } (map units, the centre 0,0);
+-- - star class: galactic_object[id].star_class ("sc_g"); common/star_classes gives its class
+--   ("g_star") and icon_scale; the galaxy map draws gfx/map/star_classes/<class>.dds (the engine
+--   names the file: no .gfx lists these), or <star class>.dds where there is one (sc_m_giant);
+-- - hyperlanes: galactic_object[id].hyperlane = { { to = id length = n } ... }, on both ends;
+-- - owner: world.system_owner (its starbase's owner, see engine/world.lua);
+-- - colours: country.flag.colors = { "teal" "dark_teal" ... }; the map draws the first as the
+--   border's edge and the second as its fill, each with the `map` swatch of flags/colors.txt
+--   (common/named_colors where that has none);
+-- - settings: common/defines NGraphics (HYPERLANE_DEFAULT_COLOR, GALAXY_STAR_ICON_SCALE,
+--   BORDER_SYSTEM_RADIUS, BORDER_HYPERLANE_THICKNESS, BORDER_TEXTURE_SIZE, GALAXY_DUST_SIZE,
+--   GALAXY_DUST_SIZE_EXTRA).
 
 local world = require("engine.world")
-local defs = require("engine.defs")
-local pdxscript = require("pdxscript")
-
-local NONE = 4294967295
+local source = require("stellar.script.source")
 
 local galaxy = {}
 
--- the blocks of a list block: `{ { to = 1 } { to = 2 } }`
-local function blocks(block)
-    local out = {}
-    if type(block) == "table" then
-        for _, e in ipairs(block) do
-            if not e.op and not e.text and not e.param then
-                out[#out + 1] = e
-            end
+local function field(block, key)
+    for _, e in ipairs(block or {}) do
+        if e.op and e.key and e.key.text == key then
+            return e.value.text or e.value
         end
     end
-    return out
+    return nil
 end
-
--- the first `key = value` of a block, as defs.field does (a token's text, or a block)
-local field = defs.field
 
 local function hsv_to_rgb(h, s, v)
     h = (h % 1) * 6
@@ -62,19 +53,25 @@ local function hsv_to_rgb(h, s, v)
     return v, p, q
 end
 
+-- the numbers of a block
+local function numbers(block)
+    local n, decimal = {}, false
+    for _, e in ipairs(type(block) == "table" and block or {}) do
+        if e.text then
+            n[#n + 1] = tonumber(e.text)
+            decimal = decimal or e.text:find(".", 1, true) ~= nil
+        end
+    end
+    return n, decimal
+end
+
 -- a colour block (`{ r g b a }` or `rgb { r g b }` in 0..255, `{ 0.5 0.2 0.1 }` in 0..1,
 -- `hsv { h s v }`, `hsv360 { h s v }`) -> r, g, b in 0..1, or nil
 local function colour(block)
     if type(block) ~= "table" then
         return nil
     end
-    local n, decimal = {}, false
-    for _, e in ipairs(block) do
-        if e.text then
-            n[#n + 1] = tonumber(e.text)
-            decimal = decimal or e.text:find(".", 1, true) ~= nil
-        end
-    end
+    local n, decimal = numbers(block)
     if #n < 3 or not (n[1] and n[2] and n[3]) then
         return nil
     end
@@ -88,21 +85,21 @@ local function colour(block)
     return n[1] / 255, n[2] / 255, n[3] / 255
 end
 
+local function exists(path)
+    local f = io.open(path, "rb")
+    if f then
+        f:close()
+        return true
+    end
+    return false
+end
+
 -- name -> { r, g, b }: the `map` swatches of flags/colors.txt
 local function map_swatches(game_dir)
     local out = {}
-    local f = io.open(game_dir .. "/flags/colors.txt", "rb")
-    if not f then
-        return out
-    end
-    local text = f:read("*a")
-    f:close()
-    local tree = pdxscript.parse(text, "flags/colors.txt")
+    local tree = source.parse(game_dir, "flags/colors.txt")
     local colors = tree and field(tree, "colors")
-    if type(colors) ~= "table" then
-        return out
-    end
-    for _, e in ipairs(colors) do
+    for _, e in ipairs(type(colors) == "table" and colors or {}) do
         if e.op and e.key and type(e.value) == "table" then
             local r, g, b = colour(field(e.value, "map"))
             if r then
@@ -113,25 +110,159 @@ local function map_swatches(game_dir)
     return out
 end
 
--- a colour name -> r, g, b, and where it came from ("map", "named"), or nil
-local function resolve_colour(name, swatches)
-    local s = swatches[name]
-    if s then
-        return s[1], s[2], s[3], "map"
-    end
-    local def = defs.get("common/named_colors", name)
-    if def then
-        local r, g, b = colour(field(def.block, "color"))
-        if r then
-            return r, g, b, "named"
+-- the defines of common/defines: namespace -> KEY -> value (a token's text or a block), files in
+-- name order, a later value replacing an earlier one
+local function defines(game_dir)
+    local out = {}
+    for _, f in ipairs(source.files(game_dir, "common/defines", "txt")) do
+        local tree = source.parse(game_dir, f)
+        for _, top in ipairs(tree or {}) do
+            if top.op and top.key and type(top.value) == "table" then
+                local ns = out[top.key.text] or {}
+                out[top.key.text] = ns
+                for _, e in ipairs(top.value) do
+                    if e.op and e.key then
+                        ns[e.key.text] = e.value.text or e.value
+                    end
+                end
+            end
         end
     end
-    return nil
+    return out
 end
 
--- a name block (`name = { key = "%ADJ%" variables = { { key = "1" value = { ... } } } }`) as
--- one line: its keys that are not placeholders, in order (localisation keys, not localised)
-local function name_text(block, depth)
+-- galaxy.extract(game_dir) -> {
+--   date, notes,
+--   systems = { { id, x, y, owner (country id or -1), star_class, class, texture, icon_scale } },
+--   lanes = { { a, b } }      (indices into systems, 1-based, each lane once),
+--   countries = { { id, name, kind, colours = { name1, name2 }, primary = {r,g,b},
+--                   secondary = {r,g,b}, source } }   (the owners of systems),
+--   hyperlane_colour = { r, g, b, a }, star_icon_scale, border_system_radius,
+--   border_hyperlane_thickness }
+function galaxy.extract(game_dir)
+    local t0 = RUST.clock()
+    local swatches = map_swatches(game_dir)
+    local named = source.definitions(game_dir, "common/named_colors")
+    local classes = source.definitions(game_dir, "common/star_classes")
+    local def = defines(game_dir)
+    local ng = def.NGraphics or {}
+
+    local function resolve(name)
+        local s = swatches[name]
+        if s then
+            return { s[1], s[2], s[3] }, "map"
+        end
+        local d = named[name]
+        if d then
+            local r, g, b = colour(field(d.block, "color"))
+            if r then
+                return { r, g, b }, "named"
+            end
+        end
+        return nil
+    end
+
+    -- star class -> { class, texture, icon_scale }
+    local star_info, missing_textures = {}, {}
+    local function star(key)
+        if star_info[key] == nil then
+            local d = classes[key]
+            local class = d and field(d.block, "class") or key
+            local scale = d and tonumber(field(d.block, "icon_scale")) or 1
+            local texture
+            for _, name in ipairs({ key, class }) do
+                local rel = "gfx/map/star_classes/" .. name .. ".dds"
+                if exists(game_dir .. "/" .. rel) then
+                    texture = rel
+                    break
+                end
+            end
+            if not texture then
+                missing_textures[#missing_textures + 1] = key
+            end
+            star_info[key] = { class = class, texture = texture or "", icon_scale = scale }
+        end
+        return star_info[key]
+    end
+
+    local systems, index = {}, {}
+    for _, id in ipairs(world.all("system")) do
+        local obj = world.object("system", id)
+        local x = tonumber(world.path(obj, "coordinate", "x"))
+        local y = tonumber(world.path(obj, "coordinate", "y"))
+        if x and y then
+            local sc = tostring(world.field(obj, "star_class") or "sc_g")
+            local info = star(sc)
+            systems[#systems + 1] = {
+                id = id, x = x, y = y, owner = world.system_owner[id] or -1,
+                star_class = sc, class = info.class, texture = info.texture, icon_scale = info.icon_scale,
+            }
+            index[id] = #systems
+        end
+    end
+
+    local lanes, seen = {}, {}
+    for i, s in ipairs(systems) do
+        for _, h in ipairs(world.blocks(world.field(world.object("system", s.id), "hyperlane"))) do
+            local j = index[tonumber(world.field(h, "to"))]
+            if j and j ~= i then
+                local a, b = math.min(i, j), math.max(i, j)
+                local key = a * 65536 + b
+                if not seen[key] then
+                    seen[key] = true
+                    lanes[#lanes + 1] = { a, b }
+                end
+            end
+        end
+    end
+
+    local countries, owners = {}, {}
+    for _, s in ipairs(systems) do
+        local o = s.owner
+        if o >= 0 and not owners[o] then
+            owners[o] = true
+            local c = world.object("country", o)
+            local names = world.list(world.path(c, "flag", "colors"))
+            local p, src = resolve(names[1] or "")
+            local q = resolve(names[2] or "") or p
+            countries[#countries + 1] = {
+                id = o, name = galaxy.name_text(world.field(c, "name")) or ("country " .. o),
+                kind = tostring(world.field(c, "type") or ""),
+                colours = { names[1] or "", names[2] or "" },
+                primary = p or { 1, 1, 1 }, secondary = q or { 1, 1, 1 }, source = src or "",
+            }
+        end
+    end
+
+    local hl = numbers(ng.HYPERLANE_DEFAULT_COLOR)
+    local classes_used = 0
+    for _ in pairs(star_info) do
+        classes_used = classes_used + 1
+    end
+    local out = {
+        date = (tostring(world.meta.date or ""):gsub('"', "")),
+        systems = systems, lanes = lanes, countries = countries,
+        hyperlane_colour = #hl >= 4 and hl or { 0, 1, 1, 0.2 },
+        star_icon_scale = tonumber(ng.GALAXY_STAR_ICON_SCALE) or 1.5,
+        border_system_radius = tonumber(ng.BORDER_SYSTEM_RADIUS) or 35,
+        border_hyperlane_thickness = tonumber(ng.BORDER_HYPERLANE_THICKNESS) or 20,
+        border_texture_size = tonumber(ng.BORDER_TEXTURE_SIZE) or 2048,
+        dust_size = tonumber(ng.GALAXY_DUST_SIZE) or 25,
+        dust_size_extra = tonumber(ng.GALAXY_DUST_SIZE_EXTRA) or 35,
+    }
+    out.notes = string.format(
+        "%d systems, %d hyperlanes, %d owners; %d star classes used (no texture for: %s); " ..
+        "HYPERLANE_DEFAULT_COLOR {%s}, GALAXY_STAR_ICON_SCALE %s, BORDER_SYSTEM_RADIUS %s, " ..
+        "BORDER_HYPERLANE_THICKNESS %s; read in %.2f s",
+        #systems, #lanes, #countries, classes_used, table.concat(missing_textures, " "),
+        table.concat(out.hyperlane_colour, " "), out.star_icon_scale, out.border_system_radius,
+        out.border_hyperlane_thickness, RUST.clock() - t0)
+    return out
+end
+
+-- a name block (`name = { key = "%ADJ%" variables = { { key = "1" value = { ... } } } }`) as one
+-- line: its keys that are not placeholders, in order (localisation keys, not localised)
+function galaxy.name_text(block, depth)
     depth = depth or 0
     if type(block) ~= "table" or depth > 8 then
         return nil
@@ -141,8 +272,8 @@ local function name_text(block, depth)
     if key ~= nil and not tostring(key):match("^%%") then
         parts[#parts + 1] = tostring(key)
     end
-    for _, v in ipairs(blocks(world.field(block, "variables"))) do
-        local t = name_text(world.field(v, "value"), depth + 1)
+    for _, v in ipairs(world.blocks(world.field(block, "variables"))) do
+        local t = galaxy.name_text(world.field(v, "value"), depth + 1)
         if t then
             parts[#parts + 1] = t
         end
@@ -151,129 +282,6 @@ local function name_text(block, depth)
         return key ~= nil and tostring(key) or nil
     end
     return table.concat(parts, " ")
-end
-
--- fleet id -> the country that owns it (country.fleets_manager.owned_fleets)
-local function fleet_owners()
-    local owner = {}
-    for _, cid in ipairs(world.all("country")) do
-        local owned = world.path(world.object("country", cid), "fleets_manager", "owned_fleets")
-        for _, b in ipairs(blocks(owned)) do
-            local f = tonumber(world.field(b, "fleet"))
-            if f then
-                owner[f] = cid
-            end
-        end
-    end
-    return owner
-end
-
--- galaxy.extract(game_dir) -> the map as flat arrays (one value each, for the Rust side):
---   systems:   id, x, y, owner (a country id, -1 for none)
---   lanes:     a, b (indices into the systems, 0-based, a < b, each lane once)
---   countries: id, name, type, colour name, r, g, b (0..1), colour source ("map", "named", "")
---              for every country that owns a system
---   notes:     what was read, as text
-function galaxy.extract(game_dir)
-    local t0 = RUST.clock()
-    local fleets = fleet_owners()
-    local swatches = map_swatches(game_dir)
-
-    local sys_id, sys_x, sys_y, sys_owner = {}, {}, {}, {}
-    local index = {}   -- system id -> 0-based index
-    local starbases, unresolved, several, disagree = 0, 0, 0, 0
-    for _, id in ipairs(world.all("system")) do
-        local obj = world.object("system", id)
-        local x = tonumber(world.path(obj, "coordinate", "x"))
-        local y = tonumber(world.path(obj, "coordinate", "y"))
-        if x and y then
-            -- the owner of the system's first starbase (some systems list more than one)
-            local owner, n = -1, 0
-            for _, sb in ipairs(world.list(world.field(obj, "starbases"))) do
-                sb = tonumber(sb)
-                if sb and sb ~= NONE then
-                    starbases, n = starbases + 1, n + 1
-                    local station = tonumber(world.field(world.object("starbase", sb), "station"))
-                    local fleet = station and tonumber(world.field(world.object("ship", station), "fleet"))
-                    local cid = fleet and fleets[fleet]
-                    if cid == nil then
-                        unresolved = unresolved + 1
-                    elseif owner < 0 then
-                        owner = cid
-                    elseif cid ~= owner then
-                        disagree = disagree + 1
-                    end
-                end
-            end
-            if n > 1 then
-                several = several + 1
-            end
-            index[id] = #sys_id
-            sys_id[#sys_id + 1] = id
-            sys_x[#sys_x + 1] = x
-            sys_y[#sys_y + 1] = y
-            sys_owner[#sys_owner + 1] = owner
-        end
-    end
-
-    local lane_a, lane_b = {}, {}
-    local seen, one_sided, dangling = {}, 0, 0
-    local ends = {}   -- "a:b" -> how many of the two ends list the lane
-    for i, id in ipairs(sys_id) do
-        local obj = world.object("system", id)
-        for _, h in ipairs(blocks(world.field(obj, "hyperlane"))) do
-            local to = tonumber(world.field(h, "to"))
-            local j = to and index[to]
-            if j == nil then
-                dangling = dangling + 1
-            else
-                local a, b = math.min(i - 1, j), math.max(i - 1, j)
-                local key = a .. ":" .. b
-                ends[key] = (ends[key] or 0) + 1
-                if not seen[key] and a ~= b then
-                    seen[key] = true
-                    lane_a[#lane_a + 1] = a
-                    lane_b[#lane_b + 1] = b
-                end
-            end
-        end
-    end
-    for _, n in pairs(ends) do
-        if n == 1 then
-            one_sided = one_sided + 1
-        end
-    end
-
-    local c_id, c_name, c_type, c_colour, c_r, c_g, c_b, c_source = {}, {}, {}, {}, {}, {}, {}, {}
-    local owners = {}
-    for _, o in ipairs(sys_owner) do
-        if o >= 0 and not owners[o] then
-            owners[o] = true
-            local c = world.object("country", o)
-            local names = world.list(world.path(c, "flag", "colors"))
-            local name = names[1] or ""
-            local r, g, b, source = resolve_colour(name, swatches)
-            c_id[#c_id + 1] = o
-            c_name[#c_name + 1] = name_text(world.field(c, "name")) or ("country " .. o)
-            c_type[#c_type + 1] = tostring(world.field(c, "type") or "")
-            c_colour[#c_colour + 1] = name
-            c_r[#c_r + 1], c_g[#c_g + 1], c_b[#c_b + 1] = r or 1, g or 1, b or 1
-            c_source[#c_source + 1] = source or ""
-        end
-    end
-
-    local n_swatches = 0
-    for _ in pairs(swatches) do
-        n_swatches = n_swatches + 1
-    end
-    local notes = string.format(
-        "%d systems, %d hyperlanes (%d listed on one end only, %d to unknown systems), %d starbases " ..
-        "(%d whose owner was not found; %d systems with more than one, %d of those owned by another " ..
-        "country than the first), %d owners; %d map swatches in flags/colors.txt; read in %.2f s",
-        #sys_id, #lane_a, one_sided, dangling, starbases, unresolved, several, disagree, #c_id, n_swatches,
-        RUST.clock() - t0)
-    return sys_id, sys_x, sys_y, sys_owner, lane_a, lane_b,
-        c_id, c_name, c_type, c_colour, c_r, c_g, c_b, c_source, notes
 end
 
 return galaxy

@@ -1,109 +1,15 @@
-//! The galaxy map on the GPU (wgpu on Vulkan): hyperlanes as antialiased quads, stars as
-//! antialiased discs, in an orthographic view fitted to the galaxy. One renderer for both targets:
-//! an offscreen texture read back to memory (the PNG mode) and a window's surface.
+//! The map on the GPU (wgpu on Vulkan): a scene's textured quads (alpha-blended or added) and its
+//! hyperlanes, for one target format. Textures are the game's, decoded on the CPU, with their mip
+//! chains built on the CPU too. One renderer for both targets: offscreen textures read back to
+//! memory (the PNG mode, one render per layer mask for the checks) and a window's surface.
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::galaxy::Galaxy;
-
-/// Colours of the map (sRGB, 0..1).
-#[derive(Clone, Debug)]
-pub struct Style {
-    pub background: [f32; 3],
-    pub lane: [f32; 3],
-    pub unowned: [f32; 3],
-    /// An owner's colour darker than this (luma, 0..1) is mixed with white up to it, so that dark
-    /// swatches (black, dark_blue, ...) show on the dark background.
-    pub min_luma: f32,
-}
-
-impl Default for Style {
-    fn default() -> Style {
-        Style {
-            background: [6.0 / 255.0, 8.0 / 255.0, 18.0 / 255.0],
-            lane: [72.0 / 255.0, 96.0 / 255.0, 128.0 / 255.0],
-            unowned: [150.0 / 255.0, 150.0 / 255.0, 150.0 / 255.0],
-            min_luma: 0.3,
-        }
-    }
-}
-
-impl Style {
-    /// The colour an owner's systems are drawn with: its map colour, lightened if too dark.
-    pub fn owner_colour(&self, rgb: [f32; 3]) -> [f32; 3] {
-        let luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
-        if luma >= self.min_luma || luma >= 1.0 {
-            return rgb;
-        }
-        let t = (self.min_luma - luma) / (1.0 - luma);
-        rgb.map(|c| c + (1.0 - c) * t)
-    }
-
-    /// The colour system `i` is drawn with.
-    pub fn system_colour(&self, galaxy: &Galaxy, i: usize) -> [f32; 3] {
-        match galaxy.systems[i].owner {
-            Some(o) => self.owner_colour(galaxy.countries[o].rgb),
-            None => self.unowned,
-        }
-    }
-}
-
-/// The view of a target of `width` x `height` pixels: the galaxy fitted into it, and the sizes of
-/// what is drawn, in pixels.
-#[derive(Clone, Copy, Debug)]
-pub struct Layout {
-    pub width: u32,
-    pub height: u32,
-    /// map units -> clip space: ndc = p * xy + zw. The save's x is drawn growing to the left
-    /// (mirrored, the convention of save viewers such as Stellaris Dashboard; not yet checked
-    /// against the game's own map); y grows up.
-    pub world_to_ndc: [f32; 4],
-    /// pixels per map unit
-    pub scale: f32,
-    pub star_radius: f32,
-    pub unowned_radius: f32,
-    pub lane_width: f32,
-}
-
-impl Layout {
-    pub fn fit(galaxy: &Galaxy, width: u32, height: u32) -> Layout {
-        let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-        for s in &galaxy.systems {
-            x0 = x0.min(s.x);
-            x1 = x1.max(s.x);
-            y0 = y0.min(s.y);
-            y1 = y1.max(s.y);
-        }
-        if galaxy.systems.is_empty() {
-            (x0, x1, y0, y1) = (-1.0, 1.0, -1.0, 1.0);
-        }
-        let (w, h) = (width.max(1) as f32, height.max(1) as f32);
-        let margin = 0.04 * w.min(h) + 8.0;
-        let span_x = (x1 - x0).max(1e-3);
-        let span_y = (y1 - y0).max(1e-3);
-        let scale = ((w - 2.0 * margin).max(1.0) / span_x).min((h - 2.0 * margin).max(1.0) / span_y);
-        let (cx, cy) = (0.5 * (x0 + x1), 0.5 * (y0 + y1));
-        let (sx, sy) = (scale * 2.0 / w, scale * 2.0 / h);
-        let star_radius = (scale * 1.6).clamp(2.0, 10.0);
-        Layout {
-            width,
-            height,
-            world_to_ndc: [-sx, sy, cx * sx, -cy * sy],
-            scale,
-            star_radius,
-            unowned_radius: (star_radius * 0.7).max(1.5),
-            lane_width: (scale * 0.45).clamp(1.0, 3.0),
-        }
-    }
-
-    /// A map position -> pixel coordinates (from the top left corner; pixel (i, j) covers
-    /// [i, i+1) x [j, j+1)).
-    pub fn to_pixel(&self, x: f32, y: f32) -> (f32, f32) {
-        let nx = x * self.world_to_ndc[0] + self.world_to_ndc[2];
-        let ny = y * self.world_to_ndc[1] + self.world_to_ndc[3];
-        ((nx + 1.0) * 0.5 * self.width as f32, (1.0 - ny) * 0.5 * self.height as f32)
-    }
-}
+use crate::dds::Image;
+use crate::scene::{Blend, Layer, Scene, Textures};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -116,11 +22,11 @@ struct ViewUniform {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct StarInstance {
-    centre: [f32; 2],
-    radius: f32,
-    pad: f32,
+struct QuadInstance {
+    rect: [f32; 4],
+    uv: [f32; 4],
     colour: [f32; 4],
+    misc: [f32; 4],
 }
 
 #[repr(C)]
@@ -206,25 +112,51 @@ pub async fn open_device(
     Err(format!("no Vulkan device: {}", errors.join("; ")))
 }
 
-/// The map's pipelines and buffers on one device, for one target format.
+struct GpuTexture {
+    /// the image it was made from (a new image under the same name replaces it)
+    source: Arc<Image>,
+    _texture: wgpu::Texture,
+    bind: wgpu::BindGroup,
+}
+
+struct Draw {
+    layer: Layer,
+    blend: Blend,
+    texture: String,
+    range: std::ops::Range<u32>,
+}
+
+/// The map's pipelines, textures and buffers on one device, for one target format.
 pub struct Renderer {
-    star_pipeline: wgpu::RenderPipeline,
+    quad_alpha: wgpu::RenderPipeline,
+    quad_add: wgpu::RenderPipeline,
     lane_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-    stars: wgpu::Buffer,
-    lanes: wgpu::Buffer,
-    n_stars: u32,
+    view_bind: wgpu::BindGroup,
+    texture_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    textures: HashMap<String, GpuTexture>,
+    quads: Option<wgpu::Buffer>,
+    lanes: Option<wgpu::Buffer>,
     n_lanes: u32,
+    draws: Vec<Draw>,
     srgb: bool,
-    pub style: Style,
-    galaxy: Galaxy,
+    clear: [f32; 3],
+}
+
+fn mip_chain(img: &Image) -> Vec<Image> {
+    let mut levels = vec![img.clone()];
+    while levels.last().map_or(false, |l| l.width > 1 || l.height > 1) {
+        let next = levels.last().unwrap().half();
+        levels.push(next);
+    }
+    levels
 }
 
 impl Renderer {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, galaxy: &Galaxy, style: Style) -> Renderer {
-        let shader = device.create_shader_module(wgpu::include_wgsl!("galaxy.wgsl"));
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Renderer {
+        let shader = device.create_shader_module(wgpu::include_wgsl!("map.wgsl"));
+        let view_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("view"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -237,20 +169,55 @@ impl Renderer {
                 count: None,
             }],
         });
+        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("texture"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("view"),
             size: std::mem::size_of::<ViewUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let view_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("view"),
-            layout: &bgl,
+            layout: &view_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }],
         });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("galaxy"),
-            bind_group_layouts: &[Some(&bgl)],
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("linear"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+        let quad_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("quads"),
+            bind_group_layouts: &[Some(&view_layout), Some(&texture_layout)],
+            immediate_size: 0,
+        });
+        let lane_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("lanes"),
+            bind_group_layouts: &[Some(&view_layout)],
             immediate_size: 0,
         });
         let attr = |shader_location: u32, format: wgpu::VertexFormat, offset: usize| wgpu::VertexAttribute {
@@ -258,11 +225,11 @@ impl Renderer {
             offset: offset as u64,
             shader_location,
         };
-        // as laid out in StarInstance and LaneInstance
-        let star_attrs = [
-            attr(0, wgpu::VertexFormat::Float32x2, std::mem::offset_of!(StarInstance, centre)),
-            attr(1, wgpu::VertexFormat::Float32, std::mem::offset_of!(StarInstance, radius)),
-            attr(2, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(StarInstance, colour)),
+        let quad_attrs = [
+            attr(0, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(QuadInstance, rect)),
+            attr(1, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(QuadInstance, uv)),
+            attr(2, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(QuadInstance, colour)),
+            attr(3, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(QuadInstance, misc)),
         ];
         let lane_attrs = [
             attr(0, wgpu::VertexFormat::Float32x2, std::mem::offset_of!(LaneInstance, a)),
@@ -270,10 +237,28 @@ impl Renderer {
             attr(2, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(LaneInstance, colour)),
             attr(3, wgpu::VertexFormat::Float32, std::mem::offset_of!(LaneInstance, width)),
         ];
-        let pipeline = |name: &str, vs: &str, fs: &str, stride: usize, attrs: &[wgpu::VertexAttribute]| {
+        let additive = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::SrcAlpha,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let pipeline = |name: &str,
+                        layout: &wgpu::PipelineLayout,
+                        vs: &str,
+                        fs: &str,
+                        stride: usize,
+                        attrs: &[wgpu::VertexAttribute],
+                        blend: wgpu::BlendState| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(name),
-                layout: Some(&layout),
+                layout: Some(layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some(vs),
@@ -291,100 +276,121 @@ impl Renderer {
                     module: &shader,
                     entry_point: Some(fs),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
+                    targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
                 }),
                 multiview_mask: None,
                 cache: None,
             })
         };
-        let star_pipeline = pipeline("stars", "vs_star", "fs_star", std::mem::size_of::<StarInstance>(), &star_attrs);
-        let lane_pipeline = pipeline("lanes", "vs_lane", "fs_lane", std::mem::size_of::<LaneInstance>(), &lane_attrs);
-        let n_stars = galaxy.systems.len() as u32;
-        let n_lanes = galaxy.lanes.len() as u32;
-        let stars = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("stars"),
-            size: (n_stars.max(1) as usize * std::mem::size_of::<StarInstance>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let lanes = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("lanes"),
-            size: (n_lanes.max(1) as usize * std::mem::size_of::<LaneInstance>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let qs = std::mem::size_of::<QuadInstance>();
+        let ls = std::mem::size_of::<LaneInstance>();
         Renderer {
-            star_pipeline,
-            lane_pipeline,
+            quad_alpha: pipeline("quads", &quad_layout, "vs_quad", "fs_quad", qs, &quad_attrs, wgpu::BlendState::ALPHA_BLENDING),
+            quad_add: pipeline("quads added", &quad_layout, "vs_quad", "fs_quad", qs, &quad_attrs, additive),
+            lane_pipeline: pipeline("lanes", &lane_layout, "vs_lane", "fs_lane", ls, &lane_attrs, wgpu::BlendState::ALPHA_BLENDING),
             uniform,
-            bind_group,
-            stars,
-            lanes,
-            n_stars,
-            n_lanes,
+            view_bind,
+            texture_layout,
+            sampler,
+            textures: HashMap::new(),
+            quads: None,
+            lanes: None,
+            n_lanes: 0,
+            draws: Vec::new(),
             srgb: format.is_srgb(),
-            style,
-            galaxy: galaxy.clone(),
+            clear: [0.0; 3],
         }
     }
 
-    /// Fits the galaxy to a target of `width` x `height` pixels and uploads the view and the
-    /// instances (whose sizes are in pixels).
-    pub fn layout(&self, queue: &wgpu::Queue, width: u32, height: u32) -> Layout {
-        let l = Layout::fit(&self.galaxy, width, height);
+    fn texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, name: &str, img: &Arc<Image>) {
+        if self.textures.get(name).is_some_and(|t| Arc::ptr_eq(&t.source, img)) {
+            return;
+        }
+        let levels = mip_chain(img);
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(name),
+            size: wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 },
+            mip_level_count: levels.len() as u32,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for (level, l) in levels.iter().enumerate() {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &l.rgba,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(l.width * 4), rows_per_image: Some(l.height) },
+                wgpu::Extent3d { width: l.width, height: l.height, depth_or_array_layers: 1 },
+            );
+        }
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(name),
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        self.textures.insert(name.to_string(), GpuTexture { source: img.clone(), _texture: texture, bind });
+    }
+
+    /// Uploads a scene for a target of its layout's size: the view, the textures it uses (those
+    /// not uploaded yet), its quads and lanes.
+    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, textures: &Textures) {
+        let l = &scene.layout;
         let view = ViewUniform {
             world_to_ndc: l.world_to_ndc,
-            px_to_ndc: [2.0 / width.max(1) as f32, 2.0 / height.max(1) as f32],
+            px_to_ndc: [2.0 / l.width.max(1) as f32, 2.0 / l.height.max(1) as f32],
             srgb: self.srgb as u32,
             pad: 0,
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&view));
-        let g = &self.galaxy;
-        // unowned stars first, owned ones over them
-        let mut order: Vec<usize> = (0..g.systems.len()).collect();
-        order.sort_by_key(|&i| g.systems[i].owner.is_some());
-        let stars: Vec<StarInstance> = order
-            .iter()
-            .map(|&i| {
-                let s = &g.systems[i];
-                let c = self.style.system_colour(g, i);
-                StarInstance {
-                    centre: [s.x, s.y],
-                    radius: if s.owner.is_some() { l.star_radius } else { l.unowned_radius },
-                    pad: 0.0,
-                    colour: [c[0], c[1], c[2], 1.0],
-                }
-            })
-            .collect();
-        let lc = self.style.lane;
-        let lanes: Vec<LaneInstance> = g
+        self.clear = scene.clear;
+
+        let mut instances = Vec::new();
+        self.draws.clear();
+        for b in &scene.batches {
+            let name = &textures.names[b.texture];
+            self.texture(device, queue, name, &textures.images[b.texture]);
+            let start = instances.len() as u32;
+            instances.extend(b.quads.iter().map(|q| QuadInstance {
+                rect: q.rect,
+                uv: q.uv,
+                colour: q.colour,
+                misc: [q.rot, if q.screen { 1.0 } else { 0.0 }, 0.0, 0.0],
+            }));
+            self.draws.push(Draw { layer: b.layer, blend: b.blend, texture: name.clone(), range: start..instances.len() as u32 });
+        }
+        let lanes: Vec<LaneInstance> = scene
             .lanes
             .iter()
-            .map(|&(a, b)| {
-                let (sa, sb) = (&g.systems[a as usize], &g.systems[b as usize]);
-                LaneInstance {
-                    a: [sa.x, sa.y],
-                    b: [sb.x, sb.y],
-                    colour: [lc[0], lc[1], lc[2], 1.0],
-                    width: l.lane_width,
-                    pad: [0.0; 3],
-                }
-            })
+            .map(|s| LaneInstance { a: [s[0], s[1]], b: [s[2], s[3]], colour: scene.lane_colour, width: l.lane_width, pad: [0.0; 3] })
             .collect();
-        if !stars.is_empty() {
-            queue.write_buffer(&self.stars, 0, bytemuck::cast_slice(&stars));
-        }
-        if !lanes.is_empty() {
-            queue.write_buffer(&self.lanes, 0, bytemuck::cast_slice(&lanes));
-        }
-        l
+        let buffer = |label: &str, bytes: &[u8]| {
+            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: (bytes.len().max(16) as u64).next_multiple_of(4),
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            if !bytes.is_empty() {
+                queue.write_buffer(&buf, 0, bytes);
+            }
+            buf
+        };
+        self.quads = Some(buffer("quads", bytemuck::cast_slice(&instances)));
+        self.lanes = Some(buffer("lanes", bytemuck::cast_slice(&lanes)));
+        self.n_lanes = lanes.len() as u32;
     }
 
-    /// The clear colour for the target (linear when the target stores sRGB).
     fn clear_colour(&self) -> wgpu::Color {
         let to = |c: f32| {
             let c = c as f64;
@@ -396,14 +402,13 @@ impl Renderer {
                 ((c + 0.055) / 1.055).powf(2.4)
             }
         };
-        let b = self.style.background;
-        wgpu::Color { r: to(b[0]), g: to(b[1]), b: to(b[2]), a: 1.0 }
+        wgpu::Color { r: to(self.clear[0]), g: to(self.clear[1]), b: to(self.clear[2]), a: 1.0 }
     }
 
-    /// Records the map into `target`: cleared, the lanes, then the stars.
-    pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+    /// Records the uploaded scene into `target`, the layers in `mask` (bits of Layer::bit).
+    pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, mask: u32) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("galaxy"),
+            label: Some("map"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 depth_slice: None,
@@ -412,94 +417,105 @@ impl Renderer {
             })],
             ..Default::default()
         });
-        pass.set_bind_group(0, &self.bind_group, &[]);
-        if self.n_lanes > 0 {
-            pass.set_pipeline(&self.lane_pipeline);
-            pass.set_vertex_buffer(0, self.lanes.slice(..));
-            pass.draw(0..6, 0..self.n_lanes);
+        pass.set_bind_group(0, &self.view_bind, &[]);
+        let (Some(quads), Some(lanes)) = (&self.quads, &self.lanes) else { return };
+        let mut lanes_drawn = false;
+        let draw_lanes = |pass: &mut wgpu::RenderPass<'_>| {
+            if mask & Layer::Lanes.bit() != 0 && self.n_lanes > 0 {
+                pass.set_pipeline(&self.lane_pipeline);
+                pass.set_vertex_buffer(0, lanes.slice(..));
+                pass.draw(0..6, 0..self.n_lanes);
+            }
+        };
+        for d in &self.draws {
+            // the lanes go between the borders and the stars
+            if !lanes_drawn && d.layer as u32 > Layer::Lanes as u32 {
+                draw_lanes(&mut pass);
+                lanes_drawn = true;
+            }
+            if mask & d.layer.bit() == 0 || d.range.is_empty() {
+                continue;
+            }
+            pass.set_pipeline(if d.blend == Blend::Add { &self.quad_add } else { &self.quad_alpha });
+            pass.set_bind_group(1, &self.textures[&d.texture].bind, &[]);
+            pass.set_vertex_buffer(0, quads.slice(..));
+            pass.draw(0..6, d.range.clone());
         }
-        if self.n_stars > 0 {
-            pass.set_pipeline(&self.star_pipeline);
-            pass.set_vertex_buffer(0, self.stars.slice(..));
-            pass.draw(0..6, 0..self.n_stars);
+        if !lanes_drawn {
+            draw_lanes(&mut pass);
         }
     }
 }
 
-/// Renders the map offscreen into an RGBA8 image of `width` x `height` (rows top to bottom, no
-/// padding). Returns the pixels, the layout used and the adapter's description.
-pub fn render_offscreen(
-    galaxy: &Galaxy,
-    width: u32,
-    height: u32,
-    want: Option<&str>,
-) -> Result<(Vec<u8>, Layout, String), String> {
-    let instance = instance();
-    let (adapter, device, queue) = pollster::block_on(open_device(&instance, want, None))?;
-    let adapter_text = describe(&adapter.get_info());
-    eprintln!("rendering on: {adapter_text}");
-    let format = wgpu::TextureFormat::Rgba8Unorm;
-    let renderer = Renderer::new(&device, format, galaxy, Style::default());
-    let layout = renderer.layout(&queue, width, height);
+/// An offscreen device and target: renders an uploaded scene with any layer mask and reads it
+/// back.
+pub struct Offscreen {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub adapter: String,
+    pub renderer: Renderer,
+}
 
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("galaxy"),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let row = width as usize * 4;
-    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
-    let padded = row.div_ceil(align) * align;
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("readback"),
-        size: (padded * height as usize) as u64,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
+pub const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("galaxy") });
-    renderer.draw(&mut encoder, &view);
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &readback,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded as u32),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-    );
-    let t0 = std::time::Instant::now();
-    queue.submit([encoder.finish()]);
-
-    let slice = readback.slice(..);
-    let (tx, rx) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |r| {
-        let _ = tx.send(r);
-    });
-    device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("poll: {e}"))?;
-    rx.recv().map_err(|e| format!("map: {e}"))?.map_err(|e| format!("map: {e}"))?;
-    let mut pixels = Vec::with_capacity(row * height as usize);
-    {
-        let data = slice.get_mapped_range().map_err(|e| format!("map: {e}"))?;
-        for y in 0..height as usize {
-            pixels.extend_from_slice(&data[y * padded..y * padded + row]);
-        }
+impl Offscreen {
+    pub fn new(want: Option<&str>) -> Result<Offscreen, String> {
+        let instance = instance();
+        let (adapter, device, queue) = pollster::block_on(open_device(&instance, want, None))?;
+        let adapter = describe(&adapter.get_info());
+        let renderer = Renderer::new(&device, OFFSCREEN_FORMAT);
+        Ok(Offscreen { device, queue, adapter, renderer })
     }
-    readback.unmap();
-    eprintln!("rendered {width}x{height} in {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0);
-    Ok((pixels, layout, adapter_text))
+
+    /// Renders the uploaded scene's layers in `mask` into a `width` x `height` RGBA8 image (rows
+    /// top to bottom).
+    pub fn render(&self, width: u32, height: u32, mask: u32) -> Result<Vec<u8>, String> {
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("map"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: OFFSCREEN_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let row = width as usize * 4;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+        let padded = row.div_ceil(align) * align;
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: (padded * height as usize) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") });
+        self.renderer.draw(&mut encoder, &view, mask);
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded as u32), rows_per_image: Some(height) },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        self.queue.submit([encoder.finish()]);
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("poll: {e}"))?;
+        rx.recv().map_err(|e| format!("map: {e}"))?.map_err(|e| format!("map: {e}"))?;
+        let mut pixels = Vec::with_capacity(row * height as usize);
+        {
+            let data = slice.get_mapped_range().map_err(|e| format!("map: {e}"))?;
+            for y in 0..height as usize {
+                pixels.extend_from_slice(&data[y * padded..y * padded + row]);
+            }
+        }
+        readback.unmap();
+        Ok(pixels)
+    }
 }

@@ -1,45 +1,21 @@
-//! Checks a rendered map by reading the PNG back from disk: what its pixels are (background,
-//! each owner's colour, unowned grey, lanes), whether every system's disc is where its
-//! coordinates put it with the colour of its owner, and whether every lane is drawn.
+//! Checks a rendered frame by reading its PNG back from disk and comparing it with renders of the
+//! same scene with one layer left out: what each layer changed, and where.
+//! - stars: every star sprite changes pixels inside its rectangle;
+//! - lanes: every hyperlane changes the pixel at its middle;
+//! - borders: each owner's territory changes the pixels inside it, and its edge band has the
+//!   owner's first colour;
+//! - GUI: every top bar sprite with visible texels changes pixels inside its rectangle;
+//! - texts: the top bar's numbers are read back from the pixels (each glyph of the font matched
+//!   against what the text layer drew, by normalised cross-correlation) and compared with the
+//!   values the save gives.
 
+use std::collections::HashMap;
+
+use crate::border::Borders;
+use crate::font::Font;
 use crate::galaxy::Galaxy;
-use crate::render::{Layout, Style};
-
-pub struct Check {
-    pub width: u32,
-    pub height: u32,
-    pub background: usize,
-    pub unowned: usize,
-    pub lane: usize,
-    /// antialiased edges and blends: neither the background nor a colour drawn
-    pub other: usize,
-    /// pixels of each country's colour, by index into `Galaxy::countries` (countries that share a
-    /// colour have the same count)
-    pub per_country: Vec<usize>,
-    /// the owners' distinct colours, and the pixels of any of them
-    pub colours: usize,
-    pub coloured: usize,
-    pub countries_visible: usize,
-    pub systems: usize,
-    /// systems whose centre pixel has the colour of the disc drawn last over it
-    pub systems_ok: usize,
-    /// of those, systems whose own colour is the one seen (not covered by a later disc)
-    pub systems_own_colour: usize,
-    pub lanes: usize,
-    /// lanes whose middle is not under a disc, and of those, how many are drawn there
-    pub lanes_checked: usize,
-    pub lanes_ok: usize,
-    /// the drawn pixels' bounding box: x0, y0, x1, y1
-    pub bbox: (u32, u32, u32, u32),
-}
-
-fn bytes(c: [f32; 3]) -> [u8; 3] {
-    [(c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8]
-}
-
-fn near(p: &[u8], c: [u8; 3]) -> bool {
-    (0..3).all(|i| (p[i] as i32 - c[i] as i32).abs() <= 1)
-}
+use crate::gui::Topbar;
+use crate::scene::{Layer, Layout, Scene, LAYERS};
 
 /// Reads an RGBA8 (or RGB8) PNG.
 pub fn read_png(path: &str) -> Result<(u32, u32, Vec<u8>), String> {
@@ -69,125 +45,342 @@ pub fn write_png(path: &str, width: u32, height: u32, rgba: &[u8]) -> Result<(),
     Ok(())
 }
 
-pub fn check(path: &str, galaxy: &Galaxy, layout: &Layout, style: &Style) -> Result<Check, String> {
-    let (width, height, px) = read_png(path)?;
-    if (width, height) != (layout.width, layout.height) {
-        return Err(format!("{path}: {width}x{height}, rendered {}x{}", layout.width, layout.height));
+impl Layout {
+    /// Pixels from the top left -> a map position.
+    pub fn to_map(&self, px: f32, py: f32) -> (f32, f32) {
+        let nx = px / self.width as f32 * 2.0 - 1.0;
+        let ny = 1.0 - py / self.height as f32 * 2.0;
+        ((nx - self.world_to_ndc[2]) / self.world_to_ndc[0], (ny - self.world_to_ndc[3]) / self.world_to_ndc[1])
     }
-    let at = |x: u32, y: u32| -> &[u8] {
-        let i = (y as usize * width as usize + x as usize) * 4;
-        &px[i..i + 3]
-    };
-    let bg = bytes(style.background);
-    let lane = bytes(style.lane);
-    let unowned = bytes(style.unowned);
-    let country: Vec<[u8; 3]> = galaxy.countries.iter().map(|c| bytes(style.owner_colour(c.rgb))).collect();
-    // countries can share a colour: pixels are counted per colour, and a country's count is its
-    // colour's
-    let mut palette: Vec<[u8; 3]> = Vec::new();
-    for &k in &country {
-        if !palette.contains(&k) {
-            palette.push(k);
-        }
-    }
-    let mut per_colour = vec![0usize; palette.len()];
+}
 
-    // every pixel, by what it is
-    let mut c = Check {
-        width,
-        height,
-        background: 0,
-        unowned: 0,
-        lane: 0,
-        other: 0,
-        per_country: vec![0; country.len()],
-        colours: 0,
-        coloured: 0,
-        countries_visible: 0,
-        systems: galaxy.systems.len(),
-        systems_ok: 0,
-        systems_own_colour: 0,
-        lanes: galaxy.lanes.len(),
-        lanes_checked: 0,
-        lanes_ok: 0,
-        bbox: (u32::MAX, u32::MAX, 0, 0),
-    };
-    for y in 0..height {
-        for x in 0..width {
-            let p = at(x, y);
-            if near(p, bg) {
-                c.background += 1;
-                continue;
-            }
-            c.bbox = (c.bbox.0.min(x), c.bbox.1.min(y), c.bbox.2.max(x), c.bbox.3.max(y));
-            if let Some(k) = palette.iter().position(|&k| near(p, k)) {
-                per_colour[k] += 1;
-            } else if near(p, unowned) {
-                c.unowned += 1;
-            } else if near(p, lane) {
-                c.lane += 1;
-            } else {
-                c.other += 1;
+/// A frame and the frame without one layer: the difference per pixel (the largest of the three
+/// channels, 0..255).
+struct Diff<'a> {
+    w: u32,
+    h: u32,
+    full: &'a [u8],
+    off: &'a [u8],
+}
+
+impl Diff<'_> {
+    fn at(&self, x: i32, y: i32) -> u8 {
+        if x < 0 || y < 0 || x >= self.w as i32 || y >= self.h as i32 {
+            return 0;
+        }
+        let i = (y as usize * self.w as usize + x as usize) * 4;
+        (0..3).map(|c| self.full[i + c].abs_diff(self.off[i + c])).max().unwrap()
+    }
+    fn changed_in(&self, r: [f32; 4]) -> usize {
+        let (x0, y0) = (r[0].floor().max(0.0) as i32, r[1].floor().max(0.0) as i32);
+        let (x1, y1) = (r[2].ceil().min(self.w as f32) as i32, r[3].ceil().min(self.h as f32) as i32);
+        let mut n = 0;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if self.at(x, y) > 2 {
+                    n += 1;
+                }
             }
         }
+        n
     }
-    c.colours = palette.len();
-    c.coloured = per_colour.iter().sum();
-    c.per_country = country.iter().map(|k| per_colour[palette.iter().position(|p| p == k).unwrap()]).collect();
-    c.countries_visible = c.per_country.iter().filter(|&&n| n > 0).count();
+    fn total(&self) -> usize {
+        (0..self.h as i32).map(|y| (0..self.w as i32).filter(|&x| self.at(x, y) > 2).count()).sum()
+    }
+}
 
-    // the discs, in the order they are drawn (unowned first, then owned), in pixels
-    let mut order: Vec<usize> = (0..galaxy.systems.len()).collect();
-    order.sort_by_key(|&i| galaxy.systems[i].owner.is_some());
-    let discs: Vec<(f32, f32, f32, [u8; 3], usize)> = order
-        .iter()
-        .map(|&i| {
-            let s = &galaxy.systems[i];
-            let (x, y) = layout.to_pixel(s.x, s.y);
-            let r = if s.owner.is_some() { layout.star_radius } else { layout.unowned_radius };
-            (x, y, r, bytes(style.system_colour(galaxy, i)), i)
+pub struct OwnerCheck {
+    pub country: usize,
+    /// the territory's pixels, and those the borders layer changed
+    pub pixels: usize,
+    pub changed: usize,
+    /// the fill's pixels; those where the border should show (its colour over what is under it
+    /// differs from what is under it), and of those the ones changed; the mean difference
+    /// between each pixel and its prediction (0..255)
+    pub fill_pixels: usize,
+    pub fill_visible: usize,
+    pub fill_visible_changed: usize,
+    pub fill_error: f32,
+    pub edge_pixels: usize,
+    /// the edge band's mean colour in the frame, and its distance to the owner's first colour
+    pub edge_mean: [f32; 3],
+    pub edge_error: f32,
+}
+
+pub struct TextCheck {
+    pub path: String,
+    pub expected: String,
+    pub read: String,
+    pub score: f32,
+    pub source: String,
+}
+
+pub struct Check {
+    pub width: u32,
+    pub height: u32,
+    pub changed: Vec<(Layer, usize)>,
+    pub stars: usize,
+    pub stars_ok: usize,
+    pub lanes: usize,
+    pub lanes_ok: usize,
+    pub owners: Vec<OwnerCheck>,
+    pub sprites: usize,
+    pub sprites_visible: usize,
+    pub sprites_ok: usize,
+    pub sprites_missing: Vec<String>,
+    pub texts: Vec<TextCheck>,
+}
+
+impl Check {
+    pub fn ok(&self) -> bool {
+        self.stars_ok == self.stars
+            && self.lanes_ok == self.lanes
+            && self.owners.iter().all(|o| {
+                o.fill_visible_changed * 100 >= o.fill_visible * 98 && o.fill_error < 3.0 && o.edge_error < 40.0
+            })
+            && self.sprites_ok == self.sprites_visible
+            && self.texts.iter().all(|t| t.read == t.expected)
+    }
+}
+
+/// The characters the top bar's numbers are made of.
+const CHARSET: &str = "0123456789.,KM-+/";
+
+/// Reads the text the text layer drew in a box: the glyphs of `font` matched left to right
+/// against the difference the layer made, starting where its first ink is.
+fn read_text(font: &Font, diff: &Diff, rect: [f32; 4], top: f32) -> (String, f32) {
+    let (x0, x1) = (rect[0].floor() as i32 - 6, rect[2].ceil() as i32 + 6);
+    let (y0, y1) = (top as i32, (top + font.line_height) as i32 + 2);
+    let ink = |x: i32| (y0..y1).any(|y| diff.at(x, y) > 40);
+    let Some(left) = (x0..x1).find(|&x| ink(x)) else { return (String::new(), 0.0) };
+    let right = (x0..x1).rev().find(|&x| ink(x)).unwrap();
+    let atlas = &font.image;
+    let alpha = |gx: i32, gy: i32| -> f32 {
+        if gx < 0 || gy < 0 || gx >= atlas.width as i32 || gy >= atlas.height as i32 {
+            0.0
+        } else {
+            atlas.pixel(gx as u32, gy as u32)[3] as f32 / 255.0
+        }
+    };
+    // the glyph's ink's first column, from its pen position
+    let ink_left = |c: char| -> Option<f32> {
+        let g = font.glyphs.get(&c)?;
+        (0..g.width as i32).find(|&dx| (0..g.height as i32).any(|dy| alpha(g.x as i32 + dx, g.y as i32 + dy) > 0.3)).map(|dx| g.xoffset + dx as f32)
+    };
+    // the match of glyph c with its pen at `pen`: the columns of its advance only (the glyph
+    // cells overlap their neighbours by the font's padding)
+    let score = |c: char, pen: f32| -> f32 {
+        let Some(g) = font.glyphs.get(&c) else { return -1.0 };
+        let (mut m, mut d) = (Vec::new(), Vec::new());
+        for dy in 0..g.height as i32 {
+            for dx in 0..g.width as i32 {
+                let sx = (pen + g.xoffset) as i32 + dx;
+                if (sx as f32) < pen || (sx as f32) >= pen + g.xadvance {
+                    continue;
+                }
+                m.push(alpha(g.x as i32 + dx, g.y as i32 + dy));
+                d.push(diff.at(sx, (top + g.yoffset) as i32 + dy) as f32 / 255.0);
+            }
+        }
+        let n = m.len() as f32;
+        if n == 0.0 {
+            return -1.0;
+        }
+        let (mm, dm) = (m.iter().sum::<f32>() / n, d.iter().sum::<f32>() / n);
+        let (mut num, mut sm, mut sd) = (0.0, 0.0, 0.0);
+        for (a, b) in m.iter().zip(&d) {
+            num += (a - mm) * (b - dm);
+            sm += (a - mm) * (a - mm);
+            sd += (b - dm) * (b - dm);
+        }
+        if sm <= 0.0 || sd <= 0.0 {
+            return 0.0;
+        }
+        num / (sm * sd).sqrt()
+    };
+    // one reading per possible first glyph (each puts the pen elsewhere); the best is the one
+    // that covers the ink, then the one that matches best
+    let mut readings: Vec<(bool, f32, String)> = Vec::new();
+    for first in CHARSET.chars() {
+        let Some(il) = ink_left(first) else { continue };
+        let mut pen = left as f32 - il;
+        let (mut text, mut total) = (String::new(), 0.0);
+        while pen < right as f32 - 1.0 && text.len() < 24 {
+            let (c, s) = CHARSET.chars().map(|c| (c, score(c, pen))).fold(('?', -2.0), |a, b| if b.1 > a.1 { b } else { a });
+            // a small glyph (a dot) between two others matches less well than a digit
+            if s < 0.25 {
+                break;
+            }
+            text.push(c);
+            total += s;
+            pen += font.glyphs[&c].xadvance;
+        }
+        if !text.is_empty() {
+            let covered = pen >= right as f32 - 1.0;
+            readings.push((covered, total / text.len() as f32, text));
+        }
+    }
+    readings.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.total_cmp(&a.1)));
+    readings.into_iter().next().map(|(_, s, t)| (t, s)).unwrap_or_default()
+}
+
+pub struct Frames<'a> {
+    pub width: u32,
+    pub height: u32,
+    /// the renders without one layer each
+    pub without: &'a HashMap<Layer, Vec<u8>>,
+}
+
+pub fn check(
+    path: &str,
+    frames: &Frames,
+    scene: &Scene,
+    galaxy: &Galaxy,
+    borders: &Borders,
+    bar: &Topbar,
+    fonts: &HashMap<String, Font>,
+) -> Result<Check, String> {
+    let (w, h, full) = read_png(path)?;
+    if (w, h) != (frames.width, frames.height) {
+        return Err(format!("{path}: {w}x{h}, rendered {}x{}", frames.width, frames.height));
+    }
+    let diff = |l: Layer| Diff { w, h, full: &full, off: &frames.without[&l] };
+    let changed = LAYERS.iter().map(|&l| (l, diff(l).total())).collect();
+    let layout = &scene.layout;
+
+    // stars
+    let ds = diff(Layer::Stars);
+    let stars_ok = scene.stars.iter().filter(|s| ds.changed_in(s.rect) > 0).count();
+
+    // lanes, at their middle
+    let dl = diff(Layer::Lanes);
+    let mut lanes_ok = 0;
+    for l in &scene.lanes {
+        let (mx, my) = layout.to_pixel(0.5 * (l[0] + l[2]), 0.5 * (l[1] + l[3]));
+        if (-1..=1).any(|dy| (-1..=1).any(|dx| dl.at(mx as i32 + dx, my as i32 + dy) > 0)) {
+            lanes_ok += 1;
+        }
+    }
+
+    // borders: the pixels each owner's territory covers (its texels' distance > 1.5 texels); in
+    // its fill (past the edge band), what each pixel should be: the border texture's colour over
+    // the frame without the borders
+    let db = diff(Layer::Borders);
+    let under = &frames.without[&Layer::Borders];
+    let mut owners: Vec<OwnerCheck> = (0..galaxy.countries.len())
+        .map(|c| OwnerCheck {
+            country: c,
+            pixels: 0,
+            changed: 0,
+            fill_pixels: 0,
+            fill_visible: 0,
+            fill_visible_changed: 0,
+            fill_error: 0.0,
+            edge_pixels: 0,
+            edge_mean: [0.0; 3],
+            edge_error: 0.0,
         })
         .collect();
-    for &(x, y, _, own, _) in &discs {
-        let (fx, fy) = (x.floor(), y.floor());
-        if fx < 0.0 || fy < 0.0 || fx >= width as f32 || fy >= height as f32 {
-            continue;
-        }
-        let (cx, cy) = (fx + 0.5, fy + 0.5);
-        // the colour of the last disc that covers this pixel fully
-        let mut expected = own;
-        for &(dx, dy, dr, dc, _) in &discs {
-            if ((cx - dx).powi(2) + (cy - dy).powi(2)).sqrt() <= dr - 0.5 {
-                expected = dc;
+    let top_bar = 40;
+    for y in top_bar..h as i32 {
+        for x in 0..w as i32 {
+            let (mx, my) = layout.to_map(x as f32 + 0.5, y as f32 + 0.5);
+            let Some(t) = borders.texel_at(mx, my) else { continue };
+            let o = borders.owner[t];
+            let d = borders.dist[t];
+            if o == 0 || d < borders.texel * 1.5 {
+                continue;
+            }
+            let oc = &mut owners[o as usize - 1];
+            oc.pixels += 1;
+            if db.at(x, y) > 2 {
+                oc.changed += 1;
+            }
+            let i = (y as usize * w as usize + x as usize) * 4;
+            if d > crate::border::EDGE + 3.0 * borders.texel && dl.at(x, y) == 0 && ds.at(x, y) == 0 {
+                let s = borders.sample(mx, my);
+                let a = s[3] / 255.0;
+                let mut err = 0f32;
+                let mut visible = 0f32;
+                for c in 0..3 {
+                    let predicted = s[c] * a + under[i + c] as f32 * (1.0 - a);
+                    err = err.max((predicted - full[i + c] as f32).abs());
+                    visible = visible.max((predicted - under[i + c] as f32).abs());
+                }
+                oc.fill_pixels += 1;
+                oc.fill_error += err;
+                if visible > 4.0 {
+                    oc.fill_visible += 1;
+                    if db.at(x, y) > 2 {
+                        oc.fill_visible_changed += 1;
+                    }
+                }
+            }
+            // the edge band, inside the darker line, where no lane or star is drawn over it
+            if d > 1.0 && d < 1.7 && dl.at(x, y) == 0 && ds.at(x, y) == 0 {
+                for c in 0..3 {
+                    oc.edge_mean[c] += full[i + c] as f32;
+                }
+                oc.edge_pixels += 1;
             }
         }
-        let p = at(fx as u32, fy as u32);
-        if near(p, expected) {
-            c.systems_ok += 1;
-            if expected == own {
-                c.systems_own_colour += 1;
+    }
+    for oc in &mut owners {
+        if oc.fill_pixels > 0 {
+            oc.fill_error /= oc.fill_pixels as f32;
+        }
+        if oc.edge_pixels > 0 {
+            for c in 0..3 {
+                oc.edge_mean[c] /= oc.edge_pixels as f32;
             }
+            let p = galaxy.countries[oc.country].primary;
+            // the band is the first colour at 90% over what is under it
+            oc.edge_error = (0..3).map(|c| (oc.edge_mean[c] - p[c] * 255.0 * 0.9).abs()).fold(0.0, f32::max);
+        } else {
+            oc.edge_error = f32::INFINITY;
         }
     }
 
-    // the lanes, at their middle when no disc is there
-    for &(a, b) in &galaxy.lanes {
-        let (sa, sb) = (&galaxy.systems[a as usize], &galaxy.systems[b as usize]);
-        let (ax, ay) = layout.to_pixel(sa.x, sa.y);
-        let (bx, by) = layout.to_pixel(sb.x, sb.y);
-        let (mx, my) = (0.5 * (ax + bx), 0.5 * (ay + by));
-        let (fx, fy) = (mx.floor(), my.floor());
-        if fx < 0.0 || fy < 0.0 || fx >= width as f32 || fy >= height as f32 {
+    // GUI sprites
+    let dg = diff(Layer::Gui);
+    let mut sprites_ok = 0;
+    let mut sprites_missing = Vec::new();
+    let mut sprites_visible = 0;
+    for s in &scene.sprites {
+        if !s.visible {
             continue;
         }
-        let (cx, cy) = (fx + 0.5, fy + 0.5);
-        if discs.iter().any(|&(dx, dy, dr, _, _)| ((cx - dx).powi(2) + (cy - dy).powi(2)).sqrt() <= dr + 1.5) {
-            continue;
-        }
-        c.lanes_checked += 1;
-        if !near(at(fx as u32, fy as u32), bg) {
-            c.lanes_ok += 1;
+        sprites_visible += 1;
+        if dg.changed_in(s.rect) > 0 {
+            sprites_ok += 1;
+        } else {
+            sprites_missing.push(format!("{} ({})", s.path, s.sprite));
         }
     }
-    Ok(c)
+
+    // texts bound to the save, read back
+    let dt = diff(Layer::Text);
+    let mut texts = Vec::new();
+    for b in &bar.bound {
+        let Some(p) = scene.texts.iter().find(|t| t.path == b.path) else { continue };
+        let Some(font) = fonts.get(&p.font) else { continue };
+        let (read, score) = read_text(font, &dt, p.rect, p.pen.1);
+        texts.push(TextCheck { path: b.path.clone(), expected: b.text.clone(), read, score, source: b.source.clone() });
+    }
+
+    Ok(Check {
+        width: w,
+        height: h,
+        changed,
+        stars: scene.stars.len(),
+        stars_ok,
+        lanes: scene.lanes.len(),
+        lanes_ok,
+        owners,
+        sprites: scene.sprites.len(),
+        sprites_visible,
+        sprites_ok,
+        sprites_missing,
+        texts,
+    })
 }
