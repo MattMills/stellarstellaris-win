@@ -183,7 +183,7 @@ function capture.dump(where, path, type_names)
             local children, d = children_of(node, data, count)
             edges, dead = edges + #children, dead + d
             f:write(string.format("%d\t%s\t%d\t%d\t%s\t%s\t%s\t%d\t%d\n", bit.band(i32(node, 8), 0xFFFFF),
-                capture.CATEGORIES[i32(ptr(node, 0), 8)] or "?", i32(node, 0xc), ffi.cast("uint8_t *", node + 0x108)[0],
+                capture.CATEGORIES[i32(ptr(node, 0), 8)] or "?", tonumber(ffi.cast("uint32_t *", node + 0xc)[0]), ffi.cast("uint8_t *", node + 0x108)[0],
                 table.concat(own, ","), table.concat(added, ";"), table.concat(children, ","), i32(set, 0xa8), i32(set, 0xac)))
             nodes, values = nodes + 1, values + n
         end
@@ -242,7 +242,7 @@ function capture.read_node(node, registry, count)
     local set = node + 0x50
     local full = ffi.cast("uint32_t *", node + 8)[0]
     local n = { id = bit.band(full, 0xFFFFF), full_id = full, category = capture.CATEGORIES[i32(ptr(node, 0), 8)] or "?",
-        owner = i32(node, 0xc), invalid = ffi.cast("uint8_t *", node + 0x108)[0] ~= 0, values = value_map(set), parts = {},
+        owner = ffi.cast("uint32_t *", node + 0xc)[0], invalid = ffi.cast("uint8_t *", node + 0x108)[0] ~= 0, values = value_map(set), parts = {},
         depth = i32(set, 0xa8), categories = i32(set, 0xac), address = node }
     local added_count, added_data = i32(set, 0x88 + 0x14), ptr(set, 0x88 + 8)
     if added_data ~= nil and added_count > 0 and added_count < 10000 then

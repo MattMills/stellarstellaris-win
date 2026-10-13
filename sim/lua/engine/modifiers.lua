@@ -31,6 +31,11 @@
 --   PopGroup: pop category, the species' traits (one part, then each trait's triggered blocks),
 --     the owner's species rights (living standard, citizenship, slavery / purge type, population
 --     control; none in a fallen empire), low habitability.
+--   Leader: the species' traits, the leader's traits' self_modifier and triggered_self_modifier.
+--   LeaderSkill: the skill statics x level (S:leader_skill), a ruler's council position x level,
+--     the traits' `modifier` blocks.
+--   StarbaseExternal: the governors of its system's colonies, skill_<class>_planet_governor and
+--     their skill statics x level.
 -- Triggered blocks need the script layer (simscript.eval, loaded by engine.load); their potential
 -- is evaluated in the object's scope. A block whose `mult` is another modifier's value
 -- (`mult = modifier:x`) is given that value by self.resolve_ref (the graph's), when set.
@@ -48,8 +53,11 @@ M.FILTER = {
     Planet = 1074432514,
     Colony = 1074430466,
     PopGroup = 688130,
+    Ship = 49276,
+    Leader = 525312,
 }
-M.CATEGORIES = { "Country", "Planet", "Colony", "PopGroup" }
+M.CATEGORIES = { "Country", "Planet", "Colony", "PopGroup", "Ship", "Leader", "LeaderSkill", "Starbase", "StarbaseCountry", "StarbaseExternal",
+    "StarbaseSystem", "StarbaseDefensePlatform", "Orbital" }
 
 -- A key of a modifier block that is not a modifier type but names a static modifier
 -- (`researcher_jobs_bonus_workforce_mult = 0.1`, common/static_modifiers/24_static_modifiers_jobs.txt)
@@ -220,6 +228,42 @@ function S:def(folder, name)
     return d
 end
 
+-- the definitions of a folder whose entries are named by a `key = "X"` inside them (component and
+-- section templates: `utility_component_template = { key = "HYPER_DRIVE_1" ... }`; engine.defs
+-- keeps one per wrapper name): key -> { block (inline scripts expanded), file }, a later file's
+-- definition replacing an earlier one
+function S:keyed(folder)
+    local ck = "keyed|" .. folder
+    local index = self.cache[ck]
+    if index == nil then
+        index = {}
+        for _, file in ipairs(source.files(self.fs, folder, "txt")) do
+            for _, e in ipairs(source.parse(self.fs, file) or {}) do
+                if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
+                    local key = unq(self.defs.field(e.value, "key"))
+                    if key then
+                        index[key] = { block = source.expand(self.fs, e.value, nil, 0, "file: " .. file), file = file }
+                    end
+                end
+            end
+        end
+        self.cache[ck] = index
+    end
+    return index
+end
+
+-- the values of the block `field` of a keyed definition, cached
+function S:keyed_values(folder, key, field)
+    local ck = "kv|" .. folder .. "|" .. tostring(key) .. "|" .. field
+    local v = self.cache[ck]
+    if v == nil then
+        local d = key and self:keyed(folder)[key]
+        v = d and self:values(self.defs.field(d.block, field), d.file) or false
+        self.cache[ck] = v
+    end
+    return v or nil
+end
+
 -- a definition's block with its inline scripts expanded (a trait's or a pop category's modifier
 -- blocks often come from one), cached
 function S:def_block(folder, name)
@@ -261,6 +305,88 @@ function S:static(name)
     return self:def_values("common/static_modifiers", name, nil)
 end
 
+-- a define (common/defines: NDefines = { NGroup = { KEY = value } }), any group
+function S:define(key)
+    local v = self.cache["define|" .. key]
+    if v == nil then
+        v = false
+        for _, d in pairs(self.defs.folder("common/defines")) do
+            for _, e in ipairs(d.block) do
+                if e.op and type(e.value) == "table" and v == false then
+                    local x = self.defs.field(e.value, key)
+                    if x ~= nil then
+                        v = x
+                    end
+                end
+            end
+        end
+        self.cache["define|" .. key] = v
+    end
+    return v or nil
+end
+
+-- the galaxy's scale of the NPCs' difficulty bonuses: 1 at SCALED_DIFFICULTY_MAX_GALAXY_SIZE systems
+-- and more, smaller ones less (SCALED_DIFFICULTY_GALAXY_SIZE_MULT of the shortfall); 596 systems:
+-- 1 - 0.75 * (1 - 596 / 1000) = 0.697, as the capture's difficulty parts have it
+function S:difficulty_scale()
+    local max = tonumber(self:define("SCALED_DIFFICULTY_MAX_GALAXY_SIZE")) or 1000
+    local mult = tonumber(self:define("SCALED_DIFFICULTY_GALAXY_SIZE_MULT")) or 0.75
+    local size = #self.world.all("galactic_object")
+    return 1 - mult * (1 - math.min(1, size / max))
+end
+
+-- triggers the sources read that the script layer does not answer yet (filled in below, by
+-- "the world"), installed while a trigger is evaluated with the economy's (engine/economy/script.lua)
+local EXTRA_TRIGGERS = {}
+local econ_script
+do
+    local ok, m = pcall(require, "engine.economy.script")
+    econ_script = ok and m or nil
+end
+
+-- the DLCs of the game (the save's required_dlcs): has_dlc and host_has_dlc, which the script
+-- layer answers yes for every DLC
+local REPLACED_TRIGGERS = {}
+function REPLACED_TRIGGERS.has_dlc(self, e)
+    if self.dlcs == nil then
+        self.dlcs = {}
+        local list = self.world.meta.required_dlcs
+        for _, x in ipairs(type(list) == "table" and list or {}) do
+            if x.text then
+                self.dlcs[unq(x.text)] = true
+            end
+        end
+    end
+    return self.dlcs[unq(e.value.text)] == true
+end
+REPLACED_TRIGGERS.host_has_dlc = REPLACED_TRIGGERS.has_dlc
+
+-- f() with the extra triggers installed where the script layer has none, and the replaced ones
+function S:with_script(f)
+    local TRIG = self.eval.TRIG
+    local saved = {}
+    for k, g in pairs(EXTRA_TRIGGERS) do
+        if TRIG[k] == nil then
+            saved[k] = false
+            TRIG[k] = function(e, ctx) return g(self, e, ctx) end
+        end
+    end
+    for k, g in pairs(REPLACED_TRIGGERS) do
+        saved[k] = TRIG[k] or false
+        TRIG[k] = function(e, ctx) return g(self, e, ctx) end
+    end
+    local ok, r
+    if econ_script then
+        ok, r = pcall(econ_script.with, f)
+    else
+        ok, r = pcall(f)
+    end
+    for k, g in pairs(saved) do
+        TRIG[k] = g or nil
+    end
+    return ok, r
+end
+
 -- a trigger block evaluated in a scope (kind, id) by the script layer -> true, false, or nil when it
 -- cannot be evaluated
 function S:trigger(block, kind, id, file)
@@ -269,7 +395,7 @@ function S:trigger(block, kind, id, file)
     end
     self.stats.triggers = self.stats.triggers + 1
     local ctx = self.eval.new_ctx(self.eval.S(kind, id), nil, nil, file)
-    local ok, r = pcall(self.eval.trigger, block, ctx)
+    local ok, r = self:with_script(function() return self.eval.trigger(block, ctx) end)
     if not ok then
         self.stats.trigger_errors = self.stats.trigger_errors + 1
         return nil
@@ -369,6 +495,31 @@ local function list_of(w, obj, key)
     return out
 end
 
+-- leader_class = <class>: the leader's class
+function EXTRA_TRIGGERS.leader_class(self, e, ctx)
+    local l = ctx.this.kind == "leader" and self.leaders[ctx.this.id]
+    return l and l.class == unq(e.value.text) or false
+end
+
+-- is_immortal: a leader with a trait (its own, or its species') of `immortal_leaders = yes`
+function EXTRA_TRIGGERS.is_immortal(self, e, ctx)
+    local r = ctx.this.kind == "leader" and self:immortal(ctx.this.id) or false
+    return r == (e.value.text ~= "no")
+end
+
+-- has_relic = <relic>: in the country's relics
+function EXTRA_TRIGGERS.has_relic(self, e, ctx)
+    if ctx.this.kind ~= "country" then
+        return false
+    end
+    for _, r in ipairs(list_of(self.world, self.world.object("country", ctx.this.id), "relics")) do
+        if r == unq(e.value.text) then
+            return true
+        end
+    end
+    return false
+end
+
 -- the bare blocks of a list block (`active_policies = { { ... } { ... } }`)
 local function blocks_of(b)
     local out = {}
@@ -431,6 +582,48 @@ function S:index_world()
             local l = self.council[country] or {}
             self.council[country] = l
             l[#l + 1] = { type = unq(w.field(o, "type")), leader = w.field(o, "leader") }
+        end
+    end
+    -- the colonized planets of each country; the planet each governor governs
+    self.colonies_of, self.governed = {}, {}
+    for _, pid in ipairs(w.all("planet")) do
+        local p = w.object("planet", pid)
+        local owner, colony = w.field(p, "owner"), w.field(p, "colony")
+        if type(owner) == "number" and type(colony) == "number" then
+            local l = self.colonies_of[owner] or {}
+            self.colonies_of[owner] = l
+            l[#l + 1] = pid
+        end
+        local gov = type(colony) == "number" and w.field(w.object("colony", colony), "governor")
+        if type(gov) == "number" then
+            self.governed[gov] = pid
+        end
+    end
+    -- the governors of each system's colonies; the system of each starbase
+    self.governors_of_system, self.system_of_starbase = {}, {}
+    for gov, pid in pairs(self.governed) do
+        local coord = w.field(w.object("planet", pid), "coordinate")
+        local sys = type(coord) == "table" and tonumber(w.field(coord, "origin"))
+        if sys then
+            local l = self.governors_of_system[sys] or {}
+            self.governors_of_system[sys] = l
+            l[#l + 1] = gov
+        end
+    end
+    for _, l in pairs(self.governors_of_system) do
+        table.sort(l)
+    end
+    for _, gid in ipairs(w.all("galactic_object")) do
+        for _, sb in ipairs(list_of(w, w.object("galactic_object", gid), "starbases")) do
+            self.system_of_starbase[tonumber(sb)] = gid
+        end
+    end
+    -- the country each ruler rules
+    self.ruler_of = {}
+    for _, cid in ipairs(w.all("country")) do
+        local r = w.field(w.object("country", cid), "ruler")
+        if type(r) == "number" then
+            self.ruler_of[r] = cid
         end
     end
     -- the player
@@ -549,6 +742,17 @@ function S:country(id)
     if ctype == "fallen_empire" then
         add("static:fallen_empire_base", self:static("fallen_empire_base"))
     end
+    self:contributions(parts, id)
+    -- an NPC country's difficulty bonuses: difficulty_<the galaxy's difficulty>_npc times its type's
+    -- scaled_difficulty_bonuses and the galaxy's scale (S:difficulty_scale)
+    local td = ctype and self.defs.get("common/country_types", ctype)
+    local sdb = td and tonumber(self.defs.field(td.block, "scaled_difficulty_bonuses"))
+    local galaxy = w.meta.galaxy
+    local difficulty = type(galaxy) == "table" and unq(w.field(galaxy, "difficulty"))
+    if sdb and sdb > 0 and difficulty then
+        local name = "difficulty_" .. difficulty .. "_npc"
+        add("static:" .. name, self:static(name), fixed(sdb * self:difficulty_scale()))
+    end
     -- a federation's members (its leader too) pay federation_tax
     if self.federation_of[id] then
         add("static:federation_tax", self:static("federation_tax"))
@@ -590,9 +794,77 @@ function S:country(id)
     end
     local ruler = w.field(c, "ruler")
     if type(ruler) == "number" and not has_ruler_position then
-        councilor(authority and ("councilor_ruler_" .. authority:gsub("^auth_", "")), ruler, "ruler_trait")
+        councilor(self:ruler_position(id), ruler, "ruler_trait")
     end
     return parts
+end
+
+-- the council position of a country's ruler: its authority's ruler_council_position, or that of
+-- the first advanced_authority_swap whose trigger holds (common/governments/authorities)
+function S:ruler_position(country)
+    local w = self.world
+    local gov = w.field(w.object("country", country), "government")
+    local auth = type(gov) == "table" and unq(w.field(gov, "authority"))
+    local d = type(auth) == "string" and self:def_block("common/governments/authorities", auth)
+    if not d then
+        return nil
+    end
+    local pos = self.defs.field(d.block, "ruler_council_position")
+    for _, e in ipairs(d.block) do
+        if e.op and e.key and e.key.text == "advanced_authority_swap" and type(e.value) == "table" then
+            local p = self.defs.field(e.value, "ruler_council_position")
+            local t = self.defs.field(e.value, "trigger")
+            if p and t and self:trigger(t, "country", country, d.file) then
+                pos = p
+                break
+            end
+        end
+    end
+    return type(pos) == "string" and unq(pos) or nil
+end
+
+-- what a country's objects add to its node: the country_modifier blocks (and the
+-- triggered_country_modifier blocks whose potential holds, in the object's planet's scope) of its
+-- colonies' worked jobs (times their amount, (workforce + bonus) / 100) and buildings, of its
+-- starbases' modules and buildings, of its megastructures
+function S:contributions(parts, id)
+    local w = self.world
+    local jobs, buildings = {}, {}
+    local function country_mods(sum, folder, ty, pid, mult)
+        sum_into(sum, self:def_values(folder, ty, "country_modifier"), mult)
+        for _, b in ipairs(self:active(folder, ty, "triggered_country_modifier", "planet", pid)) do
+            sum_into(sum, b.values, scale(b.mult, mult or 100000))
+        end
+    end
+    for _, pid in ipairs(self.colonies_of[id] or {}) do
+        local col = w.object("colony", w.field(w.object("planet", pid), "colony"))
+        for _, jid in ipairs(list_of(w, col, "pop_jobs")) do
+            local o = w.object("pop_jobs", tonumber(jid))
+            local ty = o and unq(w.field(o, "type"))
+            local wf, bonus = w.field(o, "workforce"), w.field(o, "bonus_workforce")
+            if ty and type(wf) == "number" and wf > 0 then
+                country_mods(jobs, "common/pop_jobs", ty, pid, fixed((wf + (type(bonus) == "number" and bonus or 0)) / 100))
+            end
+        end
+        for _, bid in ipairs(list_of(w, col, "buildings_cache")) do
+            local o = w.object("buildings", tonumber(bid))
+            local ty = o and unq(w.field(o, "type"))
+            if ty then
+                country_mods(buildings, "common/buildings", ty, pid)
+            end
+        end
+    end
+    parts.add("jobs#country", jobs)
+    parts.add("buildings#country", buildings)
+    -- (the starbases' country_modifier reach the country through their StarbaseCountry nodes)
+    local mega = {}
+    for _, mid in ipairs(w.all("megastructures")) do
+        local o = w.object("megastructures", mid)
+        if w.field(o, "owner") == id then
+            sum_into(mega, self:def_values("common/megastructures", unq(w.field(o, "type")), "country_modifier"))
+        end
+    end
+    parts.add("megastructures#country", mega)
 end
 
 -- timed modifiers of an object (timed_modifier = { items = { { modifier days [multiplier] } } })
@@ -901,9 +1173,283 @@ function S:pop_group(id)
     return parts
 end
 
+-- ship ----------------------------------------------------------------------------------------
+
+-- A ship's own parts: the ship_modifier of each component of its design (the design's growth stage
+-- of the ship: its sections' components and its required components), and of its sections.
+function S:ship(id)
+    local w = self.world
+    local s = w.object("ships", id)
+    local parts = new_parts(M.FILTER.Ship)
+    if s == nil then
+        return parts
+    end
+    local impl = w.field(s, "ship_design_implementation")
+    local did = type(impl) == "table" and w.field(impl, "design")
+    local stage = type(impl) == "table" and tonumber(w.field(impl, "growth_stage")) or 0
+    local design = type(did) == "number" and w.object("ship_design", did)
+    local gs = design and blocks_of(w.field(design, "growth_stages"))[stage + 1]
+    if gs == nil then
+        return parts
+    end
+    local C, T = "common/component_templates", "common/section_templates"
+    -- the ship size's ship_modifier (a starport's armor, evasion, fire rate and range; its
+    -- `modifier`, the starbase's capacities and sensor range, is not the ship's). A starbase's
+    -- station is the size of the starbase's level, whatever its design says.
+    self.structure = self.structure or require("engine.modifiers.structure").new(w, self.defs)
+    local size = unq(w.field(gs, "ship_size"))
+    for sb, station in pairs(self.structure.station_of) do
+        if station == id then
+            local level = unq(w.field(w.object("starbases", sb), "level"))
+            local ld = level and self.defs.get("common/starbase_levels", level)
+            size = ld and unq(self.defs.field(ld.block, "ship_size")) or size
+        end
+    end
+    if size then
+        parts.add("ship_size:" .. size, self:def_values("common/ship_sizes", size, "ship_modifier"))
+    end
+    -- the auras the ship is in (the save keeps their sum: aura_modifier = { ... })
+    parts.add("auras", self:values(w.field(s, "aura_modifier"), nil))
+    -- repairs: ship_orbit_repair while its fleet is docked at a starbase of its own country (the
+    -- 289 ships of the 2211.07.01 capture that have it, and no other)
+    local fleet = tonumber(w.field(s, "fleet"))
+    local mm = fleet and self.structure:fleet_movement(fleet)
+    local orbit = mm and w.field(mm, "orbit")
+    local at = type(orbit) == "table" and w.field(orbit, "orbitable")
+    local sb = type(at) == "table" and tonumber(w.field(at, "starbase"))
+    if sb and self.structure.starbase_owner[sb] == self.structure.fleet_owner[fleet] then
+        parts.add("static:ship_orbit_repair", self:static("ship_orbit_repair"))
+    end
+    for _, e in ipairs(gs) do
+        if e.op and e.key then
+            local k = e.key.text
+            if k == "section" and type(e.value) == "table" then
+                local template = unq(w.field(e.value, "template"))
+                parts.add("section:" .. tostring(template), self:keyed_values(T, template, "ship_modifier"))
+                for _, c in ipairs(e.value) do
+                    if c.op and c.key and c.key.text == "component" and type(c.value) == "table" then
+                        local ct = unq(w.field(c.value, "template"))
+                        parts.add("component:" .. tostring(ct), self:keyed_values(C, ct, "ship_modifier"))
+                    end
+                end
+            elseif k == "required_component" and e.value.text then
+                local ct = unq(e.value.text)
+                parts.add("component:" .. ct, self:keyed_values(C, ct, "ship_modifier"))
+            end
+        end
+    end
+    return parts
+end
+
+-- leaders ---------------------------------------------------------------------------------------
+
+-- where a leader is: its location's type (ship, army, planet, ...) and id, or nil
+function S:leader_location(id)
+    local w = self.world
+    local loc = w.field(w.object("leader", id), "location")
+    if type(loc) ~= "table" then
+        return nil
+    end
+    return unq(w.field(loc, "type")), tonumber(w.field(loc, "id"))
+end
+
+-- the class's skill static of a leader by where it is (common/static_modifiers skill_*): a
+-- scientist's anywhere, a commander's on a ship or an army
+local SKILL_AT = {
+    scientist = { any = "skill_scientist" },
+    commander = { ship = "skill_commander_navy", army = "skill_commander_army" },
+}
+
+-- the trait blocks of a leader's traits: key (modifier, self_modifier, fleet_modifier, ...) and its
+-- triggered blocks (triggered_<key>, potential in the leader's scope)
+function S:leader_traits(parts, id, key, mult)
+    local l = self.leaders[id]
+    for _, t in ipairs(l and l.traits or {}) do
+        parts.add("trait:" .. t, self:def_values("common/traits", t, key), mult)
+        self:triggered(parts, "trait:" .. t, "common/traits", t, "triggered_" .. key, "leader", id)
+    end
+end
+
+-- a leader is immortal when made so (created `immortal = yes`, or set_immortal: the bit of value 2
+-- in the save's leader_flags, which the caravaneers' leaders have and mortal ones with flags
+-- lack), or with a trait of `immortal_leaders = yes`, its own or its species'
+function S:immortal(id)
+    local w = self.world
+    local l = self.leaders[id]
+    if l == nil then
+        return false
+    end
+    if l.immortal == nil then
+        local flags = tonumber(w.field(w.object("leader", id), "leader_flags")) or 0
+        l.immortal = bit.band(flags, 2) ~= 0
+        local traits = {}
+        for _, t in ipairs(l.traits) do
+            traits[#traits + 1] = t
+        end
+        local _, names = self:species_traits(tonumber(w.field(w.object("leader", id), "species")))
+        for _, t in ipairs(names) do
+            traits[#traits + 1] = t
+        end
+        for _, t in ipairs(traits) do
+            local d = self:def_block("common/traits", t)
+            if d and self.defs.field(d.block, "immortal_leaders") == "yes" then
+                l.immortal = true
+            end
+        end
+    end
+    return l.immortal
+end
+
+-- a leader's skill statics times its level: its class's (SKILL_AT), and
+-- skill_<class>_background_planet_governor when the planet it governs is its background planet
+-- (neither counts as equal: a leader with no background planet that governs nothing has it)
+function S:skill_statics(parts, id)
+    local w = self.world
+    local l = self.leaders[id]
+    local level = l.level * 100000
+    local at = self:leader_location(id)
+    local skill = SKILL_AT[l.class]
+    local static = skill and (skill.any or skill[at])
+    if static then
+        parts.add("skill:" .. static, self:static(static), level)
+    end
+    local bg = w.field(w.object("leader", id), "background_planet")
+    local bg_planet = type(bg) == "table" and tonumber(w.field(bg, "reference")) or 4294967295
+    if (self.governed[id] or 4294967295) == bg_planet then
+        local name = "skill_" .. tostring(l.class) .. "_background_planet_governor"
+        parts.add("skill:" .. name, self:static(name), level)
+    end
+end
+
+-- LeaderSkill: the skill statics (S:skill_statics); a ruler's council position's `modifier` times
+-- its level (S:ruler_position); the traits' `modifier` blocks. Their triggered_modifier blocks are
+-- not in this node in the capture (the trait files say they are there for the tooltips).
+function S:leader_skill(id)
+    local parts = new_parts(-1)
+    local l = self.leaders[id]
+    if l == nil then
+        return parts
+    end
+    local level = l.level * 100000
+    self:skill_statics(parts, id)
+    local country = self.ruler_of[id]
+    local pos = country and self:ruler_position(country)
+    if pos then
+        parts.add("ruler:" .. pos, self:def_values("common/governments/councilors", pos, "modifier"), level)
+    end
+    for _, t in ipairs(l.traits) do
+        parts.add("trait:" .. t, self:def_values("common/traits", t, "modifier"))
+    end
+    return parts
+end
+
+-- the traits of a species, their `modifier` blocks summed (what a pop group, a leader or an army of
+-- that species gets of them; the node's filter keeps its own types)
+function S:species_traits(species)
+    local w = self.world
+    local sp = type(species) == "number" and w.object("species", species)
+    local sum, names = {}, {}
+    if not sp then
+        return sum, names
+    end
+    local traits = w.field(sp, "traits")
+    for _, e in ipairs(type(traits) == "table" and traits or {}) do
+        if e.op and e.key.text == "trait" then
+            local trait = unq(e.value.text)
+            names[#names + 1] = trait
+            sum_into(sum, self:def_values("common/traits", trait, "modifier"))
+        end
+    end
+    return sum, names
+end
+
+-- Leader: its species' traits, the traits' self_modifier blocks
+function S:leader(id)
+    local w = self.world
+    local parts = new_parts(M.FILTER.Leader)
+    if self.leaders[id] == nil then
+        return parts
+    end
+    local species = tonumber(w.field(w.object("leader", id), "species"))
+    parts.add("species_traits", (self:species_traits(species)))
+    self:leader_traits(parts, id, "self_modifier")
+    return parts
+end
+
+-- starbases -------------------------------------------------------------------------------------
+
+-- A starbase's nodes take their parts from its level and its modules and buildings (`modules = {
+-- 0 = shipyard ... }`, `buildings = { ... }`), each block to its node, with the filters the captures
+-- show:
+--   Starbase                 its level's ship size's `modifier` (sensor range, capacities), and the
+--                            station_modifier (and the active triggered_station_modifier) blocks
+--   StarbaseCountry          country_modifier, triggered_country_modifier (its country reads it)
+--   StarbaseExternal         planet_modifier, triggered_planet_modifier; the system's governors (S:starbase_node)
+--   StarbaseSystem           system_modifier, triggered_system_modifier
+--   StarbaseDefensePlatform  defense_platform_modifier (its defense platforms read it)
+--   Orbital                  orbit_modifier (the fleets docked at it read it)
+local STARBASE_BLOCKS = {
+    Starbase = { "station_modifier", 1076806270 },
+    StarbaseCountry = { "country_modifier", -1 },
+    StarbaseExternal = { "planet_modifier", 1076806270 },
+    StarbaseSystem = { "system_modifier", 1074317566 },
+    StarbaseDefensePlatform = { "defense_platform_modifier", 540796 },
+    Orbital = { "orbit_modifier", 1074282750 },
+}
+M.STARBASE_CATEGORIES = { "Starbase", "StarbaseCountry", "StarbaseExternal", "StarbaseSystem",
+    "StarbaseDefensePlatform", "Orbital" }
+
+function S:starbase_node(category, id)
+    local w = self.world
+    local o = w.object("starbases", id)
+    local block, filter = STARBASE_BLOCKS[category][1], STARBASE_BLOCKS[category][2]
+    local parts = new_parts(filter)
+    if o == nil then
+        return parts
+    end
+    if category == "StarbaseExternal" then
+        -- the governors of the colonies in its system: skill_<class>_planet_governor and their
+        -- skill statics, times their level
+        for _, gov in ipairs(self.governors_of_system[self.system_of_starbase[id]] or {}) do
+            local l = self.leaders[gov]
+            if l then
+                local name = "skill_" .. tostring(l.class) .. "_planet_governor"
+                parts.add("governor:" .. name, self:static(name), l.level * 100000)
+                self:skill_statics(parts, gov)
+            end
+        end
+    end
+    if category == "Starbase" then
+        local level = unq(w.field(o, "level"))
+        local ld = level and self.defs.get("common/starbase_levels", level)
+        local size = ld and unq(self.defs.field(ld.block, "ship_size"))
+        if size then
+            parts.filter = 1345241726
+            parts.add("level:" .. level, self:def_values("common/ship_sizes", size, "modifier"))
+            parts.filter = filter
+        end
+    end
+    for _, key in ipairs({ "modules", "buildings" }) do
+        local b = w.field(o, key)
+        local folder = key == "modules" and "common/starbase_modules" or "common/starbase_buildings"
+        for _, e in ipairs(type(b) == "table" and b or {}) do
+            local ty = e.op and e.value and unq(e.value.text)
+            if ty then
+                parts.add(key .. ":" .. ty, self:def_values(folder, ty, block))
+                self:triggered(parts, key .. ":" .. ty, folder, ty, "triggered_" .. block, "starbase", id)
+            end
+        end
+    end
+    return parts
+end
+
 -- ---------------------------------------------------------------------------------------------
 
-local BY_CATEGORY = { Country = S.country, Planet = S.planet, Colony = S.colony, PopGroup = S.pop_group }
+local BY_CATEGORY = { Country = S.country, Planet = S.planet, Colony = S.colony, PopGroup = S.pop_group, Ship = S.ship,
+    Leader = S.leader, LeaderSkill = S.leader_skill }
+for _, c in ipairs(M.STARBASE_CATEGORIES) do
+    BY_CATEGORY[c] = function(self, id) return self:starbase_node(c, id) end
+end
 
 -- src:parts(category, owner) -> the node's own parts ({ name, mult, filter, values }), or nil for a
 -- category not modelled
