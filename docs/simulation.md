@@ -38,11 +38,15 @@ The Rust skeleton built on this is in [`sim/`](../sim) (section 6).
   1,024 call sites. Parallel phases do not draw: the day draws a pool of 1,000 values first and
   hands it to the parallel per-object updates **[V]**. The save holds the generator's state
   (`random_seed`, `random_count`, the position); the simulation starts from it
-  (`save::random_of`). The game's 2210.07.01 save has another seed than 2210.01.01 and a count of
-  4,755,436: the game that wrote it reseeded when it loaded 2210.01.01 **[I]**, and drew about
-  26,000 values a day after that, where the simulation draws about 1,050 (the pools and its
-  events). Where the other 25,000 a day are drawn is open; the headless game (`headless/`) can
-  count them by phase.
+  (`save::random_of`). A single-player load reseeds from the clock (`CFrontEndIdler::SetAsCurrentIdler`,
+  unless `-loadrandomseed`) **[V]**: the game's 2210.07.01 save has another seed than 2210.01.01
+  and a count of 4,755,436 since that load (`STELLAR_RANDOM=target` takes its seed from position 0).
+  The draws of a day (headless/README.md, measured): about 25,200 are MicroUpdate's ship pool,
+  one value per live ship every tick, which seeds only ships whose fleet is in combat (the
+  simulation skips them, `RUST.skip`); then the daily pool of 1,000 (every value read:
+  `pool[(id + K) % 1000]` seeds the scope of each object's daily scripts), about 170 more in the
+  day, and each month a pool of 1,000 and about 350 more. The AI draws none of it (its own
+  generators). Over 180 days the simulation draws 4,691,982 against the game's 4,755,436.
 - **Out-of-sync checks** (`NOosChecksums::CalcChecksums`, 131 slots) hash the RNG seed and draw
   count, every object database's members, country stockpiles, pop groups, construction queues,
   fleet paths and orbit positions, ship health, flags **[V]** (globals and helpers referenced).
