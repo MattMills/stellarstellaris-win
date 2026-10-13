@@ -266,44 +266,73 @@ int l_db_call(lua_State* L) {
 struct AsyncCall {
 	HANDLE thread = nullptr;
 	uintptr_t function = 0;
+	uintptr_t args[4] = {};
+	uintptr_t result = 0;     // what the function returned (rax)
 	DWORD code = 0;
 	Failure failure;
 	double start = 0, finish = 0;
 };
+std::mutex async_lock;
 std::vector<AsyncCall*> async_calls;
+
+using call4_function = uintptr_t (*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+
+DWORD call_guarded_args(uintptr_t function, const uintptr_t* a, uintptr_t* result, Failure* f) {
+	__try {
+		*result = reinterpret_cast<call4_function>(function)(a[0], a[1], a[2], a[3]);
+	} __except (exception_filter(GetExceptionInformation(), f)) {
+		return GetExceptionCode();
+	}
+	return 0;
+}
 
 DWORD WINAPI async_main(void* p) {
 	AsyncCall* call = static_cast<AsyncCall*>(p);
 	call->start = now();
-	call->code = call_guarded(0, call->function, &call->failure);
+	call->code = call_guarded_args(call->function, call->args, &call->result, &call->failure);
 	call->finish = now();
 	return 0;
 }
 
-// stellar.run_async(function) -> id: a thread calls function()
+AsyncCall* async_call(size_t id) {
+	std::lock_guard<std::mutex> guard(async_lock);
+	return id >= 1 && id <= async_calls.size() ? async_calls[id - 1] : nullptr;
+}
+
+// stellar.run_async(function[, a1, a2, a3, a4]) -> id: a thread calls function(a1, ...) (integer
+// or pointer arguments)
 int l_run_async(lua_State* L) {
 	AsyncCall* call = new AsyncCall();
 	call->function = check_address(L, 1);
-	call->thread = CreateThread(nullptr, 0, async_main, call, 0, nullptr);
+	for (int i = 0; i < 4; ++i) {
+		call->args[i] = lua_isnoneornil(L, i + 2) ? 0 : static_cast<uintptr_t>(luaL_checknumber(L, i + 2));
+	}
+	// the handle is set before anyone can see the call, and the thread runs after that
+	call->thread = CreateThread(nullptr, 0, async_main, call, CREATE_SUSPENDED, nullptr);
 	if (call->thread == nullptr) {
 		delete call;
 		lua_pushnil(L);
 		lua_pushliteral(L, "CreateThread failed");
 		return 2;
 	}
-	async_calls.push_back(call);
-	lua_pushnumber(L, static_cast<lua_Number>(async_calls.size()));
+	size_t id = 0;
+	{
+		std::lock_guard<std::mutex> guard(async_lock);
+		async_calls.push_back(call);
+		id = async_calls.size();
+	}
+	ResumeThread(call->thread);
+	lua_pushnumber(L, static_cast<lua_Number>(id));
 	return 1;
 }
 
-// stellar.join_async(id[, seconds]) -> exception, { start, finish, address, stack, type } | nil,
-// "running": waits for the call (at most that long)
+// stellar.join_async(id[, seconds]) -> exception, { start, finish, result, address, stack, type } |
+// nil, "running": waits for the call (at most that long)
 int l_join_async(lua_State* L) {
-	const size_t id = static_cast<size_t>(luaL_checknumber(L, 1));
-	if (id < 1 || id > async_calls.size()) {
+	AsyncCall* call = async_call(static_cast<size_t>(luaL_checknumber(L, 1)));
+	if (call == nullptr) {
 		return luaL_argerror(L, 1, "no such call");
 	}
-	AsyncCall* call = async_calls[id - 1];
 	const double seconds = luaL_optnumber(L, 2, -1);
 	const DWORD wait = seconds < 0 ? INFINITE : static_cast<DWORD>(seconds * 1000);
 	if (WaitForSingleObject(call->thread, wait) != WAIT_OBJECT_0) {
@@ -317,6 +346,8 @@ int l_join_async(lua_State* L) {
 	lua_setfield(L, -2, "start");
 	lua_pushnumber(L, call->finish);
 	lua_setfield(L, -2, "finish");
+	lua_pushnumber(L, static_cast<lua_Number>(call->result));
+	lua_setfield(L, -2, "result");
 	if (call->code != 0) {
 		push_failure(L, call->failure);
 	}
@@ -671,6 +702,20 @@ int l_token_table_stats(lua_State* L) {
 }
 
 } // namespace
+
+bool stellar_async_join(size_t id, uintptr_t* result, double* seconds) {
+	AsyncCall* call = async_call(id);
+	if (call == nullptr) {
+		return false;
+	}
+	const double waited = now();
+	WaitForSingleObject(call->thread, INFINITE);
+	*result = call->result;
+	if (seconds != nullptr) {
+		*seconds = now() - waited;
+	}
+	return call->code == 0;
+}
 
 void stellar_database_workers_open(lua_State* L) {
 	lua_pushcfunction(L, l_db_workers);

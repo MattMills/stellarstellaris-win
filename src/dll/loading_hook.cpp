@@ -13,6 +13,7 @@
 #include <windows.h>
 
 #include "dll/loading_hook.h"
+#include "dll/database_workers.h"
 #include "dll/lexer_hook.h"
 #include "dll/code_hook.h"
 #include "dll/lua_runtime.h"
@@ -286,9 +287,37 @@ void step_hook(void* application, unsigned current, unsigned total, unsigned sta
 // record_entry and jumps to the trampoline that install_code_hook writes into its last 8 bytes.
 // Each stub has a skip flag (a byte): while it is set, the function returns 0 at once, without the
 // event (stellar.set_entry_skip; the original still runs through its trampoline).
-void record_entry(uint64_t id) {
+// A function may also be deferred (stellar.defer_mark(id, call)): Lua ran it already, on a thread
+// of its own (stellar.run_async), and the game's next call of it waits for that run and returns
+// what it returned, instead of running it again.
+std::mutex deferred_lock;
+std::vector<std::pair<uint64_t, size_t>> deferred;    // mark id -> background call
+thread_local uintptr_t deferred_result = 0;
+std::atomic<uint64_t> deferred_joins{0};
+std::atomic<uint64_t> deferred_wait_us{0};
+
+uintptr_t* record_entry(uint64_t id) {
 	record("enter", static_cast<int>(id), 0, 0, false, std::string());
 	bar_enter(id);
+	size_t call = 0;
+	{
+		std::lock_guard<std::mutex> guard(deferred_lock);
+		for (size_t i = 0; i < deferred.size(); ++i) {
+			if (deferred[i].first == id) {
+				call = deferred[i].second;
+				deferred.erase(deferred.begin() + static_cast<std::ptrdiff_t>(i));
+				break;
+			}
+		}
+	}
+	if (call == 0) {
+		return nullptr;
+	}
+	double waited = 0;
+	stellar_async_join(call, &deferred_result, &waited);
+	++deferred_joins;
+	deferred_wait_us += static_cast<uint64_t>(waited * 1e6);
+	return &deferred_result;
 }
 
 // the skip flags of the stubs, by id (1, 2, ... across every hook_entries call)
@@ -316,8 +345,12 @@ const uint8_t kStubHead[] = {
 	0x48, 0xB9,                                // mov rcx, imm64 (the id)
 };
 const uint8_t kStubCall[] = {0x48, 0xB8};      // mov rax, imm64 (record_entry)
+// record_entry returns null (run the function) or where the result of its deferred run is (the
+// stub returns that, without running the function: stellar.defer_mark)
 const uint8_t kStubTail[] = {
 	0xFF, 0xD0,                                // call rax
+	0x48, 0x85, 0xC0,                          // test rax, rax
+	0x75, 0x3D,                                // jnz deferred (61 bytes on: past the trampoline's address)
 	0x48, 0x8B, 0x4C, 0x24, 0x20,              // mov rcx, [rsp+0x20]
 	0x48, 0x8B, 0x54, 0x24, 0x28,              // mov rdx, [rsp+0x28]
 	0x4C, 0x8B, 0x44, 0x24, 0x30,              // mov r8, [rsp+0x30]
@@ -329,9 +362,15 @@ const uint8_t kStubTail[] = {
 	0x48, 0x81, 0xC4, 0x88, 0x00, 0x00, 0x00,  // add rsp, 0x88
 	0xFF, 0x25, 0x00, 0x00, 0x00, 0x00,        // jmp [rip+0]: the trampoline, in the next 8 bytes
 };
-const size_t kStubSize = 160;
+const uint8_t kStubDeferred[] = {
+	0x48, 0x8B, 0x00,                          // deferred: mov rax, [rax] (the result)
+	0x48, 0x81, 0xC4, 0x88, 0x00, 0x00, 0x00,  // add rsp, 0x88
+	0xC3,                                      // ret
+};
+static_assert(sizeof(kStubTail) - 7 + 8 == 0x3D, "the jnz offset");
+const size_t kStubSize = 192;
 static_assert(sizeof(kStubSkip) + 8 + sizeof(kStubSkipTest) + sizeof(kStubHead) + 8 + sizeof(kStubCall) + 8
-	+ sizeof(kStubTail) + 8 <= kStubSize, "stub size");
+	+ sizeof(kStubTail) + 8 + sizeof(kStubDeferred) <= kStubSize, "stub size");
 
 // Writes the stub for `id` (with its skip flag) at `stub`; returns where the trampoline's address
 // goes
@@ -356,6 +395,7 @@ void** write_stub(uint8_t* stub, uint64_t id, const uint8_t* flag) {
 	std::memcpy(p, kStubTail, sizeof(kStubTail));
 	p += sizeof(kStubTail);
 	std::memset(p, 0, 8);
+	std::memcpy(p + 8, kStubDeferred, sizeof(kStubDeferred));
 	return reinterpret_cast<void**>(p);
 }
 
@@ -781,6 +821,36 @@ int l_loading_events(lua_State* L) {
 	return 1;
 }
 
+// stellar.defer_mark(id, call): the game's next call of the marked function id waits for the
+// background call (stellar.run_async: Lua ran the function already) and returns its result
+int l_defer_mark(lua_State* L) {
+	const uint64_t id = static_cast<uint64_t>(luaL_checknumber(L, 1));
+	const size_t call = static_cast<size_t>(luaL_checknumber(L, 2));
+	std::lock_guard<std::mutex> guard(deferred_lock);
+	deferred.emplace_back(id, call);
+	return 0;
+}
+
+// stellar.loading_application() -> the CGameApplication (from the game's LoadingScreenCallback),
+// or nil before its first step
+int l_loading_application(lua_State* L) {
+	if (bar_application == nullptr) {
+		lua_pushnil(L);
+	} else {
+		lua_pushnumber(L, static_cast<lua_Number>(reinterpret_cast<uintptr_t>(bar_application)));
+	}
+	return 1;
+}
+
+// stellar.deferred_stats() -> joins, seconds waited in them, deferrals not joined yet
+int l_deferred_stats(lua_State* L) {
+	lua_pushnumber(L, static_cast<lua_Number>(deferred_joins.load()));
+	lua_pushnumber(L, static_cast<lua_Number>(deferred_wait_us.load()) / 1e6);
+	std::lock_guard<std::mutex> guard(deferred_lock);
+	lua_pushnumber(L, static_cast<lua_Number>(deferred.size()));
+	return 3;
+}
+
 // stellar.loading_map(start, span, new_start, new_span): the phase the game shows on [start,
 // start + span] of the bar is shown on [new_start, new_start + new_span] (set before
 // stellar.loading_bar(true))
@@ -846,6 +916,12 @@ int l_loading_tick(lua_State* L) {
 } // namespace
 
 void stellar_loading_open(lua_State* L) {
+	lua_pushcfunction(L, l_defer_mark);
+	lua_setfield(L, -2, "defer_mark");
+	lua_pushcfunction(L, l_deferred_stats);
+	lua_setfield(L, -2, "deferred_stats");
+	lua_pushcfunction(L, l_loading_application);
+	lua_setfield(L, -2, "loading_application");
 	lua_pushcfunction(L, l_loading_map);
 	lua_setfield(L, -2, "loading_map");
 	lua_pushcfunction(L, l_loading_schedule);

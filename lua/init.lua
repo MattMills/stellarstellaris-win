@@ -230,9 +230,14 @@ if databases_where and database_mode == "parallel" then
         end
     end
 end
+local init_steps = require("stellar.init_steps")
+local init_steps_on = false  -- set below (background.txt), before any of these runs
 if databases_where and (database_mode == "lua" or database_mode == "parallel" or database_mode == "trace") then
     stellar.setup_databases = function(a, done, progress)
         loading.milestone("NNullObjAndDatabaseInitUtil::SetupDatabases")
+        if init_steps_on then
+            init_steps.start("databases")
+        end
         local t0 = util.now()
         local n, stopped, report
         if database_mode == "parallel" then
@@ -348,44 +353,23 @@ if databases_where and (database_mode == "lua" or database_mode == "parallel" or
     end
     -- InitDefinitionIcons comes right after the game's PostReadInitInstance loop (which skips
     -- those): they run here, in their order
-    -- CModifier::LogDefinitions (writes modifiers.log: 4.3s on the game's thread, nothing waits for
-    -- it) runs on a thread of its own once the definitions are final (after the PostReads), while
-    -- the game goes on; InitGame's own call returns at once, and the first call after it waits for
-    -- it (background.txt "off": in its place)
-    local log_definitions, log_definitions_call
-    for _, m in ipairs(marks) do
-        if m.kind == "milestone" and m.name == "CModifier::LogDefinitions" and m.trampoline then
-            log_definitions = m
-        end
+    -- the steps of InitGame Lua runs ahead of the game, each on a thread of its own once what it
+    -- needs is made; the game's call of each waits for it (stellar.init_steps; background.txt
+    -- "off": all in their place)
+    if setting("background.txt", "on") ~= "off" then
+        local bound, missing = init_steps.bind(marks)
+        init_steps_on = bound > 0
+        stellar.log(string.format("load: %d steps of InitGame run ahead of the game%s", bound,
+            #missing > 0 and ("; not found: " .. table.concat(missing, ", ")) or ""))
     end
-    local background = setting("background.txt", "on") ~= "off"
     stellar.before_definition_icons = function()
         loading.milestone("CModifier::InitDefinitionIcons")
         if post_reads then
             databases.run_post_reads(post_reads)
             post_reads = nil
         end
-        if background and log_definitions and found["CEconomicCategory::LogUnusedGeneratedAddModifiers"] then
-            stellar.set_entry_skip(log_definitions.id, true)
-            log_definitions_call = stellar.run_async(log_definitions.trampoline)
-        end
-    end
-    stellar.before_log_unused = function()
-        if log_definitions_call then
-            local waited = util.system_time()
-            local code, what = stellar.join_async(log_definitions_call)
-            log_definitions_call = nil
-            stellar.set_entry_skip(log_definitions.id, false)
-            stellar.log(string.format("load: CModifier::LogDefinitions ran beside the load: %.2fs, waited for %.2fs%s",
-                (what.finish or 0) - (what.start or 0), util.system_time() - waited,
-                code ~= 0 and string.format(" (failed: exception 0x%08x)", code) or ""))
-        end
-    end
-    if background and log_definitions and found["CEconomicCategory::LogUnusedGeneratedAddModifiers"] then
-        local ok, why = stellar.hook_before(found["CEconomicCategory::LogUnusedGeneratedAddModifiers"], "before_log_unused")
-        if not ok then
-            background = false
-            stellar.log("load: LogDefinitions stays in its place: " .. tostring(why))
+        if init_steps_on then
+            init_steps.start("post_reads")
         end
     end
     local icons_hooked, icons_message = nil, "CModifier::InitDefinitionIcons not found"
@@ -629,6 +613,9 @@ stellar.heartbeat = function()
     -- parallel would take, from this load's times
     if databases_where and not schedule_logged and loading.loaded() then
         schedule_logged = true
+        if init_steps_on then
+            stellar.log("load: the steps run ahead of the game: " .. init_steps.report())
+        end
         -- a load in the game's order keeps the flags' names in id order (for parallel loads)
         if flags_where and database_mode ~= "parallel" then
             local count = flags.save(flags_where, flags_path)
