@@ -132,9 +132,10 @@ pub struct Check {
 }
 
 impl Check {
-    pub fn ok(&self) -> bool {
+    /// Whether everything was drawn (the lanes only if `lanes` is set).
+    pub fn ok(&self, lanes: bool) -> bool {
         self.stars_ok == self.stars
-            && self.lanes_ok == self.lanes
+            && (!lanes || self.lanes_ok == self.lanes)
             && self.owners.iter().all(|o| {
                 o.fill_visible_changed * 100 >= o.fill_visible * 98 && o.fill_error < 3.0 && o.edge_error < 40.0
             })
@@ -146,9 +147,15 @@ impl Check {
 /// The characters the top bar's numbers are made of.
 const CHARSET: &str = "0123456789.,KM-+/";
 
-/// Reads the text the text layer drew in a box: the glyphs of `font` matched left to right
-/// against the difference the layer made, starting where its first ink is.
-fn read_text(font: &Font, diff: &Diff, rect: [f32; 4], top: f32) -> (String, f32) {
+/// The printable ASCII characters a font has (for reading words).
+pub fn printable(font: &Font) -> Vec<char> {
+    (33u8..=126).map(char::from).filter(|c| font.glyphs.contains_key(c)).collect()
+}
+
+/// Reads the text the text layer drew in a box: the glyphs of `font` (those of `charset`, and
+/// spaces where a space's advance has no ink) matched left to right against the difference the
+/// layer made, starting where its first ink is.
+fn read_text(font: &Font, diff: &Diff, rect: [f32; 4], top: f32, charset: &[char]) -> (String, f32) {
     let (x0, x1) = (rect[0].floor() as i32 - 6, rect[2].ceil() as i32 + 6);
     let (y0, y1) = (top as i32, (top + font.line_height) as i32 + 2);
     let ink = |x: i32| (y0..y1).any(|y| diff.at(x, y) > 40);
@@ -198,30 +205,186 @@ fn read_text(font: &Font, diff: &Diff, rect: [f32; 4], top: f32) -> (String, f32
         }
         num / (sm * sd).sqrt()
     };
-    // one reading per possible first glyph (each puts the pen elsewhere); the best is the one
-    // that covers the ink, then the one that matches best
-    let mut readings: Vec<(bool, f32, String)> = Vec::new();
-    for first in CHARSET.chars() {
-        let Some(il) = ink_left(first) else { continue };
-        let mut pen = left as f32 - il;
-        let (mut text, mut total) = (String::new(), 0.0);
-        while pen < right as f32 - 1.0 && text.len() < 24 {
-            let (c, s) = CHARSET.chars().map(|c| (c, score(c, pen))).fold(('?', -2.0), |a, b| if b.1 > a.1 { b } else { a });
-            // a small glyph (a dot) between two others matches less well than a digit
-            if s < 0.25 {
-                break;
+    let space = font.glyphs.get(&' ').map_or(0.0, |g| g.xadvance);
+    let no_ink = |a: f32, b: f32| (a.ceil() as i32..b.floor() as i32).all(|x| !ink(x));
+    // one reading per possible start of the pen (the first ink less a glyph's ink offset); the
+    // best is the one that covers the ink, then the one that matches best
+    // (and the pixels either side: the first ink column is antialiased)
+    let mut starts: Vec<f32> = charset
+        .iter()
+        .filter_map(|&c| ink_left(c))
+        .flat_map(|il| {
+            let s = (left as f32 - il).round();
+            [s - 1.0, s, s + 1.0]
+        })
+        .collect();
+    starts.sort_by(f32::total_cmp);
+    starts.dedup();
+    // the line's region (down to the lowest glyph cell: descenders count), and what the text
+    // layer drew there (0..1)
+    let (rx0, rx1) = (x0 - 8, x1 + 8);
+    let bottom = font.glyphs.values().map(|g| g.yoffset + g.height).fold(font.line_height, f32::max);
+    let (ry0, ry1) = (y0 - 2, (top + bottom) as i32 + 2);
+    let (rw, rh) = ((rx1 - rx0) as usize, (ry1 - ry0) as usize);
+    let actual: Vec<f32> = (0..rh).flat_map(|j| (0..rw).map(move |i| (i, j))).map(|(i, j)| diff.at(rx0 + i as i32, ry0 + j as i32) as f32 / 255.0).collect();
+    // a glyph drawn into a mask of the region (the brighter of the two where glyphs overlap)
+    let stamp = |mask: &mut Vec<f32>, c: char, pen: f32| {
+        let Some(g) = font.glyphs.get(&c) else { return };
+        for dy in 0..g.height as i32 {
+            for dx in 0..g.width as i32 {
+                let (sx, sy) = ((pen + g.xoffset) as i32 + dx - rx0, (top + g.yoffset) as i32 + dy - ry0);
+                if sx >= 0 && sy >= 0 && (sx as usize) < rw && (sy as usize) < rh {
+                    let k = sy as usize * rw + sx as usize;
+                    mask[k] = mask[k].max(alpha(g.x as i32 + dx, g.y as i32 + dy));
+                }
             }
-            text.push(c);
-            total += s;
-            pen += font.glyphs[&c].xadvance;
         }
-        if !text.is_empty() {
-            let covered = pen >= right as f32 - 1.0;
-            readings.push((covered, total / text.len() as f32, text));
+    };
+    // how well a mask matches what was drawn, over the columns up to `to`
+    let global = |mask: &Vec<f32>, to: i32| -> f32 {
+        let cols = ((to - rx0).clamp(1, rw as i32)) as usize;
+        let n = (cols * rh) as f32;
+        let (mut sm, mut sd) = (0.0, 0.0);
+        for j in 0..rh {
+            for i in 0..cols {
+                sm += mask[j * rw + i];
+                sd += actual[j * rw + i];
+            }
+        }
+        let (mm, dm) = (sm / n, sd / n);
+        let (mut num, mut vm, mut vd) = (0.0, 0.0, 0.0);
+        for j in 0..rh {
+            for i in 0..cols {
+                let (a, b) = (mask[j * rw + i] - mm, actual[j * rw + i] - dm);
+                num += a * b;
+                vm += a * a;
+                vd += b * b;
+            }
+        }
+        if vm <= 0.0 || vd <= 0.0 {
+            0.0
+        } else {
+            num / (vm * vd).sqrt()
+        }
+    };
+    // a beam search: readings extended glyph by glyph (the few that match best locally, or a
+    // space where a space's advance has no ink), kept by how well the whole reading so far
+    // matches what was drawn
+    // wide enough that a reading started a pixel off (whose glyphs then fit shifted twins, such
+    // as q for o) does not push the right one out
+    const BEAM: usize = 32;
+    let mut beam: Vec<(f32, f32, String, Vec<f32>)> = starts.iter().map(|&s| (0.0, s, String::new(), vec![0.0; rw * rh])).collect();
+    let mut finished: Vec<(f32, String)> = Vec::new();
+    for _ in 0..64 {
+        let mut next: Vec<(f32, f32, String, Vec<f32>)> = Vec::new();
+        for (_, pen, text, mask) in &beam {
+            if *pen >= right as f32 - 1.0 {
+                finished.push((global(mask, right + 3), text.trim_end().to_string()));
+                continue;
+            }
+            if space > 1.0 && !text.is_empty() && no_ink(*pen, pen + space) {
+                let p = pen + space;
+                next.push((global(mask, p as i32), p, format!("{text} "), mask.clone()));
+            }
+            // the pen moves by the kerning of the previous glyph and this one, as when drawn
+            let prev = text.chars().last();
+            let kern = |c: char| prev.and_then(|p| font.kerning.get(&(p, c))).copied().unwrap_or(0.0);
+            let mut local: Vec<(f32, char)> =
+                charset.iter().map(|&c| (score(c, pen + kern(c)), c)).filter(|(s, _)| *s >= 0.25).collect();
+            local.sort_by(|a, b| b.0.total_cmp(&a.0));
+            for &(_, c) in local.iter().take(12) {
+                let mut m = mask.clone();
+                let at = pen + kern(c);
+                stamp(&mut m, c, at);
+                let p = at + font.glyphs[&c].xadvance;
+                next.push((global(&m, p as i32), p, format!("{text}{c}"), m));
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        next.sort_by(|a, b| b.0.total_cmp(&a.0));
+        next.truncate(BEAM);
+        beam = next;
+    }
+    finished.sort_by(|a, b| b.0.total_cmp(&a.0));
+    finished.into_iter().next().map(|(s, t)| (t, s)).unwrap_or_default()
+}
+
+/// What the GUI check of a front end screen found.
+pub struct GuiCheck {
+    pub width: u32,
+    pub height: u32,
+    pub changed: Vec<(Layer, usize)>,
+    pub sprites: usize,
+    pub sprites_visible: usize,
+    pub sprites_ok: usize,
+    pub sprites_missing: Vec<String>,
+    pub buttons: usize,
+    pub texts: Vec<TextCheck>,
+    /// texts under a sprite drawn after them (not read)
+    pub covered: Vec<String>,
+}
+
+impl GuiCheck {
+    pub fn ok(&self) -> bool {
+        self.sprites_ok == self.sprites_visible && self.texts.iter().all(|t| t.read == t.expected)
+    }
+}
+
+/// Checks a GUI screen's PNG read back from disk: every sprite with visible texels changes pixels
+/// inside its rectangle (against the frame without the GUI layer), and every text is read back
+/// from the pixels (its font's printable glyphs, against the frame without the text layer) and
+/// compared with the text laid out (the localised text).
+pub fn check_gui(path: &str, frames: &Frames, scene: &Scene, fonts: &HashMap<String, Font>) -> Result<GuiCheck, String> {
+    let (w, h, full) = read_png(path)?;
+    if (w, h) != (frames.width, frames.height) {
+        return Err(format!("{path}: {w}x{h}, rendered {}x{}", frames.width, frames.height));
+    }
+    let diff = |l: Layer| Diff { w, h, full: &full, off: &frames.without[&l] };
+    let changed = LAYERS.iter().map(|&l| (l, diff(l).total())).collect();
+    let dg = diff(Layer::Gui);
+    let (mut visible, mut ok, mut missing) = (0, 0, Vec::new());
+    for s in &scene.sprites {
+        if !s.visible {
+            continue;
+        }
+        visible += 1;
+        if dg.changed_in(s.rect) > 0 {
+            ok += 1;
+        } else {
+            missing.push(format!("{} ({})", s.path, s.sprite));
         }
     }
-    readings.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.total_cmp(&a.1)));
-    readings.into_iter().next().map(|(_, s, t)| (t, s)).unwrap_or_default()
+    let dt = diff(Layer::Text);
+    let mut texts = Vec::new();
+    let mut covered = Vec::new();
+    for p in &scene.texts {
+        let Some(font) = fonts.get(&p.font) else { continue };
+        if p.text.trim().is_empty() {
+            continue;
+        }
+        // a text under a sprite drawn after it (a window open over the menu) is not read
+        let over = |r: [f32; 4], s: [f32; 4]| r[0] < s[2] && s[0] < r[2] && r[1] < s[3] && s[1] < r[3];
+        if scene.sprites.iter().any(|s| s.visible && s.order > p.order && over(p.rect, s.rect)) {
+            covered.push(p.path.clone());
+            continue;
+        }
+        let (read, score) = read_text(font, &dt, p.rect, p.pen.1, &printable(font));
+        texts.push(TextCheck { path: p.path.clone(), expected: p.text.trim().to_string(), read, score, source: p.font.clone() });
+    }
+    Ok(GuiCheck {
+        width: w,
+        height: h,
+        changed,
+        sprites: scene.sprites.len(),
+        sprites_visible: visible,
+        sprites_ok: ok,
+        sprites_missing: missing,
+        buttons: scene.buttons.len(),
+        texts,
+        covered,
+    })
 }
 
 pub struct Frames<'a> {
@@ -364,7 +527,8 @@ pub fn check(
     for b in &bar.bound {
         let Some(p) = scene.texts.iter().find(|t| t.path == b.path) else { continue };
         let Some(font) = fonts.get(&p.font) else { continue };
-        let (read, score) = read_text(font, &dt, p.rect, p.pen.1);
+        let charset: Vec<char> = CHARSET.chars().collect();
+        let (read, score) = read_text(font, &dt, p.rect, p.pen.1, &charset);
         texts.push(TextCheck { path: b.path.clone(), expected: b.text.clone(), read, score, source: b.source.clone() });
     }
 

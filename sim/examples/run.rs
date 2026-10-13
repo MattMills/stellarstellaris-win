@@ -4,7 +4,8 @@
 //!   sim\cargo_msvc.cmd run --release --example run -- [days] [save.sav]
 //!
 //! Defaults: 31 days, the 2210.01.01 autosave (save::default_save), the Steam install
-//! (STELLARIS_DIR).
+//! (STELLARIS_DIR). With STELLAR_LUA=<file>, that Lua file runs after the days (the engine
+//! loaded: require("engine.research") etc.) and what it returns is printed.
 
 use stellar_sim::{save, Runtime, Simulation};
 
@@ -31,4 +32,12 @@ fn main() {
         println!("error: {e}");
     }
     println!("{}", sim.runtime.report());
+    if let Ok(path) = std::env::var("STELLAR_LUA") {
+        let code = std::fs::read_to_string(&path).expect("read STELLAR_LUA");
+        match sim.runtime.lua.load(&code).set_name(path.as_str()).eval::<Option<String>>() {
+            Ok(Some(s)) => println!("{s}"),
+            Ok(None) => {}
+            Err(e) => println!("STELLAR_LUA failed: {e}"),
+        }
+    }
 }

@@ -32,6 +32,17 @@ function engine.load(game_dir, gamestate, docs_dir)
         if ok then
             -- the script's flags and variables are the save's
             require("engine.scriptstate").install()
+            -- the economy's modifiers: until the graph is built from the world, the game's capture
+            -- of the save's moment (STELLAR_CAPTURE), held as it was
+            local capture = os.getenv("STELLAR_CAPTURE")
+            if capture and capture ~= "" then
+                local economy = require("engine.economy")
+                local done, why = economy.use_capture(capture)
+                lines[#lines + 1] = done and ("economy: modifiers from the capture " .. capture .. " (held as captured)")
+                    or ("economy: no modifiers: " .. tostring(why))
+            else
+                lines[#lines + 1] = "economy: no modifier source (STELLAR_CAPTURE unset): the budget phase does nothing"
+            end
         end
     end
     return table.concat(lines, "\n")
@@ -111,6 +122,11 @@ function engine.report()
     local missing, n_missing = top(engine.systems.not_modelled, 40)
     lines[#lines + 1] = "engine: phases run: " .. ran
     lines[#lines + 1] = string.format("engine: phases not modelled yet (%d): %s", n_missing, missing)
+    for _, m in ipairs({ "engine.research", "engine.leaders" }) do
+        if package.loaded[m] then
+            lines[#lines + 1] = package.loaded[m].report()
+        end
+    end
     return table.concat(lines, "\n")
 end
 

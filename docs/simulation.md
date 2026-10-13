@@ -415,6 +415,8 @@ comes from the game's files and a save:
 | world | `lua/engine/world.lua` | the game state from a save's gamestate, kept in the save's own form: every store of id-keyed objects (`country`, `planet`, `pop_groups`, `fleet`, `ships`, `galactic_object`, `construction.item_mgr.items`, ...), fields read with `world.field` / `fields` / `list` / `blocks` / `path`, changes made as edits of the save's tree (`set`, `append`, `create`, `remove`), owners the save keeps only indirectly indexed (`system_owner`, `fleet_owner`) |
 | engine interface | `lua/engine/interface.lua` | `E`, what the script layer reads of the engine (answered from the save's own fields; reads nothing answers yet are counted) and the engine effects it queues |
 | systems | `lua/engine/systems.lua` | the engine effects applied to the world; per phase, what the engine does: the pulses and daily events through the script layer, the countdowns of flags and timed modifiers; the rest is added phase by phase |
+| research | `lua/engine/research.lua` | `CTechnologyStatus::DailyResearch` in the countries' serial phase: on the month's second day each area's research (the budget's balance, times 1 + the research speed of the first queued technology) goes to the queue, with the stored points drawn up to the month's research; a technology is done at its cost (`CTechnology::GetCost`: the tier's difficulty scaling, the empire size penalty above the admin cap, the cost modifiers, the galaxy's tech cost); done: the technology added, `on_tech_increased`, the item out of the queue; a special project with a research cost takes the month's research and holds back what is behind it |
+| leaders | `lua/engine/leaders.lua` | the month's experience (`CCountry::MonthlyUpdateSerial`, `CStandardLeaderCountryModule::MonthlyUpdateSerial`): the ruler, the heir, the government's councilors, and every leader not idle (`CLeader::IsIdle`) whose class can have traits; `CLeader::AddExperience`: the experience modifiers (species, class, the council seat), the leader cap penalty, level-ups at `sum(100 + 300 k)` with the experience carried over |
 | saves | `engine.save()` | the world written back as a gamestate (pdxscript.write over the save's tree), dated today |
 | check | `lua/engine/diff.lua`, `examples/diff.rs` | the simulation from one save to the date of a later save the game wrote, compared store by store and field by field |
 | renderer | `render/` (`stellar-render`) | the galaxy map of a save (systems, hyperlanes, owners' colours) with wgpu on Vulkan, headless to a PNG or in a window |
@@ -433,6 +435,18 @@ Against the game: 2210.01.01 + 180 days against the game's own 2210.07.01 save (
 orders (the AI), pop growth, leader experience, construction progress (it needs the modifiers), and
 the AI's own state; the player's and the AI's commands between the saves are not in them, so part of
 the difference is theirs.
+
+Research over the same 180 days: on the 29 areas researching the same technology at both ends,
+95.0% of the game's progress is made (society areas within a point); the game completed 2
+technologies and so does the simulation, the same two. Not modelled yet: the AI's next pick when a
+queue empties, the alternatives drawn again, special projects researched by days and their
+completion, tech sharing; some physics and engineering areas gain ~30-70 points more in the game
+than the month's research gives, from outside `DailyResearch` (events, anomalies: not found yet).
+
+Leader experience over the same days: 363 of the 401 leaders end with the game's experience and
+level (117 differed before). Of the 38 left, 28 are scientists on ships (the experience of surveys
+and anomalies, fleet orders not modelled yet) and 6 officials governing planets (about 2 a month
+short: not found yet). Level-ups do not offer traits yet.
 
 ## 7. The script layer in the simulation: PDXScript through LuaJIT
 

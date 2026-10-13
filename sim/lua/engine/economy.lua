@@ -52,12 +52,19 @@ local economy = {
 -- the modifier source: one function, swappable (engine.modifiers once it is built)
 
 local modifier_source = function() return nil end
+local has_source = false
 
 -- economy.set_modifier_source(f): f(kind, id) -> { [modifier name] = value } | nil, kind one of
 -- colony, planet, pop_group, country, ship, fleet, leader, starbase, army, megastructure
 function economy.set_modifier_source(f)
     modifier_source = f
+    has_source = f ~= nil
     economy.invalidate()
+end
+
+-- whether a modifier source is set (the tick runs the economy only then)
+function economy.has_modifier_source()
+    return has_source
 end
 
 function economy.modifiers(kind, id)
@@ -492,8 +499,44 @@ end
 -- stockpile (CCountryBudget::EndMonthlyUpdate -> CEconomyCountryModule::AddResources), through
 -- world.set on modules.standard_economy_module.resources (countries without that module have no
 -- stockpile). The budget is computed from the world as it is (the month's modifier update done
--- before), kept as economy.last_month, then dropped. Not modelled yet: the storage caps and what
--- a deficit does (situations, deficit modifiers); a stockpile does not go below 0.
+-- before), kept as economy.last_month, then dropped. A stockpile stays within 0 and its cap
+-- (economy.capacity). Research is not stockpiled: it goes to the technologies being researched
+-- (not modelled yet, so it is left out). Not modelled yet: what a deficit does (situations,
+-- deficit modifiers).
+
+-- economy.capacity(country, r) -> the most of resource r the country can store, or nil (no cap): the
+-- resource's `max`, its `dynamic_capacity` (base, and the adds of the modifiers whose triggers hold
+-- for the country), and the country's country_resource_max_add and country_resource_max_<r>_add
+function economy.capacity(country, r)
+    local def = defs.get("common/strategic_resources", r)
+    local max = def and tonumber(defs.field(def.block, "max"))
+    if not max then
+        return nil
+    end
+    local dyn = def and defs.field(def.block, "dynamic_capacity")
+    if type(dyn) == "table" then
+        max = max + (tonumber(defs.field(dyn, "base")) or 0)
+        local ctx = economy.ctx("country", country, def.file)
+        for _, e in ipairs(dyn) do
+            if e.op and e.key.text == "modifier" and e.value.text == nil then
+                local add = tonumber(defs.field(e.value, "add")) or 0
+                local cond = {}
+                for _, x in ipairs(e.value) do
+                    if not (x.op and (x.key.text == "add" or x.key.text == "factor")) then
+                        cond[#cond + 1] = x
+                    end
+                end
+                local ok, holds = pcall(eval.trigger, cond, ctx)
+                if ok and holds then
+                    max = max + add
+                end
+            end
+        end
+    end
+    local m = economy.modifiers("country", country) or {}
+    return max + (m.country_resource_max_add or 0) + (m["country_resource_max_" .. r .. "_add"] or 0)
+end
+
 function economy.monthly()
     local before = economy.before_growth
     economy.before_growth = false
@@ -507,10 +550,15 @@ function economy.monthly()
             local balance = economy.balance(country)
             for _, r in ipairs(resources) do
                 local v = balance[r]
-                if v and v ~= 0 then
+                if v and v ~= 0 and not r:find("_research$") then
                     local now = tonumber(world.field(stock, r)) or 0
+                    local new = math.max(0, now + v)
+                    local cap = economy.capacity(country, r)
+                    if cap and new > cap then
+                        new = math.max(now, cap)  -- a cap stops growth; it does not take away
+                    end
                     -- the stockpile is fixed point, 5 decimals
-                    world.set(stock, r, math.max(0, math.floor((now + v) * 100000 + 0.5) / 100000))
+                    world.set(stock, r, math.floor(new * 100000 + 0.5) / 100000)
                 end
             end
         end

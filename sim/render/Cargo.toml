@@ -2,7 +2,7 @@
 name = "stellar-render"
 version = "0.1.0"
 edition = "2021"
-description = "The renderer of the new Stellaris engine: the galaxy map of a save, read through the Lua runtime (stellar-sim), drawn with wgpu on Vulkan."
+description = "The renderer of the new Stellaris engine: the front end and the galaxy map of a save, read through the Lua runtime (stellar-sim), drawn with wgpu on Vulkan (DX12 on Windows)."
 license = "MIT"
 publish = false
 
@@ -21,6 +21,11 @@ png = "=0.18.1"
 # DDS textures, decoded on the CPU (ddsfile for the header, bcdec_rs for BC1-BC7, and the
 # uncompressed DX9 layouts the game uses: A8R8G8B8, R8G8B8, A8B8G8R8, A1R5G5B5)
 image_dds = { version = "=0.7.2", default-features = false, features = ["ddsfile"] }
+
+# On Windows, DX12 too, and the default there (--backend vulkan to override): the AMD and Intel
+# Vulkan drivers of 2018 on the laptop crash, or draw no hyperlanes
+[target.'cfg(windows)'.dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "dx12", "wgsl"] }
 
 [profile.release]
 debug = 1
