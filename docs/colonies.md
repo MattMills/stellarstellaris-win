@@ -178,6 +178,10 @@ crime = max(crime, max(MIN_PLANET_CRIME, v(planet_crime_floor_add) [149]));  min
 "status multipliers" the modifier graph applies; they change when the cached values do (step 7 of
 section 2).
 
+In the game's fixed point, as the modifier graph (PR #22) found exact on both captures: below,
+`1 - trunc((r - MIN) / (1 - MIN))` in that order (`trunc((1 - r) / 0.75)` is a unit off); the
+amenities ratio `r` is truncated before it is used, the housing ratio is not.
+
 ### 3.6 `CColony::CalcCachedUnemployedPopStatus` (`0xdc16b0`)
 
 - `_CachedCivilianCount` (`+0xfd4`, the save's `civilian`): the sizes of the groups

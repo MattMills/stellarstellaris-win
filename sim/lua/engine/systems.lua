@@ -230,8 +230,7 @@ P["monthly.modifiers"] = function()
 end
 -- CEconomicUnitManager::CalculateTablesOrUpdateBudget<0>: every country's budget from its economic
 -- units through the modifiers, and the month's balance to its stockpile (engine.economy), once the
--- economy has a modifier source (engine.load: the capture in STELLAR_CAPTURE until the modifier
--- graph is built from the world)
+-- economy has a modifier source (engine.load: the graph built from the world, or the capture)
 P["monthly.budget"] = function()
     local economy = package.loaded["engine.economy"]
     if economy and economy.has_modifier_source and economy.has_modifier_source() then

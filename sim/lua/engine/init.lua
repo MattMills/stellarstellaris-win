@@ -32,29 +32,38 @@ function engine.load(game_dir, gamestate, docs_dir)
         if ok then
             -- the script's flags and variables are the save's
             require("engine.scriptstate").install()
-            -- the modifiers every system reads (economy.modifiers): with STELLAR_MODIFIERS=world the
-            -- rewrite's own graph built from the world (engine.economy.world_source, rebuilt each
-            -- month); else the game's capture of the save's moment (STELLAR_CAPTURE), held as it was
+            -- the modifiers every system reads (economy.modifiers): by default the rewrite's own
+            -- graph built from the world (engine.economy.world_source, rebuilt each month), its
+            -- modifier types from the game's modifier documentation (STELLAR_MODIFIER_TYPES, else
+            -- modifiers.log in docs_dir); with STELLAR_MODIFIERS=capture, or when the world graph
+            -- cannot be built, the game's capture of the save's moment (STELLAR_CAPTURE), held as it was
             local capture = os.getenv("STELLAR_CAPTURE")
-            local mode = os.getenv("STELLAR_MODIFIERS")
+            local mode = os.getenv("STELLAR_MODIFIERS") or "world"
+            local types = os.getenv("STELLAR_MODIFIER_TYPES")
+            if (types == nil or types == "") and docs_dir then
+                types = docs_dir .. "/modifiers.log"
+            end
+            local built = false
             if mode == "world" then
                 local economy = require("engine.economy")
-                local source, why = require("engine.economy.world_source").new(os.getenv("STELLAR_MODIFIER_TYPES"))
+                local source, why = require("engine.economy.world_source").new(types)
                 if source then
                     source.rebuild()
                     economy.set_modifier_source(source.get)
                     engine.modifier_source = source
+                    built = true
                     lines[#lines + 1] = "economy: modifiers from the world (" .. source.report() .. ")"
                 else
-                    lines[#lines + 1] = "economy: no modifiers: " .. tostring(why)
+                    lines[#lines + 1] = "economy: no modifiers from the world: " .. tostring(why)
                 end
-            elseif capture and capture ~= "" then
+            end
+            if not built and capture and capture ~= "" then
                 local economy = require("engine.economy")
                 local done, why = economy.use_capture(capture)
                 lines[#lines + 1] = done and ("economy: modifiers from the capture " .. capture .. " (held as captured)")
                     or ("economy: no modifiers: " .. tostring(why))
-            else
-                lines[#lines + 1] = "economy: no modifier source (STELLAR_CAPTURE unset): the budget phase does nothing"
+            elseif not built then
+                lines[#lines + 1] = "economy: no modifier source (no modifier types for the world graph, STELLAR_CAPTURE unset): the budget phase does nothing"
             end
         end
     end
