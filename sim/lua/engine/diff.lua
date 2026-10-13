@@ -11,8 +11,36 @@ local world = require("engine.world")
 
 local diff = {}
 
+-- repeated blocks matched by what they are, not where they are: a key's identifying fields (an
+-- AI's strategy entries by type, object and target; its attitudes and relations by country), so
+-- one entry gained or lost does not shift every entry after it
+local KEYED = {
+    strategy = { "type", "id", "target" },
+    attitude = { "country" },
+    relation = { "country" },
+}
+
+local function identity(block, fields)
+    local parts = {}
+    for i, f in ipairs(fields) do
+        local v
+        for _, x in ipairs(block) do
+            if x.op and x.key and x.key.text == f and x.value.text then
+                v = x.value.text
+                break
+            end
+        end
+        if v == nil then
+            return nil
+        end
+        parts[i] = v
+    end
+    return table.concat(parts, "/")
+end
+
 -- every scalar of an object, by path (`modules.standard_economy_module.resources.energy`); a key
--- written more than once gets #2, #3, ... (lists of blocks: their position)
+-- written more than once gets #2, #3, ... (lists of blocks: their position), or @<identity> for
+-- the KEYED blocks
 local function flatten(block, prefix, out, depth)
     out = out or {}
     if depth > 6 then
@@ -23,6 +51,10 @@ local function flatten(block, prefix, out, depth)
     for _, e in ipairs(block) do
         if e.op and e.key then
             local k = e.key.text
+            local ident = KEYED[k] and e.value.text == nil and identity(e.value, KEYED[k])
+            if ident then
+                k = k .. "@" .. ident
+            end
             seen[k] = (seen[k] or 0) + 1
             local path = prefix .. k .. (seen[k] > 1 and ("#" .. seen[k]) or "")
             if e.value.text then
@@ -54,7 +86,7 @@ end
 
 -- a path with its object-specific parts (positions, ids in keys) made general, to count by field
 local function general(path)
-    return (path:gsub("%[%d+%]", "[]"):gsub("#%d+", ""):gsub("%.%d+%.", ".<id>."))
+    return (path:gsub("%[%d+%]", "[]"):gsub("#%d+", ""):gsub("@[^%.]+", ""):gsub("%.%d+%.", ".<id>."))
 end
 
 -- diff.run(text[, top]) -> report: this world against the gamestate `text`
