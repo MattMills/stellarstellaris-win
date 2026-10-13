@@ -70,5 +70,9 @@ class CLog : public CLogStream {
 			}
 			return *this;
 		};
-		
+
 };
+
+// The log of stellar-injected: Documents\Paradox Interactive\Stellaris\logs\stellarstellaris-debug.log
+// of the user, opened (and emptied) on first use.
+CLog* getLogger();

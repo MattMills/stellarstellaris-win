@@ -5,69 +5,11 @@
 #include "hooking/windows.h"
 
 
-unsigned char* searchMemory(HANDLE hProcess, const char search_value[], DWORD bufferType) {
-
-    MEMORY_BASIC_INFORMATION lpBuffer;
-    unsigned char* p = NULL;
-	int p_nulls = 0;
-
-
-	for (p = NULL; VirtualQueryEx(hProcess, p, &lpBuffer, sizeof(lpBuffer)) == sizeof(lpBuffer); p += lpBuffer.RegionSize) {
-		//VirtualQueryEx seems to loop back to 0x0, so this makes it increment through only once.
-		if (p == NULL) {
-			if(p_nulls > 0){
-				return 0;
-			}else {
-				p_nulls++;
-			}
-		}
-        //std::cout << "[DBG] Memory addr: 0x" << static_cast<void*>(p) << "  State: " << lpBuffer.State << "  Protect: " << lpBuffer.Protect << "  BaseAddr: " << lpBuffer.BaseAddress << "  RegionSize: " << lpBuffer.RegionSize << std::endl;
-
-        if (lpBuffer.State == MEM_COMMIT && (lpBuffer.Type == bufferType)) {
-
-            unsigned char* buffer = new unsigned char[lpBuffer.RegionSize];
-
-            SIZE_T bytesRead;
-            ReadProcessMemory(hProcess, p, &buffer[0], lpBuffer.RegionSize, &bytesRead);
-            //std::cout << "[DBG] Read bytes: " << bytesRead << std::endl;
-
-            for (int j = 0; j < bytesRead; j++) {
-                if (memcmp(&buffer[j], search_value, sizeof(search_value) + 1) == 0) {
-                    std::cout << "searchMemory(" << search_value << ") found at addr 0x" << (static_cast<void*>(p + j)) << std::endl;
-
-                    return reinterpret_cast<unsigned char*> (p + j);
-                }
-            }
-            delete[] buffer;
-        }
-    }
-	return 0;
-}
-
 
 //Contents from here down borrowed from https://github.com/khalladay/hooking-by-example/blob/master/hooking-by-example/hooking_common.h as it is all useful
 
 
 
-
-void* AllocPageInTargetProcess(HANDLE process) {
-	SYSTEM_INFO sysInfo;
-	GetSystemInfo(&sysInfo);
-	int PAGE_SIZE = sysInfo.dwPageSize;
-
-	void* newPage = VirtualAllocEx(process, NULL, PAGE_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-	return newPage;
-}
-
-
-void* AllocPage() {
-	SYSTEM_INFO sysInfo;
-	GetSystemInfo(&sysInfo);
-	int PAGE_SIZE = sysInfo.dwPageSize;
-
-	void* newPage = VirtualAlloc(NULL, PAGE_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-	return newPage;
-}
 
 void* AllocatePageNearAddressRemote(HANDLE handle, void* targetAddr) {
 	check(IsProcess64Bit(handle));
@@ -141,87 +83,6 @@ void RebaseVirtualDrivePath(const char* path, char* outBuff, size_t outBuffSize)
 	else {
 		check(strlen(path) < outBuffSize);
 		memcpy(outBuff, path, strlen(path));
-	}
-}
-
-//returns the first module called "name" -> only searches for dll name, not whole path
-//ie: somepath/subdir/mydll.dll can be searched for with "mydll.dll"
-HMODULE FindModuleInProcess(HANDLE process, const char* name) {
-	char* lowerCaseName = _strdup(name);
-	_strlwr_s(lowerCaseName, strlen(name) + 1);
-
-	HMODULE remoteProcessModules[1024];
-	DWORD numBytesWrittenInModuleArray = 0;
-	BOOL success = EnumProcessModules(process, remoteProcessModules, sizeof(HMODULE) * 1024, &numBytesWrittenInModuleArray);
-
-	if (!success) {
-		fprintf(stderr, "Error enumerating modules on target process. Error Code %lu \n", GetLastError());
-		DebugBreak();
-	}
-
-	DWORD numRemoteModules = numBytesWrittenInModuleArray / sizeof(HMODULE);
-	CHAR remoteProcessName[256];
-	GetModuleFileNameEx(process, NULL, remoteProcessName, 256); //a null module handle gets the process name
-	_strlwr_s(remoteProcessName, 256);
-
-	MODULEINFO remoteProcessModuleInfo;
-	HMODULE remoteProcessModule = 0; //An HMODULE is just the DLL's base address 
-
-	for (DWORD i = 0; i < numRemoteModules; ++i) {
-		CHAR moduleName[256];
-		CHAR absoluteModuleName[256];
-		CHAR rebasedPath[256] = { 0 };
-		GetModuleFileNameEx(process, remoteProcessModules[i], moduleName, 256);
-		_strlwr_s(moduleName, 256);
-		char* lastSlash = strrchr(moduleName, '\\');
-		if (!lastSlash) lastSlash = strrchr(moduleName, '/');
-
-		char* dllName = lastSlash + 1;
-
-		if (strcmp(dllName, lowerCaseName) == 0) {
-			remoteProcessModule = remoteProcessModules[i];
-
-			success = GetModuleInformation(process, remoteProcessModules[i], &remoteProcessModuleInfo, sizeof(MODULEINFO));
-			check(success);
-			free(lowerCaseName);
-			return remoteProcessModule;
-		}
-		//the following string operations are to account for cases where GetModuleFileNameEx
-		//returns a relative path rather than an absolute one, the path we get to the module
-		//is using a virtual drive letter (ie: one created by subst) rather than a real drive
-		char* err = _fullpath(absoluteModuleName, moduleName, 256);
-		check(err);
-	}
-
-	free(lowerCaseName);
-	return 0;
-
-}
-
-void PrintModulesForProcess(HANDLE process) {
-	HMODULE remoteProcessModules[1024];
-	DWORD numBytesWrittenInModuleArray = 0;
-	BOOL success = EnumProcessModules(process, remoteProcessModules, sizeof(HMODULE) * 1024, &numBytesWrittenInModuleArray);
-
-	if (!success) {
-		fprintf(stderr, "Error enumerating modules on target process. Error Code %lu \n", GetLastError());
-		DebugBreak();
-	}
-
-	DWORD numRemoteModules = numBytesWrittenInModuleArray / sizeof(HMODULE);
-	HMODULE remoteProcessModule = 0; //An HMODULE is just the DLL's base address 
-
-	for (DWORD i = 0; i < numRemoteModules; ++i) {
-		CHAR moduleName[256];
-		CHAR absoluteModuleName[256];
-		GetModuleFileNameEx(process, remoteProcessModules[i], moduleName, 256);
-
-		//the following string operations are to account for cases where GetModuleFileNameEx
-		//returns a relative path rather than an absolute one, the path we get to the module
-		//is using a virtual drive letter (ie: one created by subst) rather than a real drive
-		char* err = _fullpath(absoluteModuleName, moduleName, 256);
-		check(err);
-		printf("%s\n", absoluteModuleName);
 	}
 }
 
@@ -323,8 +184,9 @@ HMODULE FindModuleBaseAddress(HANDLE process, const char* targetModule) {
 
 void* FindAddressOfRemoteDLLFunction(HANDLE process, const char* dllName, const char* funcName) {
 	//first, load the dll into this process so we can use GetProcAddress to determine the offset
-	//of the target function from the DLL base address
-	HMODULE localDLL = LoadLibraryEx(dllName, NULL, 0);
+	//of the target function from the DLL base address (without running its DllMain here, which
+	//would open the game's log again)
+	HMODULE localDLL = LoadLibraryEx(dllName, NULL, DONT_RESOLVE_DLL_REFERENCES);
 	check(localDLL);
 	void* localHookFunc = GetProcAddress(localDLL, funcName);
 	check(localHookFunc);
@@ -369,9 +231,11 @@ void SetOtherThreadsSuspended(bool suspend) {
 }
 
 
-void InjectPayload(HANDLE process, const char* pathToPayloadDLL, void* ptr, void* ptr2) {
+// Loads the DLL into the process (LoadLibraryA, in a thread of the process), then runs its
+// stellar_start export in another thread.
+void InjectPayload(HANDLE process, const char* pathToPayloadDLL) {
 	//write the name of our dll to the target process' memory
-	size_t dllPathLen = strlen(pathToPayloadDLL);
+	size_t dllPathLen = strlen(pathToPayloadDLL) + 1;
 	void* dllPathRemote = VirtualAllocEx(
 		process,
 		NULL, //let the system decide where to allocate the memory
@@ -408,40 +272,12 @@ void InjectPayload(HANDLE process, const char* pathToPayloadDLL, void* ptr, void
 	// Wait for the remote thread to terminate
 	WaitForSingleObject(remoteThread, INFINITE);
 
-	void * buf = malloc(sizeof(void*) * 2);
-	
+	PTHREAD_START_ROUTINE start = (PTHREAD_START_ROUTINE)FindAddressOfRemoteDLLFunction(process, TEXT(PAYLOAD_DLL_NAME), TEXT("stellar_start"));
+	std::cout << "Found remote start function: " << start << std::endl;
+	check(start);
 
-	memset(buf, 0x00, sizeof(void*)*2);
-	memcpy( buf, ptr, sizeof(void*));
-	memcpy((void*)(((intptr_t)buf) + sizeof(void*)), &ptr2, sizeof(void*));
-	std::cout << "buf_ptr: " << &buf << std::endl;
-	std::cout << "buf_ptr2x: " << (void*)(((intptr_t)&buf) + sizeof(void*)) << std::endl;
-
-	//Write our pointer into remote memory so we don't need to find it again.
-	writeSucceeded = WriteProcessMemory(
-		process,
-		dllPathRemote,
-		buf,
-		(sizeof(void *)*2),
-		NULL);
-	check(writeSucceeded);
-
-	PTHREAD_START_ROUTINE pushCApplicationPtr = (PTHREAD_START_ROUTINE)FindAddressOfRemoteDLLFunction(process, TEXT(PAYLOAD_DLL_NAME), TEXT("PushCApplicationPtr"));
-	std::cout << "Found remote ptr push func: " << pushCApplicationPtr << std::endl;
-	check(pushCApplicationPtr);
-
-	HANDLE remoteThread2 = CreateRemoteThread(
-		process,
-		NULL, //default thread security
-		0, //stack size for thread
-		pushCApplicationPtr, //pointer to start of thread function
-		dllPathRemote, //pointer to variable being passed to thread function
-		0, //0 means the thread runs immediately after creation
-		NULL); //we don't care about getting back the thread identifier
-
+	HANDLE remoteThread2 = CreateRemoteThread(process, NULL, 0, start, NULL, 0, NULL);
 	check(remoteThread2);
-
-	// Wait for the remote thread to terminate
 	WaitForSingleObject(remoteThread2, INFINITE);
 
 	//once we're done, free the memory we allocated in the remote process for the dllPathname, and shut down
