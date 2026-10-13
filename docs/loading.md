@@ -60,6 +60,68 @@ it (`stellar.join_async`). `modifiers.log` stays identical to vanilla. `backgrou
 it in its place. (`CModifier::InitDefinitionIcons` is called from inside `SetupDatabases`: the
 SetupDatabases hook clears only the skip flags Lua's loop set, not those set from hooks inside it.)
 
+## The steps of InitGame, Lua's
+
+Lua runs steps of `InitGame` itself, on threads of its own, as soon as what each needs is made
+(`lua/stellar/init_steps.lua`). The game's own call of each then waits for Lua's run and returns
+its result instead of running it (`stellar.defer_mark`: the mark's stub returns the result of the
+background call, `stellar.run_async`). Steps whose order matters run in a chain, one after another
+on one thread (`stellar.run_async_chain`). Steps that write the tables the databases share run ahead
+only where those functions are serialized (databases in parallel); the shared lock is held until
+the last of them is joined.
+
+| step | started | why it can |
+|---|---|---|
+| `CApplication::CalculateGameFilesChecksum` | with the databases | hashes the game's files; nothing the load makes is read |
+| `CStaticModifierDatabase::Init` | after the PostReads | the modifier definitions are final |
+| `CTriggerDatabase::PostInit` -> `PostValidate` -> `CEffectDatabase::PostInit` -> `PostValidate` | after the PostReads, one chain | every scripted trigger and effect is read by then. Run side by side, they made different triggers (census 1,317,090 or 1,318,659 for 1,318,141) |
+| `CModifier::LogDefinitions` | after the PostReads | writes `modifiers.log`, which nothing reads |
+
+In three loads, all identical to vanilla, the game waited 4.3s in 7 joins for 12s of work. The
+main menu came 31.5s after the hook, against about 50s before.
+
+### The start of InitGame, during the graphics phase (`lua/stellar/early.lua`)
+
+`InitGame` begins with what the databases need:
+- `CGlobalScriptedVariablesDatabase::InitializeWithDirectory("common/scripted_variables")`, into
+  `CReader::s_GlobalVariables`, which every reader searches;
+- `CInlineScriptDatabase::CreateInstance`;
+- `CModifier::InitDefinitions`;
+- `CGfxUtil`, which is graphics;
+- the null objects: a table of `{ TPdxNullObject<T>::Allocate, Initialize }` pairs (323 in 4.5.2). The
+  game calls every `Allocate`, then every `Initialize`, in two loops.
+
+Then it calls `SetupDatabases`. `early.locate` finds all of these in `InitGame`. The same lookup
+gives the right functions in the GOG 4.5.2 build, checked against the PDB.
+
+Lua hands them, except `CGfxUtil`, to the game's own thread for its next step of the load
+(`stellar.loading_step_work`). The step hook runs them between two files of the interface or
+graphics phase, where no reader is in the middle of a statement, so the readers' global variables
+change under none. If every call returned, the hook then turns the game's own off before the game
+goes on: it sets the skip flags of the three functions' marks and writes a jump over the two loops.
+Entering `InitializeWithDirectory` before a step comes cancels the work. A call that fails ends
+the game, since the calls before it ran.
+
+The databases then start at once on the workers (`databases.run_parallel`, `options.early`), while
+the game's thread goes on with the graphics. Some wait for `SetupDatabases`, which carries on from
+that run (`options.resume`):
+- those that need the game's thread (`databases.MAIN_THREAD`);
+- those whose `CanInitialize` reads a global not set yet;
+- those that need the phases (`cache/database_late-<md5>.tsv`, `databases.load_late`), learned from
+  failures beside them. A database that fails, or that runs while the error log grows, waits for
+  the phases from the next load on, and so do those in flight when the game dies.
+
+The first load learned that `CPingMapDatabase` needs the entities of the graphics phase ("invalid
+system entity"). `CStarbaseTypeDatabase` and `CStaticModifierDatabase` ran at the same time and were
+learned with it.
+
+The four loads after that were all identical to vanilla: the error log, `modifiers.log`, the
+census. 71 of the 198 databases were done in 0.5s during the graphics phase. The rest wait for
+`CPortraitDatabase` and the other databases of the game's thread, which most of the long chain
+depends on. Those took 7.0-7.2s at `SetupDatabases`, and the main menu came 32.9-34.6s after the
+hook, so the load is not faster yet. It is not tuned further because the databases are to be
+replaced. `early.txt` "game" leaves the start of InitGame to the game.
+
 ## CGameApplication::InitGame
 
 All on one thread, in this order. Times are from a run with the Lua lexer, in seconds from 0% on
