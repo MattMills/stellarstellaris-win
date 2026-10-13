@@ -171,6 +171,10 @@ end
 P["daily.galaxy"] = function()
     each_object(other_stores(), count_down_modifiers)
 end
+-- CConstructionManager::DailyUpdate: the construction queues (engine.construction)
+P["daily.construction_manager"] = function(host, date)
+    require("engine.construction").daily(date)
+end
 -- CCountry::DailyUpdateSerial: the country's events, then (after diplomacy and elections) its
 -- research (engine.research)
 P["daily.countries_serial"] = function(host, date)

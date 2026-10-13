@@ -122,7 +122,7 @@ function engine.report()
     local missing, n_missing = top(engine.systems.not_modelled, 40)
     lines[#lines + 1] = "engine: phases run: " .. ran
     lines[#lines + 1] = string.format("engine: phases not modelled yet (%d): %s", n_missing, missing)
-    for _, m in ipairs({ "engine.research", "engine.leaders" }) do
+    for _, m in ipairs({ "engine.research", "engine.leaders", "engine.construction" }) do
         if package.loaded[m] then
             lines[#lines + 1] = package.loaded[m].report()
         end
