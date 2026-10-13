@@ -40,6 +40,11 @@ return {
     { name = "CModifier::GetTypeFromToken", what = "a modifier type from its token (a linear scan): replaced by the index" },
     { name = "CModifier::TryAddDynamicModifier", what = "adds a generated modifier type (after a linear scan): the scan is replaced" },
     { name = "CPdxModifier<enum ModifierType,enum ModifierCategory,CModifier,CDefaultPdxModifierValueReader>::TryReadMember", what = "reads a modifier key from script (after a linear scan): the scan is replaced" },
+    -- the modifier nodes, captured (stellar.modifier_capture, docs/modifiers.md)
+    { name = "NModifierNode::CModifierNodeBase<CModifier,enum EModifierNodeCategory>::Invalidate", what = "invalidates a node and its children: names the node manager's instance" },
+    { name = "NModifierNode::CModifierNodeBase<CModifier,enum EModifierNodeCategory>::Update", what = "recomputes a node if it is invalid (a full rebuild)" },
+    { name = "NModifierNode::CModifierNodeManager<CModifier,enum EModifierNodeCategory>::MarkNodeAsInvalid", what = "a node id into the invalid set of its category" },
+    { name = "NModifierNode::CModifierNodeManager<CModifier,enum EModifierNodeCategory>::Update", what = "recomputes the invalid nodes, category by category" },
     -- the game databases (stellar.databases)
     { name = "NNullObjAndDatabaseInitUtil::SetupDatabases", what = "initializes the game databases: their table is in its code" },
     -- what the databases share, serialized when they run in parallel (stellar.serialize)

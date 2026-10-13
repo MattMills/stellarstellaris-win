@@ -590,6 +590,14 @@ image:close()
 -- dev\run.lua when there is one (stellar.dev, development only)
 local dev = require("stellar.dev")
 dev.state.where = script_where
+dev.state.found = found
+-- the modifier nodes, captured on demand (stellar.modifier_capture; a game loaded)
+do
+    local capture_where, why = require("stellar.modifier_capture").locate(found, stellar.read)
+    dev.state.modifier_where = capture_where
+    stellar.log("modifiers: the node manager " .. (capture_where and string.format("at %s", hex(capture_where.instance))
+        or ("not found: " .. tostring(why))))
+end
 local heartbeats, catalog_done, schedule_logged = 0, script_where == nil, false
 stellar.heartbeat = function()
     heartbeats = heartbeats + 1
