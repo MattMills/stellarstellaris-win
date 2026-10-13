@@ -164,7 +164,30 @@ local LINKS = {
         local l = E.leaders(cur.id)[1]
         return l and S("leader", l) or nil
     end,
+    -- species (scopes.log): an object's species; a country's founding species; the main species of
+    -- the owner (a country's own: its founder species)
+    species = function(cur)
+        if not E.species_of then return nil end
+        sync()
+        local s = E.species_of(cur.kind, cur.id)
+        return s and S("species", s) or nil
+    end,
+    founder_species = function(cur)
+        if cur.kind ~= "country" or not E.founder_species then return nil end
+        sync()
+        local s = E.founder_species(cur.id)
+        return s and S("species", s) or nil
+    end,
 }
+LINKS.owner_main_species = function(cur)
+    if not E.founder_species then return nil end
+    local c = cur.kind == "country" and cur or owner_of(cur)
+    if not c then return nil end
+    sync()
+    local s = E.founder_species(c.id)
+    return s and S("species", s) or nil
+end
+LINKS.owner_species = LINKS.owner_main_species
 M.LINKS = LINKS
 
 -- resolve a scope reference (`owner`, `root.owner.capital_scope`, `event_target:x`,
@@ -445,11 +468,17 @@ local function apply_ops(b, ctx, acc, only_ops)
             elseif k == "limit" or k == "weight" or k == "desc" or k == "display_name" then
                 -- handled by the caller or not a value operation
             else
-                local found, sc = M.resolve(e.key.text, ctx, e)
-                if found and e.value.text == nil then
-                    if sc then acc = apply_ops(e.value, push(ctx, sc), acc) end
+                -- `count_owned_pop_amount = { limit = { ... } }`: the iterator's count
+                local n = e.value.text == nil and M.count_value and M.count_value(k, e.value, ctx)
+                if n then
+                    acc = n
                 else
-                    miss("value op", k, ctx, e)
+                    local found, sc = M.resolve(e.key.text, ctx, e)
+                    if found and e.value.text == nil then
+                        if sc then acc = apply_ops(e.value, push(ctx, sc), acc) end
+                    else
+                        miss("value op", k, ctx, e)
+                    end
                 end
             end
         end
@@ -585,9 +614,34 @@ local LISTS = {
 LISTS.owned_colony = LISTS.owned_planet
 LISTS.playable_country = LISTS.country
 LISTS.leader = LISTS.owned_leader
+LISTS.neighbor_country = function(sc)
+    if sc.kind ~= "country" or not E.neighbors then return {} end
+    sync()
+    return map_scopes("country", E.neighbors(sc.id))
+end
+LISTS.owned_megastructure = function(sc)
+    if sc.kind ~= "country" or not E.megastructures then return {} end
+    sync()
+    return map_scopes("megastructure", E.megastructures(sc.id))
+end
 M.LISTS = LISTS
 
+-- iterators that count amounts, not items: count_owned_pop_amount sums the pop groups' sizes
+local AMOUNTS = {
+    owned_pop_amount = {
+        list = "owned_pop_group",
+        weight = function(s)
+            sync()
+            return tonumber(E.get("pop_group", s.id, "size")) or 0
+        end,
+    },
+}
+M.AMOUNTS = AMOUNTS
+
 local function list_of(name, block, ctx, e)
+    if AMOUNTS[name] then
+        name = AMOUNTS[name].list
+    end
     if name == "in_list" then
         local lname
         for _, x in ipairs(block) do
@@ -652,20 +706,14 @@ local function trigger1(e, ctx)
                 end
                 return false
             end
-            local limit, op, want = nil, ">=", 1
+            local op, want = ">=", 1
             for _, x in ipairs(e.value) do
-                if x.op then
-                    local xk = x.key.text:lower()
-                    if xk == "limit" then limit = x.value
-                    elseif xk == "count" then op = x.op; want = x.value.text == "all" and -1 or M.value(x.value, ctx, x) end
+                if x.op and x.key.text:lower() == "count" then
+                    op = x.op; want = x.value.text == "all" and -1 or M.value(x.value, ctx, x)
                 end
             end
-            local n = 0
-            for _, s2 in ipairs(list) do
-                local c2 = push(ctx, s2)
-                if (not limit or trigger(limit, c2)) and trigger(e.value, c2, ITER_PARAMS) then n = n + 1 end
-            end
-            if want == -1 then return n == #list end
+            local n, total = M.count_items(lname, list, e.value, ctx)
+            if want == -1 then return n == total end
             return compare(n, op, want)
         end
         miss("iterator", lk, ctx, e)
@@ -673,6 +721,23 @@ local function trigger1(e, ctx)
     end
     local def = db.scripted_triggers[key]
     if def then
+        -- `pop_amount > 10`: a scripted trigger whose body is one count iterator, compared as a
+        -- number (the comparison takes the iterator's count)
+        local tv = e.value.text
+        if tv and tv ~= "yes" and tv ~= "no" then
+            local body = scripted_call(def, key, { value = { text = "yes" } }, "trigger")
+            local only
+            for _, x in ipairs(body or {}) do
+                if x.op then
+                    if only then only = false break end
+                    only = x
+                end
+            end
+            local n = only and M.count_value(only.key.text:lower(), only.value, with_file(ctx, def.file))
+            if n then
+                return compare(n, e.op, M.value(e.value, ctx, e))
+            end
+        end
         local body = scripted_call(def, key, e, "trigger")
         if not body then
             miss("trigger", "instantiate " .. key, ctx, e)
@@ -699,6 +764,39 @@ local function trigger1(e, ctx)
     end
     miss("trigger", lk, ctx, e)
     return false
+end
+
+-- M.count_items(lname, list, block, ctx) -> n, total: the items of an iterator's list for which
+-- its limit and its triggers hold (weighted by the amount for the *_amount iterators), and the
+-- whole list's weight
+function M.count_items(lname, list, block, ctx)
+    local amount = AMOUNTS[lname]
+    local limit
+    for _, x in ipairs(block) do
+        if x.op and x.key.text:lower() == "limit" then limit = x.value end
+    end
+    local n, total = 0, 0
+    for _, s2 in ipairs(list) do
+        local w = amount and amount.weight(s2) or 1
+        total = total + w
+        local c2 = push(ctx, s2)
+        if (not limit or trigger(limit, c2)) and trigger(block, c2, ITER_PARAMS) then n = n + w end
+    end
+    return n, total
+end
+
+-- M.count_value(key, block, ctx) -> the number a `count_<list> = { limit ... }` stands for, or nil
+-- when key is not such an iterator
+function M.count_value(key, block, ctx)
+    local lname = key:match("^count_(.+)$")
+    if not lname or type(block) ~= "table" or block.text then
+        return nil
+    end
+    local list = list_of(lname, block, ctx, nil)
+    if not list then
+        return nil
+    end
+    return (M.count_items(lname, list, block, ctx))
 end
 
 -- a block: AND of its statements (keys in skip are parameters, not triggers)
@@ -857,12 +955,78 @@ TRIG["host_has_dlc"] = TRIG["has_dlc"]
 TRIG["is_multiplayer"] = function(e) return not yes(e) end
 TRIG["is_ironman"] = function(e) return not yes(e) end
 
+-- has_deficit = <resource>: a country out of the resource with a negative balance
+TRIG["has_deficit"] = function(e, ctx)
+    if not E.has_deficit or ctx.this == NONE or not e.value.text then return false end
+    sync()
+    return E.has_deficit(ctx.this.kind, ctx.this.id, e.value.text) and true or false
+end
+-- fleet_power > N: the scope's fleet power (a fleet's military power; a country's fleets')
+TRIG["fleet_power"] = function(e, ctx)
+    if not E.fleet_power or ctx.this == NONE then return false end
+    sync()
+    return compare(E.fleet_power(ctx.this.kind, ctx.this.id) or 0, e.op, M.value(e.value, ctx, e))
+end
+-- check_modifier_value = { modifier = x value > y }: the scope's modifier node value
+TRIG["check_modifier_value"] = function(e, ctx)
+    if e.value.text or ctx.this == NONE then return false end
+    local name, op, want
+    for _, x in ipairs(e.value) do
+        local xk = x.op and x.key.text:lower()
+        if xk == "modifier" then name = x.value.text
+        elseif xk == "value" then op = x.op; want = M.value(x.value, ctx, x) end
+    end
+    if not name or not want then return false end
+    sync()
+    return compare(E.modifier(ctx.this.kind, ctx.this.id, name) or 0, op, want)
+end
+-- is_same_species = <target>: both scopes' species are the same
+TRIG["is_same_species"] = function(e, ctx)
+    if not E.species_of or not e.value.text then return false end
+    local found, other = M.resolve(e.value.text, ctx, e)
+    if not found or not other or ctx.this == NONE then return false end
+    sync()
+    local a = E.species_of(ctx.this.kind, ctx.this.id)
+    local b = E.species_of(other.kind, other.id)
+    return a ~= nil and a == b
+end
+-- has_citizenship_type = { country = <who> type = <type> } and has_population_control = { country
+-- = <who> type = bool/<type> }: the country's species rights for the scope's species (the scope's
+-- owner when no country is given)
+local function species_right_trigger(key, none)
+    return function(e, ctx)
+        if not E.species_right or e.value.text ~= nil or ctx.this == NONE then return false end
+        local who, want
+        for _, x in ipairs(e.value) do
+            local xk = x.op and x.key.text:lower()
+            if xk == "country" and x.value.text then
+                local found, sc = M.resolve(x.value.text, ctx, x)
+                who = found and sc or nil
+            elseif xk == "type" then
+                want = x.value.text
+            end
+        end
+        who = who or (ctx.this.kind == "country" and ctx.this) or owner_of(ctx.this)
+        if not who or who.kind ~= "country" then return false end
+        sync()
+        local sid = E.species_of(ctx.this.kind, ctx.this.id)
+        local have = sid and E.species_right(who.id, sid, key)
+        if want == "yes" or want == "no" then
+            return ((have ~= nil and have ~= none) and "yes" or "no") == want
+        end
+        return have ~= nil and have == want
+    end
+end
+TRIG["has_citizenship_type"] = species_right_trigger("citizenship", nil)
+TRIG["has_population_control"] = species_right_trigger("population_control", "population_control_no")
+
 -- numeric engine reads: key -> scope kind, field
 local NUMS = {
     num_owned_planets = { "country", "num_colonies" },
     num_colonies = { "country", "num_colonies" },
     num_pops = { nil, "num_pops" },
     num_leaders = { "country", "num_leaders" },
+    has_base_skill = { "leader", "has_base_skill" },
 }
 for k, spec in pairs(NUMS) do
     TRIG[k] = function(e, ctx)
@@ -889,6 +1053,10 @@ local PROP_ATTR = {
     -- engine state the sample world does not have (no wars, federations, subjects): absent = no
     is_at_war = true, is_subject = true, is_overlord = true, has_federation = true, is_nomadic = true,
     is_councilor = true, is_galactic_community_member = true, is_ruler = true, is_in_federation = true,
+    -- species (and pop groups, leaders: their species')
+    is_sapient = true, is_infertile = true, is_robotic = true, is_robotic_species = true, is_archetype = true,
+    last_increased_tech = true, is_megastructure_type = true,
+    leader_class = true, is_leader_tier = true, is_hidden = true,
 }
 local PROP_SET = {
     has_ethic = true, has_civic = true, has_valid_civic = true, has_authority = true, has_origin = true,

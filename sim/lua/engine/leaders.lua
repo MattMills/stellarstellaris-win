@@ -145,7 +145,7 @@ local function cap_penalty(country, class)
     local base = cd and tonumber(defs.field(cd, "leader_capacity"))
     if base == nil and cd then
         local v = defs.field(cd, "leader_capacity")
-        base = v and tonumber(eval.value({ text = tostring(v) }, eval.new_ctx(eval.S("country", country))))
+        base = v and tonumber(eval.value({ text = tostring(v) }, eval.new_ctx(eval.S("country", country), nil, nil, (defs.get("common/leader_classes", class) or {}).file)))
     end
     if base and base > 0 then
         local M = modifiers("country", country)
