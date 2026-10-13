@@ -31,6 +31,11 @@
 --   PopGroup: pop category, the species' traits (one part, then each trait's triggered blocks),
 --     the owner's species rights (living standard, citizenship, slavery / purge type, population
 --     control; none in a fallen empire), low habitability.
+--   Ship: the design's sections and components, the size, auras, docked repairs (S:ship).
+--   Fleet: its system's star class, its leader's class skill and trait blocks (S:fleet).
+--   Army: the species' traits, its general's class skill and army_modifier blocks (S:army).
+--   Sector: its capital's governor's sector_modifier blocks. GalacticObjectTimed: the system's
+--     timed modifiers.
 --   Leader: the species' traits, the leader's traits' self_modifier and triggered_self_modifier.
 --   LeaderSkill: the skill statics x level (S:leader_skill), a ruler's council position x level,
 --     the traits' `modifier` blocks.
@@ -55,8 +60,13 @@ M.FILTER = {
     PopGroup = 688130,
     Ship = 49276,
     Leader = 525312,
+    Fleet = 1342882558,
+    Army = 524800,
+    Sector = 1077926654,
+    GalacticObjectTimed = 1076878078,
 }
-M.CATEGORIES = { "Country", "Planet", "Colony", "PopGroup", "Ship", "Leader", "LeaderSkill", "Starbase", "StarbaseCountry", "StarbaseExternal",
+M.CATEGORIES = { "Country", "Planet", "Colony", "PopGroup", "Ship", "Fleet", "Army", "Sector",
+    "GalacticObjectTimed", "Leader", "LeaderSkill", "Starbase", "StarbaseCountry", "StarbaseExternal",
     "StarbaseSystem", "StarbaseDefensePlatform", "Orbital" }
 
 -- A key of a modifier block that is not a modifier type but names a static modifier
@@ -616,6 +626,28 @@ function S:index_world()
     for _, gid in ipairs(w.all("galactic_object")) do
         for _, sb in ipairs(list_of(w, w.object("galactic_object", gid), "starbases")) do
             self.system_of_starbase[tonumber(sb)] = gid
+        end
+    end
+    -- the leader of each fleet: on one of its ships (location = { type = ship id = <ship> }), or
+    -- its general, the leader of an army embarked in it
+    self.fleet_general, self.fleet_leader = {}, {}
+    for _, aid in ipairs(w.all("army")) do
+        local a = w.object("army", aid)
+        local leader, ship = tonumber(w.field(a, "leader")), tonumber(w.field(a, "ship"))
+        local fleet = ship and tonumber(w.field(w.object("ships", ship), "fleet"))
+        if leader and leader ~= 4294967295 and fleet then
+            self.fleet_general[fleet] = leader
+            self.fleet_leader[fleet] = leader
+        end
+    end
+    for _, lid in ipairs(w.all("leader")) do
+        local loc = w.field(w.object("leader", lid), "location")
+        if type(loc) == "table" and unq(w.field(loc, "type")) == "ship" then
+            local ship = tonumber(w.field(loc, "id"))
+            local fleet = ship and tonumber(w.field(w.object("ships", ship), "fleet"))
+            if fleet then
+                self.fleet_leader[fleet] = lid
+            end
         end
     end
     -- the country each ruler rules
@@ -1241,6 +1273,123 @@ function S:ship(id)
     return parts
 end
 
+-- fleets ----------------------------------------------------------------------------------------
+
+-- the filter of a fleet's triggered parts (its plain parts have M.FILTER.Fleet)
+M.FLEET_TRIGGERED_FILTER = 1074447102
+
+-- Fleet: its system's star class `modifier`; its leader's class skill static times its level and
+-- the leader's traits' modifier and fleet_modifier blocks, and their triggered blocks
+-- (triggered_modifier, triggered_fleet_modifier, potential in the leader's scope) with a filter of
+-- their own
+function S:fleet(id)
+    local w = self.world
+    local parts = new_parts(M.FILTER.Fleet)
+    local fl = w.object("fleet", id)
+    if fl == nil then
+        return parts
+    end
+    local mm = w.field(fl, "movement_manager")
+    local coord = type(mm) == "table" and w.field(mm, "coordinate")
+    local sys = type(coord) == "table" and tonumber(w.field(coord, "origin"))
+    local star = sys and unq(w.field(w.object("galactic_object", sys), "star_class"))
+    if type(star) == "string" then
+        parts.add("star:" .. star, self:def_values("common/star_classes", star, "modifier"))
+    end
+    local leader = self.fleet_leader[id]
+    local l = leader and self.leaders[leader]
+    if l then
+        self:class_skill(parts, leader)
+        for _, t in ipairs(l.traits) do
+            for _, key in ipairs({ "modifier", "fleet_modifier" }) do
+                parts.add("trait:" .. t .. "." .. key, self:def_values("common/traits", t, key))
+            end
+        end
+        parts.filter = M.FLEET_TRIGGERED_FILTER
+        for _, t in ipairs(l.traits) do
+            for _, key in ipairs({ "triggered_modifier", "triggered_fleet_modifier" }) do
+                self:triggered(parts, "trait:" .. t .. "." .. key, "common/traits", t, key, "leader", leader)
+            end
+        end
+        parts.filter = M.FILTER.Fleet
+    end
+    return parts
+end
+
+-- armies ----------------------------------------------------------------------------------------
+
+-- Army: its species' traits; its general's (its own leader, or its fleet's general, not the
+-- fleet's admiral) class skill times its level and traits' army_modifier and
+-- triggered_army_modifier blocks
+function S:army(id)
+    local w = self.world
+    local parts = new_parts(M.FILTER.Army)
+    local a = w.object("army", id)
+    if a == nil then
+        return parts
+    end
+    parts.add("species_traits", (self:species_traits(tonumber(w.field(a, "species")))))
+    local general = tonumber(w.field(a, "leader"))
+    local own = general ~= nil and self.leaders[general] ~= nil
+    if not own then
+        local ship = tonumber(w.field(a, "ship"))
+        local fleet = ship and tonumber(w.field(w.object("ships", ship), "fleet"))
+        general = fleet and self.fleet_general[fleet]
+    end
+    local l = general and self.leaders[general]
+    if l then
+        self:class_skill(parts, general)
+    end
+    for _, t in ipairs(l and l.traits or {}) do
+        parts.add("general:" .. t, self:def_values("common/traits", t, "army_modifier"))
+        -- the triggered blocks only for its own leader: the capture has none from a fleet's
+        -- general (their potentials read the leader, as leader_class does, which an army without
+        -- one does not have)
+        if own then
+            self:triggered(parts, "general:" .. t, "common/traits", t, "triggered_army_modifier", "leader", general)
+        end
+    end
+    return parts
+end
+
+-- sectors and systems ---------------------------------------------------------------------------
+
+-- Sector: the sector_modifier and triggered_sector_modifier blocks of the traits of the governor
+-- of its capital, when the capital is not occupied (common/traits/000_documentation_leader_traits.txt)
+function S:sector(id)
+    local w = self.world
+    local parts = new_parts(M.FILTER.Sector)
+    local o = w.object("sectors", id)
+    local cap = o and tonumber(w.field(o, "local_capital"))
+    local col = cap and w.object("colony", cap)
+    local gov = col and tonumber(w.field(col, "governor"))
+    local l = gov and self.leaders[gov]
+    local planet = cap and self.planet_of_colony[cap]
+    local p = planet and w.object("planet", planet)
+    if not (l and p) then
+        return parts
+    end
+    local controller = w.field(p, "controller")
+    if controller ~= nil and controller ~= w.field(p, "owner") then
+        return parts
+    end
+    for _, t in ipairs(l.traits) do
+        parts.add("governor:" .. t, self:def_values("common/traits", t, "sector_modifier"))
+        self:triggered(parts, "governor:" .. t, "common/traits", t, "triggered_sector_modifier", "leader", gov)
+    end
+    return parts
+end
+
+-- GalacticObjectTimed: the system's timed modifiers (turbulent_nebula, storms)
+function S:system_timed(id)
+    local parts = new_parts(M.FILTER.GalacticObjectTimed)
+    local o = self.world.object("galactic_object", id)
+    if o then
+        self:timed(parts, o)
+    end
+    return parts
+end
+
 -- leaders ---------------------------------------------------------------------------------------
 
 -- where a leader is: its location's type (ship, army, planet, ...) and id, or nil
@@ -1300,19 +1449,24 @@ function S:immortal(id)
     return l.immortal
 end
 
--- a leader's skill statics times its level: its class's (SKILL_AT), and
+-- a leader's class's skill static (SKILL_AT) times its level
+function S:class_skill(parts, id)
+    local l = self.leaders[id]
+    local skill = SKILL_AT[l.class]
+    local static = skill and (skill.any or skill[(self:leader_location(id))])
+    if static then
+        parts.add("skill:" .. static, self:static(static), l.level * 100000)
+    end
+end
+
+-- a leader's skill statics times its level: its class's (S:class_skill), and
 -- skill_<class>_background_planet_governor when the planet it governs is its background planet
 -- (neither counts as equal: a leader with no background planet that governs nothing has it)
 function S:skill_statics(parts, id)
     local w = self.world
     local l = self.leaders[id]
     local level = l.level * 100000
-    local at = self:leader_location(id)
-    local skill = SKILL_AT[l.class]
-    local static = skill and (skill.any or skill[at])
-    if static then
-        parts.add("skill:" .. static, self:static(static), level)
-    end
+    self:class_skill(parts, id)
     local bg = w.field(w.object("leader", id), "background_planet")
     local bg_planet = type(bg) == "table" and tonumber(w.field(bg, "reference")) or 4294967295
     if (self.governed[id] or 4294967295) == bg_planet then
@@ -1446,7 +1600,8 @@ end
 -- ---------------------------------------------------------------------------------------------
 
 local BY_CATEGORY = { Country = S.country, Planet = S.planet, Colony = S.colony, PopGroup = S.pop_group, Ship = S.ship,
-    Leader = S.leader, LeaderSkill = S.leader_skill }
+    Fleet = S.fleet, Army = S.army, Sector = S.sector, GalacticObjectTimed = S.system_timed, Leader = S.leader,
+    LeaderSkill = S.leader_skill }
 for _, c in ipairs(M.STARBASE_CATEGORIES) do
     BY_CATEGORY[c] = function(self, id) return self:starbase_node(c, id) end
 end

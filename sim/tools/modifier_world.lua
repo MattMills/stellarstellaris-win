@@ -8,9 +8,11 @@
 --     MODCHECK_NODES  the capture (default /opt/stellaris-captures/modifier-nodes-2211.07.01-edges.tsv)
 --     MODCHECK_TYPES  its modifiers.log (default /opt/stellaris-captures/modifiers-2211.07.01.log)
 --
--- Two graphs: (1) the world's structure with the capture's own parts (the structure on its own:
+-- Four graphs: (1) the world's structure with the capture's own parts (the structure on its own:
 -- every difference is a link or a filter), (2) the world's structure with the own parts
--- engine.modifiers computes, for the categories it models (the capture's for the others).
+-- engine.modifiers computes, for the categories it models (the capture's for the others), (3) the
+-- computed parts alone, (4) mw.world_graph, as the engine reads it (the multipliers that are
+-- another modifier's value from its own graph, where (2) and (3) read them from the capture).
 
 local dir = (arg and arg[0] or ""):match("^(.*)[/\\]sim[/\\]tools[/\\][^/\\]*$") or "."
 package.path = dir .. "/sim/lua/?.lua;" .. dir .. "/sim/lua/?/init.lua;" .. dir .. "/lib/stellar-lua-pdxscript/?.lua;"
@@ -152,4 +154,24 @@ local wg3 = mw.build(core.new(), defs, st, function(category, owner)
 end)
 print(mw.format(mw.compare(wg3, snap, defs), string.format(
     "(3) the world alone (own parts of the categories not modelled: none; built in %.1f s):", os.clock() - t1)))
+
+-- (4) mw.world_graph, as the engine reads its modifiers: the world alone, the multipliers that are
+-- another modifier's value read from its own graph, not the capture's
+t1 = os.clock()
+local wg4 = mw.world_graph({ defs = defs, world = world, edefs = edefs, fs = fs, st = st })
+print(mw.format(mw.compare(wg4, snap, defs), string.format(
+    "(4) mw.world_graph (the multipliers from its own graph; built twice in %.1f s):", os.clock() - t1)))
+-- mw.values against the tree, on every node
+local checked, wrong, read_nodes = 0, 0, 0
+for key, h in pairs(wg4.holders) do
+    local category, owner = key:match("^(.-):(.*)$")
+    read_nodes = read_nodes + 1
+    for name, v in pairs(mw.values(wg4, category, tonumber(owner) or owner) or {}) do
+        checked = checked + 1
+        if wg4.tree:get(h, name) ~= math.floor(v * 100000 + 0.5) then
+            wrong = wrong + 1
+        end
+    end
+end
+print(string.format("mw.values: %d values of %d nodes read, %d not the tree's", checked, read_nodes, wrong))
 print(string.format("total %.1f s", os.clock() - t0))
