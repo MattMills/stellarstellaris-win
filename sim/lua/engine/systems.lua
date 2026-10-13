@@ -238,8 +238,11 @@ P["monthly.budget"] = function()
         systems.ran["monthly.budget (economy)"] = (systems.ran["monthly.budget (economy)"] or 0) + 1
     end
 end
--- CCountry::MonthlyUpdateSerial: the leaders' experience (engine.leaders), the monthly pulse
-P["monthly.countries_serial"] = function(host)
+-- CCountry::MonthlyUpdateStrategy (before it, in the game a parallel pass after the budget): the
+-- AIs' strategic data (engine.ai.strategy); then CCountry::MonthlyUpdateSerial: the leaders'
+-- experience (engine.leaders), the monthly pulse
+P["monthly.countries_serial"] = function(host, date)
+    call_optional("engine.ai.strategy", "monthly", host, date)
     require("engine.leaders").monthly()
     each_country(function(id) host.on_action("on_monthly_pulse_country", "country", id) end)
 end
