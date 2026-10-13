@@ -114,6 +114,20 @@ impl Runtime {
                 Ok(r.next_int())
             })?,
         )?;
+        // RUST.skip(n): n draws whose values nothing reads (MicroUpdate's ship pool outside combat,
+        // headless/README.md): the position advances by n
+        let r = rng.clone();
+        rust.set(
+            "skip",
+            lua.create_function(move |_, n: u32| {
+                let mut r = r.borrow_mut();
+                if r.is_forbidden() {
+                    return Err(mlua::Error::RuntimeError("random draw in a parallel phase".into()));
+                }
+                r.position = r.position.wrapping_add(n);
+                Ok(())
+            })?,
+        )?;
         let monthly_pool: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
         let mp = monthly_pool.clone();
         rust.set(

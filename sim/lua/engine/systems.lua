@@ -293,6 +293,14 @@ P["daily.pop_groups"] = function(host, date)
         systems.not_modelled["daily.pop_groups"] = (systems.not_modelled["daily.pop_groups"] or 0) + 1
     end
 end
+-- CGameState::MicroUpdate, every tick: movement and combat are not modelled, but the ship pool is
+-- drawn as the game draws it (UpdateShipParallel: CRandom::GetIntegersForMacro of one value per
+-- live ship, every entry of the ships store, after the fleet phase), so the stream's position
+-- stays the game's. Its values seed only the ships whose fleet is in combat (headless/README.md,
+-- "The random pools, traced"): with no combat modelled, the draws are skipped, not made.
+P["micro.update"] = function()
+    RUST.skip(#world.all("ship"))
+end
 -- CGameState::ProcessAI: the AI's decisions (engine.ai, once it is there; docs/ai.md)
 P["ai.process"] = function(host, date)
     local ai = optional("engine.ai")
