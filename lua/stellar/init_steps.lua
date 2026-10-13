@@ -15,17 +15,39 @@ local stellar = require("stellar")
 
 local init_steps = {}
 
+-- locks: the step writes the tables the databases share (the trigger and effect sets, ...): it
+-- runs ahead only where those functions are serialized (databases in parallel), with the shared
+-- lock taken until the last step is joined
 init_steps.STEPS = {
     { name = "CApplication::CalculateGameFilesChecksum", at = "databases", args = { "application" },
         why = "hashes the game's files into the application (+800), 1.1s; nothing the load makes is read" },
+    { name = "CStaticModifierDatabase::Init", at = "post_reads", args = { "static_modifier_database", 0 }, locks = true,
+        why = "common/static_modifiers again, 0.8s; the modifier definitions are final after the PostReads" },
+    -- the scripted triggers' and effects' passes in the game's order, one after another (run side
+    -- by side they made different triggers: the census was 1,317,090 and 1,318,659 for 1,318,141)
+    { name = "CTriggerDatabase::PostInit", at = "post_reads", args = { "trigger_database" }, locks = true,
+        chain = "scripted", why = "the scripted triggers called with arguments, 2.6s; every scripted trigger is read by then" },
+    { name = "CTriggerDatabase::PostValidate", at = "post_reads", args = { "trigger_database" }, locks = true,
+        chain = "scripted", why = "checks every trigger: before the effects' pass adds theirs, as in the game" },
+    { name = "CEffectDatabase::PostInit", at = "post_reads", args = { "effect_database" }, locks = true,
+        chain = "scripted", why = "the scripted effects called with arguments, 2.3s; after the triggers' pass, as in the game" },
+    { name = "CEffectDatabase::PostValidate", at = "post_reads", args = { "effect_database" }, locks = true,
+        chain = "scripted", why = "checks every effect" },
     { name = "CModifier::LogDefinitions", at = "post_reads", args = {},
         why = "writes modifiers.log, 4.3s; the modifier definitions are final after the PostReads" },
 }
 
 local by_name, started = {}, {}
+local sources = {}      -- name -> function returning an argument's value
+local locks = false     -- whether the shared tables' functions are serialized
+local locked_now = false
 
--- init_steps.bind(marks) -> bound, missing: each step's mark (by name, kind milestone)
-function init_steps.bind(marks)
+-- init_steps.bind(marks, argument_sources, serialized) -> bound, missing: each step's mark (by
+-- name, kind milestone); where the named arguments come from ({ name = function }); whether the
+-- shared tables' functions are serialized (steps with locks run ahead only then)
+function init_steps.bind(marks, argument_sources, serialized)
+    sources = argument_sources or {}
+    locks = serialized and true or false
     local missing = {}
     for _, m in ipairs(marks) do
         if m.kind == "milestone" and m.id and m.trampoline then
@@ -46,6 +68,8 @@ end
 local function argument(a)
     if a == "application" then
         return stellar.loading_application()
+    elseif type(a) == "string" then
+        return sources[a] and sources[a]() or nil
     end
     return a
 end
@@ -54,21 +78,60 @@ end
 -- game's call of each waits for it
 function init_steps.start(at)
     local n = 0
+    -- the steps of this point that can start, as { step, mark, function and arguments }, alone or
+    -- in their chains (one thread each, in the table's order)
+    local alone, chains, chain_order = {}, {}, {}
     for _, step in ipairs(init_steps.STEPS) do
         local m = by_name[step.name]
-        if step.at == at and m and not started[step.name] then
-            local args, ok = {}, true
+        if step.at == at and m and not started[step.name] and (locks or not step.locks) then
+            local call, ok = { m.trampoline }, true
             for i, a in ipairs(step.args) do
-                args[i] = argument(a)
-                ok = ok and args[i] ~= nil
+                call[i + 1] = argument(a)
+                ok = ok and call[i + 1] ~= nil
             end
             if ok then
-                local call = stellar.run_async(m.trampoline, args[1], args[2], args[3], args[4])
-                if call then
-                    stellar.defer_mark(m.id, call)
-                    started[step.name] = call
-                    n = n + 1
+                local item = { step = step, mark = m, call = call }
+                if step.chain then
+                    if not chains[step.chain] then
+                        chains[step.chain] = {}
+                        chain_order[#chain_order + 1] = step.chain
+                    end
+                    table.insert(chains[step.chain], item)
+                else
+                    alone[#alone + 1] = item
                 end
+            end
+        end
+    end
+    -- the shared tables locked from now until the last step is joined
+    local function lock_if_needed(item)
+        if item.step.locks and not locked_now then
+            stellar.serialize_until_joined()
+            locked_now = true
+        end
+    end
+    local function defer(item, id)
+        stellar.defer_mark(item.mark.id, id)
+        started[item.step.name] = id
+        n = n + 1
+    end
+    for _, item in ipairs(alone) do
+        lock_if_needed(item)
+        local id = stellar.run_async(item.call[1], item.call[2], item.call[3], item.call[4], item.call[5])
+        if id then
+            defer(item, id)
+        end
+    end
+    for _, name in ipairs(chain_order) do
+        local calls = {}
+        for i, item in ipairs(chains[name]) do
+            lock_if_needed(item)
+            calls[i] = item.call
+        end
+        local ids = stellar.run_async_chain(calls)
+        for i, item in ipairs(chains[name]) do
+            if ids and ids[i] then
+                defer(item, ids[i])
             end
         end
     end

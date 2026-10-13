@@ -295,6 +295,7 @@ std::vector<std::pair<uint64_t, size_t>> deferred;    // mark id -> background c
 thread_local uintptr_t deferred_result = 0;
 std::atomic<uint64_t> deferred_joins{0};
 std::atomic<uint64_t> deferred_wait_us{0};
+std::atomic<bool> serial_until_joined{false};  // the shared lock is left when the last joins
 
 uintptr_t* record_entry(uint64_t id) {
 	record("enter", static_cast<int>(id), 0, 0, false, std::string());
@@ -317,6 +318,14 @@ uintptr_t* record_entry(uint64_t id) {
 	stellar_async_join(call, &deferred_result, &waited);
 	++deferred_joins;
 	deferred_wait_us += static_cast<uint64_t>(waited * 1e6);
+	// the last deferred step joined: the shared lock, if it was taken for them, is left
+	if (serial_until_joined.load()) {
+		std::lock_guard<std::mutex> guard(deferred_lock);
+		if (deferred.empty()) {
+			serial_until_joined.store(false);
+			stellar_serialize_set(false);
+		}
+	}
 	return &deferred_result;
 }
 
@@ -831,6 +840,15 @@ int l_defer_mark(lua_State* L) {
 	return 0;
 }
 
+// stellar.serialize_until_joined(): the shared lock (stellar.serialize) is taken now, and left
+// when the last deferred step has been joined
+int l_serialize_until_joined(lua_State* L) {
+	(void)L;
+	serial_until_joined.store(true);
+	stellar_serialize_set(true);
+	return 0;
+}
+
 // stellar.loading_application() -> the CGameApplication (from the game's LoadingScreenCallback),
 // or nil before its first step
 int l_loading_application(lua_State* L) {
@@ -922,6 +940,8 @@ void stellar_loading_open(lua_State* L) {
 	lua_setfield(L, -2, "deferred_stats");
 	lua_pushcfunction(L, l_loading_application);
 	lua_setfield(L, -2, "loading_application");
+	lua_pushcfunction(L, l_serialize_until_joined);
+	lua_setfield(L, -2, "serialize_until_joined");
 	lua_pushcfunction(L, l_loading_map);
 	lua_setfield(L, -2, "loading_map");
 	lua_pushcfunction(L, l_loading_schedule);

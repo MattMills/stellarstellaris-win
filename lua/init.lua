@@ -7,6 +7,7 @@
 --
 -- game.lua hooks the turn tick: scripts get the game state every tick (10 per game day).
 
+local ffi = require("ffi")
 local stellar = require("stellar")
 local fnmatch = require("fnmatch")
 local util = require("stellar.util")
@@ -232,6 +233,7 @@ if databases_where and database_mode == "parallel" then
 end
 local init_steps = require("stellar.init_steps")
 local init_steps_on = false  -- set below (background.txt), before any of these runs
+local script_globals = {}    -- the trigger and effect databases' globals (catalog.locate, below)
 if databases_where and (database_mode == "lua" or database_mode == "parallel" or database_mode == "trace") then
     stellar.setup_databases = function(a, done, progress)
         loading.milestone("NNullObjAndDatabaseInitUtil::SetupDatabases")
@@ -357,7 +359,24 @@ if databases_where and (database_mode == "lua" or database_mode == "parallel" or
     -- needs is made; the game's call of each waits for it (stellar.init_steps; background.txt
     -- "off": all in their place)
     if setting("background.txt", "on") ~= "off" then
-        local bound, missing = init_steps.bind(marks)
+        -- the steps' arguments: the instances of the databases they are methods of, read when the
+        -- step starts (the globals that hold them: the trigger and effect databases' from the
+        -- script tables, located below; the static modifiers' from the database table)
+        local function instance(global)
+            local p = global and ffi.cast("void **", global)[0]
+            return p ~= nil and tonumber(ffi.cast("uintptr_t", p)) or nil
+        end
+        local static_global
+        for _, e in ipairs(databases_where.entries) do
+            if e.name == "CStaticModifierDatabase" then
+                static_global = e.instance
+            end
+        end
+        local bound, missing = init_steps.bind(marks, {
+            static_modifier_database = function() return instance(static_global) end,
+            trigger_database = function() return instance(script_globals.trigger_database) end,
+            effect_database = function() return instance(script_globals.effect_database) end,
+        }, database_mode == "parallel" and next(serialized) ~= nil)
         init_steps_on = bound > 0
         stellar.log(string.format("load: %d steps of InitGame run ahead of the game%s", bound,
             #missing > 0 and ("; not found: " .. table.concat(missing, ", ")) or ""))
@@ -441,6 +460,9 @@ local catalog, docs = require("stellar.script.catalog"), require("stellar.script
 local script_where, script_message = catalog.locate(image, stellar.read)
 if script_where == nil then
     stellar.log("script: cannot locate the script tables: " .. tostring(script_message))
+else
+    script_globals.trigger_database = script_where.trigger_database
+    script_globals.effect_database = script_where.effect_database
 end
 local catalog_path = util.dirname(stellar.dll_path) .. "\\cache\\script_catalog-" .. image:md5() .. ".tsv"
 

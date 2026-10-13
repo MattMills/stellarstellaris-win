@@ -13,3 +13,6 @@ void stellar_database_workers_open(lua_State* L);
 // Waits for the background call `id` (stellar.run_async); its return value in *result, how long
 // the wait was in *seconds (if not null). False if there is no such call or it failed.
 bool stellar_async_join(size_t id, uintptr_t* result, double* seconds);
+
+// The shared lock of the serialized functions taken (on) or not (stellar.serialize_active).
+void stellar_serialize_set(bool on);

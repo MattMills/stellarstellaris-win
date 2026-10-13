@@ -260,11 +260,13 @@ int l_db_call(lua_State* L) {
 	return 2;
 }
 
-// Background calls (stellar.run_async, stellar.join_async): a step of the load the game would run
-// on its own thread, run on a thread of its own meanwhile (a function without arguments, under the
-// same handler as the databases), and waited for where its result is needed.
+// Background calls (stellar.run_async, stellar.run_async_chain, stellar.join_async): a step of the
+// load the game would run on its own thread, run on a thread of its own meanwhile (up to four
+// integer arguments, under the same handler as the databases), and waited for where its result is
+// needed. A chain runs its calls one after another on one thread (steps whose order matters); each
+// call is waited for on its own (its event).
 struct AsyncCall {
-	HANDLE thread = nullptr;
+	HANDLE done = nullptr;    // set when the call has returned
 	uintptr_t function = 0;
 	uintptr_t args[4] = {};
 	uintptr_t result = 0;     // what the function returned (rax)
@@ -286,11 +288,23 @@ DWORD call_guarded_args(uintptr_t function, const uintptr_t* a, uintptr_t* resul
 	return 0;
 }
 
+// a chain's thread: its calls in order (a call that fails ends the chain: the rest are marked
+// failed with the same exception, not run)
 DWORD WINAPI async_main(void* p) {
-	AsyncCall* call = static_cast<AsyncCall*>(p);
-	call->start = now();
-	call->code = call_guarded_args(call->function, call->args, &call->result, &call->failure);
-	call->finish = now();
+	std::vector<AsyncCall*>* chain = static_cast<std::vector<AsyncCall*>*>(p);
+	DWORD failed = 0;
+	for (AsyncCall* call : *chain) {
+		call->start = now();
+		if (failed == 0) {
+			call->code = call_guarded_args(call->function, call->args, &call->result, &call->failure);
+			failed = call->code;
+		} else {
+			call->code = failed;
+		}
+		call->finish = now();
+		SetEvent(call->done);
+	}
+	delete chain;
 	return 0;
 }
 
@@ -299,30 +313,74 @@ AsyncCall* async_call(size_t id) {
 	return id >= 1 && id <= async_calls.size() ? async_calls[id - 1] : nullptr;
 }
 
+// the call from (function, a1, ...) at index `at` of the Lua stack (numbers), registered
+AsyncCall* new_async_call(lua_State* L, int at, int count, size_t* id) {
+	AsyncCall* call = new AsyncCall();
+	call->done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	call->function = check_address(L, at);
+	for (int i = 0; i < 4 && i + 1 < count; ++i) {
+		call->args[i] = lua_isnoneornil(L, at + 1 + i) ? 0 : static_cast<uintptr_t>(luaL_checknumber(L, at + 1 + i));
+	}
+	std::lock_guard<std::mutex> guard(async_lock);
+	async_calls.push_back(call);
+	*id = async_calls.size();
+	return call;
+}
+
+bool start_chain(std::vector<AsyncCall*>* chain) {
+	HANDLE thread = CreateThread(nullptr, 0, async_main, chain, 0, nullptr);
+	if (thread == nullptr) {
+		for (AsyncCall* call : *chain) {
+			call->code = 0xE0000001;  // never ran
+			SetEvent(call->done);
+		}
+		delete chain;
+		return false;
+	}
+	CloseHandle(thread);
+	return true;
+}
+
 // stellar.run_async(function[, a1, a2, a3, a4]) -> id: a thread calls function(a1, ...) (integer
 // or pointer arguments)
 int l_run_async(lua_State* L) {
-	AsyncCall* call = new AsyncCall();
-	call->function = check_address(L, 1);
-	for (int i = 0; i < 4; ++i) {
-		call->args[i] = lua_isnoneornil(L, i + 2) ? 0 : static_cast<uintptr_t>(luaL_checknumber(L, i + 2));
-	}
-	// the handle is set before anyone can see the call, and the thread runs after that
-	call->thread = CreateThread(nullptr, 0, async_main, call, CREATE_SUSPENDED, nullptr);
-	if (call->thread == nullptr) {
-		delete call;
+	size_t id = 0;
+	auto* chain = new std::vector<AsyncCall*>{new_async_call(L, 1, lua_gettop(L), &id)};
+	if (!start_chain(chain)) {
 		lua_pushnil(L);
 		lua_pushliteral(L, "CreateThread failed");
 		return 2;
 	}
-	size_t id = 0;
-	{
-		std::lock_guard<std::mutex> guard(async_lock);
-		async_calls.push_back(call);
-		id = async_calls.size();
-	}
-	ResumeThread(call->thread);
 	lua_pushnumber(L, static_cast<lua_Number>(id));
+	return 1;
+}
+
+// stellar.run_async_chain({ { function, a1, ... }, ... }) -> { id, ... }: one thread calls them one
+// after another; each has its id to wait for
+int l_run_async_chain(lua_State* L) {
+	luaL_checktype(L, 1, LUA_TTABLE);
+	const int n = static_cast<int>(lua_objlen(L, 1));
+	auto* chain = new std::vector<AsyncCall*>();
+	lua_createtable(L, n, 0);
+	for (int k = 1; k <= n; ++k) {
+		lua_rawgeti(L, 1, k);
+		luaL_checktype(L, -1, LUA_TTABLE);
+		const int top = lua_gettop(L);
+		const int count = static_cast<int>(lua_objlen(L, top));
+		for (int i = 1; i <= count; ++i) {
+			lua_rawgeti(L, top, i);
+		}
+		size_t id = 0;
+		chain->push_back(new_async_call(L, top + 1, count, &id));
+		lua_settop(L, top - 1);
+		lua_pushnumber(L, static_cast<lua_Number>(id));
+		lua_rawseti(L, -2, k);
+	}
+	if (!start_chain(chain)) {
+		lua_pushnil(L);
+		lua_pushliteral(L, "CreateThread failed");
+		return 2;
+	}
 	return 1;
 }
 
@@ -335,7 +393,7 @@ int l_join_async(lua_State* L) {
 	}
 	const double seconds = luaL_optnumber(L, 2, -1);
 	const DWORD wait = seconds < 0 ? INFINITE : static_cast<DWORD>(seconds * 1000);
-	if (WaitForSingleObject(call->thread, wait) != WAIT_OBJECT_0) {
+	if (WaitForSingleObject(call->done, wait) != WAIT_OBJECT_0) {
 		lua_pushnil(L);
 		lua_pushliteral(L, "running");
 		return 2;
@@ -703,13 +761,17 @@ int l_token_table_stats(lua_State* L) {
 
 } // namespace
 
+void stellar_serialize_set(bool on) {
+	serial_active.store(on, std::memory_order_release);
+}
+
 bool stellar_async_join(size_t id, uintptr_t* result, double* seconds) {
 	AsyncCall* call = async_call(id);
 	if (call == nullptr) {
 		return false;
 	}
 	const double waited = now();
-	WaitForSingleObject(call->thread, INFINITE);
+	WaitForSingleObject(call->done, INFINITE);
 	*result = call->result;
 	if (seconds != nullptr) {
 		*seconds = now() - waited;
@@ -730,6 +792,8 @@ void stellar_database_workers_open(lua_State* L) {
 	lua_setfield(L, -2, "exit_process");
 	lua_pushcfunction(L, l_run_async);
 	lua_setfield(L, -2, "run_async");
+	lua_pushcfunction(L, l_run_async_chain);
+	lua_setfield(L, -2, "run_async_chain");
 	lua_pushcfunction(L, l_join_async);
 	lua_setfield(L, -2, "join_async");
 	lua_pushcfunction(L, l_serialize);
