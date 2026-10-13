@@ -185,6 +185,17 @@ P["daily.colonies_serial"] = function(host)
         end
     end
 end
+-- CEconomicUnitManager::CalculateTablesOrUpdateBudget<0>: every country's budget from its economic
+-- units through the modifiers, and the month's balance to its stockpile (engine.economy), once the
+-- economy has a modifier source (engine.load: the capture in STELLAR_CAPTURE until the modifier
+-- graph is built from the world)
+P["monthly.budget"] = function()
+    local economy = package.loaded["engine.economy"]
+    if economy and economy.has_modifier_source and economy.has_modifier_source() then
+        economy.monthly()
+        systems.ran["monthly.budget (economy)"] = (systems.ran["monthly.budget (economy)"] or 0) + 1
+    end
+end
 P["monthly.countries_serial"] = function(host)
     each_country(function(id) host.on_action("on_monthly_pulse_country", "country", id) end)
 end
