@@ -64,9 +64,9 @@ who reads it: **C** `ParseClausewitzCommandLineOption`, **G** `RunGame`, **P** `
 | `-one_year` | G | Queues the `one_year` console command: the game runs one year at speed 4, logs `Performance run took <x>s` to game.log, pauses and shows "Run Finished". |
 | `-overnight` | G | Quick start, and the console commands `overnight` and `game_paused false`: observer mode, `ticks_per_turn 300`, frame smoothing off, the camera follows combat, incremental saves on (ironman too), and the game quits in 2600 (`g_bOvernight`). Refused in multiplayer. |
 | `-incrementalsaves`, `-incrementalsaves=<n>` | G | Saves non-ironman games on 1 January every n years (without n: the define `NGameplay.INCREMENTAL_SAVE_FREQUENCY`), as `<game name>_<yyyy.mm.dd>` in the game's save folder (`CGameState::HandleTurnTick`). |
-| `-random=<n>` | G | n ≥ 0: the front end seeds the random generator with n instead of the performance counter (`CFrontEndIdler::SetAsCurrentIdler`), and a new game gets `CSetRandomSeed(n)` (`CGameSetup::StartSyncPlayers`): the same galaxy every time. Default -1. |
-| `-rng_seed=<n>`, `-rng_pos=<n>` | G | After a game state is read (`CGameState::InitPostRead`), its random seed (`CSystem::_nSeed`, `CRandom::_Random`) or position (`CSystem::_nRandomCount`) is replaced. |
-| `-loadrandomseed` | G | `g_bUseSavedRandom` (also the console variable `UseSavedRandom`): loading a save restores the random generator (`random_seed`, `random_count`) and each AI's random state from it; otherwise the save's values are ignored. |
+| `-random=<n>` | G | n ≥ 0: the seed of the random generator when the main menu opens (`CFrontEndIdler::SetAsCurrentIdler`), instead of the clock, and the seed the game setup sends (`CGameSetup::StartSyncPlayers`). It fixes the seed, not the position, so it gives the same galaxy only when everything else is the same too: see [Random numbers](#random-numbers). Default -1. |
+| `-rng_seed=<n>`, `-rng_pos=<n>` | G | Only when a game state is loaded (`CGameState::InitPostRead`): the random generator's seed and position (its place in the sequence of numbers, not a place on the map). Either option sets both; the one not given is 0. No effect on a new game. See [Random numbers](#random-numbers). |
+| `-loadrandomseed` | G | `g_bUseSavedRandom` (also the console variable `UseSavedRandom`): loading a save restores the random generator from the save's `random_seed` and `random_count`, and each AI's own generators. Otherwise a load keeps the current generator (the main menu's, or the running game's) and restarts the AI's. |
 | `-combat_debug` | G | Combat test mode (`g_bCombatOnlyMode`): `CGameApplication::InitGame` loads `combat_test_scenarios.txt` and starts a `CCombatDebugIdler` instead of the main menu. Monthly updates, most of the daily update and the AI interior minister are off, and `CFleet::CanAddShip` skips its checks. |
 
 ## Joining a multiplayer game
@@ -217,6 +217,79 @@ apply.
 | `-deepsyncscan` | C | `DeepSyncScan` (64): `CalcChecksums` / `MakeSyncCheck` compute the detailed checksums. |
 | `-randomlog_stack=<n>` | C | `_nRandomLogStackDepth` (by its name, the call stack depth kept with each entry). In 4.5.2 the value is only copied and sent with the game settings; no other reader found. |
 | `-randomlog_frames=<n>` | C | `_nRandomLogExtraFrames`: how much random log history is kept. `CGameState::HandleRandomLogTurnTick` drops entries older than (n+1)×10 ticks ((n+1) days) behind the current tick, or behind the oldest tick another player has reached. Default 0. |
+
+## Random numbers
+
+Every synchronized random outcome comes from one generator: galaxy generation, events, combat,
+the `random` blocks of scripts. That generator is `CRandom::_Random` (GOG `0x310cb68`), a
+`CNoiseRandom` of two numbers, a seed and a position. A draw hashes (position, seed) and adds one to
+the position, so the n-th number after a given seed is always the same. The AI has generators of its
+own and draws nothing from this one. [random.md](random.md) has the algorithm, the AI's generators,
+and where the draws go (measured in the headless game). [newgame.md](newgame.md) section 2 has the
+galaxy's seeding.
+
+| When | Seed | Position |
+|---|---|---|
+| The main menu opens (`CFrontEndIdler::SetAsCurrentIdler`; also after leaving a game) | `-random=<n>` if n ≥ 0, else the clock (`QueryPerformanceCounter`) | 0 |
+| Every draw (menus, generation, the game) | | +1 |
+| The game setup moves on (`CGameSetup::StartSyncPlayers`, single player and multiplayer) | `CSetRandomSeed` sends the same seed (`-random=<n>` if set) to every player | the current one |
+| A player joins a running game (`CPostHotJoinCommand`) | the host's | the host's |
+| A save is loaded (`CFrontEndIdler::LaunchSave`, `CInGameIdler::LoadSave`) | unchanged (the main menu's, or the running game's for a load from inside a game); with `-loadrandomseed` the save's `random_seed` | unchanged; with `-loadrandomseed` the save's `random_count` |
+| Right after a game state is read (`CGameState::InitPostRead`), with `-rng_seed` or `-rng_pos` | `-rng_seed=<n>`, else 0 | `-rng_pos=<n>`, else 0 |
+
+A new game (`CGameState::GenerateNewGalaxy`) draws one number and turns it into the galaxy seed.
+From that seed and the settings, `CGalaxyGenerator` makes the star map (star positions, nebulas,
+partitions, the empires' home systems) with a stream of its own. The hyperlanes, the systems'
+contents, the species and empires, the names and every script effect draw from the global
+generator, so they also depend on the draws that follow.
+
+Numbers on the command line: values are read with `atoi` and cannot contain `-`. A seed that a save
+shows as negative (`random_seed=-386941723`) cannot be given: `-rng_seed=-386941723` reads as an
+empty value, which is 0, and the unsigned form 3908025573 overflows `atoi` to 2147483647. Use
+`-loadrandomseed` to keep a save's own seed.
+
+Checking that the options reach the game: on Steam the game starts through the Paradox launcher,
+and whether it passes Steam's launch options on is not visible in `stellaris.exe`. Add
+`-logprefix=test_` next to the other options. If the logs come out as `logs/test_game.log`,
+`logs/test_error.log` and so on, the command line arrived.
+
+### The same galaxy twice: `-random=<n>`
+
+`-random=<n>` fixes the seed, not the position. The galaxy is the same only when everything that
+feeds the generation is the same:
+
+- **The position when the galaxy is generated**: the same draws in the menus since the main menu
+  opened. The menus draw when an empire design is edited in the game setup
+  (`CGameSetupView::EditEmpireDesign` draws once and re-rolls the flag), with the empire designer's
+  randomize functions (name, flag, portrait, traits, ethics, ...), and when a store product with a
+  ship preview is shown. Leaving a game back to the main menu starts again at position 0.
+- **The setup**: the galaxy settings and game rules, the player's empire, and the empire designs
+  the AI can pick.
+- **The game files**: the version, the DLC, the mods.
+- **The order of the draws**: generation allows draws from worker threads
+  (`CRandom::_MultithreadAllowed`), whose order may vary from run to run (inferred, not measured).
+  `-threads` cannot go below 4.
+
+From the code (not tested): `-random=<n> -quick` twice, with the same settings, starts a new game
+from the main menu with no menu input, which keeps the position the same.
+
+### `-rng_seed=<n>` and `-rng_pos=<n>`
+
+These are not only for events. They set the seed and position of the generator above, so every
+random outcome after that point follows from them: events, combat, script randomness (not the AI,
+which has its own generators). They apply only when a game state is read: a loaded save, or the game
+state a multiplayer client receives. They do nothing to a new game.
+
+Use them to replay from a save. Load the same save with the same `-rng_seed=<s> -rng_pos=<p>`, make
+the same choices, and the random outcomes repeat. The headless game did this from an autosave with
+`-rng_seed=64429129 -rng_pos=0` and reproduced the player's next autosave, except for his event
+choices ([random.md](random.md)). `-loadrandomseed` does the same from the numbers stored in the
+save, so you do not need to know them.
+
+`-rng_pos=<n>` is a position in the sequence of random numbers (how many have been drawn since the
+seed was set), not a place in the galaxy. No option puts an empire at a chosen spot (say, "2
+o'clock"). The home systems are part of the star map that the galaxy seed makes. Only a static galaxy
+scenario (`map/setup_scenarios`, used by mods) fixes where things are.
 
 ## Localisation tools
 
