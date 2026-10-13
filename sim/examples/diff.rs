@@ -22,8 +22,18 @@ fn main() {
     // from the first save's tick within the day to the second's (`tick`)
     let (start_tick, end_tick) = (save::tick_of(&gamestate).unwrap_or(0), save::tick_of(&target_text).unwrap_or(0));
     let ticks = (days as i64 * 10 + (end_tick - start_tick) as i64).max(0) as u64;
+    // the synchronized generator: the first save's seed and position (the game going on as saved);
+    // with STELLAR_RANDOM=target, the second save's seed from position 0 (a game that reseeded when
+    // it loaded the first save: its draws since the load are the second save's random_count)
+    let (seed, position) = if std::env::var("STELLAR_RANDOM").as_deref() == Ok("target") {
+        (save::random_of(&target_text).map(|r| r.0).unwrap_or(0), 0)
+    } else {
+        save::random_of(&gamestate).unwrap_or((0, 0))
+    };
 
-    let runtime = Runtime::new(start, 0).expect("the Lua runtime");
+    let runtime = Runtime::new(start, seed).expect("the Lua runtime");
+    runtime.rng.borrow_mut().position = position;
+    println!("random: seed {seed}, position {position}");
     println!("{}", runtime.load(&game_dir, Some(&gamestate), None).expect("load"));
     drop(gamestate);
     // the stockpiles at the start, to compare their change with the game's
@@ -36,6 +46,11 @@ fn main() {
     println!("{days} days, {start:?} tick {start_tick} -> {:?} tick {}, in {:.1} s; {} phase errors", sim.date(), sim.tick_count(), t0.elapsed().as_secs_f64(), sim.errors.len());
     for e in sim.errors.iter().take(5) {
         println!("error: {e}");
+    }
+    let drawn = sim.runtime.rng.borrow().position.wrapping_sub(position);
+    match save::random_of(&target_text) {
+        Some((s, c)) => println!("random: {drawn} draws here; the second save's seed {s}, position {c}"),
+        None => println!("random: {drawn} draws here"),
     }
     // the world's own date as the save writes it
     let _ = sim.runtime.save_text().expect("date the world");

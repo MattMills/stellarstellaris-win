@@ -19,7 +19,10 @@ fn main() {
     let gamestate = save::read_gamestate(&save_path).expect("read the save");
     let date = save::date_of(&gamestate).expect("the save's date");
     let tick = save::tick_of(&gamestate).unwrap_or(0);
-    let runtime = Runtime::new(date, 0).expect("the Lua runtime");
+    // the synchronized generator as saved (`random_seed`, `random_count`)
+    let (seed, position) = save::random_of(&gamestate).unwrap_or((0, 0));
+    let runtime = Runtime::new(date, seed).expect("the Lua runtime");
+    runtime.rng.borrow_mut().position = position;
     let loaded = runtime.load(&game_dir, Some(&gamestate), None).expect("load");
     drop(gamestate);
     println!("{loaded}");
