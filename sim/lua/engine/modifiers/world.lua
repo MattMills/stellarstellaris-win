@@ -18,6 +18,16 @@ local M = {}
 
 local TOLERANCE = 100 -- 0.001 in fixed point
 
+-- the category of a capture's node as the structure names it: a megastructure's Orbital node (its
+-- filter -1, where a starbase's has its own) is OrbitalMegaStructure
+function M.category_of(n)
+    if n.category == "Orbital" and n.categories == -1 then
+        return "OrbitalMegaStructure"
+    end
+    return n.category
+end
+local category_of = M.category_of
+
 -- mw.build(g, defs, st, parts_of) -> { tree, holders, holder(category, owner), links, stats }
 function M.build(g, defs, st, parts_of)
     local tree = gmod.new(g, defs)
@@ -102,7 +112,7 @@ function M.compare(wg, snap, defs, cats)
                 out[n.category] = c
             end
             c.nodes = c.nodes + 1
-            local h = wg.holder(n.category, n.owner)
+            local h = wg.holder(category_of(n), n.owner)
             if h == nil then
                 c.no_holder = c.no_holder + 1
             else

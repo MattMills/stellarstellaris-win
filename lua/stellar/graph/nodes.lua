@@ -129,7 +129,12 @@ function M.read_capture(text)
             end
             local id = tonumber(cols[1])
             if id ~= nil then
-                local n = { id = id, category = cols[2], owner = tonumber(cols[3]), invalid = cols[4] ~= "0",
+                -- the owner is the object's id, unsigned (older captures wrote it as a signed int32)
+                local owner = tonumber(cols[3])
+                if owner and owner < 0 then
+                    owner = owner + 4294967296
+                end
+                local n = { id = id, category = cols[2], owner = owner, invalid = cols[4] ~= "0",
                     values = parse_values(cols[5]), parts = {} }
                 if cols[6] ~= nil and cols[6] ~= "" then
                     for p in cols[6]:gmatch("[^;]+") do

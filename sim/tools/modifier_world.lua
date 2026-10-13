@@ -91,7 +91,7 @@ for _, n in ipairs(snap.nodes) do
     for name, values in pairs(h.sources) do
         parts[#parts + 1] = { name = name, mult = 100000, filter = -1, values = values }
     end
-    captured[n.category .. ":" .. n.owner] = parts
+    captured[mw.category_of(n) .. ":" .. n.owner] = parts
 end
 local function from_capture(category, owner)
     return captured[category .. ":" .. owner]
@@ -141,4 +141,15 @@ end)
 print(string.format("world graph with computed own parts (%s) built in %.1f s", table.concat(modifiers.CATEGORIES, ", "),
     os.clock() - t1))
 print(mw.format(mw.compare(wg2, snap, defs), "(2) the world's structure, computed own parts where modelled:"))
+
+-- (3) the world alone: computed own parts where modelled, none for the other categories
+t1 = os.clock()
+local wg3 = mw.build(core.new(), defs, st, function(category, owner)
+    if modelled[category] then
+        return src:parts(category, owner)
+    end
+    return nil
+end)
+print(mw.format(mw.compare(wg3, snap, defs), string.format(
+    "(3) the world alone (own parts of the categories not modelled: none; built in %.1f s):", os.clock() - t1)))
 print(string.format("total %.1f s", os.clock() - t0))

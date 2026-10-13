@@ -15,7 +15,7 @@
 --                starbase it hosts (the planet the station orbits); MegaStructureSystem of each
 --                megastructure in the system (some types are read by the fleets instead: not modelled)
 --   Colony    <- Planet; its system's GalacticObjectBuilding
---   PopGroup  <- Colony; Country (Habitability mask)
+--   PopGroup  <- Colony; Country (Habitability mask); a killed one nothing
 --   Fleet     <- its system's GalacticObjectTimed, -CosmicStorm, -PsionicAura, and as a planet
 --                -Leader, StarbaseSystem, Sector; its country, or for a starbase's own fleet the
 --                Starbase; Orbital of the starbase it is docked at
@@ -46,6 +46,9 @@ M.FILTER = {
     Starbase = 1345241726, StarbaseExternal = 1076806270, StarbaseCountry = -1, StarbaseSystem = 1074317566,
     StarbasePlanet = 1074449022, StarbaseDefensePlatform = 540796, Orbital = 1074282750,
     MegaStructure = 606588, MegaStructureSystem = 1074317566,
+    -- a megastructure's Orbital node (the game's category Orbital, as a starbase's; told apart here, as
+    -- both have the same owner ids: in a capture, by its filter)
+    OrbitalMegaStructure = -1,
 }
 
 -- the links whose call passes a mask: the part's filter as the captures show it
@@ -295,7 +298,7 @@ function S:nodes()
     end
     add("MegaStructure", "megastructures")
     add("MegaStructureSystem", "megastructures")
-    add("Orbital", "megastructures")
+    add("OrbitalMegaStructure", "megastructures")
     return out
 end
 
@@ -357,7 +360,12 @@ function S:parents(category, owner)
         link("Planet", pid)
         link("GalacticObjectBuilding", pid and system_of(w, w.object("planet", pid)))
     elseif category == "PopGroup" then
-        local colony = id_of(w.field(w.object("pop_groups", owner), "planet"))
+        local g = w.object("pop_groups", owner)
+        -- a killed pop group keeps its node, and reads nothing
+        if w.field(g, "killed") == "yes" then
+            return out
+        end
+        local colony = id_of(w.field(g, "planet"))
         link("Colony", colony)
         local pid = colony and self.planet_of_colony[colony]
         link("Country", pid and id_of(w.field(w.object("planet", pid), "owner")))

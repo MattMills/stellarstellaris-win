@@ -261,6 +261,36 @@ function S:static(name)
     return self:def_values("common/static_modifiers", name, nil)
 end
 
+-- a define (common/defines: NDefines = { NGroup = { KEY = value } }), any group
+function S:define(key)
+    local v = self.cache["define|" .. key]
+    if v == nil then
+        v = false
+        for _, d in pairs(self.defs.folder("common/defines")) do
+            for _, e in ipairs(d.block) do
+                if e.op and type(e.value) == "table" and v == false then
+                    local x = self.defs.field(e.value, key)
+                    if x ~= nil then
+                        v = x
+                    end
+                end
+            end
+        end
+        self.cache["define|" .. key] = v
+    end
+    return v or nil
+end
+
+-- the galaxy's scale of the NPCs' difficulty bonuses: 1 at SCALED_DIFFICULTY_MAX_GALAXY_SIZE systems
+-- and more, smaller ones less (SCALED_DIFFICULTY_GALAXY_SIZE_MULT of the shortfall); 596 systems:
+-- 1 - 0.75 * (1 - 596 / 1000) = 0.697, as the capture's difficulty parts have it
+function S:difficulty_scale()
+    local max = tonumber(self:define("SCALED_DIFFICULTY_MAX_GALAXY_SIZE")) or 1000
+    local mult = tonumber(self:define("SCALED_DIFFICULTY_GALAXY_SIZE_MULT")) or 0.75
+    local size = #self.world.all("galactic_object")
+    return 1 - mult * (1 - math.min(1, size / max))
+end
+
 -- a trigger block evaluated in a scope (kind, id) by the script layer -> true, false, or nil when it
 -- cannot be evaluated
 function S:trigger(block, kind, id, file)
@@ -433,6 +463,17 @@ function S:index_world()
             l[#l + 1] = { type = unq(w.field(o, "type")), leader = w.field(o, "leader") }
         end
     end
+    -- the colonized planets of each country
+    self.colonies_of = {}
+    for _, pid in ipairs(w.all("planet")) do
+        local p = w.object("planet", pid)
+        local owner, colony = w.field(p, "owner"), w.field(p, "colony")
+        if type(owner) == "number" and type(colony) == "number" then
+            local l = self.colonies_of[owner] or {}
+            self.colonies_of[owner] = l
+            l[#l + 1] = pid
+        end
+    end
     -- the player
     self.players = {}
     local player = w.meta.player
@@ -549,6 +590,17 @@ function S:country(id)
     if ctype == "fallen_empire" then
         add("static:fallen_empire_base", self:static("fallen_empire_base"))
     end
+    self:contributions(parts, id)
+    -- an NPC country's difficulty bonuses: difficulty_<the galaxy's difficulty>_npc times its type's
+    -- scaled_difficulty_bonuses and the galaxy's scale (S:difficulty_scale)
+    local td = ctype and self.defs.get("common/country_types", ctype)
+    local sdb = td and tonumber(self.defs.field(td.block, "scaled_difficulty_bonuses"))
+    local galaxy = w.meta.galaxy
+    local difficulty = type(galaxy) == "table" and unq(w.field(galaxy, "difficulty"))
+    if sdb and sdb > 0 and difficulty then
+        local name = "difficulty_" .. difficulty .. "_npc"
+        add("static:" .. name, self:static(name), fixed(sdb * self:difficulty_scale()))
+    end
     -- a federation's members (its leader too) pay federation_tax
     if self.federation_of[id] then
         add("static:federation_tax", self:static("federation_tax"))
@@ -593,6 +645,66 @@ function S:country(id)
         councilor(authority and ("councilor_ruler_" .. authority:gsub("^auth_", "")), ruler, "ruler_trait")
     end
     return parts
+end
+
+-- what a country's objects add to its node: the country_modifier blocks (and the
+-- triggered_country_modifier blocks whose potential holds, in the object's planet's scope) of its
+-- colonies' worked jobs (times their amount, (workforce + bonus) / 100) and buildings, of its
+-- starbases' modules and buildings, of its megastructures
+function S:contributions(parts, id)
+    local w = self.world
+    local jobs, buildings = {}, {}
+    local function country_mods(sum, folder, ty, pid, mult)
+        sum_into(sum, self:def_values(folder, ty, "country_modifier"), mult)
+        for _, b in ipairs(self:active(folder, ty, "triggered_country_modifier", "planet", pid)) do
+            sum_into(sum, b.values, scale(b.mult, mult or 100000))
+        end
+    end
+    for _, pid in ipairs(self.colonies_of[id] or {}) do
+        local col = w.object("colony", w.field(w.object("planet", pid), "colony"))
+        for _, jid in ipairs(list_of(w, col, "pop_jobs")) do
+            local o = w.object("pop_jobs", tonumber(jid))
+            local ty = o and unq(w.field(o, "type"))
+            local wf, bonus = w.field(o, "workforce"), w.field(o, "bonus_workforce")
+            if ty and type(wf) == "number" and wf > 0 then
+                country_mods(jobs, "common/pop_jobs", ty, pid, fixed((wf + (type(bonus) == "number" and bonus or 0)) / 100))
+            end
+        end
+        for _, bid in ipairs(list_of(w, col, "buildings_cache")) do
+            local o = w.object("buildings", tonumber(bid))
+            local ty = o and unq(w.field(o, "type"))
+            if ty then
+                country_mods(buildings, "common/buildings", ty, pid)
+            end
+        end
+    end
+    parts.add("jobs#country", jobs)
+    parts.add("buildings#country", buildings)
+    -- starbases: their modules and buildings (`modules = { 0 = shipyard ... }`)
+    self.structure = self.structure or require("engine.modifiers.structure").new(w, self.defs)
+    local sb_sum = {}
+    for _, sb in ipairs(self.structure.starbases_of[id] or {}) do
+        local o = w.object("starbases", sb)
+        for _, key in ipairs({ "modules", "buildings" }) do
+            local b = w.field(o, key)
+            local folder = key == "modules" and "common/starbase_modules" or "common/starbase_buildings"
+            for _, e in ipairs(type(b) == "table" and b or {}) do
+                local ty = e.op and e.value and unq(e.value.text)
+                if ty then
+                    sum_into(sb_sum, self:def_values(folder, ty, "country_modifier"))
+                end
+            end
+        end
+    end
+    parts.add("starbases#country", sb_sum)
+    local mega = {}
+    for _, mid in ipairs(w.all("megastructures")) do
+        local o = w.object("megastructures", mid)
+        if w.field(o, "owner") == id then
+            sum_into(mega, self:def_values("common/megastructures", unq(w.field(o, "type")), "country_modifier"))
+        end
+    end
+    parts.add("megastructures#country", mega)
 end
 
 -- timed modifiers of an object (timed_modifier = { items = { { modifier days [multiplier] } } })
