@@ -67,10 +67,15 @@ Two streams take part:
 
 So the star map (positions, nebulas, partitions, home systems) is a pure function of the galaxy seed
 and the settings, while the lanes and the systems' contents also depend on C's state when the
-generation starts. In a new game C is `{ position 0, seed = g_nGameDebugRandom if set, else the low
-dword of QueryPerformanceCounter }` (`CFrontEndIdler::SetAsCurrentIdler` `0x8bb348`), moved by
-whatever the lobby drew [I]; in multiplayer `CSetRandomSeed::Execute` (`0xa94600`) sets it;
-`CGameState::InitPostRead` only applies `-forcedseed`. An event scope's seed is `noise32(r,
+generation starts. In a new game C is `{ position 0, seed = g_nGameDebugRandom (-random=) if >= 0,
+else the low dword of QueryPerformanceCounter }` when the main menu opens
+(`CFrontEndIdler::SetAsCurrentIdler` `0x8bb348`). Every draw the menus make before the generation
+moves it: editing an empire design in the setup (`CGameSetupView::EditEmpireDesign` draws, then
+re-rolls the flag) and the empire designer's randomize functions do. When the setup moves on,
+`CGameSetup::StartSyncPlayers` (`0xb28117`, single player and multiplayer) posts
+`CSetRandomSeed(g_nGameDebugRandom if >= 0 else _nSeed, _nRandomCount)`, which
+`CSetRandomSeed::Execute` (`0xa94600`) sets on every player. `CGameState::InitPostRead` applies
+`-rng_seed=` / `-rng_pos=` to loaded game states only. An event scope's seed is `noise32(r,
 0x5EA6BA9F)` for a draw r of C.
 
 Value draws (both streams):

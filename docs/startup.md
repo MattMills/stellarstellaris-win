@@ -236,9 +236,13 @@ code reads them back in 4.5.2.
   limit checks.
 - `TryMakeElasticLogger` (`-elasticsearch...`).
 
-`CFrontEndIdler::SetAsCurrentIdler` (`0x8ba820`): with `g_nGameDebugRandom >= 0` (`-random=`),
-`CSystem::_nSeed` and `CRandom::_Random` get that value instead of `QueryPerformanceCounter`.
-`CGameSetup::StartSyncPlayers` (`0xb280e0`) posts `CSetRandomSeed(n)`.
+`CFrontEndIdler::SetAsCurrentIdler` (`0x8ba820`), each time the main menu becomes current:
+`CSystem::_nSeed` and the seed of `CRandom::_Random` get `g_nGameDebugRandom` when it is >= 0
+(`-random=`), else the low dword of `QueryPerformanceCounter`; `CSystem::_nRandomCount` and the
+position become 0. `CGameSetup::StartSyncPlayers` (`0xb280e0`, from `CGameSetup::Start` when the
+setup screen moves on) posts `CSetRandomSeed(g_nGameDebugRandom >= 0 ? it : _nSeed, _nRandomCount)`:
+the seed again, with the position the menus have reached. See the command line document's "Random
+numbers" and docs/random.md.
 
 `CFrontEndIdler::UpdateInternal` (`0x8b9440`), every main menu frame:
 
@@ -303,7 +307,9 @@ path (`gReloadWorldStage`), not for the command line.
 Loading a save: `CGameState::ReadMember` restores `random_seed` / `random_count` and
 `CCountryAI::ReadMember` the AI's random fields only with `g_bUseSavedRandom` (`-loadrandomseed`);
 `CGameState::InitPostRead` (`0x24be80`) then applies `-rng_seed=` / `-rng_pos=` (`CSystem::_nSeed`,
-`CRandom::_Random`, `CSystem::_nRandomCount`).
+`CRandom::_Random`, `CSystem::_nRandomCount`): either option sets `g_bUseForcedSeed`, and both
+values are written (the one not given is 0). Without `-loadrandomseed` or these, `LaunchSave` /
+`LoadSave` keep the current `CSystem::_nSeed` and `_nRandomCount`.
 
 `NAdvisorVoice::SetForCountry` (`0x7c5da0`): with `g_bEnableBajenAudioGroup` (`-bajen`) the advisor
 voice group is `l_bajen`.
