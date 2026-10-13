@@ -1593,10 +1593,83 @@ function S:new_colonies(country)
     return c[1], c[2]
 end
 
+-- a colony's stability (CColony::CalcPlanetStability, the engine session's docs/colonies.md
+-- 3.2-3.3), from its node's values (get(type), the graph's) and its pop groups' happiness and
+-- political power (the save's; a group without happiness there: 0.5 + its node's pop_happiness,
+-- pop_citizen_happiness and pop_cat_<category>_happiness, at most 1); nil when the graph cannot
+-- be read yet. 0 for a colony without an owner, 50 for one being colonized.
+--   S = (50 + min(planet_stability_add_with_limit, ADDITIONAL_PLANET_STABILITY_LIMIT)
+--        + planet_stability_add) * max(0, 1 + planet_stability_mult)
+--   h = the average happiness weighted by political power, each held within (0.05, 20) below 0.5
+--       and (0, 20) above (the MIN/MAX_POLITICAL_POWER_*_STABILITY_IMPACT defines)
+--   S + (1 - h / 0.5) * LOW_HAPPINESS_STABILITY_EFFECT below 0.5, + (h - 0.5) / 0.5 *
+--   HIGH_HAPPINESS_STABILITY_EFFECT above, within MIN/MAX_PLANET_STABILITY
+-- Exact on every owned colony of both captures.
+function S:colony_stability(id, get)
+    local w = self.world
+    local col = w.object("colony", id)
+    local planet = self.planet_of_colony[id]
+    if not (col and planet and self.resolve_ref) then
+        return nil
+    end
+    if type(w.field(w.object("planet", planet), "owner")) ~= "number" then
+        return 0
+    end
+    local base = tonumber(self:define("BASE_PLANET_STABILITY")) or 50
+    if w.field(col, "colonizing_species") ~= nil then
+        return base
+    end
+    local add, mult, limited = get("planet_stability_add"), get("planet_stability_mult"), get("planet_stability_add_with_limit")
+    if add == nil or mult == nil then
+        return nil
+    end
+    local limit = tonumber(self:define("ADDITIONAL_PLANET_STABILITY_LIMIT")) or 15
+    local s = (base + math.min((limited or 0) / 100000, limit) + add / 100000) * math.max(0, 1 + mult / 100000)
+    local function def(k, d)
+        return tonumber(self:define(k)) or d
+    end
+    local sp, sph = 0, 0
+    for _, gid in ipairs(list_of(w, col, "pop_groups")) do
+        local g = w.object("pop_group", tonumber(gid))
+        if g and w.field(g, "killed") ~= "yes" then
+            local h = tonumber(w.field(g, "happiness"))
+            if h == nil then
+                local cat = unq(w.field(w.field(g, "key") or {}, "category"))
+                local function pv(t)
+                    return self.resolve_ref({ scope = "this", kind = "pop_group", id = tonumber(gid), type = self.canon[t] or t }) or 0
+                end
+                h = 0.5 + (pv("pop_happiness") + pv("pop_citizen_happiness") + pv("pop_cat_" .. tostring(cat) .. "_happiness")) / 100000
+                h = math.max(0, math.min(1, h))
+            end
+            local pw = tonumber(w.field(g, "power")) or 0
+            if h < 0.5 then
+                pw = math.max(def("MIN_POLITICAL_POWER_NEGATIVE_STABILITY_IMPACT", 0.05),
+                    math.min(def("MAX_POLITICAL_POWER_NEGATIVE_STABILITY_IMPACT", 20), pw))
+            else
+                pw = math.max(def("MIN_POLITICAL_POWER_POSITIVE_STABILITY_IMPACT", 0),
+                    math.min(def("MAX_POLITICAL_POWER_POSITIVE_STABILITY_IMPACT", 20), pw))
+            end
+            sp = sp + pw
+            sph = sph + pw * h
+        end
+    end
+    if sp > 0 then
+        -- (the average truncated to the fixed point, as the game's is: 0.962587 is 0.96258)
+        local h = math.floor(sph / sp * 100000 + 1e-7) / 100000
+        if h < 0.5 then
+            s = s + (1 - h / 0.5) * def("LOW_HAPPINESS_STABILITY_EFFECT", -50)
+        else
+            s = s + (h - 0.5) / 0.5 * def("HIGH_HAPPINESS_STABILITY_EFFECT", 30)
+        end
+    end
+    return math.max(def("MIN_PLANET_STABILITY", 0), math.min(def("MAX_PLANET_STABILITY", 100), s))
+end
+
 -- The colony's status modifiers (static modifiers scaled by how far the colony is past a
 -- threshold; read from the 2210 capture, where each multiplier matches the save's colony fields):
---   stability above 50: planet_stability_high x (stability - 50) / 50, below: _low x (50 - s) / 50
---   amenities: planet_amenities_high x (amenities / usage - 1), _low x (1 - amenities / usage) / 0.5
+--   stability (S:colony_stability) above 50: planet_stability_high x (stability - 50) / 50, below:
+--     _low x (50 - s) / 50
+--   amenities: planet_amenities_high x (amenities / usage - 1), _low x (1 - amenities / usage) / 0.75
 --   housing: planet_housing_high x (housing / usage - 1) / 3, _low x (1 - housing / usage) / 0.5,
 --     and planet_overcrowded when the free housing is negative
 --   employment: planet_employment_low x the unemployed pops (workforce / 100, whole), _high x the
@@ -1648,7 +1721,12 @@ function S:colony(id)
             end
         end
     end
-    local stability = num("stability")
+    -- a value of the colony's node, read from the graph (self.resolve_ref), or nil
+    local function get(t)
+        return self.resolve_ref and planet
+            and self.resolve_ref({ scope = "colony", kind = "planet", id = planet, type = self.canon[t] or t }) or nil
+    end
+    local stability = self:colony_stability(id, get) or num("stability")
     if stability then
         status("planet_stability" .. nh .. "_high", (stability - 50) / 50)
         status("planet_stability" .. nh .. "_low", (50 - stability) / 50)
@@ -1660,19 +1738,20 @@ function S:colony(id)
     -- fallen empire's colony with both mults at 0.05: 18000 x 1.1 = 19800, as the save has it)
     local amenities, ausage = num("amenities"), num("amenities_usage")
     if self.resolve_ref and planet then
-        local function get(t)
-            return self.resolve_ref({ scope = "colony", kind = "planet", id = planet, type = self.canon[t] or t })
-        end
         local add, mult = get("planet_amenities_add"), get("planet_amenities_mult")
         if add and mult then
             local nadd, nmult = get("planet_amenities_no_happiness_add"), get("planet_amenities_no_happiness_mult")
             amenities = (add + (nadd or 0)) / 100000 * (1 + (mult + (nmult or 0)) / 100000)
         end
     end
+    -- (CColony::GetAmenitiesEffectScale: above, (r - 1) / (MAX_PLANET_AMENITIES - 1); below,
+    -- (1 - r) / (1 - MIN_PLANET_AMENITIES), MIN 0.25: the engine session's docs/colonies.md 3.5)
     if amenities and ausage and ausage > 0 then
         local r = amenities / ausage
-        status("planet_amenities" .. nh .. "_high", r - 1)
-        status("planet_amenities" .. nh .. "_low", (1 - r) / 0.5)
+        local amax = tonumber(self:define("MAX_PLANET_AMENITIES")) or 2
+        local amin = tonumber(self:define("MIN_PLANET_AMENITIES")) or 0.25
+        status("planet_amenities" .. nh .. "_high", (r - 1) / (amax - 1))
+        status("planet_amenities" .. nh .. "_low", (1 - r) / (1 - amin))
     end
     local housing, husage = num("total_housing"), num("housing_usage")
     if housing and husage and husage > 0 then
