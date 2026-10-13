@@ -352,8 +352,9 @@ function S:difficulty_scale()
     return 1 - mult * (1 - math.min(1, size / max))
 end
 
--- triggers the sources read that the script layer does not answer yet (filled in below, by
--- "the world"), installed while a trigger is evaluated with the economy's (engine/economy/script.lua)
+-- triggers the sources read that the script layer does not answer yet (is_immortal, has_relic:
+-- filled in below, by "the world"), installed while a trigger is evaluated with the economy's
+-- (engine/economy/script.lua)
 local EXTRA_TRIGGERS = {}
 local econ_script
 do
@@ -361,58 +362,15 @@ do
     econ_script = ok and m or nil
 end
 
--- the DLCs of the game (the save's required_dlcs): has_dlc and host_has_dlc, which the script
--- layer answers yes for every DLC
-local REPLACED_TRIGGERS = {}
-function REPLACED_TRIGGERS.has_dlc(self, e)
-    if self.dlcs == nil then
-        self.dlcs = {}
-        local list = self.world.meta.required_dlcs
-        for _, x in ipairs(type(list) == "table" and list or {}) do
-            if x.text then
-                self.dlcs[unq(x.text)] = true
-            end
-        end
-    end
-    return self.dlcs[unq(e.value.text)] == true
-end
-REPLACED_TRIGGERS.host_has_dlc = REPLACED_TRIGGERS.has_dlc
-
--- is_primitive: a country of the primitive country type (the interface does not set it: the
--- primitives' capital buildings' blocks need it)
-function REPLACED_TRIGGERS.is_primitive(self, e, ctx)
-    local w = self.world
-    local c = ctx.this.kind == "country" and ctx.this.id
-    if ctx.this.kind == "planet" then
-        c = tonumber(w.field(w.object("planet", ctx.this.id), "owner"))
-    end
-    local r = c ~= nil and unq(w.field(w.object("country", c), "type")) == "primitive"
-    return r == (e.value.text ~= "no")
-end
-
--- scope links the sources read that the script layer does not answer yet (filled in below)
-local EXTRA_LINKS = {}
-
--- f() with the extra triggers and links installed where the script layer has none, and the
--- replaced triggers
+-- f() with the extra triggers installed where the script layer has none
 function S:with_script(f)
-    local TRIG, LINKS = self.eval.TRIG, self.eval.LINKS
-    local saved, saved_links = {}, {}
+    local TRIG = self.eval.TRIG
+    local added = {}
     for k, g in pairs(EXTRA_TRIGGERS) do
         if TRIG[k] == nil then
-            saved[k] = false
+            added[#added + 1] = k
             TRIG[k] = function(e, ctx) return g(self, e, ctx) end
         end
-    end
-    for k, g in pairs(EXTRA_LINKS) do
-        if LINKS[k] == nil then
-            saved_links[k] = true
-            LINKS[k] = function(cur, ctx) return g(self, cur, ctx) end
-        end
-    end
-    for k, g in pairs(REPLACED_TRIGGERS) do
-        saved[k] = TRIG[k] or false
-        TRIG[k] = function(e, ctx) return g(self, e, ctx) end
     end
     local ok, r
     if econ_script then
@@ -420,11 +378,8 @@ function S:with_script(f)
     else
         ok, r = pcall(f)
     end
-    for k, g in pairs(saved) do
-        TRIG[k] = g or nil
-    end
-    for k in pairs(saved_links) do
-        LINKS[k] = nil
+    for _, k in ipairs(added) do
+        TRIG[k] = nil
     end
     return ok, r
 end
@@ -674,12 +629,6 @@ local function list_of(w, obj, key)
     return out
 end
 
--- leader_class = <class>: the leader's class
-function EXTRA_TRIGGERS.leader_class(self, e, ctx)
-    local l = ctx.this.kind == "leader" and self.leaders[ctx.this.id]
-    return l and l.class == unq(e.value.text) or false
-end
-
 -- is_immortal: a leader with a trait (its own, or its species') of `immortal_leaders = yes`
 function EXTRA_TRIGGERS.is_immortal(self, e, ctx)
     local r = ctx.this.kind == "leader" and self:immortal(ctx.this.id) or false
@@ -697,138 +646,6 @@ function EXTRA_TRIGGERS.has_relic(self, e, ctx)
         end
     end
     return false
-end
-
--- the system of an object's position (a planet's, a pop group's planet's, a fleet's, a ship's
--- fleet's, a starbase's)
-local function system_of(self, kind, id)
-    local w = self.world
-    local function origin(o, key)
-        local c = o and w.field(o, key)
-        if key == "movement_manager" then
-            c = type(c) == "table" and w.field(c, "coordinate")
-        end
-        return type(c) == "table" and tonumber(w.field(c, "origin")) or nil
-    end
-    if kind == "pop_group" then
-        kind, id = "planet", self.planet_of_colony[w.field(w.object("pop_group", id), "planet")]
-    elseif kind == "ship" then
-        kind, id = "fleet", tonumber(w.field(w.object("ships", id), "fleet"))
-    end
-    if kind == "planet" then
-        return origin(id and w.object("planet", id), "coordinate")
-    elseif kind == "fleet" then
-        return origin(id and w.object("fleet", id), "movement_manager")
-    elseif kind == "starbase" then
-        return self.system_of_starbase[id]
-    end
-    return nil
-end
-
--- solar_system: the system an object is in
-function EXTRA_LINKS.solar_system(self, cur)
-    local sys = system_of(self, cur.kind, cur.id)
-    return sys and self.eval.S("system", sys) or nil
-end
-
--- leader: a planet's governor, a fleet's (or a ship's fleet's) leader, an army's general, a
--- country's ruler
-function EXTRA_LINKS.leader(self, cur)
-    local w = self.world
-    local l
-    if cur.kind == "planet" then
-        local colony = w.field(w.object("planet", cur.id), "colony")
-        l = type(colony) == "number" and tonumber(w.field(w.object("colony", colony), "governor"))
-    elseif cur.kind == "fleet" then
-        l = self.fleet_leader[cur.id]
-    elseif cur.kind == "ship" then
-        l = self.fleet_leader[tonumber(w.field(w.object("ships", cur.id), "fleet"))]
-    elseif cur.kind == "army" then
-        l = tonumber(w.field(w.object("army", cur.id), "leader"))
-    elseif cur.kind == "country" then
-        l = tonumber(w.field(w.object("country", cur.id), "ruler"))
-    end
-    return l and self.leaders[l] and self.eval.S("leader", l) or nil
-end
-
--- uses_ship_category = <category>: in the ship_kinds of the country's graphical culture
--- (common/graphical_culture); a culture without ship_kinds uses every category (the caravaneers'
--- and marauders' do, and take the bio-ship swaps of the hyperdrive technologies)
-function EXTRA_TRIGGERS.uses_ship_category(self, e, ctx)
-    local w = self.world
-    local c = ctx.this.kind == "country" and ctx.this.id
-    if not c then
-        return false
-    end
-    local culture = unq(w.field(w.object("country", c), "graphical_culture"))
-    local d = culture and self.defs.get("common/graphical_culture", culture)
-    if d == nil then
-        return false
-    end
-    local kinds = self.defs.field(d.block, "ship_kinds")
-    if type(kinds) ~= "table" then
-        return true
-    end
-    local want = unq(e.value.text)
-    for _, k in ipairs(kinds) do
-        if k.text == want then
-            return true
-        end
-    end
-    return false
-end
-
--- any_owned_species = { }: a species with pops in the country (its pop groups on its colonies)
--- for which the block holds
-function EXTRA_TRIGGERS.any_owned_species(self, e, ctx)
-    if ctx.this.kind ~= "country" or type(e.value) ~= "table" then
-        return false
-    end
-    local w = self.world
-    self.owned_species = self.owned_species or {}
-    local list = self.owned_species[ctx.this.id]
-    if list == nil then
-        list = {}
-        local seen = {}
-        for _, pid in ipairs(self.colonies_of[ctx.this.id] or {}) do
-            local col = w.object("colony", w.field(w.object("planet", pid), "colony"))
-            for _, gid in ipairs(col and list_of(w, col, "pop_groups") or {}) do
-                local g = w.object("pop_group", tonumber(gid))
-                local sp = g and w.field(g, "killed") ~= "yes" and tonumber(w.field(w.field(g, "key") or {}, "species"))
-                if sp and not seen[sp] then
-                    seen[sp] = true
-                    list[#list + 1] = sp
-                end
-            end
-        end
-        self.owned_species[ctx.this.id] = list
-    end
-    for _, sp in ipairs(list) do
-        if self.eval.trigger(e.value, self.eval.push(ctx, self.eval.S("species", sp))) then
-            return true
-        end
-    end
-    return false
-end
-
--- capital_tier <op> n: the highest capital_tier of the buildings of a planet's colony (0 with no
--- capital building)
-function EXTRA_TRIGGERS.capital_tier(self, e, ctx)
-    local w = self.world
-    local planet = ctx.this.kind == "planet" and ctx.this.id
-        or ctx.this.kind == "colony" and self.planet_of_colony[ctx.this.id]
-    local colony = planet and w.field(w.object("planet", planet), "colony")
-    local col = type(colony) == "number" and w.object("colony", colony)
-    local tier = 0
-    for _, bid in ipairs(col and list_of(w, col, "buildings_cache") or {}) do
-        local ty = unq(w.field(w.object("buildings", tonumber(bid)), "type"))
-        local d = ty and self.defs.get("common/buildings", ty)
-        local t = d and tonumber(self.defs.field(d.block, "capital_tier"))
-        if t and t > tier then
-            tier = t
-        end
-    end
-    return self.eval.compare(tier, e.op, self.eval.value(e.value, ctx, e))
 end
 
 -- the bare blocks of a list block (`active_policies = { { ... } { ... } }`)
