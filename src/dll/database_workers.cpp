@@ -43,13 +43,23 @@ double now() {
 	return static_cast<double>(t - 116444736000000000ULL) / 1e7;
 }
 
+// What stopped a database: where, the stack there (return addresses, innermost first), and for a
+// C++ exception the name of the type thrown (decorated: ".?AVbad_alloc@std@@")
+const int kStackDepth = 24;
+struct Failure {
+	uintptr_t address = 0;
+	uintptr_t stack[kStackDepth] = {};
+	int depth = 0;
+	char type[96] = {};
+};
+
 struct Job {
 	double id;
 	uintptr_t create, init;
 	double start, finish;
 	uint32_t thread;
 	uint32_t exception;   // the code of the exception that stopped it, or 0
-	uintptr_t address;    // where it happened
+	Failure failure;
 };
 
 std::mutex jobs_lock;
@@ -63,24 +73,82 @@ using call_function = uintptr_t (*)();
 // the database (its id, from Lua) this thread is initializing, or 0
 thread_local int current_database = 0;
 
-int exception_filter(EXCEPTION_POINTERS* info, uintptr_t* address) {
-	*address = reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress);
+// The stack at the exception, unwound from its context (the frames are still there while the
+// filter runs). A stack too broken to unwind ends the walk, not the filter.
+void walk_stack(const CONTEXT* at, Failure* f) {
+	CONTEXT c = *at;
+	__try {
+		while (f->depth < kStackDepth && c.Rip != 0) {
+			f->stack[f->depth++] = static_cast<uintptr_t>(c.Rip);
+			DWORD64 image = 0;
+			PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(c.Rip, &image, nullptr);
+			if (function == nullptr) {
+				// a leaf function: its return address is at rsp
+				c.Rip = *reinterpret_cast<const DWORD64*>(c.Rsp);
+				c.Rsp += 8;
+			} else {
+				void* handler_data = nullptr;
+				DWORD64 frame = 0;
+				RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Rip, function, &c, &handler_data, &frame, nullptr);
+			}
+		}
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+	}
+}
+
+// For an MSVC C++ exception (0xE06D7363), the name of the type thrown: ExceptionInformation[2] is
+// its ThrowInfo, [3] the module the RVAs in it are relative to; ThrowInfo +12 the
+// CatchableTypeArray, its first CatchableType, +4 its TypeDescriptor, the name at +16
+void thrown_type(const EXCEPTION_RECORD* r, Failure* f) {
+	if (r->ExceptionCode != 0xE06D7363 || r->NumberParameters < 4) {
+		return;
+	}
+	__try {
+		const uintptr_t base = static_cast<uintptr_t>(r->ExceptionInformation[3]);
+		const int32_t* info = reinterpret_cast<const int32_t*>(r->ExceptionInformation[2]);
+		const int32_t* types = reinterpret_cast<const int32_t*>(base + info[3]);
+		const int32_t* type = reinterpret_cast<const int32_t*>(base + types[1]);
+		const char* name = reinterpret_cast<const char*>(base + type[1] + 16);
+		strncpy_s(f->type, name, _TRUNCATE);
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		f->type[0] = 0;
+	}
+}
+
+int exception_filter(EXCEPTION_POINTERS* info, Failure* f) {
+	f->address = reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress);
+	walk_stack(info->ContextRecord, f);
+	thrown_type(info->ExceptionRecord, f);
 	return EXCEPTION_EXECUTE_HANDLER;
 }
 
 // Calls create (if any) and init under a structured exception handler: 0, or the code of the
-// exception that stopped them (its address in *address). The game's frames below are abandoned:
-// the database is left half made, and the load cannot go on safely after that.
-DWORD call_guarded(uintptr_t create, uintptr_t init, uintptr_t* address) {
+// exception that stopped them (what it was in *f). The game's frames below are abandoned: the
+// database is left half made, and the load cannot go on safely after that.
+DWORD call_guarded(uintptr_t create, uintptr_t init, Failure* f) {
 	__try {
 		if (create != 0) {
 			reinterpret_cast<call_function>(create)();
 		}
 		reinterpret_cast<call_function>(init)();
-	} __except (exception_filter(GetExceptionInformation(), address)) {
+	} __except (exception_filter(GetExceptionInformation(), f)) {
 		return GetExceptionCode();
 	}
 	return 0;
+}
+
+// pushes the failure's fields into the table on the top of the stack
+void push_failure(lua_State* L, const Failure& f) {
+	lua_pushnumber(L, static_cast<lua_Number>(f.address));
+	lua_setfield(L, -2, "address");
+	lua_createtable(L, f.depth, 0);
+	for (int i = 0; i < f.depth; ++i) {
+		lua_pushnumber(L, static_cast<lua_Number>(f.stack[i]));
+		lua_rawseti(L, -2, i + 1);
+	}
+	lua_setfield(L, -2, "stack");
+	lua_pushstring(L, f.type);
+	lua_setfield(L, -2, "type");
 }
 
 void worker() {
@@ -95,7 +163,7 @@ void worker() {
 		job.thread = GetCurrentThreadId();
 		job.start = now();
 		current_database = static_cast<int>(job.id);
-		job.exception = call_guarded(job.create, job.init, &job.address);
+		job.exception = call_guarded(job.create, job.init, &job.failure);
 		current_database = 0;
 		job.finish = now();
 		{
@@ -129,7 +197,7 @@ int l_db_workers(lua_State* L) {
 
 // stellar.db_start(id, create, init): a worker will call create(), then init()
 int l_db_start(lua_State* L) {
-	Job job{luaL_checknumber(L, 1), check_address(L, 2), check_address(L, 3), 0, 0, 0, 0, 0};
+	Job job{luaL_checknumber(L, 1), check_address(L, 2), check_address(L, 3), 0, 0, 0, 0, Failure{}};
 	{
 		std::lock_guard<std::mutex> guard(jobs_lock);
 		queue.push_back(job);
@@ -139,7 +207,7 @@ int l_db_start(lua_State* L) {
 }
 
 // stellar.db_wait([seconds]) -> the databases done since the last call (waits for one, or at most
-// that long): { id, start, finish, thread, exception, address }
+// that long): { id, start, finish, thread, exception, address, stack, type }
 int l_db_wait(lua_State* L) {
 	const double seconds = luaL_optnumber(L, 1, -1);
 	std::vector<Job> done;
@@ -155,11 +223,12 @@ int l_db_wait(lua_State* L) {
 	}
 	lua_createtable(L, static_cast<int>(done.size()), 0);
 	for (size_t i = 0; i < done.size(); ++i) {
-		lua_createtable(L, 0, 6);
+		lua_createtable(L, 0, 8);
 		lua_pushnumber(L, done[i].exception);
 		lua_setfield(L, -2, "exception");
-		lua_pushnumber(L, static_cast<lua_Number>(done[i].address));
-		lua_setfield(L, -2, "address");
+		if (done[i].exception != 0) {
+			push_failure(L, done[i].failure);
+		}
 		lua_pushnumber(L, done[i].id);
 		lua_setfield(L, -2, "id");
 		lua_pushnumber(L, done[i].start);
@@ -173,17 +242,21 @@ int l_db_wait(lua_State* L) {
 	return 1;
 }
 
-// stellar.db_call(create, init[, id]) -> exception, address: create() then init() on this thread
-// under the same handler as the workers' (0 when they returned)
+// stellar.db_call(create, init[, id]) -> exception, { address, stack, type } | nil: create() then
+// init() on this thread under the same handler as the workers' (0 when they returned)
 int l_db_call(lua_State* L) {
 	const uintptr_t create = static_cast<uintptr_t>(luaL_optnumber(L, 1, 0));
 	const uintptr_t init = check_address(L, 2);
-	uintptr_t address = 0;
+	Failure f;
 	current_database = static_cast<int>(luaL_optnumber(L, 3, 0));
-	const DWORD code = call_guarded(create, init, &address);
+	const DWORD code = call_guarded(create, init, &f);
 	current_database = 0;
 	lua_pushnumber(L, code);
-	lua_pushnumber(L, static_cast<lua_Number>(address));
+	if (code == 0) {
+		return 1;
+	}
+	lua_createtable(L, 0, 3);
+	push_failure(L, f);
 	return 2;
 }
 

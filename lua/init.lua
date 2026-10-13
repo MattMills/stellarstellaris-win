@@ -60,8 +60,10 @@ end
 -- the static lexer's token table, taken over (src/dll/database_workers.cpp): its id -> name lookup
 -- is kept up to date in place as tokens are added, and CStaticLexer::RebuildLookup (which emptied
 -- and refilled it under every reader) never runs again
+local cstring_assign  -- the CString's assign (loader.token_table), for stellar.flags
 do
     local t, message = loader.token_table(require("stellar.resolve").functions(image), lexer_where, stellar.read)
+    cstring_assign = t and t.assign
     local ok
     if t then
         ok, message = stellar.token_table(t.add, t.find, t.rebuild, t.access, t.reserve, t.assign)
@@ -161,6 +163,16 @@ end
 local after_path = util.dirname(stellar.dll_path) .. "\\cache\\database_after-" .. image:md5() .. ".tsv"
 local game_order  -- the game's order of the databases (databases.load_order), for run_parallel
 local serialized = {}  -- name -> slot (databases.serialize)
+-- the script flags' names in id order (stellar.flags): kept by a load in the game's order, given
+-- their ids before the databases run in parallel (then no database waits for another for them).
+-- Located before the lock's hook rewrites the start of CreateFlagIndex.
+local flags = require("stellar.flags")
+local flags_where, flags_message = flags.locate(found, stellar.read)
+local flags_path = util.dirname(stellar.dll_path) .. "\\cache\\flag_names-" .. image_md5 .. ".tsv"
+local flag_names  -- the names to register (flags.load), in parallel
+if not flags_where then
+    stellar.log("flags: " .. tostring(flags_message))
+end
 if databases_where and database_mode == "parallel" then
     -- a load that died in the databases without a handler seeing it: what ran then conflicts
     local recovered, names = databases.recover_inflight(inflight_path, conflicts_path)
@@ -190,10 +202,17 @@ if databases_where and database_mode == "parallel" then
         -- what failed loads learned the databases wait for
         local waits = databases.load_after(databases_where, after_path)
         stellar.log(string.format("databases: %d waits learned in failed loads", waits or 0))
+        -- the flags' ids given before the databases run: their makers need no order
+        flag_names = flags_where and cstring_assign and flags.load(flags_path)
+        if flag_names then
+            stellar.log(string.format("flags: %d names to give their ids before the databases (%s)", #flag_names, flags_path))
+        end
         -- the databases that make what is numbered as it is made, in the game's order
         for _, o in ipairs(databases.ORDERED) do
             local writers = databases.load_names(writers_path(o))
-            if writers and order then
+            if flag_names and o.file == "flag_writers" then
+                stellar.log("databases: the databases that make script flag ids need no order: the ids are given before")
+            elseif writers and order then
                 stellar.log(string.format("databases: %d databases make %s: %d links keep them in the game's order",
                     #writers, o.what, databases.chain(databases_where, writers, order)))
             else
@@ -215,13 +234,28 @@ if databases_where and (database_mode == "lua" or database_mode == "parallel" or
             if found[databases.MODIFIER_RESERVE] and modifier_where then
                 stellar.call(found[databases.MODIFIER_RESERVE], modifier_where.data - 8, databases.MODIFIER_ROOM)
             end
+            -- the flags' ids, in the game's order, before any database makes one
+            if flag_names then
+                local registered, mismatch = flags.register(flags_where, cstring_assign, flag_names)
+                stellar.log(mismatch and string.format("flags: %d names registered, but id %d is not the one kept: the ids are not the game's",
+                    registered, mismatch) or string.format("flags: %d names given their ids, as the game gives them", registered))
+            end
             local t0 = util.system_time()
             local timeline, failure
             stellar.serialize_active(true)
             n, stopped, report, timeline, failure = databases.run_parallel(databases_where, progress, stellar.read,
                 tonumber(database_workers) or 4, conflicts_path, inflight_path, after_path, game_order,
-                (os.getenv("USERPROFILE") or ".") .. "\\Documents\\Paradox Interactive\\Stellaris\\logs\\error.log")
+                (os.getenv("USERPROFILE") or ".") .. "\\Documents\\Paradox Interactive\\Stellaris\\logs\\error.log",
+                databases.load_durations(boot_order_path))
             stellar.serialize_active(false)
+            -- flags the kept names do not have were numbered in this load's order
+            if flag_names then
+                local now = #flags.names(flags_where)
+                if now > #flag_names then
+                    stellar.log(string.format("flags: %d made while the databases ran that the kept names do not have: their ids may not be the game's (a \"lua\" load keeps the names again)",
+                        now - #flag_names))
+                end
+            end
             -- what the lock cost: per function, the calls under it and how long they waited for it
             local costs = {}
             for _, name in ipairs(databases.SHARED) do
@@ -524,6 +558,11 @@ stellar.heartbeat = function()
     -- parallel would take, from this load's times
     if databases_where and not schedule_logged and loading.loaded() then
         schedule_logged = true
+        -- a load in the game's order keeps the flags' names in id order (for parallel loads)
+        if flags_where and database_mode ~= "parallel" then
+            local count = flags.save(flags_where, flags_path)
+            stellar.log(string.format("flags: %s names kept in id order (%s)", tostring(count), flags_path))
+        end
         local lookups, hits, indexed = stellar.modifier_index_stats()
         lookups, hits, indexed = lookups or 0, hits or 0, indexed or 0
         stellar.log(string.format("modifiers: %d lookups through the index (%d found), %d definitions indexed",

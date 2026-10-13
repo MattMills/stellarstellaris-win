@@ -119,10 +119,35 @@ every database writes. Those functions run under one recursive lock (`stellar.se
 | `CHashTable<CString, CNameSpace>::Find` | the event namespaces | `CEventManager::GetNameSpace`, `Find` (found as `GetNameSpace`'s first call) |
 | `CPdxArray<CPdxModifierDefinition>::SetNewDataAndCapacity` | the modifier definitions | `CModifier::TryAddDynamicModifier`; the array is reserved for 131,072 first so it never moves under a reader |
 
-Modifier types and script flag ids are numbered as they are made, so the databases that make them
-in `InitInstance` (recorded by the lock: `cache/database_modifier_writers-<md5>.tsv`,
-`cache/database_flag_writers-<md5>.tsv`, `databases.ORDERED`) are chained in the game's order,
-and the `PostReadInitInstance` calls run in the game's order too.
+Modifier types are numbered as they are made, so the databases that make them in `InitInstance`
+(recorded by the lock: `cache/database_modifier_writers-<md5>.tsv`, `databases.ORDERED`) are
+chained in the game's order, and the `PostReadInitInstance` calls run in the game's order too.
+Script flag ids are numbered the same way, but a flag is only a name: a load in the game's order
+keeps the 10,088 names in id order (`cache/flag_names-<md5>.tsv`, `stellar.flags`), and a parallel
+load gives them their ids before its databases start (`CreateFlagIndex` for each), so the 29
+databases that make flags need no order between them.
+
+The loop starts, of the databases ready, the one with the longest chain still to come after it
+(with each database's time from the last boot), not the table's order: a short database late in
+the table that a long one waits for started seconds late. Each line of
+`cache/database_boot_order-<md5>.tsv` says what the database waited for last; `C:\lfm\crit.lua`
+walks back from the last one. A `CanInitialize` that reads a global that is no database's makes
+a barrier (waits for every database before it), unless the global is set when the databases
+start (`CGui::_pGui`); `CEventManager`'s instance is stored 262 bytes into its `CreateInstance`,
+past the 256 first read, and seven databases waited for everything.
+
+What the handler learns is checked with `C:\lfm\stress_boot.ps1`: loads from the same start (the
+learned waits set aside, those of `-Keep` kept), each validated. With only
+`CSituationTypeDatabase`'s 7 waits (it reads the events `CEventManager` makes), 14 loads in a row
+were identical to vanilla; the 72 other waits and 2 conflicts learned before were not needed and
+were dropped (kept in `cache/learned-before-pruning`). A failure logs the stack (game addresses as
+`+rva`, to name with `sym.py`) and, for a C++ exception, the type thrown.
+
+On this machine (4 cores, 8 threads) the phase takes 7.6-8.8s against 10.7s one at a time. What
+bounds it is a chain of real dependencies (`CShipSizeDatabase` -> `CPopCategoryDatabase` ->
+`CJobTypeDatabase` -> `CEventManager` -> `COnActionDatabase` -> `CScriptedActionDatabase` ->
+`CShipDesignTemplatesDatabase`), and each database takes about twice its time alone while the
+others run (`CEventManager` 2.9s against 1.4s).
 
 A load that gets through is checked against vanilla with `C:\lfm\validate_load.sh`: error.log
 (558 bytes), `modifiers.log` (identical), the census (1,318,141 triggers, 424,716 effects).
