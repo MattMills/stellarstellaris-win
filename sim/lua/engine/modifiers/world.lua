@@ -7,6 +7,8 @@
 --   local wg = mw.build(core.new(), defs, st, function(category, owner) return parts end)
 --   wg.tree:get(wg.holder("Fleet", 12), "ship_fire_rate_mult")
 --   mw.compare(wg, snap, defs)          -- against a capture of the game's nodes
+--   local wg = mw.world_graph({ defs = defs })   -- the world alone, as the engine reads it
+--   mw.values(wg, "Country", 0)       -- { [type name] = value as a float }
 --
 -- defs: the graph's definitions (stellar.graph.modifiers); a part: { name, mult, filter, values }
 -- (engine.modifiers.fold folds it).
@@ -25,6 +27,26 @@ function M.category_of(n)
         return "OrbitalMegaStructure"
     end
     return n.category
+end
+
+-- mw.mark_megastructures(snap, world): name the megastructures' Orbital nodes of a capture
+-- OrbitalMegaStructure in place (their ids, 0..14, are also starbases'). By their filter (-1);
+-- in a capture without the categories column (2210), the second Orbital node of an owner (the
+-- megastructures' come after the starbases') or one whose owner is not a starbase
+function M.mark_megastructures(snap, world)
+    local seen = {}
+    for _, n in ipairs(snap.nodes) do
+        if n.category == "Orbital" then
+            if n.categories == -1 then
+                n.category = "OrbitalMegaStructure"
+            elseif n.categories == nil then
+                if seen[n.owner] or (world and world.object("starbases", n.owner) == nil) then
+                    n.category = "OrbitalMegaStructure"
+                end
+                seen[n.owner] = true
+            end
+        end
+    end
 end
 local category_of = M.category_of
 
@@ -63,10 +85,55 @@ function M.build(g, defs, st, parts_of)
             end
         end
     end
-    local wg = { tree = tree, holders = holders, stats = stats }
+    local wg = { tree = tree, holders = holders, stats = stats, defs = defs }
     function wg.holder(category, owner)
         return holders[category .. ":" .. owner]
     end
+    return wg
+end
+
+-- the holder a modifier's value is read from for a multiplier (`mult = modifier:x`, `planet.`,
+-- `owner.`, a job's output modifier) of a part of an object (ref: { scope, type, kind, id },
+-- engine.modifiers S:active; the node: S:ref_node)
+local function ref_holder(wg, src, ref)
+    local c, owner = src:ref_node(ref)
+    return c and owner ~= nil and wg.holder(c, owner) or nil
+end
+
+-- mw.world_graph(opts) -> wg: the modifier graph of the world from the world alone (what the engine
+-- reads its modifiers from):
+--   opts.defs      the graph's definitions (stellar.graph.modifiers, read from a modifiers log)
+--   opts.world     engine.world;  opts.edefs: engine.defs;  opts.fs: the file system (optional)
+--   opts.src       an engine.modifiers source (optional: made from the above)
+--   opts.parts_of  parts for the categories engine.modifiers does not model (optional: a capture's)
+-- A part whose multiplier is another modifier's value (`mult = modifier:x`) is left out of a first
+-- build; the graph is then built again with those values read from the first.
+function M.world_graph(opts)
+    local core = require("stellar.graph.core")
+    local structure = require("engine.modifiers.structure")
+    local world, edefs = opts.world or require("engine.world"), opts.edefs or require("engine.defs")
+    local st = opts.st or structure.new(world, edefs)
+    local src = opts.src or modifiers.new({ types = opts.defs, world = world, defs = edefs, fs = opts.fs })
+    local modelled = {}
+    for _, c in ipairs(modifiers.CATEGORIES) do
+        modelled[c] = true
+    end
+    local function parts_of(category, owner)
+        if modelled[category] then
+            return src:parts(category, owner)
+        end
+        return opts.parts_of and opts.parts_of(category, owner) or nil
+    end
+    local saved = src.resolve_ref
+    src.resolve_ref = nil
+    local first = M.build(core.new(), opts.defs, st, parts_of)
+    src.resolve_ref = function(ref)
+        local h = ref_holder(first, src, ref)
+        return h and first.tree:get(h, ref.type) or nil
+    end
+    local wg = M.build(core.new(), opts.defs, st, parts_of)
+    src.resolve_ref = saved
+    wg.src, wg.st = src, st
     return wg
 end
 
@@ -96,6 +163,26 @@ local function types_fn(defs)
         return t
     end
     return types
+end
+
+-- mw.values(wg, category, owner) -> { [type name] = value as a float (fixed / 100000) }: every
+-- value of a node, its own and what its parents give it, as the game's node has it; nil for a node
+-- not in the world
+function M.values(wg, category, owner)
+    local h = wg.holder(category, owner)
+    if h == nil then
+        return nil
+    end
+    wg.types = wg.types or types_fn(wg.defs)
+    local out = {}
+    for t in pairs(wg.types(h)) do
+        local name = wg.defs:name(t)
+        local v = wg.tree:get(h, name)
+        if v ~= 0 then
+            out[name] = v / 100000
+        end
+    end
+    return out
 end
 
 -- mw.compare(wg, snap, defs, cats) -> { [category] = { nodes, exact, values, close, equal, extra,
