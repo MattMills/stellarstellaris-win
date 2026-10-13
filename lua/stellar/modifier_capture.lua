@@ -161,6 +161,41 @@ function capture.dump(where, path, type_names)
     return nodes, values, parts
 end
 
+-- capture.stats_hook(where) -> true | nil, message: the counts of what the nodes cost over time
+-- (src/dll/modifier_stats.cpp: recomputes and their time by category, marks by category and by
+-- caller, the manager's passes)
+function capture.stats_hook(where)
+    return require("stellar").modifier_stats_hook(where.node_update, where.mark, where.update)
+end
+
+-- capture.stats_report(stats, base, top) -> text: one line of what stellar.modifier_stats gave
+-- (callers as +rva of the game, the `top` most marking)
+function capture.stats_report(stats, base, top)
+    local cats, recomputed, seconds, marked = {}, 0, 0, 0
+    for c, s in pairs(stats.categories or {}) do
+        recomputed, seconds, marked = recomputed + s.recomputed, seconds + s.seconds, marked + s.marked
+        cats[#cats + 1] = { capture.CATEGORIES[c] or tostring(c), s }
+    end
+    table.sort(cats, function(a, b) return a[2].seconds > b[2].seconds end)
+    local parts = {}
+    for i = 1, math.min(#cats, 8) do
+        local s = cats[i][2]
+        parts[i] = string.format("%s %d in %.1f ms (%d marked)", cats[i][1], s.recomputed, s.seconds * 1000, s.marked)
+    end
+    local callers = {}
+    for address, n in pairs(stats.callers or {}) do
+        callers[#callers + 1] = { address, n }
+    end
+    table.sort(callers, function(a, b) return a[2] > b[2] end)
+    local by = {}
+    for i = 1, math.min(#callers, top or 6) do
+        by[i] = string.format("+%x %d", callers[i][1] - base, callers[i][2])
+    end
+    return string.format("%d passes in %.1f ms; %d nodes recomputed in %.1f ms (%d calls on valid nodes), %d marks; %s; marked from %s",
+        stats.passes, stats.pass_seconds * 1000, recomputed, seconds * 1000, stats.valid_calls, marked,
+        table.concat(parts, ", "), table.concat(by, ", "))
+end
+
 -- capture.type_names(path) -> { [type] = name } from a modifiers.log (line k of the list is type k)
 function capture.type_names(path)
     local f = io.open(path, "r")

@@ -23,6 +23,7 @@
 #include "dll/database_workers.h"
 #include "dll/access_trace.h"
 #include "dll/modifier_index.h"
+#include "dll/modifier_stats.h"
 #include "util/logging.h"
 #include "git_version.h"
 
@@ -328,6 +329,8 @@ int luaopen_stellar(lua_State* L) {
 	stellar_access_trace_open(L);
 	// modifier_index, modifier_index_stats (src/dll/modifier_index.cpp)
 	stellar_modifier_index_open(L);
+	// modifier_stats_hook, modifier_stats (src/dll/modifier_stats.cpp)
+	stellar_modifier_stats_open(L);
 
 	// the game
 	push_address(L, hModule);

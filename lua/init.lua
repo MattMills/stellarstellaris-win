@@ -424,12 +424,28 @@ game.after_tick(function(gamestate, db)
             game.current() == gamestate and "=" or "NOT", hex(db), stellar.thread_id()))
     end
 end)
+-- what the modifier nodes cost, month by month (modifier_stats.txt "on": stellar.modifier_capture)
+local modifier_stats = false
+if setting("modifier_stats.txt", "off") == "on" then
+    local capture = require("stellar.modifier_capture")
+    local capture_where, why = capture.locate(found, stellar.read)
+    local ok
+    if capture_where then
+        ok, why = capture.stats_hook(capture_where)
+    end
+    modifier_stats = ok and capture or false
+    stellar.log("modifiers: the nodes' costs " .. (ok and "are counted, logged each month" or ("are not counted: " .. tostring(why))))
+end
 game.after_day(function(gamestate, db)
     local _, _, day = game.date(gamestate)
     if day == 1 then
         stellar.log(string.format("new month %s: its first tick took %.1f ms, %d ticks since the last one",
             game.date_string(gamestate), (util.now() - started) * 1000, month_ticks))
         month_ticks = 0
+        if modifier_stats then
+            stellar.log("modifiers: the last month: " .. modifier_stats.stats_report(stellar.modifier_stats(true),
+                stellar.module_base))
+        end
     end
 end)
 
