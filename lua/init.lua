@@ -468,6 +468,13 @@ if setting("modifier_stats.txt", "off") == "on" then
     modifier_stats = ok and capture or false
     stellar.log("modifiers: the nodes' costs " .. (ok and "are counted, logged each month" or ("are not counted: " .. tostring(why))))
 end
+-- the Lua graph of the modifier nodes beside the game's, checked after every pass of the game's
+-- (modifier_graph.txt "shadow": stellar.modifier_shadow; hooks what modifier_stats.txt hooks)
+if setting("modifier_graph.txt", "off") == "shadow" and not modifier_stats then
+    local ok, why = require("stellar.modifier_shadow").install(found, game, modifier_where)
+    stellar.log("modifiers: the graph's shadow " .. (ok and "is on: built at the first tick, checked after every pass of the game's"
+        or ("is off: " .. tostring(why))))
+end
 game.after_day(function(gamestate, db)
     local _, _, day = game.date(gamestate)
     if day == 1 then
