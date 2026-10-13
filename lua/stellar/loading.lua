@@ -248,6 +248,7 @@ end
 -- milestones after the databases in the time they took, instead of 16 seconds at 100%.
 local timeline_path
 local timeline, t0, game_thread = {}, nil, nil
+local timeline_kept = false
 
 local function read_timeline(path)
     local f = path and io.open(path, "r")
@@ -292,9 +293,15 @@ function loading.bar(path)
     if last == nil or #last == 0 then
         return nil, "no timeline kept yet (" .. tostring(path) .. "): the bar is the game's this load"
     end
-    for _, entry in ipairs(last) do
+    -- the startup load ends at the first DestroyLoadScreen (a timeline kept before this was fixed
+    -- may go on into a save's load)
+    for i, entry in ipairs(last) do
         if entry.name == "mark:DestroyLoadScreen" then
             last_total = entry.time
+            for k = #last, i + 1, -1 do
+                last[k] = nil
+            end
+            break
         end
     end
     if not last_total or last_total <= 0 then
@@ -530,12 +537,14 @@ function loading.poll(read)
         closed = true
         stellar.log(string.format("load: the load screen is gone (its progress context is null): loaded, %.1fs after the hook; last progress %s%%, %d stages open",
             util.now() - started, tostring(last_progress), #stack))
-        -- this load's timeline, for the next load's bar
+        -- this load's timeline, for the next load's bar: the startup's only (a save loaded later
+        -- has a load screen of its own, not the bar's)
         local ended = false
         for _, entry in ipairs(timeline) do
             ended = ended or entry.name == "mark:DestroyLoadScreen"
         end
-        if ended then
+        if ended and not timeline_kept then
+            timeline_kept = true
             stellar.log(string.format("load: the timeline (%d steps) kept for the next load's bar: %s", #timeline,
                 tostring(write_timeline())))
         end
