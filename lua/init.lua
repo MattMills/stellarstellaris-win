@@ -470,9 +470,11 @@ if setting("modifier_stats.txt", "off") == "on" then
 end
 -- the Lua graph of the modifier nodes beside the game's, checked after every pass of the game's
 -- (modifier_graph.txt "shadow": stellar.modifier_shadow; hooks what modifier_stats.txt hooks)
+local modifier_shadow = false
 if setting("modifier_graph.txt", "off") == "shadow" and not modifier_stats then
     local ok, why = require("stellar.modifier_shadow").install(found, game, modifier_where)
-    stellar.log("modifiers: the graph's shadow " .. (ok and "is on: built at the first tick, checked after every pass of the game's"
+    modifier_shadow = ok and require("stellar.modifier_shadow")
+    stellar.log("modifiers: the graph's shadow " .. (ok and "is on: built at the first tick after the script catalog, checked after every pass of the game's"
         or ("is off: " .. tostring(why))))
 end
 game.after_day(function(gamestate, db)
@@ -715,6 +717,11 @@ stellar.heartbeat = function()
         end
     end
     if catalog_done then
+        -- the shadow builds its mirror only once the catalog's reading is over (its tables and
+        -- garbage are most of the Lua heap)
+        if modifier_shadow then
+            modifier_shadow.ready()
+        end
         dev.poll()
     end
 end

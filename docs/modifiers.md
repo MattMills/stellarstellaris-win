@@ -381,7 +381,11 @@ starbases.
 
 A vanilla 4.5.2 game in 2210 (55 countries; 15,678 registered nodes: 6,080 planets, 2,504 ships,
 804 fleets, 596 galactic objects x 6 categories, 422 armies, 403 leaders, 171 pop groups, ...),
-run six months after loading **[V]**:
+run six months after loading **[V]**. The rebuilds are counted by the hook on
+`CModifierNodeBase::Update`, which the manager's passes do not call: their `UpdateInvalid` tasks
+rebuild nodes with an inlined copy (none of its 65 callers is a manager task). So "nodes
+recomputed" below counts only the direct calls, and the passes rebuild more
+([modifier_graph.md](modifier_graph.md), shadow mode, finds those by the nodes' invalid flag).
 
 | per month | |
 |---|---|
