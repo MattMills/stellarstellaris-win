@@ -1,0 +1,1301 @@
+-- simscript/eval.lua : evaluates PDXScript trees (triggers, effects, script values, weights).
+--
+-- Script state (flags, variables, event targets, temp lists) lives here, in Lua. Engine state is
+-- read through E (filled by sim/src/lua_host.rs for each call); engine effects are pushed to the
+-- engine queue with E.push. Before any read of engine state, pending engine effects are flushed
+-- (E.flush: the barrier for reads after writes and for last_created_*), so a read sees every
+-- effect queued before it, as in the game, where effects apply at once.
+--
+-- Anything not implemented is recorded (kind, keyword, count, first file:line) in stats.missing
+-- and evaluates to false (trigger) or does nothing (effect); documented engine effects without a
+-- model are pushed as "unmodelled" engine effects and counted in stats.unmodelled.
+
+local db = require("simscript.db")
+
+local M = {}
+local E = _G.E
+
+local floor = math.floor
+
+-- ---------------------------------------------------------------------------------------------
+-- scopes
+
+local scopes = {}
+local NONE = { kind = "none", id = 0, key = "none" }
+M.NONE = NONE
+local function S(kind, id)
+    if kind == nil or kind == "none" or id == nil then
+        return NONE
+    end
+    local k = kind .. ":" .. id
+    local s = scopes[k]
+    if not s then
+        s = { kind = kind, id = id, key = k }
+        scopes[k] = s
+    end
+    return s
+end
+M.S = S
+
+-- ---------------------------------------------------------------------------------------------
+-- script state and statistics
+
+local state = { flags = {}, vars = {}, global_flags = {}, global_targets = {}, fired_once = {} }
+M.state = state
+
+local stats = {
+    script = 0, engine = 0, flushes = 0, trigger_evals = 0, effect_runs = 0,
+    missing = {}, unmodelled = {},
+}
+M.stats = stats
+
+local function where(ctx, e)
+    return (ctx and ctx.file or "?") .. ":" .. tostring(e and e.line or "?")
+end
+
+local function miss(kind, key, ctx, e)
+    local k = kind .. " " .. key
+    local m = stats.missing[k]
+    if not m then
+        m = { kind = kind, key = key, count = 0, first = where(ctx, e) }
+        stats.missing[k] = m
+    end
+    m.count = m.count + 1
+end
+M.miss = miss
+
+function M.today()
+    return floor((E.date() - 43800000) / 24)
+end
+
+local function sync()
+    if E.pending() > 0 then
+        E.flush()
+        stats.flushes = stats.flushes + 1
+    end
+end
+M.sync = sync
+
+local function rand()
+    return E.rand()
+end
+M.rand = rand
+
+-- ---------------------------------------------------------------------------------------------
+-- contexts
+
+-- ctx: { this, root, from, fromfrom, prev, prevprev, targets, lists, created, file }
+function M.new_ctx(this, from, targets, file)
+    return {
+        this = this or NONE, root = this or NONE, from = from or NONE, fromfrom = NONE,
+        prev = NONE, prevprev = NONE, targets = targets or {}, lists = {}, created = {}, file = file,
+    }
+end
+
+local function push(ctx, sc)
+    return {
+        this = sc, root = ctx.root, from = ctx.from, fromfrom = ctx.fromfrom, prev = ctx.this,
+        prevprev = ctx.prev, targets = ctx.targets, lists = ctx.lists, created = ctx.created, file = ctx.file,
+    }
+end
+M.push = push
+
+local function with_file(ctx, file)
+    if ctx.file == file then
+        return ctx
+    end
+    local c = push(ctx, ctx.this)
+    c.prev, c.prevprev, c.file = ctx.prev, ctx.prevprev, file
+    return c
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- scope links
+
+local function owner_of(sc)
+    sync()
+    if sc.kind == "planet" then
+        local o = E.get("planet", sc.id, "owner")
+        return o and o ~= 0 and S("country", o) or nil
+    elseif sc.kind == "pop_group" then
+        local c = E.get("pop_group", sc.id, "colony")
+        local o = c and E.get("planet", c, "owner")
+        return o and S("country", o) or nil
+    elseif sc.kind == "leader" then
+        local o = E.get("leader", sc.id, "country")
+        return o and S("country", o) or nil
+    end
+    return nil
+end
+
+local CREATED_KIND = { pop_group = "pop_group", pop = "pop_group", leader = "leader" }
+
+local LINKS = {
+    this = function(cur) return cur end,
+    root = function(_, ctx) return ctx.root end,
+    from = function(_, ctx) return ctx.from end,
+    fromfrom = function(_, ctx) return ctx.fromfrom end,
+    prev = function(_, ctx) return ctx.prev end,
+    prevprev = function(_, ctx) return ctx.prevprev end,
+    owner = function(cur) return owner_of(cur) end,
+    controller = function(cur) return owner_of(cur) end,
+    capital_scope = function(cur)
+        if cur.kind ~= "country" then return nil end
+        sync()
+        local c = E.get("country", cur.id, "capital")
+        return c and S("planet", c) or nil
+    end,
+    planet = function(cur)
+        if cur.kind == "planet" then return cur end
+        if cur.kind == "pop_group" then
+            sync()
+            local c = E.get("pop_group", cur.id, "colony")
+            return c and S("planet", c) or nil
+        end
+        return nil
+    end,
+    ruler = function(cur)
+        if cur.kind ~= "country" then return nil end
+        sync()
+        local l = E.leaders(cur.id)[1]
+        return l and S("leader", l) or nil
+    end,
+}
+M.LINKS = LINKS
+
+-- resolve a scope reference (`owner`, `root.owner.capital_scope`, `event_target:x`,
+-- `last_created_leader`): found (is a scope reference), scope or nil
+function M.resolve(text, ctx, e)
+    local cur = ctx.this
+    local first = true
+    for part in text:gmatch("[^%.]+") do
+        local p = part:gsub("%?$", "")
+        local lp = p:lower()
+        local nxt
+        local link = LINKS[lp]
+        if link then
+            nxt = link(cur, ctx)
+        elseif lp:sub(1, 13) == "event_target:" or lp:sub(1, 6) == "scope:" then
+            local name = p:match(":(.*)$")
+            nxt = ctx.targets[name] or state.global_targets[name]
+        elseif lp:sub(1, 13) == "last_created_" then
+            local k = CREATED_KIND[lp:sub(14)]
+            local h = ctx.created[lp:sub(14)]
+            if not k then
+                miss("scope link", lp, ctx, e)
+                return true, nil
+            end
+            if h then
+                sync() -- the barrier: the created object exists only after the flush
+                local id = E.resolve(h)
+                nxt = id and S(k, id) or nil
+            end
+        elseif first then
+            return false
+        else
+            miss("scope link", lp, ctx, e)
+            return true, nil
+        end
+        first = false
+        if nxt == nil then
+            return true, nil
+        end
+        cur = nxt
+    end
+    if first then
+        return false
+    end
+    return true, cur
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- values
+
+local VALUE_OPS = {
+    add = true, subtract = true, factor = true, multiply = true, mult = true, divide = true,
+    modulo = true, base = true, value = true, weight = true, min = true, max = true,
+}
+
+local function var_raw(name, ctx)
+    local fv = db.filevars(ctx.file)
+    local v = fv and fv[name]
+    if v == nil then
+        v = db.globalvars[name]
+    end
+    return v
+end
+
+local value_text
+
+-- inline math: @[ expr ] / @\[ expr ]
+local function mathexpr(text, ctx, e)
+    local s = text:gsub("^@\\?%[", ""):gsub("%]$", "")
+    local pos = 1
+    local function skip()
+        pos = s:find("[^%s]", pos) or (#s + 1)
+    end
+    local expr
+    local function atom()
+        skip()
+        local c = s:sub(pos, pos)
+        if c == "(" then
+            pos = pos + 1
+            local v = expr()
+            skip()
+            pos = pos + 1 -- ')'
+            return v
+        elseif c == "-" then
+            pos = pos + 1
+            return -atom()
+        elseif c == "|" then
+            pos = pos + 1
+            local v = expr()
+            skip()
+            pos = pos + 1
+            return math.abs(v)
+        end
+        local num = s:match("^%d+%.?%d*", pos)
+        if num then
+            pos = pos + #num
+            return tonumber(num)
+        end
+        local id = s:match("^@?[%w_]+", pos)
+        if id then
+            pos = pos + #id
+            return value_text("@" .. id:gsub("^@", ""), ctx, e)
+        end
+        error("bad inline math: " .. text)
+    end
+    local function term()
+        local v = atom()
+        while true do
+            skip()
+            local c = s:sub(pos, pos)
+            if c == "*" then pos = pos + 1; v = v * atom()
+            elseif c == "/" then pos = pos + 1; local d = atom(); v = d ~= 0 and v / d or 0
+            elseif c == "%" then pos = pos + 1; local d = atom(); v = d ~= 0 and v % d or 0
+            else return v end
+        end
+    end
+    expr = function()
+        local v = term()
+        while true do
+            skip()
+            local c = s:sub(pos, pos)
+            if c == "+" then pos = pos + 1; v = v + term()
+            elseif c == "-" then pos = pos + 1; v = v - term()
+            else return v end
+        end
+    end
+    local ok, v = pcall(expr)
+    if ok and type(v) == "number" then
+        return v
+    end
+    miss("value", "inline math", ctx, e)
+    return 0
+end
+
+local function getvar(sc, name)
+    local t = state.vars[sc.key]
+    return t and t[name]
+end
+local function setvar(sc, name, v)
+    local t = state.vars[sc.key]
+    if not t then
+        t = {}
+        state.vars[sc.key] = t
+    end
+    t[name] = v
+end
+M.getvar, M.setvar = getvar, setvar
+
+function value_text(t, ctx, e)
+    local n = tonumber(t)
+    if n then
+        return n
+    end
+    if t == "yes" then return 1 elseif t == "no" then return 0 end
+    if t:sub(1, 1) == "@" then
+        if t:sub(2, 2) == "[" or t:sub(2, 3) == "\\[" then
+            return mathexpr(t, ctx, e)
+        end
+        local raw = var_raw(t:sub(2), ctx)
+        if raw then
+            return value_text(raw, ctx, e)
+        end
+        miss("value", "@" .. t:sub(2), ctx, e)
+        return 0
+    end
+    if t:sub(1, 6) == "value:" then
+        return M.script_value(t:sub(7), ctx, e)
+    end
+    if t:sub(1, 8) == "trigger:" then
+        miss("value", t, ctx, e)
+        return 0
+    end
+    if t:sub(1, 9) == "modifier:" then
+        sync()
+        return E.modifier(ctx.this.kind, ctx.this.id, t:sub(10))
+    end
+    -- a variable, possibly behind a scope chain (`owner.my_var`)
+    local sc, name = ctx.this, t
+    local chain, last = t:match("^(.*)%.([^%.]+)$")
+    if chain then
+        local found, s2 = M.resolve(chain, ctx, e)
+        if found then
+            if not s2 then return 0 end
+            sc, name = s2, last
+        end
+    end
+    local v = getvar(sc, name)
+    if v ~= nil then
+        return v
+    end
+    local sv = db.script_values[t]
+    if sv then
+        return M.script_value(t, ctx, e)
+    end
+    return 0 -- an unset variable is 0 in the game
+end
+M.value_text = value_text
+
+function M.value(v, ctx, e)
+    if v == nil then
+        return 0
+    end
+    if v.text then
+        return value_text(v.text, ctx, e or v)
+    end
+    return M.value_block(v, ctx)
+end
+
+local trigger, effect -- forward
+
+local function apply_ops(b, ctx, acc, only_ops)
+    local taken = false
+    for _, e in ipairs(b) do
+        if e.op and e.key and not (only_ops and not VALUE_OPS[e.key.text:lower()]) then
+            local k = e.key.text:lower()
+            if k == "base" or k == "value" or k == "set" then
+                acc = M.value(e.value, ctx, e)
+            elseif k == "add" then acc = acc + M.value(e.value, ctx, e)
+            elseif k == "subtract" then acc = acc - M.value(e.value, ctx, e)
+            elseif k == "mult" or k == "multiply" or k == "factor" then acc = acc * M.value(e.value, ctx, e)
+            elseif k == "divide" then local d = M.value(e.value, ctx, e); if d ~= 0 then acc = acc / d end
+            elseif k == "modulo" then local d = M.value(e.value, ctx, e); if d ~= 0 then acc = acc % d end
+            elseif k == "min" then acc = math.max(acc, M.value(e.value, ctx, e))
+            elseif k == "max" then acc = math.min(acc, M.value(e.value, ctx, e))
+            elseif k == "abs" then acc = math.abs(acc)
+            elseif k == "round" then acc = floor(acc + 0.5)
+            elseif k == "floor" then acc = floor(acc)
+            elseif k == "ceiling" then acc = math.ceil(acc)
+            elseif k == "modifier" and e.value.text == nil then
+                if trigger(e.value, ctx, VALUE_OPS) then
+                    acc = apply_ops(e.value, ctx, acc, true)
+                end
+            elseif k == "if" or k == "else_if" or k == "else" then
+                if k == "if" then taken = false end
+                if not taken and e.value.text == nil then
+                    local lim
+                    for _, x in ipairs(e.value) do
+                        if x.op and x.key.text:lower() == "limit" then lim = x.value end
+                    end
+                    if k == "else" or not lim or trigger(lim, ctx) then
+                        taken = true
+                        acc = apply_ops(e.value, ctx, acc)
+                    end
+                end
+            elseif k == "limit" or k == "weight" or k == "desc" or k == "display_name" then
+                -- handled by the caller or not a value operation
+            else
+                local found, sc = M.resolve(e.key.text, ctx, e)
+                if found and e.value.text == nil then
+                    if sc then acc = apply_ops(e.value, push(ctx, sc), acc) end
+                else
+                    miss("value op", k, ctx, e)
+                end
+            end
+        end
+    end
+    return acc
+end
+
+function M.value_block(b, ctx)
+    return apply_ops(b, ctx, 0)
+end
+
+function M.script_value(spec, ctx, e)
+    local parts = {}
+    for p in (spec .. "|"):gmatch("([^|]*)|") do
+        parts[#parts + 1] = p
+    end
+    local name = parts[1]
+    local def = db.script_values[name]
+    if not def then
+        miss("value", "value:" .. name, ctx, e)
+        return 0
+    end
+    local args = {}
+    for i = 2, #parts - 1, 2 do
+        if parts[i] ~= "" then
+            args[#args + 1] = { parts[i], parts[i + 1] or "" }
+        end
+    end
+    local block, msg = db.instance("value", def, name, args)
+    if not block then
+        miss("value", "instantiate " .. name, ctx, e)
+        return 0
+    end
+    return apply_ops(block, with_file(ctx, def.file), 0)
+end
+
+-- weights: ai_chance, mean_time_to_happen, random_list entries, weight blocks
+function M.weight(b, ctx, base)
+    local acc = base or 1
+    for _, e in ipairs(b) do
+        if e.op and e.key then
+            local k = e.key.text:lower()
+            if k == "base" or k == "factor" or k == "weight" or k == "days" then
+                acc = M.value(e.value, ctx, e)
+            elseif k == "months" then acc = M.value(e.value, ctx, e) * 30
+            elseif k == "years" then acc = M.value(e.value, ctx, e) * 360
+            elseif k == "add" then acc = acc + M.value(e.value, ctx, e)
+            elseif k == "multiply" or k == "mult" then acc = acc * M.value(e.value, ctx, e)
+            elseif k == "modifier" and e.value.text == nil then
+                if trigger(e.value, ctx, VALUE_OPS) then
+                    for _, x in ipairs(e.value) do
+                        if x.op then
+                            local xk = x.key.text:lower()
+                            if xk == "factor" or xk == "multiply" or xk == "mult" then acc = acc * M.value(x.value, ctx, x)
+                            elseif xk == "add" then acc = acc + M.value(x.value, ctx, x)
+                            elseif xk == "subtract" then acc = acc - M.value(x.value, ctx, x)
+                            end
+                        end
+                    end
+                end
+            elseif k == "complex_trigger_modifier" or k == "opinion_modifier" or k == "modifier" then
+                miss("weight op", k, ctx, e)
+            end
+        end
+    end
+    return acc
+end
+
+local function compare(a, op, b)
+    if op == "=" or op == "==" then return a == b
+    elseif op == ">" then return a > b
+    elseif op == "<" then return a < b
+    elseif op == ">=" then return a >= b
+    elseif op == "<=" then return a <= b
+    elseif op == "!=" then return a ~= b
+    end
+    return false
+end
+M.compare = compare
+
+-- ---------------------------------------------------------------------------------------------
+-- flags
+
+local function flag_name(text, ctx, e)
+    local base, ref = text:match("^(.-)@(.+)$")
+    if base and not ref:find("^%[") then
+        local found, sc = M.resolve(ref, ctx, e)
+        if found then
+            return base .. "@" .. (sc and sc.id or "none")
+        end
+    end
+    return text
+end
+
+local function flags_of(key)
+    local t = state.flags[key]
+    if not t then
+        t = {}
+        state.flags[key] = t
+    end
+    return t
+end
+
+local function has_flag(key, name)
+    local t = state.flags[key]
+    local v = t and t[name]
+    if v == nil then return false end
+    if v == true then return true end
+    return v > M.today() -- timed: the last day
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- lists (iterators)
+
+local function map_scopes(kind, ids)
+    local out = {}
+    for i, id in ipairs(ids) do
+        out[i] = S(kind, id)
+    end
+    return out
+end
+
+local function pop_groups_of(sc)
+    sync()
+    local out = {}
+    local cols
+    if sc.kind == "planet" then
+        cols = { sc.id }
+    elseif sc.kind == "country" then
+        cols = E.colonies(sc.id)
+    else
+        return out
+    end
+    for _, c in ipairs(cols) do
+        for _, p in ipairs(E.pop_groups(c)) do
+            out[#out + 1] = S("pop_group", p)
+        end
+    end
+    return out
+end
+
+local LISTS = {
+    owned_planet = function(sc) if sc.kind ~= "country" then return {} end sync() return map_scopes("planet", E.colonies(sc.id)) end,
+    country = function() sync() return map_scopes("country", E.countries()) end,
+    owned_pop_group = pop_groups_of,
+    pop_group = pop_groups_of,
+    owned_leader = function(sc) if sc.kind ~= "country" then return {} end sync() return map_scopes("leader", E.leaders(sc.id)) end,
+}
+LISTS.owned_colony = LISTS.owned_planet
+LISTS.playable_country = LISTS.country
+LISTS.leader = LISTS.owned_leader
+M.LISTS = LISTS
+
+local function list_of(name, block, ctx, e)
+    if name == "in_list" then
+        local lname
+        for _, x in ipairs(block) do
+            if x.op and x.key.text:lower() == "list" then lname = x.value.text end
+        end
+        return ctx.lists[lname or ""] or {}
+    end
+    local f = LISTS[name]
+    if not f then
+        return nil
+    end
+    return f(ctx.this, ctx)
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- triggers
+
+local TRIG = {}
+M.TRIG = TRIG
+local ITER_PARAMS = { limit = true, count = true, list = true, order_by = true, position = true, max = true,
+    min = true, check_range_bounds = true, weight = true, text = true, fail_text = true }
+
+local function scripted_call(def, name, e, kind)
+    if e.value.text then
+        return db.instance(kind, def, name, {})
+    end
+    local args = {}
+    for _, x in ipairs(e.value) do
+        if x.op and x.key then
+            args[#args + 1] = { x.key.text, x.value.text or db.pdxscript.write(x.value) }
+        end
+    end
+    return db.instance(kind, def, name, args)
+end
+
+-- one statement
+local function trigger1(e, ctx)
+    stats.trigger_evals = stats.trigger_evals + 1
+    local key = e.key.text
+    local lk = key:lower()
+    local h = TRIG[lk]
+    if h then
+        return h(e, ctx, lk)
+    end
+    local found, sc = M.resolve(key, ctx, e)
+    if found then
+        if e.value.text then -- `owner = root`: the same scope
+            local f2, other = M.resolve(e.value.text, ctx, e)
+            return f2 and sc ~= nil and sc == other
+        end
+        if not sc then return false end
+        return trigger(e.value, push(ctx, sc))
+    end
+    local it, lname = lk:match("^(any)_(.+)$")
+    if not it then it, lname = lk:match("^(count)_(.+)$") end
+    if it and e.value.text == nil then
+        local list = list_of(lname, e.value, ctx, e)
+        if list then
+            if it == "any" then
+                for _, s2 in ipairs(list) do
+                    if trigger(e.value, push(ctx, s2), ITER_PARAMS) then return true end
+                end
+                return false
+            end
+            local limit, op, want = nil, ">=", 1
+            for _, x in ipairs(e.value) do
+                if x.op then
+                    local xk = x.key.text:lower()
+                    if xk == "limit" then limit = x.value
+                    elseif xk == "count" then op = x.op; want = x.value.text == "all" and -1 or M.value(x.value, ctx, x) end
+                end
+            end
+            local n = 0
+            for _, s2 in ipairs(list) do
+                local c2 = push(ctx, s2)
+                if (not limit or trigger(limit, c2)) and trigger(e.value, c2, ITER_PARAMS) then n = n + 1 end
+            end
+            if want == -1 then return n == #list end
+            return compare(n, op, want)
+        end
+        miss("iterator", lk, ctx, e)
+        return false
+    end
+    local def = db.scripted_triggers[key]
+    if def then
+        local body = scripted_call(def, key, e, "trigger")
+        if not body then
+            miss("trigger", "instantiate " .. key, ctx, e)
+            return false
+        end
+        local r = trigger(body, with_file(ctx, def.file))
+        if e.value.text == "no" then r = not r end
+        return r
+    end
+    local fk = lk:match("^has_(.+)_flag$")
+    if fk and e.value.text then
+        if fk == "global" then
+            return state.global_flags[flag_name(e.value.text, ctx, e)] == true
+        end
+        return has_flag(ctx.this.key, flag_name(e.value.text, ctx, e))
+    end
+    if M.property(lk) and e.value.text then
+        return M.property(lk)(e, ctx, lk)
+    end
+    if lk:sub(1, 1) == "@" or lk:find("^%$") then
+        miss("trigger", "unresolved " .. key:sub(1, 1), ctx, e)
+        return false
+    end
+    miss("trigger", lk, ctx, e)
+    return false
+end
+
+-- a block: AND of its statements (keys in skip are parameters, not triggers)
+trigger = function(b, ctx, skip)
+    local taken = false
+    for _, e in ipairs(b) do
+        if e.op and e.key then
+            local lk = e.key.text:lower()
+            if not (skip and skip[lk]) then
+                if lk == "if" or lk == "else_if" or lk == "else" then
+                    if lk == "if" then taken = false end
+                    if not taken and e.value.text == nil then
+                        local lim
+                        for _, x in ipairs(e.value) do
+                            if x.op and x.key.text:lower() == "limit" then lim = x.value end
+                        end
+                        if lk == "else" or not lim or trigger(lim, ctx) then
+                            taken = true
+                            if not trigger(e.value, ctx, { limit = true }) then return false end
+                        end
+                    end
+                elseif not trigger1(e, ctx) then
+                    return false
+                end
+            end
+        end
+    end
+    return true
+end
+M.trigger = trigger
+M.trigger1 = trigger1
+
+local function yes(e) return e.value.text ~= "no" end
+
+TRIG["and"] = function(e, ctx) return trigger(e.value, ctx) end
+TRIG["or"] = function(e, ctx)
+    for _, x in ipairs(e.value) do
+        if x.op and trigger1(x, ctx) then return true end
+    end
+    return false
+end
+TRIG["not"] = function(e, ctx) -- NOT = { a b } is true when none holds
+    for _, x in ipairs(e.value) do
+        if x.op and trigger1(x, ctx) then return false end
+    end
+    return true
+end
+TRIG["nor"] = TRIG["not"]
+TRIG["nand"] = function(e, ctx) return not trigger(e.value, ctx) end
+TRIG["hidden_trigger"] = TRIG["and"]
+TRIG["custom_tooltip"] = function(e, ctx)
+    if e.value.text then return true end
+    return trigger(e.value, ctx, { text = true, fail_text = true, success_text = true })
+end
+TRIG["custom_tooltip_fail"] = TRIG["custom_tooltip"]
+TRIG["calc_true_if"] = function(e, ctx)
+    local amount, n = 1, 0
+    for _, x in ipairs(e.value) do
+        if x.op then
+            if x.key.text:lower() == "amount" then amount = M.value(x.value, ctx, x)
+            elseif trigger1(x, ctx) then n = n + 1 end
+        end
+    end
+    return n >= amount
+end
+TRIG["always"] = function(e) return yes(e) end
+TRIG["exists"] = function(e, ctx)
+    local found, sc = M.resolve(e.value.text or "", ctx, e)
+    local r = found and sc ~= nil and sc ~= NONE
+    if not found then miss("scope link", "exists " .. tostring(e.value.text), ctx, e) end
+    return r
+end
+TRIG["is_same_value"] = function(e, ctx)
+    local f, sc = M.resolve(e.value.text or "", ctx, e)
+    return f and sc == ctx.this
+end
+TRIG["is_same_empire"] = TRIG["is_same_value"]
+TRIG["has_global_flag"] = function(e, ctx) return state.global_flags[flag_name(e.value.text, ctx, e)] == true end
+TRIG["is_variable_set"] = function(e, ctx)
+    local name = e.value.text or ""
+    local found, sc = false, ctx.this
+    local chain, last = name:match("^(.*)%.([^%.]+)$")
+    if chain then
+        found, sc = M.resolve(chain, ctx, e)
+        if found then name = last else sc = ctx.this end
+    end
+    return sc ~= nil and getvar(sc, name) ~= nil
+end
+TRIG["check_variable"] = function(e, ctx)
+    local which, op, val
+    for _, x in ipairs(e.value) do
+        if x.op then
+            local xk = x.key.text:lower()
+            if xk == "which" then which = x.value.text
+            elseif xk == "value" then op = x.op; val = M.value(x.value, ctx, x) end
+        end
+    end
+    if not which then return false end
+    return compare(value_text(which, ctx, e), op or "=", val or 0)
+end
+TRIG["years_passed"] = function(e, ctx)
+    return compare(floor(M.today() / 360) - 2200, e.op, M.value(e.value, ctx, e))
+end
+TRIG["has_modifier"] = function(e, ctx)
+    sync()
+    return E.has_modifier(ctx.this.kind, ctx.this.id, e.value.text or "")
+end
+TRIG["has_technology"] = function(e, ctx)
+    local c = ctx.this.kind == "country" and ctx.this or owner_of(ctx.this)
+    if not c then return false end
+    sync()
+    return E.has("country", c.id, "tech", e.value.text or "")
+end
+TRIG["has_resource"] = function(e, ctx)
+    local res, op, amount = nil, ">=", 0
+    for _, x in ipairs(e.value) do
+        if x.op then
+            local xk = x.key.text:lower()
+            if xk == "type" then res = x.value.text
+            elseif xk == "amount" then op = x.op; amount = M.value(x.value, ctx, x) end
+        end
+    end
+    local c = ctx.this.kind == "country" and ctx.this or owner_of(ctx.this)
+    if not (c and res) then return false end
+    sync()
+    local have = E.resource(c.id, res)
+    if have == nil then miss("trigger", "has_resource " .. res, ctx, e); return false end
+    return compare(have, op, amount)
+end
+TRIG["resource_stockpile_compare"] = function(e, ctx)
+    local res, op, amount = nil, ">=", 0
+    for _, x in ipairs(e.value) do
+        if x.op then
+            local xk = x.key.text:lower()
+            if xk == "resource" then res = x.value.text
+            elseif xk == "value" then op = x.op; amount = M.value(x.value, ctx, x) end
+        end
+    end
+    local c = ctx.this.kind == "country" and ctx.this or owner_of(ctx.this)
+    if not (c and res) then return false end
+    sync()
+    local have = E.resource(c.id, res)
+    if have == nil then return false end
+    return compare(have, op, amount)
+end
+TRIG["has_dlc"] = function() return true end
+-- the tutorial is off; the mid and end game start 100 and 200 years in (the default game rules)
+TRIG["is_tutorial_level"] = function(e, ctx) return compare(0, e.op, M.value(e.value, ctx, e)) end
+TRIG["mid_game_years_passed"] = function(e, ctx)
+    return compare(floor(M.today() / 360) - 2300, e.op, M.value(e.value, ctx, e))
+end
+TRIG["end_game_years_passed"] = function(e, ctx)
+    return compare(floor(M.today() / 360) - 2400, e.op, M.value(e.value, ctx, e))
+end
+TRIG["host_has_dlc"] = TRIG["has_dlc"]
+TRIG["is_multiplayer"] = function(e) return not yes(e) end
+TRIG["is_ironman"] = function(e) return not yes(e) end
+
+-- numeric engine reads: key -> scope kind, field
+local NUMS = {
+    num_owned_planets = { "country", "num_colonies" },
+    num_colonies = { "country", "num_colonies" },
+    num_pops = { nil, "num_pops" },
+    num_leaders = { "country", "num_leaders" },
+}
+for k, spec in pairs(NUMS) do
+    TRIG[k] = function(e, ctx)
+        local sc = ctx.this
+        local kind = spec[1] or sc.kind
+        if kind ~= sc.kind then return false end
+        sync()
+        local field = spec[2]
+        if sc.kind == "planet" and field == "num_pops" then field = "pops" end
+        local v = E.get(sc.kind, sc.id, field)
+        return compare(tonumber(v) or 0, e.op, M.value(e.value, ctx, e))
+    end
+end
+
+-- property triggers: engine properties the world exposes as attributes (`is_country_type =
+-- default`, `is_ai = no`) or sets (`has_ethic = ethic_x`); the Rust World's attrs/sets are keyed
+-- by the trigger's name
+local PROP_ATTR = {
+    is_country_type = true, is_ai = true, is_gestalt = true, is_machine_empire = true,
+    is_hive_empire = true, is_megacorp = true, is_planet_class = true, is_capital = true,
+    is_homeworld = true, has_owner = true, is_colony = true, is_primitive = true,
+    is_fallen_empire = true, is_crisis_faction = true, is_pirate = true, is_galactic_custodian = true,
+    is_galactic_emperor = true, is_lithoid_empire = true, is_regular_empire = true,
+    -- engine state the sample world does not have (no wars, federations, subjects): absent = no
+    is_at_war = true, is_subject = true, is_overlord = true, has_federation = true, is_nomadic = true,
+    is_councilor = true, is_galactic_community_member = true, is_ruler = true, is_in_federation = true,
+}
+local PROP_SET = {
+    has_ethic = true, has_civic = true, has_valid_civic = true, has_authority = true, has_origin = true,
+    has_government = true, has_designation = true, has_trait = true, has_policy_flag = true,
+    has_tradition = true, has_ascension_perk = true, has_edict = true, has_building = true,
+    is_species_class = true, is_species = true, has_covenant = true, has_crisis_level = true,
+    has_ai_personality = true, has_active_tradition = true, has_deposit = true, has_event_chain = true,
+}
+local function property_trigger(e, ctx, lk)
+    local sc = ctx.this
+    if sc == NONE then return false end
+    sync()
+    local v = e.value.text
+    if PROP_SET[lk] then
+        local set = lk
+        if lk == "has_building" then set = "building" elseif lk == "has_edict" then set = "edict" end
+        return E.has(sc.kind, sc.id, set, v)
+    end
+    local have = E.get(sc.kind, sc.id, lk)
+    if v == "yes" or v == "no" then
+        return (have == "yes" or have == true) == (v == "yes")
+    end
+    return have ~= nil and tostring(have) == v
+end
+function M.property(lk)
+    if PROP_ATTR[lk] or PROP_SET[lk] then return property_trigger end
+    return nil
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- effects
+
+local EFF = {}
+M.EFF = EFF
+
+local function count_script() stats.script = stats.script + 1 end
+
+local function push_engine(t)
+    stats.engine = stats.engine + 1
+    E.push(t)
+end
+
+local function unmodelled(lk, ctx, e)
+    local m = stats.unmodelled[lk]
+    if not m then
+        m = { key = lk, count = 0, first = where(ctx, e) }
+        stats.unmodelled[lk] = m
+    end
+    m.count = m.count + 1
+    push_engine({ type = "unmodelled", keyword = lk })
+end
+
+local function iterate_effect(kind, lname, e, ctx)
+    local list = list_of(lname, e.value, ctx, e)
+    if not list then
+        miss("iterator", kind .. "_" .. lname, ctx, e)
+        return
+    end
+    local limit, order_by, position, max = nil, nil, 0, 1
+    for _, x in ipairs(e.value) do
+        if x.op then
+            local xk = x.key.text:lower()
+            if xk == "limit" then limit = x.value
+            elseif xk == "order_by" then order_by = x.value
+            elseif xk == "position" then position = M.value(x.value, ctx, x)
+            elseif xk == "max" then max = M.value(x.value, ctx, x) end
+        end
+    end
+    local chosen = {}
+    for _, s2 in ipairs(list) do
+        if not limit or trigger(limit, push(ctx, s2)) then chosen[#chosen + 1] = s2 end
+    end
+    if kind == "random" then
+        if #chosen == 0 then return end
+        chosen = { chosen[rand() % #chosen + 1] }
+    elseif kind == "ordered" then
+        local keyed = {}
+        for i, s2 in ipairs(chosen) do
+            keyed[i] = { s2, order_by and M.value(order_by, push(ctx, s2), e) or 0, i }
+        end
+        table.sort(keyed, function(a, b) if a[2] ~= b[2] then return a[2] > b[2] end return a[3] < b[3] end)
+        chosen = {}
+        for i = position + 1, math.min(#keyed, position + max) do
+            chosen[#chosen + 1] = keyed[i][1]
+        end
+    end
+    for _, s2 in ipairs(chosen) do
+        effect(e.value, push(ctx, s2), ITER_PARAMS)
+    end
+end
+
+local EVENT_EFFECT = {}
+for k in pairs(db.EVENT_KINDS) do EVENT_EFFECT[k] = true end
+
+local function effect1(e, ctx)
+    stats.effect_runs = stats.effect_runs + 1
+    local key = e.key.text
+    local lk = key:lower()
+    local h = EFF[lk]
+    if h then
+        return h(e, ctx, lk)
+    end
+    if EVENT_EFFECT[lk] then
+        return M.fire_event_effect(lk, e, ctx)
+    end
+    local found, sc = M.resolve(key, ctx, e)
+    if found then
+        if sc and e.value.text == nil then effect(e.value, push(ctx, sc)) end
+        return
+    end
+    local kind, lname = lk:match("^(every)_(.+)$")
+    if not kind then kind, lname = lk:match("^(random)_(.+)$") end
+    if not kind then kind, lname = lk:match("^(ordered)_(.+)$") end
+    if kind and e.value.text == nil then
+        return iterate_effect(kind, lname, e, ctx)
+    end
+    local def = db.scripted_effects[key]
+    if def then
+        if e.value.text == "no" then return end
+        local body = scripted_call(def, key, e, "effect")
+        if not body then
+            miss("effect", "instantiate " .. key, ctx, e)
+            return
+        end
+        return effect(body, with_file(ctx, def.file))
+    end
+    local verb, fk = lk:match("^(set)_(.+)_flag$")
+    if not verb then verb, fk = lk:match("^(remove)_(.+)_flag$") end
+    if verb and e.value.text then
+        local name = flag_name(e.value.text, ctx, e)
+        count_script()
+        if fk == "global" then
+            state.global_flags[name] = verb == "set" or nil
+        else
+            flags_of(ctx.this.key)[name] = verb == "set" or nil
+        end
+        return
+    end
+    fk = lk:match("^set_timed_(.+)_flag$")
+    if fk and e.value.text == nil then
+        local name, days = nil, 0
+        for _, x in ipairs(e.value) do
+            if x.op then
+                local xk = x.key.text:lower()
+                if xk == "flag" then name = flag_name(x.value.text, ctx, x)
+                elseif xk == "days" then days = M.value(x.value, ctx, x)
+                elseif xk == "months" then days = M.value(x.value, ctx, x) * 30
+                elseif xk == "years" then days = M.value(x.value, ctx, x) * 360 end
+            end
+        end
+        if name then
+            count_script()
+            local t = fk == "global" and state.global_flags or flags_of(ctx.this.key)
+            t[name] = fk == "global" and true or (M.today() + days)
+        end
+        return
+    end
+    if db.doc_effects[lk] then
+        return unmodelled(lk, ctx, e)
+    end
+    miss("effect", lk, ctx, e)
+end
+
+effect = function(b, ctx, skip)
+    local taken = false
+    for _, e in ipairs(b) do
+        if e.op and e.key then
+            local lk = e.key.text:lower()
+            if not (skip and skip[lk]) then
+                if lk == "if" or lk == "else_if" or lk == "else" then
+                    if lk == "if" then taken = false end
+                    if not taken and e.value.text == nil then
+                        local lim
+                        for _, x in ipairs(e.value) do
+                            if x.op and x.key.text:lower() == "limit" then lim = x.value end
+                        end
+                        if lk == "else" or not lim or trigger(lim, ctx) then
+                            taken = true
+                            effect(e.value, ctx, { limit = true })
+                        end
+                    end
+                else
+                    effect1(e, ctx)
+                end
+            end
+        end
+    end
+end
+M.effect = effect
+M.effect1 = effect1
+
+local function noop() end
+EFF["hidden_effect"] = function(e, ctx) if e.value.text == nil then effect(e.value, ctx) end end
+EFF["custom_tooltip"] = noop
+EFF["tooltip"] = noop
+EFF["log"] = noop
+EFF["log_error"] = noop
+EFF["set_update_modifiers_batch"] = noop
+EFF["optimize_memory"] = noop
+EFF["while"] = function(e, ctx)
+    local n, limit = nil, nil
+    for _, x in ipairs(e.value) do
+        if x.op then
+            local xk = x.key.text:lower()
+            if xk == "count" then n = M.value(x.value, ctx, x) elseif xk == "limit" then limit = x.value end
+        end
+    end
+    local i = 0
+    while i < (n or 1000) do
+        if limit and not trigger(limit, ctx) then break end
+        effect(e.value, ctx, { count = true, limit = true })
+        i = i + 1
+    end
+end
+EFF["random"] = function(e, ctx)
+    local chance = 100
+    for _, x in ipairs(e.value) do
+        if x.op and x.key.text:lower() == "chance" then chance = M.value(x.value, ctx, x) end
+    end
+    local c = M.weight(e.value, ctx, chance)
+    if (rand() % 10000) < c * 100 then
+        effect(e.value, ctx, { chance = true, modifier = true })
+    end
+end
+EFF["random_list"] = function(e, ctx)
+    local entries, total = {}, 0
+    for _, x in ipairs(e.value) do
+        if x.op and x.value.text == nil then
+            local w = M.weight(x.value, ctx, tonumber(x.key.text) or M.value(x.key, ctx, x))
+            local ok = true
+            for _, y in ipairs(x.value) do
+                if y.op and y.key.text:lower() == "trigger" then ok = trigger(y.value, ctx) end
+            end
+            if ok and w > 0 then
+                entries[#entries + 1] = { x.value, floor(w * 1000) }
+                total = total + floor(w * 1000)
+            end
+        end
+    end
+    if total <= 0 then return end
+    local r = rand() % total
+    for _, en in ipairs(entries) do
+        if r < en[2] then
+            return effect(en[1], ctx, { modifier = true, trigger = true })
+        end
+        r = r - en[2]
+    end
+end
+EFF["locked_random_list"] = EFF["random_list"]
+
+local function var_effect(op)
+    return function(e, ctx)
+        local which, val
+        if e.value.text then which = e.value.text else
+            for _, x in ipairs(e.value) do
+                if x.op then
+                    local xk = x.key.text:lower()
+                    if xk == "which" then which = x.value.text
+                    elseif xk == "value" then val = M.value(x.value, ctx, x) end
+                end
+            end
+        end
+        if not which then return end
+        count_script()
+        local cur = getvar(ctx.this, which) or 0
+        local v = val or 0
+        if op == "set" then cur = v
+        elseif op == "change" then cur = cur + v
+        elseif op == "subtract" then cur = cur - v
+        elseif op == "multiply" then cur = cur * v
+        elseif op == "divide" then if v ~= 0 then cur = cur / v end
+        elseif op == "modulo" then if v ~= 0 then cur = cur % v end
+        elseif op == "round" then cur = floor(cur + 0.5)
+        elseif op == "floor" then cur = floor(cur)
+        elseif op == "ceiling" then cur = math.ceil(cur)
+        elseif op == "abs" then cur = math.abs(cur)
+        elseif op == "clear" then cur = nil end
+        setvar(ctx.this, which, cur)
+    end
+end
+for _, op in ipairs({ "set", "change", "subtract", "multiply", "divide", "modulo", "round", "floor", "ceiling", "abs" }) do
+    EFF[op .. "_variable"] = var_effect(op)
+end
+EFF["clear_variable"] = var_effect("clear")
+EFF["remove_variable"] = var_effect("clear")
+EFF["clamp_variable"] = function(e, ctx)
+    local which, lo, hi
+    for _, x in ipairs(e.value) do
+        if x.op then
+            local xk = x.key.text:lower()
+            if xk == "which" then which = x.value.text
+            elseif xk == "min" then lo = M.value(x.value, ctx, x)
+            elseif xk == "max" then hi = M.value(x.value, ctx, x) end
+        end
+    end
+    if not which then return end
+    count_script()
+    local v = getvar(ctx.this, which) or 0
+    if lo and v < lo then v = lo end
+    if hi and v > hi then v = hi end
+    setvar(ctx.this, which, v)
+end
+EFF["save_event_target_as"] = function(e, ctx) count_script(); ctx.targets[e.value.text] = ctx.this end
+EFF["save_global_event_target_as"] = function(e, ctx) count_script(); state.global_targets[e.value.text] = ctx.this end
+EFF["clear_global_event_target"] = function(e) count_script(); state.global_targets[e.value.text] = nil end
+EFF["clear_global_event_targets"] = function() count_script(); state.global_targets = {} end
+EFF["add_to_temp_list"] = function(e, ctx)
+    count_script()
+    local l = ctx.lists[e.value.text]
+    if not l then l = {}; ctx.lists[e.value.text] = l end
+    l[#l + 1] = ctx.this
+end
+EFF["remove_from_temp_list"] = function(e, ctx)
+    count_script()
+    local l = ctx.lists[e.value.text] or {}
+    for i = #l, 1, -1 do if l[i] == ctx.this then table.remove(l, i) end end
+end
+EFF["fire_on_action"] = function(e, ctx)
+    local name
+    if e.value.text then name = e.value.text else
+        for _, x in ipairs(e.value) do
+            if x.op and x.key.text:lower() == "on_action" then name = x.value.text end
+        end
+    end
+    if name then M.on_action(name, ctx.this, ctx) end
+end
+
+-- engine effects with a model in the Rust engine
+EFF["add_resource"] = function(e, ctx)
+    if e.value.text then return unmodelled("add_resource", ctx, e) end
+    local mult = 1
+    for _, x in ipairs(e.value) do
+        if x.op and x.key.text:lower() == "mult" then mult = M.value(x.value, ctx, x) end
+    end
+    for _, x in ipairs(e.value) do
+        if x.op then
+            local xk = x.key.text:lower()
+            if xk ~= "mult" and xk ~= "reset_resource_storage" then
+                push_engine({ type = "add_resource", kind = ctx.this.kind, id = ctx.this.id, resource = x.key.text,
+                    amount = M.value(x.value, ctx, x) * mult })
+            end
+        end
+    end
+end
+EFF["add_modifier"] = function(e, ctx)
+    local name, days
+    if e.value.text then name = e.value.text else
+        for _, x in ipairs(e.value) do
+            if x.op then
+                local xk = x.key.text:lower()
+                if xk == "modifier" then name = x.value.text
+                elseif xk == "days" then days = M.value(x.value, ctx, x)
+                elseif xk == "months" then days = M.value(x.value, ctx, x) * 30
+                elseif xk == "years" then days = M.value(x.value, ctx, x) * 360 end
+            end
+        end
+    end
+    if not name then return end
+    if days and days < 0 then days = nil end
+    local entries = db.static_modifiers[name]
+    if not entries then miss("static modifier", name, ctx, e) end
+    push_engine({ type = "add_modifier", kind = ctx.this.kind, id = ctx.this.id, source = name,
+        days = days and floor(days), entries = entries or {} })
+end
+EFF["create_pop_group"] = function(e, ctx)
+    local species, size = "unknown", 1
+    if e.value.text == nil then
+        for _, x in ipairs(e.value) do
+            if x.op then
+                local xk = x.key.text:lower()
+                if xk == "species" then species = x.value.text or species
+                elseif xk == "size" or xk == "count" then size = M.value(x.value, ctx, x) end
+            end
+        end
+    end
+    local h = E.new_handle()
+    ctx.created.pop_group = h
+    ctx.created.pop = h
+    push_engine({ type = "create_pop_group", kind = ctx.this.kind, id = ctx.this.id, species = species, size = size, handle = h })
+end
+EFF["create_leader"] = function(e, ctx)
+    local h = E.new_handle()
+    ctx.created.leader = h
+    push_engine({ type = "create_leader", kind = ctx.this.kind, id = ctx.this.id, handle = h })
+end
+EFF["give_technology"] = function(e, ctx)
+    local tech = e.value.text
+    if not tech then
+        for _, x in ipairs(e.value) do
+            if x.op and x.key.text:lower() == "tech" then tech = x.value.text end
+        end
+    end
+    if tech then push_engine({ type = "give_technology", kind = ctx.this.kind, id = ctx.this.id, tech = tech }) end
+end
+EFF["kill_leader"] = function(e, ctx)
+    if ctx.this.kind == "leader" then push_engine({ type = "kill_leader", kind = "leader", id = ctx.this.id }) end
+end
+
+-- the status of a keyword for the coverage report: "lua" (implemented here), "scripted",
+-- "scope", "iterator", "property", "flag", "event", "engine-unmodelled" (an effect pushed to the
+-- engine without a model) or nil
+function M.status(kind, key)
+    local lk = key:lower()
+    if lk == "if" or lk == "else_if" or lk == "else" then return "lua" end
+    if kind == "trigger" then
+        if TRIG[lk] then return "lua" end
+        if M.property(lk) then return "property" end
+        if lk:match("^has_.+_flag$") then return "flag" end
+        if db.scripted_triggers[key] then return "scripted" end
+        local it, l = lk:match("^(any)_(.+)$")
+        if not it then it, l = lk:match("^(count)_(.+)$") end
+        if it then return (LISTS[l] or l == "in_list") and "iterator" or nil end
+    else
+        if EFF[lk] then return "lua" end
+        if EVENT_EFFECT[lk] then return "event" end
+        if lk:match("^set_.+_flag$") or lk:match("^remove_.+_flag$") or lk:match("^set_timed_.+_flag$") then return "flag" end
+        if db.scripted_effects[key] then return "scripted" end
+        local it, l = lk:match("^(every)_(.+)$")
+        if not it then it, l = lk:match("^(random)_(.+)$") end
+        if not it then it, l = lk:match("^(ordered)_(.+)$") end
+        if it then return (LISTS[l] or l == "in_list") and "iterator" or nil end
+        if db.doc_effects[lk] then return "engine-unmodelled" end
+    end
+    local first = lk:match("^([^%.]+)")
+    first = first:gsub("%?$", "")
+    if LINKS[first] or first:sub(1, 13) == "event_target:" or first:sub(1, 13) == "last_created_" then
+        return "scope"
+    end
+    return nil
+end
+
+return M

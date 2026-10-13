@@ -1,0 +1,12 @@
+﻿[package]
+name = "stellar-sim"
+version = "0.1.0"
+edition = "2021"
+description = "A skeleton simulation of Stellaris 4.5.2's progression (tick, day, month, year), with the PDXScript layer in embedded LuaJIT. See docs/simulation.md."
+license = "MIT"
+publish = false
+
+[dependencies]
+# LuaJIT 2.1, as in the game's runtime; vendored: built from source with the C compiler (MSVC).
+mlua = { version = "0.11", features = ["luajit", "vendored"] }
+
