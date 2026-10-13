@@ -1,0 +1,79 @@
+-- engine/defs.lua : the game's definitions: every database folder of common/ in the vanilla file
+-- set, read in place from the game directory the game's way (stellar.script.source.definitions:
+-- the files of a folder in load order, a later definition replacing an earlier one, scripted
+-- variables and parameter blocks as the game reads them).
+--
+--   local defs = require("engine.defs")
+--   defs.load(fs, game_dir)
+--   defs.folder("common/strategic_resources")   -- name -> { block, file, line, ... }
+--   defs.get("common/technology", "tech_lasers_1")
+
+local source = require("stellar.script.source")
+
+local defs = {
+    folders = {},   -- "common/x" -> { [name] = def }
+    order = {},     -- the folders, sorted
+    counts = {},    -- folder -> number of definitions
+    errors = {},    -- { folder, message }
+    seconds = 0,
+}
+
+-- defs.load(fs, game_dir): every folder under common/ that has .txt files
+function defs.load(fs, game_dir)
+    local t0 = RUST.clock()
+    local folders = {}
+    for _, file in ipairs(RUST.list_files(game_dir, "common")) do
+        local folder = file:match("^(.*)/[^/]*$")
+        if folder then
+            folders[folder] = true
+        end
+    end
+    for folder in pairs(folders) do
+        defs.order[#defs.order + 1] = folder
+    end
+    table.sort(defs.order)
+    for _, folder in ipairs(defs.order) do
+        local d, errors = source.definitions(fs, folder)
+        defs.folders[folder] = d
+        local n = 0
+        for _ in pairs(d) do
+            n = n + 1
+        end
+        defs.counts[folder] = n
+        for _, m in ipairs(errors or {}) do
+            defs.errors[#defs.errors + 1] = { folder = folder, message = tostring(m) }
+        end
+    end
+    defs.seconds = RUST.clock() - t0
+end
+
+function defs.folder(folder)
+    return defs.folders[folder] or {}
+end
+
+function defs.get(folder, name)
+    local f = defs.folders[folder]
+    return f and f[name]
+end
+
+-- the first value of `key` in a definition's block (a token's text, or a block), or nil
+function defs.field(block, key)
+    for _, e in ipairs(block or {}) do
+        if e.op and e.key and e.key.text == key then
+            return e.value.text or e.value
+        end
+    end
+    return nil
+end
+
+-- defs.summary() -> text: the folders and their definitions
+function defs.summary()
+    local total = 0
+    for _, n in pairs(defs.counts) do
+        total = total + n
+    end
+    return string.format("%d folders of common/, %d definitions, %d files that did not parse, in %.1f s",
+        #defs.order, total, #defs.errors, defs.seconds)
+end
+
+return defs

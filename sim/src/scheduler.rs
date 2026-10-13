@@ -10,27 +10,21 @@
 //! 5. on the day tick: cache the date, `DailyUpdate`, then `MonthlyUpdate` if the month index
 //!    changed, then `YearlyUpdate` if the year changed.
 //!
-//! The phases inside `DailyUpdate` / `MonthlyUpdate` / `YearlyUpdate` follow docs/simulation.md
-//! (section 1), restricted to the kept subsystems, each parallel phase run serially in id order with
-//! random draws forbidden. Every root effect (a call into the script host) is followed by a flush:
-//! the engine-effect queue is drained and the modifiers recomputed, where the game's
-//! `CRootEffect::Execute` runs `CModifierNodeManager::Update`.
+//! The phases of `DailyUpdate` / `MonthlyUpdate` / `YearlyUpdate` are the game's (docs/simulation.md,
+//! section 1). Each runs in the Lua engine (`engine.phase`), followed by its barrier (the engine
+//! effects queued in it applied). Parallel phases run with random draws forbidden; the day's pool of
+//! 1,000 draws is taken where the game takes it.
 
 use crate::date::Date;
-use crate::engine::{self, events, events::CallIn};
-use crate::fixed::Fixed;
-use crate::queue::EngineQueue;
 use crate::rng::DAILY_POOL_SIZE;
-use crate::script::{EffectOutcome, Scope, ScriptCtx, ScriptHost};
-use crate::state::{GameState, Id};
+use crate::runtime::Runtime;
 
 /// A synchronized command (`CCommand`), executed before the next tick.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
-    /// A player action implemented in script (a decision, an event option).
-    RunEffect { effect: String, scope: Scope },
-    /// `CAddBuildableToQueueCommand`.
-    QueueBuilding { colony: Id, building: String },
+    /// A player action implemented in script (a decision, an event option): a scripted effect or
+    /// an event, on a scope (`country`, `planet`, ... and its id).
+    Effect { effect: String, kind: String, id: u32 },
 }
 
 /// What ran, for tests and tracing.
@@ -45,7 +39,7 @@ pub enum Phase {
     Yearly(&'static str),
 }
 
-/// The daily phases, in order (`CGameState::DailyUpdate`, `0x25cde0`; the kept subsystems).
+/// The daily phases, in order (`CGameState::DailyUpdate`, `0x25cde0`).
 pub const DAILY_PHASES: [&str; 13] = [
     "script_state_expiry",  // the daily task graph: CPdxIntegerFlags::UpdateFlags
     "construction_manager", // CConstructionManager::DailyUpdate
@@ -62,7 +56,10 @@ pub const DAILY_PHASES: [&str; 13] = [
     "galaxy",               // market, galactic community, borders, ...
 ];
 
-/// The monthly phases, in order (`CGameState::MonthlyUpdate`, `0x261620`; the kept subsystems).
+/// The daily phases that run in parallel in the game: no random draws (they use the pool).
+const PARALLEL: [&str; 5] = ["modifiers_1", "countries_parallel", "modifiers_2", "colonies_parallel", "pop_groups"];
+
+/// The monthly phases, in order (`CGameState::MonthlyUpdate`, `0x261620`).
 pub const MONTHLY_PHASES: [&str; 5] = [
     "modifiers",        // CModifierNodeManager::Update (0x26195f)
     "budget",           // CEconomicUnitManager::CalculateTablesOrUpdateBudget<0>
@@ -71,37 +68,46 @@ pub const MONTHLY_PHASES: [&str; 5] = [
     "on_monthly_pulse", // COnActionDatabase::PerformEvent
 ];
 
+/// The yearly phases, in order (`CGameState::YearlyUpdate`).
 pub const YEARLY_PHASES: [&str; 2] = [
-    "on_yearly_pulse", // COnActionDatabase::PerformEvent
+    "on_yearly_pulse", // COnActionDatabase::PerformEvent (and the longer pulses)
     "cleanup",         // ClearUnusedShipDesigns, ClearInvalidFleetDesigns
 ];
 
-pub struct Simulation<S: ScriptHost> {
-    pub state: GameState,
-    pub queue: EngineQueue,
-    pub script: S,
+pub struct Simulation {
+    pub runtime: Runtime,
     pub tracing: bool,
     pub trace: Vec<Phase>,
     pub ticks: u64,
-    /// Totals of what the script host reported.
-    pub outcome: EffectOutcome,
+    /// Lua errors raised by phases (the phase is cut short, the tick goes on).
+    pub errors: Vec<String>,
+    tick_count: i32,
+    cached_month: i32,
+    cached_year: i32,
     commands: Vec<Command>,
     pool: Vec<i32>,
 }
 
-impl<S: ScriptHost> Simulation<S> {
-    pub fn new(state: GameState, script: S) -> Simulation<S> {
+impl Simulation {
+    /// A simulation over a loaded runtime, at its date.
+    pub fn new(runtime: Runtime) -> Simulation {
+        let d = runtime.date.get();
         Simulation {
-            state,
-            queue: EngineQueue::new(),
-            script,
+            runtime,
             tracing: false,
             trace: Vec::new(),
             ticks: 0,
-            outcome: EffectOutcome::default(),
+            errors: Vec::new(),
+            tick_count: 0,
+            cached_month: d.month_index(),
+            cached_year: d.year(),
             commands: Vec::new(),
             pool: Vec::new(),
         }
+    }
+
+    pub fn date(&self) -> Date {
+        self.runtime.date.get()
     }
 
     /// Posts a command (`PostCommandToSession`); it runs before the next tick.
@@ -115,69 +121,14 @@ impl<S: ScriptHost> Simulation<S> {
         }
     }
 
-    /// Calls the script host with a context over the current state.
-    pub fn with_script<R>(&mut self, f: impl FnOnce(&mut S, &mut ScriptCtx) -> R) -> R {
-        let GameState { date, world, rng, .. } = &mut self.state;
-        let mut ctx = ScriptCtx { date: *date, world, rng, queue: &mut self.queue };
-        f(&mut self.script, &mut ctx)
-    }
-
-    /// Drains the engine-effect queue and recomputes modifiers (the barrier).
-    pub fn flush(&mut self) -> usize {
-        let GameState { date, world, rng, .. } = &mut self.state;
-        crate::queue::barrier(world, &mut self.queue, rng, *date)
-    }
-
-    /// `CModifierNodeManager::Update` with random draws forbidden.
-    fn update_modifiers(&mut self) {
-        let old = self.state.rng.set_forbidden(true);
-        engine::modifiers::update(&mut self.state.world);
-        self.state.rng.set_forbidden(old);
-    }
-
-    /// A root effect: run, then flush (`CRootEffect::Execute`).
-    pub fn root_effect(&mut self, effect: &str, scope: Scope) -> EffectOutcome {
-        let out = self.with_script(|s, c| s.run_effect(effect, scope, c));
-        self.outcome.merge(out);
-        self.flush();
-        out
-    }
-
-    /// An engine on_action: run, then flush.
-    pub fn fire_on_action(&mut self, name: &str, scope: Scope) -> EffectOutcome {
-        let out = self.with_script(|s, c| s.on_action(name, scope, c));
-        self.outcome.merge(out);
-        self.flush();
-        out
-    }
-
-    fn dispatch(&mut self, calls: Vec<CallIn>) {
-        for c in calls {
-            match c {
-                CallIn::OnAction { name, scope } => {
-                    self.fire_on_action(name, scope);
-                }
+    fn phase(&mut self, kind: &str, name: &str, parallel: bool) {
+        let old = self.runtime.rng.borrow_mut().set_forbidden(parallel);
+        if let Err(e) = self.runtime.phase(kind, name) {
+            if self.errors.len() < 20 {
+                self.errors.push(format!("{kind}.{name}: {e}"));
             }
         }
-    }
-
-    /// Runs a parallel phase: random draws are forbidden (the phase may read the pool).
-    fn parallel<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        let old = self.state.rng.set_forbidden(true);
-        let r = f(self);
-        self.state.rng.set_forbidden(old);
-        r
-    }
-
-    fn execute(&mut self, c: Command) {
-        match c {
-            Command::RunEffect { effect, scope } => {
-                self.root_effect(&effect, scope);
-            }
-            Command::QueueBuilding { colony, building } => {
-                engine::construction::queue_building(&mut self.state.world, colony, &building);
-            }
-        }
+        self.runtime.rng.borrow_mut().set_forbidden(old);
     }
 
     /// One `CSession::ProcessSynchronousCommands` pass: the commands, then `HandleTurnTick`.
@@ -186,38 +137,43 @@ impl<S: ScriptHost> Simulation<S> {
         if !cmds.is_empty() {
             self.mark(Phase::Commands(cmds.len()));
             for c in cmds {
-                self.execute(c);
+                let Command::Effect { effect, kind, id } = c;
+                if let Err(e) = self.runtime.command_effect(&effect, &kind, id) {
+                    self.errors.push(format!("command {effect}: {e}"));
+                }
             }
-            self.flush(); // CGameState::AfterCommandExecutedUpdate
         }
 
-        self.state.tick_count += 1;
-        let phase = self.state.tick_count % 10;
+        self.tick_count += 1;
+        let phase = self.tick_count % 10;
         let day = phase == 0;
         if day {
-            self.state.tick_count = 0;
-            self.state.date = self.state.date.add_days(1);
-            let d = self.state.date;
+            self.tick_count = 0;
+            let d = self.date().add_days(1);
+            self.runtime.date.set(d);
             self.mark(Phase::DateAdvanced(d));
         }
 
-        self.micro_update();
+        // CGameState::MicroUpdate (0x253cf0): movement, combat
+        self.mark(Phase::Micro);
+        self.phase("micro", "update", false);
+        // CGameState::ProcessAI (0x264600): decisions become commands for the next tick
         if phase == 4 {
-            self.process_ai();
+            self.mark(Phase::Ai);
+            self.phase("ai", "process", false);
         }
         if day {
-            let (old_month, old_year) = (self.state.cached_month, self.state.cached_year);
-            self.state.cached_month = self.state.date.month_index();
-            self.state.cached_year = self.state.date.year();
+            let (old_month, old_year) = (self.cached_month, self.cached_year);
+            self.cached_month = self.date().month_index();
+            self.cached_year = self.date().year();
             self.daily_update();
-            if self.state.cached_month != old_month {
+            if self.cached_month != old_month {
                 self.monthly_update();
             }
-            if self.state.cached_year != old_year {
+            if self.cached_year != old_year {
                 self.yearly_update();
             }
         }
-        self.flush();
         self.ticks += 1;
     }
 
@@ -231,193 +187,36 @@ impl<S: ScriptHost> Simulation<S> {
         self.run_ticks(days * 10);
     }
 
-    /// `CGameState::MicroUpdate` (`0x253cf0`).
-    fn micro_update(&mut self) {
-        self.mark(Phase::Micro);
-        let arrivals = engine::fleets::micro_update(&mut self.state.world);
-        engine::combat::micro_update(&mut self.state.world);
-        self.dispatch(arrivals);
-    }
-
-    /// `CGameState::ProcessAI` (`0x264600`): decisions become commands for the next tick.
-    fn process_ai(&mut self) {
-        self.mark(Phase::Ai);
-        let cmds = engine::ai::process_ai(&self.state.world);
-        self.commands.extend(cmds);
-    }
-
-    fn country_ids(&self) -> Vec<Id> {
-        self.state.world.countries.iter().filter(|(_, c)| c.alive).map(|(id, _)| *id).collect()
-    }
-
-    fn colony_ids(&self) -> Vec<Id> {
-        self.state.world.colonies.keys().copied().collect()
-    }
-
-    /// `CGameState::DailyUpdate` (`0x25cde0`), the kept phases.
+    /// `CGameState::DailyUpdate` (`0x25cde0`).
     fn daily_update(&mut self) {
-        let date = self.state.date;
-
-        self.mark(Phase::Daily(DAILY_PHASES[0]));
-        self.with_script(|s, c| s.daily_script_state(c));
-
-        self.mark(Phase::Daily(DAILY_PHASES[1]));
-        engine::construction::daily_manager(&mut self.state.world);
-
-        self.mark(Phase::Daily(DAILY_PHASES[2]));
-        self.pool = self.state.rng.draw_pool(DAILY_POOL_SIZE);
-
-        self.mark(Phase::Daily(DAILY_PHASES[3]));
-        self.update_modifiers();
-
-        self.mark(Phase::Daily(DAILY_PHASES[4]));
-        self.parallel(|sim| engine::modifiers::expire(&mut sim.state.world, date));
-
-        self.mark(Phase::Daily(DAILY_PHASES[5]));
-        for id in self.country_ids() {
-            let scope = Scope::Country(id);
-            // CCountryEventManager::DailyUpdateSerial: due delayed events and MTTH events
-            let out = self.with_script(|s, c| s.scope_daily_events(scope, c));
-            self.outcome.merge(out);
-            self.flush();
-            // CTechnologyStatus::DailyResearch, then QueueResearch
-            let done = engine::research::daily_research(&mut self.state.world, id);
-            for _ in &done {
-                self.fire_on_action(events::ON_TECH_INCREASED, scope);
+        for name in DAILY_PHASES {
+            self.mark(Phase::Daily(name));
+            if name == "random_pool" {
+                self.pool = self.runtime.rng.borrow_mut().draw_pool(DAILY_POOL_SIZE);
+            } else {
+                self.phase("daily", name, PARALLEL.contains(&name));
             }
-            let picks = self.with_script(|s, c| {
-                let mut picks = Vec::new();
-                for area in engine::research::AREAS {
-                    if engine::research::needs_pick(c.world, id, area) {
-                        let opts = engine::research::options(c.world, id, area);
-                        if let Some(t) = weighted_pick(s, c, scope, "tech:", &opts) {
-                            picks.push((area, t));
-                        }
-                    }
-                }
-                picks
-            });
-            for (area, t) in picks {
-                engine::research::start(&mut self.state.world, id, area, t);
-            }
-            engine::country::daily_serial(&mut self.state.world, id, date);
         }
-
-        self.mark(Phase::Daily(DAILY_PHASES[6]));
-        self.update_modifiers();
-
-        self.mark(Phase::Daily(DAILY_PHASES[7]));
-        // employment caches are rebuilt by the serial job update in the skeleton
-
-        self.mark(Phase::Daily(DAILY_PHASES[8]));
-        for col in self.colony_ids() {
-            // the colony's delayed and MTTH events (CColony::DailyUpdateSerial -> CEventManager::TriggerEvent)
-            let out = self.with_script(|s, c| s.scope_daily_events(Scope::Colony(col), c));
-            self.outcome.merge(out);
-            self.flush();
-            let order = self.job_order(col);
-            let calls = engine::colonies::daily_serial(&mut self.state.world, col, &order);
-            self.dispatch(calls);
-        }
-
-        self.mark(Phase::Daily(DAILY_PHASES[9]));
-        // ethics divergence, factions: not modelled
-
-        self.mark(Phase::Daily(DAILY_PHASES[10]));
-        let pool = std::mem::take(&mut self.pool);
-        self.parallel(|sim| engine::fleets::daily_pathfinding(&mut sim.state.world, &pool));
-
-        self.mark(Phase::Daily(DAILY_PHASES[11]));
-        let dying = self.parallel(|sim| engine::country::leaders_parallel(&mut sim.state.world, &pool));
-        let calls = engine::country::leaders_serial(&mut self.state.world, &dying);
-        self.dispatch(calls);
-        self.pool = pool;
-
-        self.mark(Phase::Daily(DAILY_PHASES[12]));
-        engine::diplomacy::daily(&mut self.state.world);
     }
 
-    /// Jobs by script weight (highest first, then name).
-    fn job_order(&mut self, col: Id) -> Vec<String> {
-        self.with_script(|s, c| {
-            let slots = engine::colonies::job_slots(c.world, col);
-            let mut v: Vec<(Fixed, String)> =
-                slots.keys().map(|j| (s.weight(&format!("job:{j}"), Scope::Colony(col), c), j.clone())).collect();
-            v.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-            v.into_iter().map(|(_, j)| j).collect()
-        })
-    }
-
-    /// `CGameState::MonthlyUpdate` (`0x261620`), the kept phases.
+    /// `CGameState::MonthlyUpdate` (`0x261620`).
     fn monthly_update(&mut self) {
-        self.mark(Phase::Monthly(MONTHLY_PHASES[0]));
-        self.update_modifiers();
-
-        self.mark(Phase::Monthly(MONTHLY_PHASES[1]));
-        engine::economy::monthly_budget(&mut self.state.world);
-
-        self.mark(Phase::Monthly(MONTHLY_PHASES[2]));
-        for id in self.country_ids() {
-            self.fire_on_action(events::ON_MONTHLY_PULSE_COUNTRY, Scope::Country(id));
+        for name in MONTHLY_PHASES {
+            self.mark(Phase::Monthly(name));
+            self.phase("monthly", name, name == "modifiers");
         }
-
-        self.mark(Phase::Monthly(MONTHLY_PHASES[3]));
-        for col in self.colony_ids() {
-            if engine::pops::monthly_growth(&mut self.state.world, col) {
-                self.state.world.modifiers.dirty = true;
-                self.fire_on_action(events::ON_POP_ASSEMBLED, Scope::Colony(col));
-            }
-            let order = self.job_order(col);
-            let slots = engine::colonies::job_slots(&self.state.world, col);
-            engine::pops::update_pop_jobs(&mut self.state.world, col, &slots, &order);
-        }
-
-        self.mark(Phase::Monthly(MONTHLY_PHASES[4]));
-        self.fire_on_action(events::ON_MONTHLY_PULSE, Scope::None);
     }
 
-    /// `CGameState::YearlyUpdate` (`0x262ee0`).
+    /// `CGameState::YearlyUpdate`.
     fn yearly_update(&mut self) {
-        self.mark(Phase::Yearly(YEARLY_PHASES[0]));
-        self.fire_on_action(events::ON_YEARLY_PULSE, Scope::None);
-        for id in self.country_ids() {
-            self.fire_on_action(events::ON_YEARLY_PULSE_COUNTRY, Scope::Country(id));
+        for name in YEARLY_PHASES {
+            self.mark(Phase::Yearly(name));
+            self.phase("yearly", name, false);
         }
-        // the longer pulses, by year (which caller fires them, and on which years, was not traced)
-        let year = self.state.date.year();
-        for (n, global, country) in [
-            (2, events::ON_BI_YEARLY_PULSE, events::ON_BI_YEARLY_PULSE_COUNTRY),
-            (5, events::ON_FIVE_YEAR_PULSE, events::ON_FIVE_YEAR_PULSE_COUNTRY),
-            (10, events::ON_DECADE_PULSE, events::ON_DECADE_PULSE_COUNTRY),
-        ] {
-            if year % n == 0 {
-                self.fire_on_action(global, Scope::None);
-                for id in self.country_ids() {
-                    self.fire_on_action(country, Scope::Country(id));
-                }
-            }
-        }
-        self.mark(Phase::Yearly(YEARLY_PHASES[1]));
     }
-}
 
-/// A weighted random pick among `options` (weights from script, `<prefix><option>`), drawing from
-/// the synchronized RNG.
-fn weighted_pick<S: ScriptHost>(s: &mut S, c: &mut ScriptCtx, scope: Scope, prefix: &str, options: &[String]) -> Option<String> {
-    if options.is_empty() {
-        return None;
+    /// The day's pool of random draws (taken in `random_pool`), for the parallel phases.
+    pub fn pool(&self) -> &[i32] {
+        &self.pool
     }
-    let weights: Vec<i64> = options.iter().map(|o| s.weight(&format!("{prefix}{o}"), scope, c).raw().max(0)).collect();
-    let total: i64 = weights.iter().sum();
-    if total <= 0 {
-        return None;
-    }
-    let mut r = (c.rng.next_int() as i64) % total;
-    for (o, w) in options.iter().zip(weights) {
-        if r < w {
-            return Some(o.clone());
-        }
-        r -= w;
-    }
-    None
 }

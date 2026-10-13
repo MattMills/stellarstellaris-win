@@ -1,37 +1,33 @@
-//! A skeleton simulation of Stellaris 4.5.2's progression.
+//! A new engine for Stellaris 4.5.2: Rust is the platform, the game is in Lua from the game's own
+//! files.
 //!
-//! The game's tick (`CGameState::HandleTurnTick`) in the game's order, with the script layer
-//! (the Lua PDXScript layer: triggers, effects, events, flags, variables) behind [`script::ScriptHost`]
-//! and the engine's own work (economy, pops, colonies, construction, research, ...) as subsystems in
-//! [`engine`]. Script effects are applied by the script host directly; engine effects are queued
-//! ([`queue::EngineQueue`]) and drained at the game's barriers. See `docs/simulation.md`.
+//! - the definitions: every `common/` folder of the vanilla file set, read in place
+//!   (`sim/lua/engine/defs.lua`);
+//! - the script layer: events, on_actions, scripted triggers, effects and values, evaluated in Lua
+//!   (`sim/lua/simscript`);
+//! - the world: the game state from a save, in the save's own form (`sim/lua/engine/world.lua`);
+//! - the engine's systems, phase by phase (`sim/lua/engine/systems.lua`), checked against the
+//!   game's next save.
 //!
 //! Module map:
 //! - [`fixed`]: `CFixedPoint` (int64, 1.0 = 100000)
 //! - [`rng`]: the game's random number generator (`CRandom::_Random`, a `CNoiseRandom`)
 //! - [`date`]: `CDate` / `CStellarisDate` (hours, 12 x 30-day months)
-//! - [`state`]: the game state of the subsystems the minimal simulation keeps
-//! - [`script`]: the `ScriptHost` trait and a mock
-//! - [`queue`]: the Lua -> engine effect queue
-//! - [`engine`]: one module per engine subsystem, each naming the C++ it replaces
+//! - [`save`]: reading saves
+//! - [`runtime`]: the Lua runtime the game runs in
 //! - [`scheduler`]: `HandleTurnTick`, `MicroUpdate`, `DailyUpdate`, `MonthlyUpdate`, `YearlyUpdate`
+//! - [`modcheck`]: the modifier model against a capture of the game's modifier nodes
 
 pub mod date;
-pub mod engine;
 pub mod fixed;
-pub mod lua_host;
 pub mod modcheck;
-pub mod queue;
 pub mod rng;
-pub mod sample;
+pub mod runtime;
+pub mod save;
 pub mod scheduler;
-pub mod script;
-pub mod state;
 
 pub use date::Date;
 pub use fixed::Fixed;
-pub use lua_host::LuaScriptHost;
 pub use rng::NoiseRandom;
+pub use runtime::Runtime;
 pub use scheduler::{Command, Phase, Simulation};
-pub use script::{EffectOutcome, MockScriptHost, Scope, ScriptCtx, ScriptHost};
-pub use state::{GameState, Id, World};

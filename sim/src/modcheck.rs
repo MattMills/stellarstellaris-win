@@ -6,11 +6,9 @@
 //! loaded, and the vanilla script in place. The work is in `sim/lua/simscript/modcheck.lua`; see
 //! docs/simulation.md, "Checking against the game's modifier nodes".
 
-use std::io::Read;
-
 use mlua::{Function, Table};
 
-use crate::lua_host::LuaScriptHost;
+pub use crate::save::read_gamestate;
 
 /// The paths of one comparison.
 #[derive(Clone, Debug)]
@@ -42,20 +40,10 @@ impl Inputs {
     }
 }
 
-/// The `gamestate` of a save (a zip, read in memory; the save is not changed or copied).
-pub fn read_gamestate(save: &str) -> Result<String, String> {
-    let f = std::fs::File::open(save).map_err(|e| format!("{save}: {e}"))?;
-    let mut z = zip::ZipArchive::new(f).map_err(|e| format!("{save}: {e}"))?;
-    let mut entry = z.by_name("gamestate").map_err(|e| format!("{save}: gamestate: {e}"))?;
-    let mut text = String::new();
-    entry.read_to_string(&mut text).map_err(|e| format!("{save}: gamestate: {e}"))?;
-    Ok(text)
-}
-
 /// Runs the comparison and returns its report.
 pub fn run(inputs: &Inputs) -> Result<String, String> {
     let gamestate = read_gamestate(&inputs.save)?;
-    let lua = LuaScriptHost::new_lua().map_err(|e| e.to_string())?;
+    let lua = crate::runtime::new_lua().map_err(|e| e.to_string())?;
     let m: Table = lua.load("return require('simscript.modcheck')").eval().map_err(|e| e.to_string())?;
     let f: Function = m.get("run").map_err(|e| e.to_string())?;
     let opts = lua.create_table().map_err(|e| e.to_string())?;
