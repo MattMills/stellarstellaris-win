@@ -31,7 +31,7 @@ The AI draws nothing from the synchronized generator **[V]**.
 | option | effect |
 |---|---|
 | `-loadrandomseed` | keep the save's `random_seed` / `random_count` (read in `CGameState::ReadMember`) instead of reseeding at load; it sets `g_bUseSavedRandom` (read at `0x15092e`), which also restores each AI's unsynced generator **[V]** |
-| `-rng_seed=N -rng_pos=N` | force the synchronized generator's seed and position (`CGameState::InitPostRead`) **[V]**. `-rng_seed=64429129 -rng_pos=0` reproduces a real play session from its starting save (below) |
+| `-rng_seed=N -rng_pos=N` | force the synchronized generator's seed and position (`CGameState::InitPostRead`; either one sets `g_bUseForcedSeed`, and the other then defaults to 0) **[V]**. `-rng_seed=64429129 -rng_pos=0` reproduces a real play session from its starting save (below). The value is read with `CString::GetInt` (`atoi`, which clamps on overflow), and the command line is split at every `-`. So a seed the save shows as negative can't be passed: its unsigned form becomes 2147483647. Only `-loadrandomseed` reuses such a seed **[V]** |
 | `-random=N` | the seed `CFrontEndIdler::SetAsCurrentIdler` uses instead of the clock **[V]** |
 | `-threads=N` | not an RNG option, but it matters for reproducibility. `InitTaskSystem(int)` (GOG `0x1b39aa0`, Linux `0x4294ea0`) clamps N to [4, the usable threads]; the default (-1) is the usable threads − 1. So `-threads=1` means 4 threads, not 1 **[V]**. With many threads the AIs' unsynced generators are drawn in a varying order and runs drift apart: 4 to 1,568 lines in 180 days with the default, 23 threads on the 24-thread test box **[V]** |
 
@@ -44,7 +44,7 @@ untested.
 ## What a normal load does **[V]**
 
 1. A single-player load reseeds from the clock: `CFrontEndIdler::SetAsCurrentIdler` sets `CSystem::_nSeed = CProfile::GetCPUTime()` (unless `-random=N`) and `_nRandomCount = 0`.
-2. After the load, `CGameSetup::StartSyncPlayers` posts `CSetRandomSeed(_nSeed, _nRandomCount)`.
+2. After the load, `CGameSetup::StartSyncPlayers` (from `CGameSetup::Start`, in single player too) posts `CSetRandomSeed` with `g_nGameDebugRandom` when it is ≥ 0, else `_nSeed`, and the current `_nRandomCount`.
 3. Its `Execute` calls `CRandom::SynchronisedSeed`.
 4. The load itself draws 112 values.
 
@@ -63,6 +63,22 @@ lines), with `random_count` exactly 4,755,436.
 
 A reload is not transparent. A mid-session save plus N ticks is not what the session did: the
 load draws 6 more values on the first day, and 143,841 lines differ after 180 days.
+
+## A new game
+
+Galaxy generation (docs/newgame.md section 2) takes its galaxy seed from one draw of the global
+stream, and the systems' contents from the global stream as it goes. So `-random=N` makes the same
+galaxy only if the main menu draws the same values before generation starts. The menu draws from
+the global stream in these places **[V]**:
+- `CGameSetupView::EditEmpireDesign`: one draw, then `CEmpireFlag::Randomize`. The `CCoopSPSetupView` and `CMPGameSetupView` versions draw too.
+- The empire designer's randomizers: `CNameListEditor::*`, `CTraitSet::Randomize`, `CCountryEthos::Randomize`, `CSpecies::Randomize*`.
+- The store's ship previewer: `CAdditionalContentShipPreviewer::SetShip`.
+
+Generation itself allows draws off the main thread (`CRandom::_MultithreadAllowed`, set by
+`CGameState::GenerateNewGalaxy`) **[V]**. Whether that reorders them is untested.
+
+The command-line side of this (`-random`, `-rng_seed`, `-rng_pos`) is in
+docs/stellaris-command-line-args.md, "Random numbers".
 
 ## Where the draws go **[V]**
 
