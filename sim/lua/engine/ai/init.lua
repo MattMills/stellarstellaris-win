@@ -89,8 +89,47 @@ local function execute(cmd, today)
     if cmd.kind == "research" then
         return require("engine.ai.research").queue(cmd.country, cmd.tech, today)
     end
+    -- a command of another module: { kind, execute = function(cmd, today) }
+    if cmd.execute then
+        return cmd.execute(cmd, today)
+    end
     return false
 end
+
+-- an AI module that may not be written yet (engine.ai.<name>): the module or nil
+local present = {}
+local function optional(name)
+    if present[name] == nil then
+        present[name] = package.searchpath(name, package.path) ~= nil
+    end
+    return present[name] and require(name) or nil
+end
+
+-- the AI's day counters (CAICore::Update: _WeekDaysCounter, _MonthDaysCounter, _YearDaysCounter),
+-- not saved: at load each starts at id % 7, id % 30, id % 360; each day it goes down by one and at
+-- 0 or below the weekly / monthly / yearly update runs and it starts again at 7, 30, 360
+local counters = {}
+local function tick_counters(country)
+    local k = counters[country]
+    if k == nil then
+        k = { week = country % 7, month = country % 30, year = country % 360 }
+        counters[country] = k
+    end
+    local due = {}
+    for name, period in pairs({ week = 7, month = 30, year = 360 }) do
+        k[name] = k[name] - 1
+        if k[name] <= 0 then
+            due[name] = true
+            k[name] = period
+        end
+    end
+    return due
+end
+ai.counters = counters
+
+-- the interior minister's periodic parts, in its modules' order: modules engine.ai.<name> with
+-- weekly / monthly / yearly(country, today, commands) functions, called when they are there
+ai.INTERIOR = { "traditions" }
 
 -- ai.process(host, date): the day's AI (CGameState::ProcessAI)
 function ai.process(host, date)
@@ -102,10 +141,26 @@ function ai.process(host, date)
         local c = world.object("country", country)
         if c and type(world.field(c, "ai")) == "table" and setting(country, "enabled") and not human(country) then
             ai.stats.countries = ai.stats.countries + 1
-            -- the modules' daily updates, in the country type's module order (military, foreign,
-            -- interior, ...): only the interior minister's research is ported
-            if setting(country, "tech") and has_module(country, "interior_minister_module") then
+            -- CAICore::Update: the modules' daily updates (in the country type's module order:
+            -- military, foreign, interior, ...; only the interior minister's research is ported),
+            -- then the weekly, monthly and yearly ones when their counters are due
+            local interior = has_module(country, "interior_minister_module")
+            if interior and setting(country, "tech") then
                 research.daily(country, today, commands)
+            end
+            local due = tick_counters(country)
+            if interior then
+                for _, period in ipairs({ "week", "month", "year" }) do
+                    if due[period] then
+                        local fn = ({ week = "weekly", month = "monthly", year = "yearly" })[period]
+                        for _, name in ipairs(ai.INTERIOR) do
+                            local m = optional("engine.ai." .. name)
+                            if m and m[fn] then
+                                m[fn](country, today, commands, host)
+                            end
+                        end
+                    end
+                end
             end
         end
     end
