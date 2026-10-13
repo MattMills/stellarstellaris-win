@@ -194,13 +194,26 @@ local function reads_table()
     return reads
 end
 
+-- the content keys of a node and its parts (a parent read for matching has values only)
 local function prepare(n)
     if n.key == nil then
         n.key = key_of(n.values)
-        for _, p in ipairs(n.parts) do
+        for _, p in ipairs(n.parts or {}) do
             p.key = key_of(p.values)
         end
     end
+end
+
+-- nodes.parts_key(n) -> the text of a node as read: its parts (multiplier, filter, content) and
+-- values. Two reads of a node give the same text unless the game rebuilt it in between.
+function M.parts_key(n)
+    prepare(n)
+    local list = {}
+    for _, p in ipairs(n.parts or {}) do
+        list[#list + 1] = string.format("%d|%d|%s", p.mult, p.filter, p.key)
+    end
+    table.sort(list)
+    return table.concat(list, ";") .. "#" .. n.key
 end
 
 -- nodes.new(g, defs) -> mirror: an empty tree of the game's nodes; nodes.build fills it from a
@@ -224,10 +237,15 @@ function M.new(g, defs)
         return h
     end
 
-    -- a holder and its links removed (a node unregistered: its object is gone)
+    -- a holder and its links removed (a node unregistered: its object is gone). Its children lose
+    -- their link to it: their next assign links them again, whatever their parents are then (a
+    -- new node at the same index has the same id).
     function mirror:destroy(id)
         local h = self.holders[id]
         if h ~= nil then
+            for child in pairs(h.children) do
+                child.links_key = nil
+            end
             tree:destroy(h)
             self.holders[id] = nil
         end
@@ -419,6 +437,7 @@ function M.new(g, defs)
             end
             h.own_key = own_key
         end
+        h.parts_key = M.parts_key(n)
         return own_changed, links_changed
     end
 

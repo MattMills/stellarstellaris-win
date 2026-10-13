@@ -655,9 +655,20 @@ test("nodes: passes of the game given to the mirror (roots, cascades, a relink)"
     defs:read_log("- a, Category: Ships\n- b, Category: Countries\n- c, Pops\n")
     local mirror = nodes.build(g, defs, nodes.read_capture(capture_text(100, 2)))
     mirror:materialize()
+    -- the parents as the shadow reads them after a pass: values only
+    local function values_only(all)
+        local out = {}
+        for child, list in pairs(all) do
+            out[child] = {}
+            for _, p in ipairs(list) do
+                out[child][#out[child] + 1] = { id = p.id, category = p.category, values = p.values }
+            end
+        end
+        return out
+    end
     -- pass 1: a technology (+1000 a) on the country; the game recomputes everything below it
     local snap = nodes.read_capture(capture_text(1100, 2))
-    local parents = nodes.parents(snap)
+    local parents = values_only(nodes.parents(snap))
     local roots, relinked = 0, 0
     for _, n in ipairs(snap.nodes) do
         local own, links = mirror:assign(n, parents[n.id] or {})
@@ -673,7 +684,7 @@ test("nodes: passes of the game given to the mirror (roots, cascades, a relink)"
     end
     -- pass 2: ship 3 moves to fleet 6 (the game recomputes the ship only)
     snap = nodes.read_capture(capture_text(1100, 6))
-    parents = nodes.parents(snap)
+    parents = values_only(nodes.parents(snap))
     local ship = nil
     for _, n in ipairs(snap.nodes) do
         if n.id == 3 then

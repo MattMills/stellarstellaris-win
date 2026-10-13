@@ -227,29 +227,59 @@ exact again.
 ### Shadow mode
 
 `modifier_graph.txt` next to the DLL: `shadow` (`stellar.modifier_shadow`; it hooks what
-`modifier_stats.txt` hooks, so only one of the two runs). `src/dll/modifier_shadow.cpp` records the
-id of every node `CModifierNodeBase::Update` rebuilds, from any thread. After each
-`CModifierNodeManager::Update` pass it hands them to Lua on the thread that ran the pass, never
-waiting: while Lua is busy, they wait for the next pass. At the first tick of a game the mirror is
-built from every node and checked whole, and the snapshot is written to
+`modifier_stats.txt` hooks, so only one of the two runs). `src/dll/modifier_shadow.cpp` finds the
+nodes the game rebuilds in two ways:
+
+- `CModifierNodeBase::Update`, called directly by about 60 functions (`AddModifierNode` pulling a
+  stale parent, colony and country updates, effects): the node's id, from any thread;
+- the manager's own passes, which do not call it: their `UpdateInvalid` tasks rebuild the nodes
+  with an inlined copy. So `CModifierNodeManager::Update` scans the registry before the pass for
+  the nodes marked invalid (`+0x108`) and keeps the ones that are valid after it.
+
+After each pass the ids go to Lua on the thread that ran the pass, inside `lua_cpcall`: an error
+of Lua's (out of memory too) comes back as a status, never as an exception through the game. The
+hook never waits for Lua either: while Lua is busy, the ids wait for the next pass. The mirror is
+built at the first tick after the script catalog has been read, with the Lua heap under 700 MB. It
+is checked whole, and the snapshot is written to
 `logs/stellarstellaris-modifier-nodes-shadow.tsv`. After each pass:
 
-1. the recomputed nodes are read again, with their parents;
+1. the rebuilt nodes are read again, with their parents;
 2. `mirror:assign` gives each to the mirror. A node whose own parts changed is a root of the
-   change. The others the game recomputed only because something above them changed, and the
+   change. The others the game rebuilt only because something above them changed, and the
    graph must arrive at their values by itself;
-3. the graph's values are compared with the game's for every recomputed node, every node the graph
-   marked that the game did not recompute, and a window of 400 other nodes in turn.
+3. the graph's values are compared with the game's for every rebuilt node, every node the graph
+   marked that the game did not rebuild, and a window of 400 other nodes in turn. A mismatch on a
+   node the game did not report is classified by a fresh read. With the same parts as when the
+   mirror last took it, the game did not rebuild it: the graph is ahead of the game. With other
+   parts, it is a missed rebuild, taken again and counted wrong if it still differs. A mismatch on
+   a rebuilt node is wrong: the graph's own error.
 
-The counts (passes, recomputed nodes, roots, relinks, the graph's marks and computes, mismatches
-by category) are logged every game month, and the first 60 mismatches as they are found.
+The counts (passes, rebuilt nodes, roots, relinks, the graph's marks and computes, ahead, missed
+and wrong by category) are logged every game month, and the first 60 mismatches as they are
+found.
 
-Status: built and installed in the game. It has not run over game time yet: the one load so far
-ran the machine out of commit memory (a `std::bad_alloc` in the game's `CBordersGraphics` on the
-first frame after the load, with 17 of 24.9 GB committed before the game started), with a capture
-running in the middle of the load. The `-continuelastsave` argument needs the launcher, and `quick=<save>`
-(RunGame -> `CFrontEndIdler::LaunchSave`) did not load the save either, so the save is loaded by
-hand.
+Runs so far (the 2211.07.01 autosave, 15,953 nodes):
+
+- The first run, with only the `Update` hook: the mirror is exact at the start (every node and
+  value). It took 0.3-0.6 s of Lua per game month against 491 game passes a month. It saw 130-170
+  rebuilds a month, only the direct calls, and drifted from the game for the rebuilds it did not
+  see, mostly fleets, starbases and pop groups. The registry scan of the passes came from this.
+  The measured counts in [modifiers.md](modifiers.md) used the same hook and undercount the
+  rebuilds the same way.
+- The second run crashed the game, and Windows' `dwm.exe` with it. The save was loaded while the
+  script catalog was still being read; the catalog ran the Lua heap out of memory ("script catalog
+  failed: not enough memory"). The shadow's hook then pushed onto the Lua stack outside a
+  protected call and raised LuaJIT's out-of-memory exception (`E24C4A04`) through
+  `CGameState::AfterCommandExecutedUpdate`. Hence `lua_cpcall` and the wait for the catalog.
+- An earlier load ran the machine out of commit memory, with 17 of 24.9 GB committed before the
+  game started: a `std::bad_alloc` in the game's `CBordersGraphics` on the first frame after the
+  load, while a capture ran in the middle of the load. The game itself, with StellarStellaris,
+  held 7.2 GB at the main menu.
+- Running the user's game rotates its autosaves out (one every 6 game months, 5 kept): runs stay
+  under 6 game months, with the save folder backed up first.
+
+The `-continuelastsave` argument needs the launcher, and `quick=<save>` (RunGame ->
+`CFrontEndIdler::LaunchSave`) did not load the save either, so the save is loaded by hand.
 
 ## Status
 
@@ -263,7 +293,7 @@ Implemented and tested offline:
 | `stellar.graph.modifiers` | definitions (modifiers.log, ModifierCategory), holders, sources, links with scale and mask, values on demand |
 | `stellar.graph.economy` | categories (pdxscript), generated names, the game's entry formula, triggers as inputs, units and totals |
 | `stellar.graph.nodes` | the game's whole node tree: captures read and written, holders, links with the game's fixed-point truncation, own sources, a node given again after a pass (`mirror:assign`), exact comparison |
-| `stellar.modifier_shadow` | the mirror beside the game's node system, checked after every pass (built, not yet run over game time) |
+| `stellar.modifier_shadow` | the mirror beside the game's node system, checked after every pass; mismatches classified as graph ahead, missed rebuild or wrong (one run over 17 game months before the pass scan) |
 
 `tools/graph_test.lua`: 19 tests (formulas, laziness, cutoff, delta drift, edges, cycles, needs,
 budgeted level order, the pending list, a randomized test of graph changes against a naive
