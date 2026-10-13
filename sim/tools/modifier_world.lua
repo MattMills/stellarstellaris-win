@@ -6,7 +6,7 @@
 --     STELLARIS_DIR   the game (default /opt/stellaris)
 --     STELLAR_SAVE    the save (default /opt/stellaris-saves/autosave_2211.07.01.sav)
 --     MODCHECK_NODES  the capture (default /opt/stellaris-captures/modifier-nodes-2211.07.01-edges.tsv)
---     MODCHECK_TYPES  its modifiers.log (default /opt/stellaris-captures/modifiers-2211.07.01.log)
+--     MODCHECK_TYPES  a modifiers.log to read the types from (default: made from the game's files)
 --
 -- Four graphs: (1) the world's structure with the capture's own parts (the structure on its own:
 -- every difference is a link or a filter), (2) the world's structure with the own parts
@@ -39,7 +39,7 @@ end
 local game_dir = env("STELLARIS_DIR", "/opt/stellaris")
 local save = env("STELLAR_SAVE", "/opt/stellaris-saves/autosave_2211.07.01.sav")
 local nodes_tsv = env("MODCHECK_NODES", "/opt/stellaris-captures/modifier-nodes-2211.07.01-edges.tsv")
-local types_log = env("MODCHECK_TYPES", "/opt/stellaris-captures/modifiers-2211.07.01.log")
+local types_log = env("MODCHECK_TYPES", nil)
 
 local function read(path)
     local f = assert(io.open(path, "rb"))
@@ -76,7 +76,11 @@ local structure = require("engine.modifiers.structure")
 local mw = require("engine.modifiers.world")
 
 local defs = gmod.definitions()
-defs:read_log(read(types_log))
+if types_log then
+    defs:read_log(read(types_log))
+else
+    defs:read_game(edefs.folder)
+end
 local snap = nodes.read_capture(read(nodes_tsv))
 local st = structure.new(world, edefs)
 print(string.format("capture %d nodes (children: %s); read in %.1f s", #snap.nodes, tostring(snap.has_children), os.clock() - t0))

@@ -7,7 +7,7 @@
 --     STELLAR_SAVE    the save (.sav, read with `unzip -p`, or a gamestate file;
 --                     default /opt/stellaris-saves/autosave_2210.01.01.sav)
 --     MODCHECK_NODES  the capture (default /opt/stellaris-captures/modifier-nodes-2210.tsv)
---     MODCHECK_TYPES  its modifiers.log (default /opt/stellaris-captures/modifiers-2210.log)
+--     MODCHECK_TYPES  a modifiers.log to read the types from (default: made from the game's files)
 --   categories: a comma-separated list (Country,Planet,Colony,PopGroup: the default)
 --
 -- The same check runs from Rust: `cargo test --release --test modifiers -- --nocapture`.
@@ -37,7 +37,7 @@ end
 local game_dir = env("STELLARIS_DIR", "/opt/stellaris")
 local save = env("STELLAR_SAVE", "/opt/stellaris-saves/autosave_2210.01.01.sav")
 local nodes_tsv = env("MODCHECK_NODES", "/opt/stellaris-captures/modifier-nodes-2210.tsv")
-local types_log = env("MODCHECK_TYPES", "/opt/stellaris-captures/modifiers-2210.log")
+local types_log = env("MODCHECK_TYPES", nil)
 
 local function gamestate(path)
     local f = io.open(path, "rb")

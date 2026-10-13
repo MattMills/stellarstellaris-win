@@ -584,6 +584,61 @@ test("modifier tree: fixed-point links truncate each entry, a pair linked twice"
     ok_check(g)
 end)
 
+test("modifier types: made from the databases (resources, economic categories, jobs)", function()
+    local pdxscript = require("pdxscript")
+    local files = {
+        ["common/strategic_resources"] = "energy = { }\nminerals = { }",
+        ["common/economic_categories"] = [[
+            planet_miners = {
+                generate_mult_modifiers = { produces }
+                generate_add_modifiers = { produces upkeep }
+                modifier_category = colony
+            }
+            ships = {
+                generate_mult_modifiers = { upkeep }
+                triggered_cost_modifier = { key = ship_early modifier_types = { mult } }
+                modifier_category = ship
+                triggered_cost_modifier = { key = ship_colonizer modifier_types = { mult add } }
+            }]],
+        ["common/pop_jobs"] = "miner = { } telepath = { can_be_automated = no }",
+    }
+    local function folder(name)
+        local out = {}
+        local tree = files[name] and assert(pdxscript.parse(files[name], name))
+        for _, e in ipairs(tree or {}) do
+            out[e.key.text] = { block = e.value, file = name .. "/00.txt", line = e.line }
+        end
+        return out
+    end
+    local defs = modifiers.game_definitions(folder)
+    local cats = function(name)
+        return defs.ids[name] and defs:categories(name) or 0
+    end
+    local AI, COLONY, SHIPS = 16777216, 1073741824, 16508
+    eq(cats("planet_miners_energy_produces_add"), AI + COLONY, "an add type, its category")
+    eq(cats("planet_miners_minerals_upkeep_add"), AI + COLONY, "upkeep add")
+    eq(cats("planet_miners_produces_mult"), AI + COLONY, "the category's own mult")
+    eq(cats("planet_miners_energy_upkeep_mult"), 0, "no upkeep mult")
+    eq(cats("ships_energy_upkeep_mult"), AI + SHIPS, "ships")
+    eq(cats("ship_early_energy_cost_mult"), AI + 524288, "triggered before the modifier category: Economic Units")
+    eq(cats("ship_colonizer_cost_mult"), AI + SHIPS, "triggered after it")
+    eq(cats("ship_colonizer_minerals_cost_add"), AI + SHIPS, "triggered add")
+    eq(cats("job_miner_automated_workforce_mult"), COLONY, "a job")
+    eq(cats("job_telepath_automated_workforce_mult"), 0, "a job that cannot be automated")
+    eq(cats("pop_telepath_workforce_mult"), 2, "its pop type")
+    eq(cats("shipsize_corvette_hull_add"), 0, "no ship sizes")
+    eq(cats("blank_modifier"), 2, "a type defined in code")
+    -- the order: a triggered modifier where it is declared, the category's own at its end
+    local at = {}
+    for i, t in ipairs(require("stellar.graph.modifier_types").generate(folder)) do
+        at[t[1]] = i
+    end
+    eq(at.ship_early_cost_mult < at.ships_energy_upkeep_mult and 1 or 0, 1, "triggered first")
+    eq(at.ship_colonizer_energy_cost_add + 1, at.ship_colonizer_energy_cost_mult, "add, then mult")
+    eq(at.planet_miners_energy_upkeep_add < at.planet_miners_minerals_produces_add and 1 or 0, 1,
+        "per resource, every kind")
+end)
+
 test("nodes: a capture rebuilt from its parts, with children and by content", function()
     local nodes = require("stellar.graph.nodes")
     local log = "- a, Category: Ships\n- b, Category: Countries\n- c, Category: Pops\n"
