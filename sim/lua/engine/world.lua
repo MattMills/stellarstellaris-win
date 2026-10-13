@@ -42,7 +42,7 @@ local function is_store(block)
 end
 
 world.entries = {}   -- store name -> { [id] = its entry in the tree (removal writes 'id = none') }
-world.blocks = {}    -- store name -> the tree's block that holds it (new objects are added there)
+world.store_blocks = {}  -- store name -> the tree's block that holds it (new objects are added there)
 
 local function add_store(name, block)
     local store, ids, entries = world.stores[name] or {}, world.ids[name] or {}, world.entries[name] or {}
@@ -55,7 +55,7 @@ local function add_store(name, block)
         end
     end
     world.stores[name], world.ids[name], world.entries[name] = store, ids, entries
-    world.blocks[name] = block
+    world.store_blocks[name] = block
 end
 
 -- world.load(text) -> true | nil, message
@@ -238,7 +238,7 @@ end
 -- world.create(kind, id, block): a new object in its store (and in the save, at the store's end)
 function world.create(kind, id, block)
     local name = world.KINDS[kind] or kind
-    local holder = world.blocks[name]
+    local holder = world.store_blocks[name]
     if not holder then
         return nil
     end
