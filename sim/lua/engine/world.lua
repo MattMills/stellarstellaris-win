@@ -23,6 +23,7 @@ world.KINDS = {
     fleet = "fleet", ship = "ships", system = "galactic_object", species = "species_db",
     army = "army", starbase = "starbases", federation = "federation", war = "war",
     deposit = "deposit", pop_job = "pop_jobs", megastructure = "megastructures", sector = "sectors",
+    situation = "situations", first_contact = "contacts",
 }
 
 local function is_id(text)

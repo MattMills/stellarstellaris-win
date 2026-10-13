@@ -334,7 +334,7 @@ block only when it has entries.
 | pop group `housing_usage` | daily, `CPopGroup::CalcHousingUsage` (`0x67fd60`): `max(0, size * (pop_housing_usage_base + pop_housing_usage_add) * m(pop_housing_usage_mult))` | `DailyUpdateOnlyChangeSafePrivate` (`0x676d10`) |
 | colony `housing_usage`, `free_housing`, `total_housing` | daily: the sum of its groups' usage (checked: 49 of 49 colonies), housing - usage; housing `planet_housing_add * (1 + planet_housing_mult)` (checked 49 of 49 **[I]**) | colony caches |
 | pop group `amenities_usage`, `happiness`, `power`, `crime`, `habitability` | daily, `DailyUpdateOnlyChangeSafePrivate` (`CalcAmenitiesUsage`, `CalcHappinessWithModifier`, `CalcCrime`, `NHabitability::CalcHabitability`; power through `ApplyModifierMult`) | not modelled |
-| pop group `fractions`, `factions`, `wanted_factions`, `ethics_attraction`, `total_attraction` | daily, factions (`CheckPopFactionChange`, `CalculateFactionChange`, `CPopGroup::DailyUpdateSerial`) | not modelled |
+| pop group `fractions`, `factions`, `wanted_factions`, `ethics_attraction`, `total_attraction` | daily, factions (`CheckPopFactionChange`, `CalculateFactionChange`, `CPopGroup::DailyUpdateSerial`) | [ethics.md](ethics.md): `ethos`, the attraction, `fractions` without factions (`engine/ethics.lua`) |
 | colony `amenities`, `free_amenities`, `amenities_usage`, `stability`, `crime`, `civilian`, `unemploy_pop` | daily / micro: `MicroUpdateCachedValues` (`CalcAmenities`, `CalcPlanetStability`, `CalcPlanetCrime`), `CalcCachedUnemployedPopStatus` | not modelled |
 | pop jobs `workforce`, the groups' categories | daily and monthly, `NPlanetJobs::UpdatePopJobs` | not modelled |
 

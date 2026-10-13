@@ -68,6 +68,21 @@ pub fn tick_of(gamestate: &str) -> Option<i32> {
     line[4..].trim_start()[1..].trim().parse().ok()
 }
 
+/// A top-level `key=value` of a gamestate (a key at the start of a line), the last one written.
+fn top_value<'a>(gamestate: &'a str, key: &str) -> Option<&'a str> {
+    let at = gamestate.rfind(&format!("\n{key}="))? + key.len() + 2;
+    let rest = &gamestate[at..];
+    Some(rest[..rest.find(['\n', '\r']).unwrap_or(rest.len())].trim())
+}
+
+/// The synchronized generator's state in a gamestate (`random_seed`, `random_count`: `CRandom::_Random`'s
+/// seed and position as `u32`).
+pub fn random_of(gamestate: &str) -> Option<(u32, u32)> {
+    let seed = top_value(gamestate, "random_seed")?.parse::<i64>().ok()? as u32;
+    let count = top_value(gamestate, "random_count")?.parse::<i64>().ok()? as u32;
+    Some((seed, count))
+}
+
 /// The save of 2210.01.01 (the modifier capture's): `STELLAR_SAVE`, else the first of the known
 /// places that has it; None when none does.
 pub fn default_save() -> Option<String> {

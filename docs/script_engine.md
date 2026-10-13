@@ -38,7 +38,9 @@ Every compiled trigger is in `CTriggerDatabase::_Triggers` (a robin hood set at 
 The game also documents all of this itself, at startup, in
 `Documents\Paradox Interactive\Stellaris\logs\script_documentation` (`triggers.log`,
 `effects.log`, `scopes.log` with the 99 scope links, `modifiers.log` with 45,583 modifiers,
-`localizations.log`): names, descriptions, syntax examples, supported and output scopes.
+`localizations.log`): names, descriptions, syntax examples, supported and output scopes. Their
+formats, writers and errors, and the mod that uses every keyword they list:
+[script_docs.md](script_docs.md).
 
 ## What Lua reads (`stellar.script.catalog`, `stellar.script.docs`)
 
@@ -267,7 +269,10 @@ The aim: do the script work in Lua, and keep the C++ engine for what only it can
   the pending change.
 - **Engine reads** (`has_technology`, `num_ships`, `is_planet_class`, ...): reads of the game
   database, through the FFI (`stellar.game`: the game state and its database), or by calling the
-  compiled native trigger while it is not ported.
+  compiled native trigger while it is not ported. In the simulation (`sim/lua`) they read the
+  save: [script_triggers.md](script_triggers.md) gives, for the triggers, iterators, links and
+  effects implemented from the disassembly, the game's class, the save fields it reads and its
+  edge cases (and how an `if` / `else` chain inside an `OR` evaluates).
 - **Speed** comes from what Lua can do that the C++ tree-walker does not: compile script to Lua
   functions LuaJIT traces, cache results per scope and tick (tooltips recomputing fleet modifiers),
   and skip work that cannot change. A shadow mode, running the Lua evaluation next to the native

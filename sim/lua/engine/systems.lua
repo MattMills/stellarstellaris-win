@@ -186,9 +186,11 @@ P["daily.script_state_expiry"] = function(host)
     each_object(other_stores(), count_down_flags)
     host.daily_script_state()
 end
--- CCountry::DailyUpdateSelfDontReadOthers: the timed modifiers
+-- CCountry::DailyUpdateSelfDontReadOthers: the timed modifiers; CCountry::DailyUpdateOnlyChangeSafePrivate:
+-- every 30 days a country's ethics attraction (engine.ethics: UpdateCountryEthicsSafePrivate, no draws)
 P["daily.countries_parallel"] = function(host, date)
     each_object({ "country" }, count_down_modifiers)
+    call_optional("engine.ethics", "countries_daily", host, date)
 end
 -- NColonyUpdate::DailyParallelUpdate: the timed modifiers; the colonies' own day (engine.colonies,
 -- once it is there: stability, amenities, happiness, crime, ...)
@@ -206,7 +208,12 @@ end
 -- CCountry::DailyUpdateSerial: the country's events, then (after diplomacy and elections) its
 -- research (engine.research)
 P["daily.countries_serial"] = function(host, date)
-    each_country(function(id) host.scope_daily_events("country", id) end)
+    each_country(function(id)
+        -- CCountry::UpdateContacts -> CFirstContactsData::DailyUpdate: the country's first
+        -- contacts (engine.first_contact), before its events
+        call_optional("engine.first_contact", "country_daily", host, date, id)
+        host.scope_daily_events("country", id)
+    end)
     require("engine.research").daily(host, date)
 end
 -- NColonyUpdate::DailySerialUpdate: the planets' daily events; the colonies' serial day
@@ -238,10 +245,20 @@ P["monthly.budget"] = function()
         systems.ran["monthly.budget (economy)"] = (systems.ran["monthly.budget (economy)"] or 0) + 1
     end
 end
--- CCountry::MonthlyUpdateSerial: the leaders' experience (engine.leaders), the monthly pulse
-P["monthly.countries_serial"] = function(host)
+-- CCountry::MonthlyUpdateStrategy (before it, in the game a parallel pass after the budget): the
+-- AIs' strategic data (engine.ai.strategy); then CCountry::MonthlyUpdateSerial: the leaders'
+-- experience (engine.leaders), the monthly pulse
+P["monthly.countries_serial"] = function(host, date)
+    -- the situations' monthly progress (engine.situations: the game's parallel lambda right after
+    -- the budget, before the strategy pass; no draws)
+    call_optional("engine.situations", "monthly_progress", host, date)
+    call_optional("engine.ai.strategy", "monthly", host, date)
     require("engine.leaders").monthly()
-    each_country(function(id) host.on_action("on_monthly_pulse_country", "country", id) end)
+    each_country(function(id)
+        -- CCountryEventManager::MonthlyUpdateSerial: the country's situations, before its pulse
+        call_optional("engine.situations", "country_monthly", host, date, id)
+        host.on_action("on_monthly_pulse_country", "country", id)
+    end)
 end
 -- NColonyUpdate::MonthlyUpdate: growth and decline of the colonies' pops (engine.pops, once it is
 -- there)
@@ -266,9 +283,23 @@ P["daily.pop_groups"] = function(host, date)
     if call_optional("engine.colonies", "pop_groups_daily", host, date) then
         ran = true
     end
+    -- the pop groups' ethics drift and faction-change remnant (engine.ethics: EthicChangeSafePrivate,
+    -- CheckPopFactionChange, then CPopGroup::DailyUpdateSerial's ethics part; the day's pool, no
+    -- global draws: OnEthicsDivergence's two are counted, not made, until a serial pop group phase)
+    if call_optional("engine.ethics", "pop_groups_daily", host, date) then
+        ran = true
+    end
     if not ran then
         systems.not_modelled["daily.pop_groups"] = (systems.not_modelled["daily.pop_groups"] or 0) + 1
     end
+end
+-- CGameState::MicroUpdate, every tick: movement and combat are not modelled, but the ship pool is
+-- drawn as the game draws it (UpdateShipParallel: CRandom::GetIntegersForMacro of one value per
+-- live ship, every entry of the ships store, after the fleet phase), so the stream's position
+-- stays the game's. Its values seed only the ships whose fleet is in combat (headless/README.md,
+-- "The random pools, traced"): with no combat modelled, the draws are skipped, not made.
+P["micro.update"] = function()
+    RUST.skip(#world.all("ship"))
 end
 -- CGameState::ProcessAI: the AI's decisions (engine.ai, once it is there; docs/ai.md)
 P["ai.process"] = function(host, date)

@@ -58,6 +58,10 @@ day, `sim/src/scheduler.rs` phase `ai.process`); the engine in section 6.
   acceptance` over every action and country it can propose to); it answers proposals after a
   7-day cooldown with a daily roll; acceptance is C++ per action type (`Get*Acceptance`, the
   tooltip terms and `NAI` defines) plus the script's `ai_acceptance` **[V]**.
+- **Strategic data** (the save's `ai.strategy` lists, section 9): rebuilt from the world on every
+  calendar month for every AI (`CCountryAI::CreateStrategicData`): systems to explore, planets to
+  terraform, stations to build, systems to expand to, colony targets (the synced AI random), ships
+  and armies to build, the military minister's targets. Nothing in them carries over a month.
 - **Porting order** (section 7): the AI state and its RNGs first, then research (simple, daily,
   checkable on every save), then opinion and attitudes (deterministic, saved), then the war
   preparation decision, then diplomacy and acceptance, then the budget and the economy; fleets
@@ -117,7 +121,9 @@ Other parts of the AI run outside `ProcessAI`, in the game's own phases:
 
 - `CCountryAI::UpdateAttitudesThreaded` (`0xb7ab60`) is phase 2 of `DailyUpdate`, and
   `MonthlyUpdateStrategy` / `MonthlyCopyAttitudes` run in parallel in `MonthlyUpdate` (simulation.md
-  section 1) **[V]** (call sites); the attitudes are section 3.
+  section 1) **[V]** (call sites); the attitudes are section 3. `MonthlyUpdateStrategy` rebuilds
+  every AI's strategic data (`CCountryAI::CreateStrategicData`, the save's `strategy` lists) on the
+  calendar month, not the AI's own month: section 9.
 - `ShouldAIAccept`, `GetAIAcceptance` also run when a proposal to an AI is processed.
 - The commands execute in `ProcessSynchronousCommands` of the next tick, serially, and may draw
   the global `CRandom` there (e.g. `CAIPrepareWarCommand::Execute`).
@@ -130,7 +136,7 @@ Other parts of the AI run outside `ProcessAI`, in the game's own phases:
 | `building`, `station`, `prepare_war`, `war`, `deficit_spending`, `colonize`, `navy_depleted`, `can_build_robots`, `need_strategic_war_data`, `is_in_stale_war`, `dirty_expand_strategy`, `ai_death_spiral`, `ai_module_composition_changed` | `_Flags` (`EAICountryFlags` bits 0-8, 10-13) | written only when set (`colonize=yes` is `HasCreatedColonizeData`) |
 | `budget` | `_Budget` | 4 numbers |
 | `extra_attacker` | `_ExtraAttackers` `+0x3d0` | allies picked for the prepared war |
-| `strategy = { id target value type }` | `CAIStrategicBase` strategies | 14 of 55 AI countries have them |
+| `strategy = { id target value type }` | `CAIStrategicBase` lists (section 9) | the 12 default empires and the 2 fallen empires have them (about 15,700 in 2210.01.01) |
 | `prepare_war_date_start`, `prepare_war_date` | `_PrepareWarDateStart` `+0x3f8`, `_PrepareWarDateEnd` `+0x3fc` | |
 | `target` | `_Target` `+0x400` | war preparation target, 4294967295 = none |
 | `nemesis` | `_Nemesis` `+0x478` | |
@@ -298,7 +304,7 @@ is one draw of the unsynced AI random per candidate that passes the gates, in re
    if CCountryAI::HasPotentialBorderExpansion (0xb70890):
        if colonies < MAX_PLANETS_FOR_BUDGET_FACTOR (3): x = x / (3 - colonies)   (integer division)
            then if truce: x = x / AI_AGGRESSIVENESS_BOXED_IN_MULT
-       elif the AI's strategy list 1 (CAIStrategicBase::GetStrategy(1), colony targets [I]) is not empty:
+       elif the AI's strategy list 1 (CAIStrategicBase::GetStrategy(1), STRATEGY_COLONIZE, section 9) is not empty:
            if truce: x = x / AI_AGGRESSIVENESS_BOXED_IN_MULT
        elif truce: x = x / AI_AGGRESSIVENESS_BOXED_IN_MULT
        else:       x = x * AI_AGGRESSIVENESS_NO_COLONY_TARGET_MULT (2)
@@ -711,8 +717,9 @@ built to fill fleet templates (`CAIMilitaryMinister::ReinforceFleetGroups`,
 `CCreateOrUpdateShipDesignCommand` **[V]** (calls) / **[I]** (the roles). Colonization targets come
 from `CCountryAI::CreateColonizeData` (`0xb6f280`), which draws the **synced** AI random
 (`AddColonyData` -> `GetRandomIntSynced`). `HasPotentialBorderExpansion` (`0xb70890`, used by the
-war aggressiveness) = `ai.colonizer` and (strategy list 19 not empty or fewer than
-`AI_BUDGETING_START_YEARS` (15) years since `START_YEAR`) **[V]**.
+war aggressiveness) = `ai.colonizer` and (strategy list 19, `STRATEGY_EXPAND_BORDERS`, not empty
+or fewer than `AI_BUDGETING_START_YEARS` (15) years since `START_YEAR`) **[V]**. The colonization
+targets are list 1 of the strategic data, built monthly by `CreateColonizeData` (section 9).
 
 ## 6. Fleets (decision structure) **[V]** (names, calls)
 
@@ -787,7 +794,8 @@ groups are committed when their power reaches `CalcWantedFleetPower` (`ENEMY_FLE
 | module | contents | game functions |
 |---|---|---|
 | `init.lua` | `ProcessAI`: the per-country loop, counters, module order, command list; the attitude phase hook | `CGameState::ProcessAI`, `CAICore::Update`, `CCountryAI::Update/DailyUpdate` |
-| `state.lua` | read and write the save's `ai` block; flags; strategy lists; `last_diplo_actions` expiry | `CCountryAI::ReadMember/WriteMembers` |
+| `state.lua` | read and write the save's `ai` block; flags; `last_diplo_actions` expiry | `CCountryAI::ReadMember/WriteMembers` |
+| `strategy.lua` | the strategic data (the save's `strategy` lists), monthly; written in the save's form (section 9) | `CCountryAI::CreateStrategicData`, `CreateColonizeData`, `CAIStrategicBase` |
 | `rng.lua` | the two AI generators, weighted pick (`GetWeightedRandomInternal`) | `CAICore::GetRandomInt`, `GetRandomIntSynced` |
 | `research.lua` | tech choice | `GetTechToResearch`, `GetAIWeight` |
 | `opinion.lua` | opinion of one country for another (shared with the script layer's `opinion` trigger) | `CalcOurOpinionOfOther` |
@@ -853,9 +861,9 @@ each day, giving the number of draws per day and phase to compare with the Lua A
 - Which other daily handlers draw from the unsynced stream (the interior minister's daily
   `BuildArmies`, `HandleSpecialProjects`, colonization; `HandleRelations` does not draw itself, but
   calls `IsTimeToRespond`).
-- The strategy list kinds (`CAIStrategicBase`, 33 lists; 1 is read as colony targets and 19 as
-  border expansion targets in the war code) and how the save's `strategy = { id target value type }`
-  maps to them.
+- ~~The strategy list kinds and how the save's `strategy = { id target value type }` maps to
+  them~~: answered in section 9 (list `t` is `STRATEGIC_DATA_TYPES` value `t`; 1 is
+  `STRATEGY_COLONIZE`, 19 `STRATEGY_EXPAND_BORDERS`; `id` is the object, not a counter).
 - The budget's second pass (what the clamps leave), what `UpdateUpkeepBudget` splits, and the
   economic plan choice (`CalcBestEconomicPlan`).
 - The war goal used by `IsReadyForWarWith` for the estimate: the first `CWarGoalType` with the
@@ -864,4 +872,218 @@ each day, giving the number of draws per day and phase to compare with the Lua A
   with a runtime probe before copying it.
 - `CalcBestPeaceOffer`: the preference between the offers and what the duplicated probes are.
 - Whether `CCountryAI::Start` or the first `CAIUpdateStrategicData` after a load draw from either
-  stream.
+  stream: `Start` (`0xb6d7e0`) is `RefreshModules` and the started flag, no draw **[V]**;
+  `CreateStrategicData` draws the synced stream in `AddColonyData` only (section 9), the military
+  minister's `RandomizePriority` aside.
+
+## 9. Strategic data (the save's `ai.strategy` lists) **[V]**
+
+The AI's strategic data is 33 lists of (id, target, value) built again from the world once a
+month; the save writes them, but nothing in them carries over a month. Read in full for the parts
+ported to `sim/lua/engine/ai/strategy.lua` (`CreateStrategicData`, `CreateColonizeData`'s lists 2
+and 23, the bordering and distance helpers); the other builders by their calls.
+
+### Classes and layouts
+
+- `CAIStrategicBase` (800 bytes, vtable `0x25514d0`), a base of `CAICore` and so of `CCountryAI`:
+  `_StrategyData` at `+0x8` is 33 `CPdxArray<CAIStrategy*>` of 24 bytes; list `t` is at
+  `+0x8 + 24 t` (`GetStrategy`, `0x1af290`), its data pointer at `+0x10 + 24 t`, its size at
+  `+0x1c + 24 t`. In `CCountryAI` the lists start at `+0x20` (list 1 at `+0x20`, 2 at `+0x38`, 3 at
+  `+0x50`, 19 at `+0x1d0`, 23 at `+0x230`, ...).
+- `CAIStrategy` (16 bytes, `operator new` per entry): `+0x0 _nVal` (int), `+0x4 _nTarget` (uint),
+  `+0x8 _nID` (uint), `+0xc _Token` (a token: `none` 357, `planet` 10777, `astral_rift` 16935).
+- The virtual functions (on `CCountryAI`'s `CAICore` vtable `0x23b7138`: `+0x8`, `+0x10`, `+0x18`,
+  `+0x20`):
+  - `AddStrategy(type, id, target, value, bNoMerge, token)` (`0x1af9870`): `type > 32` is ignored;
+    unless `bNoMerge`, the first entry with the same id, target and token gets `value` added and is
+    removed (swapped with the last) when it falls below 1; otherwise, when `value > 0`, a new entry
+    is appended. Every builder below passes `bNoMerge = true`, except the interior minister's
+    (list 31).
+  - `RemoveStrategy(type, id, target)` (`0x1af97f0`): the first match, swapped with the last.
+  - `GetStrategyValue(type, id, target)` (`0x1af9980`): the value of the first entry with that id
+    and target (any target when `target = -1`), else 0.
+- `STRATEGIC_DATA_TYPES` (the PDB's enum): 0 CONQUER, 1 COLONIZE, 2 EXPLORE, 3
+  BUILD_ORBITAL_STATION, 4 ANTAGONIZE, 5 BEFRIEND, 6 PROTECT, 7 INFLUENCE, 8 ALLIANCE, 9 BUILD_SHIP,
+  10 BUILD_ARMY, 11 BUILD_BUILDING, 12 RESEARCH_TECH, 13 GARRISON, 14 HOSTILE_FLEETS, 15
+  HOSTILE_COUNTRY_FLEET_SYSTEMS, 16 CONTAIN, 17 INVADE, 18 ATTACK, 19 EXPAND_BORDERS, 20 UNIT_RATIO,
+  21 UNIT_BASE, 22 DESTROY, 23 TERRAFORM, 24 EXPLORE_BYPASS, 25 DEFEND, 26 FOLLOW, 27 VISIT_CAPITAL,
+  28 GATHER_FOR_WAR, 29 LOCK_BYPASS, 30 SCRIPTED_ACTION, 31 POI_SYSTEMS, 32 RAID.
+
+### The save's form
+
+`CCountryAI::WriteMembers` (`0xb73e50`): for `t = 0 .. 32`, a copy of list `t` stable-sorted by
+(`_nID`, `_nTarget`), unsigned, each entry written through a `CAIStrategyReader` (`0xb6c7b0`):
+`id` = `_nID`, `target` = `_nTarget`, `value` = `_nVal`, `type` = `t`; the token is not written.
+The `strategy` entries come after `budget` (and `extra_attacker`), before
+`prepare_war_date_start`. `CCountryAI::ReadMember` (`0xb759a0`, key `strategy`) reads one into a
+`CAIStrategyReader` (`0xb6c730`) and calls `AddStrategy(type, id, target, value, bNoMerge = true,
+none)`. So the save's order is the sort's, not the creation order, and **`id` is not a counter**: it
+is the object of the entry (a system, a planet, a ship size, an army type...), `target` its
+qualifier (a station's ship class, a colonizing species, a bypass index), `value` the weight.
+
+In 2210.01.01 (15,714 entries, the 12 default empires and the 2 fallen empires; every other AI has
+none): 23 (TERRAFORM, the two fallen empires: 4,981 and 4,898 planets) 9,879; 2 (EXPLORE, about 470
+systems per empire) 5,633; 3 (BUILD_ORBITAL_STATION) 114; 19 (EXPAND_BORDERS) 38; 9 (BUILD_SHIP)
+29; 10 (BUILD_ARMY) 12; 14 (HOSTILE_FLEETS) 6; 1 (COLONIZE) 3.
+
+### When it runs
+
+- **Monthly, every country**: `CGameState::MonthlyUpdate` (`0x261620`), after the budget and the
+  countries' parallel update (`MonthlyUpdateSelfDontReadOthers`) and before
+  `MonthlyCopyAttitudes` and `CCountry::MonthlyUpdateSerial`, runs
+  `ParallelFor<CCountry::MonthlyUpdateStrategy>` (functor `0x2c8ed0`, call at `0x261cfb`) with
+  random draws forbidden, over the game state's country list: for each valid country whose AI
+  answers vfunc `+0x98` (always true for `CCountryAI`), the attitudes array `+0x488` is copied to
+  `+0x4a0` and `CreateStrategicData` (vfunc `+0x70`) runs. It is the calendar month, not the AI's
+  own month counter, and it includes the players' countries (they have an AI object). A
+  (countries + 1)^2 int table filled with `INT_MAX` is installed as a shared cache for the pass.
+- **When the war state changes**: `CCountryAI::DailyUpdate` posts `CAIUpdateStrategicData` when
+  the country's at-war state differs from the `InWar` flag; its `Execute` (`0x6c5380`) calls
+  `CreateStrategicData`.
+- **The effect** `run_ai_strategic_data` (`CRunAIStrategicDataEffect::ExecuteActual`,
+  `0x174dd60`).
+- **Not at load**: the lists come from the save; `CCountryAI::Start` only refreshes the modules.
+
+### `CCountryAI::CreateStrategicData` (`0xb6e0a0`)
+
+```
+country not alive: _bInitializedStrategy (+0x379) = 1, return
+if the type has relations = yes (ECountryTypeFlags Relations, bit 7):
+    InWar flag (8) = the country's war count (CCountry +0x2bb4) != 0
+    CreateBudget (vfunc +0x78)
+    the economy module present: CreateNavyBuildData (list 9), CreateArmyBuildData (list 10)
+    if  CCountry +0x30e8 (_pCrisisProgression) is set
+     or id % 12 == CGameState +0x128 (the month of the year, 0-based, set from GetMonthOfYear in
+        HandleTurnTick 0x252ced)
+     or year - START_YEAR < AI_BUDGETING_START_YEARS (15)
+     or not HasCreatedColonizeData (32)
+     or DirtyExpandStrategy (2048):
+        flags = (flags & ~DirtyExpandStrategy) | HasCreatedColonizeData;  CreateColonizeData
+    CreateConquerData (list 0)
+else if the type's ai.limited_military_construction (SCountryAISettings bit 17): CreateNavyBuildData
+flags &= ~NeedStrategicWarData (256)
+each module: vfunc +0x20 (CreateStrategicData)
+_bRecalculateStrategy (+0x37b) = 0, _bInitializedStrategy (+0x379) = 1
+```
+
+So until 2215 every `relations = yes` AI rebuilds its colonize lists every month; afterwards once a
+year (in the month `id % 12`) unless something marks them dirty.
+
+### `CCountryAI::CreateColonizeData` (`0xb6f280`)
+
+Clears lists 2, 24, 1, 19, 3, 23, 29, then:
+
+```
+A[planet]   surveyed: everything when the type is not needs_survey (ECountryTypeFlags bit 21),
+            else NAIUtil::ListSurveyed (0xba2b30): _SurveyedDepositHolders (+0x1990, save
+            surveyed_deposit_holders, the type 0 = planet entries), _ControlledPlanets (+0x2718,
+            controlled_planets) that have a colony, the planets of _OwnedColonies (+0x26b8,
+            owned_planets)
+B[system]   _SystemsWithinBorder (border manager +0x8, CCountry +0x2ea0)
+C[country]  the countries on the other side of our wars (CCountry +0x2ba8 / +0x2bb4)
+colonizer   the type's ai.colonizer (bit 2) and the personality not `limited`
+            (SPersonalityBehaviour +0x1d)
+terraform   CTechnologyStatus::HasFeatureFlag(build_terraform_station) (the techs' feature_flags,
+            _FeatureFlags +0xf0; tech_terrestrial_sculpting, tech_wilderness_terraform)
+capital     the capital colony's carrier's system
+D           the planet classes nobody can live on, found so far
+for each system of the game state (+0x590), in order:
+    owner = the system's owner (CGalacticObject +0x1370)
+    skip if owner is valid and in C; skip unless CCountry::HasAccess(owner, 3) (true for no owner
+    and for us); skip if owner is valid and not us
+    bordering = colonizer and CalcIsBorderingSystem(system, 0, true)
+    if a planet of the system is a star (CPlanetClass settings bit 10, IsStar), the first such
+    planet S; then each planet P of the system (+0x498):
+        not A[P]: unsurveyed = true; next
+        not colonizer: terraform -> AddStrategy(23, P, 0, 1, none); then the station check
+        colonizer:
+            should_colonize_use_terraform (game rule; wilderness empires):
+                CanTerraformPlanet and ShouldColonizePlanet -> (23, P, 0, 1); next planet
+                else the station check
+            P's class in D, or not CPlanet::CanColonize: terraform -> (23, P, 0, 1); station check
+            not NAIUtil::ShouldColonizePlanet: station check
+            AddColonyData(P) (below): an entry -> next planet; none -> class into D, station check
+        station check, own systems only:
+            CDepositHolder::CanBuildStation(P, observation station class 9) -> (3, P, 9, 1, planet)
+            else P not colonizable (CDepositHolder vfunc +0xa0), with deposits, the first one's
+            station class (CDepositType +0x1a8: 5 mining, 6 research; 14 none) not none, and
+            CanBuildStation(P, class) -> (3, P, class, 1, planet)
+    own systems: each astral rift (+0x540) without a station: (3, rift, class, 1, astral_rift)
+    each natural wormhole (+0x528): its bypass, when NeedsExploration and usable -> (24, system,
+        index, max(AI_MAX_DISTANCE - distance(capital) / 100000, 1))
+    own systems with IsDimensionalLockAvailable: each bypass (+0x5b0) of a type with +0x634 ->
+        (29, system, index, DIMENSIONAL_LOCK_AI_WEIGHT_* by distance and the other owner's
+        rivalry, war, closed borders, alliance, no owner)
+    expand: e = colonizer and S valid and no unsurveyed planet and no owner and not B[system]
+        (own systems without a primary starbase also qualify); CanBuildStation(S, starbase class 10)
+        and ShouldExpand(system, &v) (EXPANSION_OWN_PRIORITY for an own system without a starbase,
+        else NAIUtil::ShouldBuildStarbase and NAIUtil::CalcExpansionValue) -> (19, S, 0, v)
+    explore: unsurveyed and colonizer ->
+        j = 0 for the capital's system, else the bypass path's jumps when the country has usable
+            bypasses (CCountry::GetBypassPathInfoInternal<..., StaticCostFunc>, 0x764a50), else
+            CGalacticDistanceCache::GetHyperlaneJumps (0xa52140: the jumps of the shortest path
+            by hyperlane length, built by BuildHyperlaneDistances 0xa521b0), 65535 without a path
+        v = max(AI_MAX_DISTANCE (200) - j, 1)
+        bordering: v *= IsBorderingOnlyOurSystemsUsingHyperlanes (0xa0f670) ? 5 : 2
+        AddStrategy(2, system, 0, v, none)
+```
+
+`CCountryBorderManager::CalcIsBorderingSystem(system, mode 0, owner check)` (`0xa0e850`): true for
+our system; a system of another owner only when it is on that owner's `_SystemsOnTheBorder`;
+then true when a hyperlane neighbour is ours, or (mode 0) a bypass of the system usable by us
+(`CBypass::CanBeUsedInPathfind`) is connected to a usable bypass in a system of ours; bypasses of
+the type `CBypassTypeDatabase +0x88` are skipped. `IsBorderingOnlyOurSystemsUsingHyperlanes`:
+every hyperlane neighbour ours.
+
+`CCountryAI::AddColonyData` (`0xb6e2b0`, list 1, **the synced AI random**): for each colonizer
+species (`CCountry::ListColonizerSpecies`) allowed to colonize (species rights),
+`score = NHabitability::CalcHabitability x (planet size + 25)`; when `score / 4 > 0` one draw of
+`CCountryAI::GetRandomIntSynced` adds `(r % (score / 4))`; the best species becomes the entry
+`(1, planet, species, value)` (the value's formula not traced **[I]**). So the synced stream advances every month by one draw per colonizer
+species per candidate planet. In the saves `synced_random_count` grows by 0 to 34 per default empire
+in 180 days (16777224: 0; 16777221: 30).
+
+### The other builders (not ported)
+
+| list | builder | what it needs |
+|---|---|---|
+| 0 | `CCountryAI::CreateConquerData` (`0xb6e970`): systems to claim, `CalcStrategicValue` (`0xb6ef20`) | claims (`CGameRules::CanAddClaim`), intel, attitudes |
+| 9 | `CCountryAI::CreateNavyBuildData` (`0xb72c10`): per ship size, the ships wanted (`CalcBuildableShipsAndDesiredFractions`, `SetNumWantedShips`) less the owned and queued | ships, designs, construction queues |
+| 10 | `CCountryAI::CreateArmyBuildData` (`0xb73120`): per army type (`CArmyType::PotentialBuildBy`), from pops, colonies' queued armies, transport fleets | armies, army types, fleets |
+| 3, 19 | `CreateColonizeData`'s station and expansion parts | `CDepositHolder::CanBuildStation` (`0xd949f0`: the latest orbital design of the class, `CPlanet::CanBuildStation` `0xe00c90`, the hideable and non-hideable checks, `can_planet_support_orbital_stations`), `NAIUtil::ShouldBuildStarbase` (`0xba4fa0`), `CalcExpansionValue` (`0xba5390`) |
+| 1 | `AddColonyData` | `CPlanet::CanColonize` (`0xdfff10`), `NAIUtil::ShouldColonizePlanet` (`0xba4df0`), habitability, the synced draw |
+| 6, 14, 15, 17, 18, 22, 25, 26, 28, 30, 32 | `CAIMilitaryMinister::CreateStrategicData` (`0xbfbd00`): clears them, then `CreateHostileFleetData` (14), `CreateHostileCountryFleetSystemData` (15), `CreateRelationStrategyData` (17, 18, 28), `CreateScriptedOrdersStrategyData` (30), and the policy's offensive and defensive strategies (6, 16, 17, 18, 25; `RandomizePriority`, synced) | fleets, wars |
+| 31 | `CAIInteriorMinister::CreateStrategicData` (`0xbb4ea0`): each point of interest (`CCountry +0x2500`) with a location: `(31, system, 0, 1)`, merged | points of interest |
+
+Readers: `PrepareWar` (list 1, section 2), `HasPotentialBorderExpansion` (list 19), the military
+minister's targets, the interior minister's colonization and starbases.
+
+### In Lua (`engine/ai/strategy.lua`)
+
+`strategy.monthly(host, date)` is called first in `monthly.countries_serial` (`systems.lua`), which
+is where `MonthlyUpdateStrategy` sits in the game's month (after the budget, before
+`MonthlyUpdateSerial`); no new phase is needed. For every country with an `ai` block it clears
+`need_strategic_war_data` and `recalculate` and sets `initialized`; for a `relations = yes` type
+whose colonize data is due (the rule above) it rebuilds lists 2 and 23, keeps the other lists as
+they are, sets `colonize` and clears `dirty_expand_strategy`, and writes the lists back in the
+save's order. `strategy.compare()` checks the ported lists against the world's (a loaded save).
+`STELLAR_AI_STRATEGY=off` keeps the lists as loaded (A/B).
+
+Implemented locally (the script layer has no equivalent): the galaxy index (planets per system, the
+star planet, hyperlanes, bypass systems), the hyperlane jumps (a Dijkstra by `length`, ties to the
+fewer jumps), `ListSurveyed`, `HasFeatureFlag` (the researched techs' `feature_flags`; every tech
+for an `all_technology_module` type), the two bordering checks (the bypass part approximated by the
+country's `usable_bypasses`), the capital's system. The InWar flag is not written (wars are not
+modelled), the bypass A* for countries with usable bypasses is not (no colonizer has one in the 2210
+to 2212 saves), nor the colonizers' list 23 (no colonizer has `build_terraform_station` there).
+
+**Checks** (probe `strategy.compare()` on each autosave, at load): lists 2 and 23 equal the game's,
+entry for entry, in all six saves: 2210.01.01 15,512 of 15,512 (2: 5,633, 23: 9,879); 2210.07.01
+15,336; 2211.01.01 15,223; 2211.07.01 15,050; 2212.01.01 14,931; 2212.07.01 14,780. Over 180 days
+the module changes nothing in the diff (2210.01.01 -> 2210.07.01 and 2211.07.01 -> 2212.01.01, with
+and without it: the same counts): its inputs do not move in the simulation. What moves them in the
+game is surveying (`surveyed_deposit_holders`, science ships), outposts (system ownership, from the
+starbases: 5 new in 180 days), colonies, and the capital: fleets and construction. The diff
+compares the lists by position, so one system surveyed early in a list shifts every later entry:
+the game's lists 2 and 23 lose 58 and 118 entries between 2210.01.01 and 2210.07.01, and the diff
+counts 14,729 `ai.strategy.id` differences.

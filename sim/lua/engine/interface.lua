@@ -403,6 +403,43 @@ end
 DERIVED.country.is_criminal_syndicate = function(c)
     return SETS.country.has_civic(c, "civic_criminal_heritage") and "yes" or "no"
 end
+-- is_ai (CAiTrigger 0x1949750: no player controls the country): not in the save's `player = { {
+-- name country } }` list (every country's `ai = { initialized = yes }`, the player's too)
+local humans
+local function is_human(id)
+    if humans == nil then
+        humans = {}
+        for _, e in ipairs(world.tree or {}) do
+            if e.op and e.key and e.key.text == "player" and e.value.text == nil then
+                for _, p in ipairs(world.blocks(e.value)) do
+                    local c = tonumber(world.field(p, "country"))
+                    if c then humans[c] = true end
+                end
+            end
+        end
+    end
+    return humans[id] == true
+end
+DERIVED.country.is_ai = function(c, id) return is_human(id) and "no" or "yes" end
+-- is_subject / is_overlord / has_federation: the country's `overlord`, `subjects`, `federation`
+local function ref(v)
+    v = tonumber(v)
+    return (v and v ~= 4294967295) and v or nil
+end
+DERIVED.country.is_subject = function(c)
+    local o = ref(world.field(c, "overlord"))
+    return (o and obj("country", o)) and "yes" or "no"
+end
+DERIVED.country.is_overlord = function(c)
+    for _, s in ipairs(world.list(world.field(c, "subjects"))) do
+        if obj("country", tonumber(s)) then return "yes" end
+    end
+    return "no"
+end
+DERIVED.country.has_federation = function(c)
+    local f = ref(world.field(c, "federation"))
+    return (f and obj("federation", f)) and "yes" or "no"
+end
 -- E.federation_of(country id): its federation's id, or nil
 E.federation_of = function(id)
     local f = tonumber(world.field(obj("country", id), "federation"))
@@ -415,6 +452,453 @@ end
 -- has_unlocked_all_traditions (engine.traditions)
 E.unlocked_all_traditions = function(id)
     return require("engine.traditions").unlocked_all(id)
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- diplomacy: a country's relations (`relations_manager = { relation = { owner country <flag>=yes
+-- ... } }`, CRelation::WriteMembers 0x669d30: each bit of the relation's flags is written as
+-- `<name> = yes`)
+
+-- E.relation(country, other) -> the country's relation block towards other, or nil
+E.relation = function(country, other)
+    local rm = world.field(obj("country", country), "relations_manager")
+    for _, r in ipairs(world.fields(rm, "relation")) do
+        if type(r) == "table" and tonumber(world.field(r, "country")) == other then
+            return r
+        end
+    end
+    return nil
+end
+-- E.relation_flag(country, other, name): the relation's `name = yes`
+E.relation_flag = function(country, other, name)
+    local r = E.relation(country, other)
+    return r ~= nil and world.field(r, name) == "yes"
+end
+-- E.relations(country) -> the ids of the countries it has a relation with that exist
+-- (CRelationListBuilder::BuildIDArray 0x1812e00)
+E.relations = function(country)
+    local out = {}
+    local rm = world.field(obj("country", country), "relations_manager")
+    for _, r in ipairs(world.fields(rm, "relation")) do
+        local other = type(r) == "table" and tonumber(world.field(r, "country"))
+        if other and obj("country", other) then
+            out[#out + 1] = other
+        end
+    end
+    return out
+end
+-- E.num_communications(country): its relations with an existing country and `communications = yes`
+-- (CNumCommunicationsTrigger::GetTriggerValue 0x198df10: bit 3 of the relation's flags)
+E.num_communications = function(country)
+    local n = 0
+    local rm = world.field(obj("country", country), "relations_manager")
+    for _, r in ipairs(world.fields(rm, "relation")) do
+        local other = type(r) == "table" and tonumber(world.field(r, "country"))
+        if other and obj("country", other) and world.field(r, "communications") == "yes" then
+            n = n + 1
+        end
+    end
+    return n
+end
+-- E.has_waystation_pact(country, other) (CRelation::HasWaystationPact 0x66bd00): the relation's
+-- `waystation_pact = yes` (bit 27), or both in the same federation whose settings grant the pacts
+-- (`federation_progression = { waystation_pact = yes }`, set by set_federation_settings)
+E.has_waystation_pact = function(country, other)
+    if E.relation_flag(country, other, "waystation_pact") then
+        return true
+    end
+    local f = E.federation_of(country)
+    if not f or f ~= E.federation_of(other) then
+        return false
+    end
+    return world.path(obj("federation", f), "federation_progression", "waystation_pact") == "yes"
+end
+-- E.federation_leader(country) -> the `leader` of the country's federation, or nil without one
+E.federation_leader = function(country)
+    local f = E.federation_of(country)
+    local fo = f and obj("federation", f)
+    return fo and (ref(world.field(fo, "leader")) or -1) or nil
+end
+-- E.federation_members(federation) -> country ids (`members = { ... }`)
+E.federation_members = function(fid)
+    local out = {}
+    for _, m in ipairs(world.list(world.field(obj("federation", fid), "members"))) do
+        local c = tonumber(m)
+        if c and obj("country", c) then out[#out + 1] = c end
+    end
+    return out
+end
+-- E.subjects(country) -> country ids (`subjects = { ... }`, CCountry +9840)
+E.subjects = function(country)
+    local out = {}
+    for _, s in ipairs(world.list(world.field(obj("country", country), "subjects"))) do
+        local c = tonumber(s)
+        if c and obj("country", c) then out[#out + 1] = c end
+    end
+    return out
+end
+-- E.overlord(country) -> country id (`overlord = <country>`, CCountry +9776; CHasAnyOverlord
+-- 0x19b1df0), or nil
+E.overlord = function(country)
+    local o = ref(world.field(obj("country", country), "overlord"))
+    return (o and obj("country", o)) and o or nil
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- a country's crisis, relics, focus, special projects, technologies
+
+-- E.has_menace_perk(country, perk) (CHasCrisisPerkTrigger 0x1a1cab0 -> CCountry::HasCrisisPerk
+-- 0x72f020): a perk of a crisis level the country unlocked (`crisis_progression = { path = x level =
+-- "crisis_level_1" ... }`, CCrisisProgression::WriteMembers 0x569820; the levels' `perks` in
+-- common/crisis_levels)
+E.has_menace_perk = function(country, perk)
+    local cp = world.field(obj("country", country), "crisis_progression")
+    for _, level in ipairs(world.fields(cp, "level")) do
+        local d = type(level) == "string" and defs().get("common/crisis_levels", level)
+        local perks = d and defs().field(d.block, "perks")
+        for _, p in ipairs(type(perks) == "table" and perks or {}) do
+            if p.text == perk then return true end
+        end
+    end
+    return false
+end
+-- E.has_relic(country, relic) (CHasRelicTrigger 0x19b2990: CCountry +12336): `relics = { "r_x" }`
+E.has_relic = function(country, relic)
+    for _, r in ipairs(world.list(world.field(obj("country", country), "relics"))) do
+        if r == relic then return true end
+    end
+    return false
+end
+-- E.has_active_focus(country, focus) (CHasActiveFocusTrigger 0x1a19860): a card of the country's
+-- `focus = { active = { <focus card ids> } }` of that type whose `status` is 0 (not completed)
+E.has_active_focus = function(country, focus)
+    local f = world.field(obj("country", country), "focus")
+    for _, id in ipairs(world.list(world.field(f, "active"))) do
+        local card = obj("focus_cards", tonumber(id))
+        if card and world.field(card, "type") == focus and (tonumber(world.field(card, "status")) or 0) == 0 then
+            return true
+        end
+    end
+    return false
+end
+-- E.completed_special_project(country, project) (CHasSpecialProjectStatusTrigger<Completed>
+-- 0x19e5740): a special project of the country's `events` of that key with `status = completed`
+-- (CSpecialProjectInstance status 2)
+E.completed_special_project = function(country, project)
+    local ev = world.field(obj("country", country), "events")
+    for _, sp in ipairs(world.fields(ev, "special_project")) do
+        if type(sp) == "table" and world.field(sp, "special_project") == project
+            and world.field(sp, "status") == "completed" then
+            return true
+        end
+    end
+    return false
+end
+-- E.num_repeatable_techs(country) (CNumRepeatableTechsTrigger::GetTriggerValue 0x1990580): the
+-- levels of the country's technologies whose definition has more than one level (`levels = -1` or
+-- > 1)
+E.num_repeatable_techs = function(country)
+    local ts = world.field(obj("country", country), "tech_status")
+    local n, tech = 0, nil
+    for _, e in ipairs(type(ts) == "table" and ts or {}) do
+        if e.op and e.key then
+            if e.key.text == "technology" then
+                tech = e.value.text
+            elseif e.key.text == "level" and tech then
+                local d = defs().get("common/technology", tech)
+                local levels = d and tonumber(defs().field(d.block, "levels")) or 1
+                if levels < 0 or levels > 1 then
+                    n = n + (tonumber(e.value.text) or 0)
+                end
+                tech = nil
+            end
+        end
+    end
+    return n
+end
+-- E.has_built_species(country) (CHasBuiltSpecies 0x19949c0): `built_species_ref` names a species
+E.has_built_species = function(country)
+    local s = ref(world.field(obj("country", country), "built_species_ref"))
+    return s ~= nil and obj("species", s) ~= nil
+end
+
+-- E.identical_species(country) -> { { from, into } ... }: the merges merge_species would make
+-- (CMergeSpeciesEffect 0x17b9840 -> CCountry::HandleIdenticalSpeciesMerge 0x71a160): a species of the
+-- country's `owned_species_refs`, other than its founder and default species, into another of them
+-- with the same base species, the same name, the same traits (in order) and the same species rights
+local RIGHTS = { "living_standard", "citizenship", "military_service", "slavery", "purge", "population_control",
+    "colonization_control", "migration_control", "subspecies_integration" }
+E.identical_species = function(country)
+    local c = obj("country", country)
+    local list = {}
+    for _, s in ipairs(world.list(world.field(c, "owned_species_refs"))) do
+        local sid = tonumber(s)
+        if sid and obj("species", sid) then list[#list + 1] = sid end
+    end
+    local function sig(sid)
+        local sp = obj("species", sid)
+        local name = world.field(sp, "name")
+        local parts = { tostring(E.base_species(sid)),
+            type(name) == "table" and require("pdxscript").write(name) or tostring(name) }
+        for _, t in ipairs(world.fields(world.field(sp, "traits"), "trait")) do parts[#parts + 1] = tostring(t) end
+        for _, k in ipairs(RIGHTS) do parts[#parts + 1] = tostring(E.species_right(country, sid, k)) end
+        return table.concat(parts, "|")
+    end
+    local founder = ref(world.field(c, "founder_species_ref"))
+    local default = ref(world.field(c, "default_species"))
+    local out = {}
+    for _, a in ipairs(list) do
+        if a ~= founder and a ~= default then
+            local sa = sig(a)
+            for _, b in ipairs(list) do
+                if b ~= a and sig(b) == sa then
+                    out[#out + 1] = { a, b }
+                    break
+                end
+            end
+        end
+    end
+    return out
+end
+
+-- E.budget_page(country, page) ->{ income = { [cat] = { [res] = v } }, expenses = ... }: the
+-- simulation's last month once it ran one (engine.economy.last_month), else the save's `budget =
+-- { <page> = { income expenses trade_income trade_expenses } }` (the trade tables in the sides)
+E.budget_page = function(country, page)
+    local economy = package.loaded["engine.economy"]
+    local lm = economy and economy.last_month and economy.last_month[country]
+    if lm then
+        return lm
+    end
+    local p = world.path(obj("country", country), "budget", page)
+    local out = { income = {}, expenses = {} }
+    if type(p) ~= "table" then
+        return out
+    end
+    for _, pair in ipairs({ { "income", "income" }, { "expenses", "expenses" }, { "trade_income", "income" },
+        { "trade_expenses", "expenses" } }) do
+        local s = world.field(p, pair[1])
+        for _, e in ipairs(type(s) == "table" and s or {}) do
+            if e.op and e.key and e.value.text == nil then
+                local t = out[pair[2]][e.key.text] or {}
+                for _, x in ipairs(e.value) do
+                    if x.op and x.key then
+                        t[x.key.text] = (t[x.key.text] or 0) + (tonumber(x.value.text) or 0)
+                    end
+                end
+                out[pair[2]][e.key.text] = t
+            end
+        end
+    end
+    return out
+end
+-- E.budget_sum(country, page, side, res[, category]): a side's (income, expenses or "balance":
+-- income minus expenses) amount of res over all categories, or the category's
+E.budget_sum = function(country, page, side, res, category)
+    local b = E.budget_page(country, page)
+    local v = 0
+    for s, sign in pairs({ income = 1, expenses = -1 }) do
+        if side == "balance" or side == s then
+            for cat, t in pairs(b[s] or {}) do
+                if category == nil or cat == category then
+                    v = v + (side == "balance" and sign or 1) * (t[res] or 0)
+                end
+            end
+        end
+    end
+    return v
+end
+-- E.owned_starbases(country, nonprimary) -> starbase ids (COwnedStarbaseListBuilder 0x1816d50,
+-- COwnedNonprimaryStarbaseListBuilder 0x1816ee0): the starbases of the systems whose owner
+-- (CStarbase::GetOwner: its station's fleet's) is the country; nonprimary: not the system's
+-- primary starbase (CStarbase::IsPrimaryStarbase 0x7dcb00: the first of its `starbases`)
+E.owned_starbases = function(country, nonprimary)
+    local out = {}
+    for _, sid in ipairs(world.all("system")) do
+        for i, sb in ipairs(world.list(world.field(obj("system", sid), "starbases"))) do
+            local s = tonumber(sb)
+            if s and obj("starbase", s) and (not nonprimary or i > 1) and E.owner_of("starbase", s) == country then
+                out[#out + 1] = s
+            end
+        end
+    end
+    return out
+end
+
+-- E.situations(country) -> the ids of the situations of the country (`situations = { situations = {
+-- <id> = { country = x ... } } }`)
+world.KINDS.situation = world.KINDS.situation or "situations"
+E.situations = function(country)
+    local out = {}
+    for _, id in ipairs(world.all("situation")) do
+        if tonumber(world.field(obj("situation", id), "country")) == country then
+            out[#out + 1] = id
+        end
+    end
+    return out
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- borders, systems, colonies
+
+-- E.systems_within_border(country) -> system ids (CSystemWithinBorderListBuilder 0x1817430: the
+-- country's owned systems; the save does not write them: a system's owner is its starbase's,
+-- world.system_owner)
+E.systems_within_border = function(country)
+    local out = {}
+    for _, sid in ipairs(world.all("system")) do
+        if world.system_owner and world.system_owner[sid] == country then
+            out[#out + 1] = sid
+        end
+    end
+    return out
+end
+-- E.system_planets(system) -> planet ids (`planet = <id>` of the galactic object)
+E.system_planets = function(sid)
+    local out = {}
+    for _, p in ipairs(world.fields(obj("system", sid), "planet")) do
+        local id = tonumber(p)
+        if id and obj("planet", id) then out[#out + 1] = id end
+    end
+    return out
+end
+-- E.starbase_of(kind, id) -> the starbase of a system (its first `starbases`), of a planet (its
+-- system's), a starbase itself
+E.starbase_of = function(kind, id)
+    if kind == "starbase" then
+        return id
+    elseif kind ~= "system" and kind ~= "planet" then
+        return nil
+    end
+    local sid = kind == "system" and id or E.system_of(kind, id)
+    for _, sb in ipairs(world.list(world.field(obj("system", sid), "starbases"))) do
+        local s = tonumber(sb)
+        if s and s ~= 4294967295 and obj("starbase", s) then
+            return s
+        end
+    end
+    return nil
+end
+-- E.owner_of(kind, id) -> the owner of a starbase, ship or fleet: the country whose fleets_manager
+-- owns the fleet (a starbase's: its station ship's fleet)
+E.owner_of = function(kind, id)
+    if kind == "starbase" then
+        kind, id = "ship", tonumber(world.field(obj("starbase", id), "station"))
+    end
+    if kind == "ship" then
+        kind, id = "fleet", tonumber(world.field(obj("ship", id), "fleet"))
+    end
+    if kind == "fleet" then
+        return id and world.fleet_owner and world.fleet_owner[id] or nil
+    end
+    return nil
+end
+-- the colony of a scope (NScriptUtil::GetColonyFromScope): a planet's, a pop group's
+local function colony_of(kind, id)
+    local pid
+    if kind == "planet" then
+        pid = id
+    elseif kind == "pop_group" then
+        local col = tonumber(world.field(obj("pop_group", id), "planet"))
+        return col and obj("colony", col)
+    end
+    local col = pid and world.planet_colony[pid]
+    return col and obj("colony", col)
+end
+-- E.branch_office_owner(kind, id) (CHasBranchOfficeTrigger 0x19a0dc0, CColony::HasBranchOffice
+-- 0xdcd9c0): the owner of the colony's branch office, or nil: its `externally_owned_buildings = { {
+-- building_owner = c owner_type = corporate ... } }` (SBuildingArrayData; owner type 1, corporate)
+E.branch_office_owner = function(kind, id)
+    local c = colony_of(kind, id)
+    for _, b in ipairs(world.blocks(world.field(c, "externally_owned_buildings"))) do
+        if world.field(b, "owner_type") == "corporate" then
+            return tonumber(world.field(b, "building_owner")) or -1
+        end
+    end
+    return nil
+end
+-- E.num_districts(kind, id) / E.has_district(kind, id, type) (CHasDistrictTrigger 0x196ed70:
+-- CColony::CalcNumDistricts 0xdc95b0, the levels of the colony's districts; CColony::HasDistrict
+-- 0xdc8010, a district of the type, any level)
+E.num_districts = function(kind, id)
+    local c = colony_of(kind, id)
+    local n = 0
+    for _, d in ipairs(world.list(world.field(c, "districts"))) do
+        n = n + (tonumber(world.field(obj("districts", tonumber(d)), "level")) or 0)
+    end
+    return n
+end
+E.has_district = function(kind, id, dtype)
+    local c = colony_of(kind, id)
+    for _, d in ipairs(world.list(world.field(c, "districts"))) do
+        if world.field(obj("districts", tonumber(d)), "type") == dtype then return true end
+    end
+    return false
+end
+-- E.num_zones(kind, id, type) (CNumZonesTrigger::GetTriggerValue 0x196fed0 ->
+-- CColony::CalcNumZonesOfType 0xda8960): the zones of the colony's districts (of the type, or all);
+-- for a country the game writes each colony's count over the last one (the last colony's count)
+E.num_zones = function(kind, id, ztype)
+    local function count(c)
+        local n = 0
+        for _, d in ipairs(world.list(world.field(c, "districts"))) do
+            for _, z in ipairs(world.list(world.field(obj("districts", tonumber(d)), "zones"))) do
+                local zid = tonumber(z)
+                if zid and zid ~= 4294967295 and (ztype == nil or world.field(obj("zones", zid), "type") == ztype) then
+                    n = n + 1
+                end
+            end
+        end
+        return n
+    end
+    if kind == "country" then
+        local n = 0
+        for _, col in ipairs(world.list(world.field(obj("country", id), "owned_planets"))) do
+            n = count(obj("colony", tonumber(col)))
+        end
+        return n
+    end
+    return count(colony_of(kind, id))
+end
+-- E.colonizing_species(kind, id) (CIsUnderColonizationTrigger 0x1966c10): the colony's
+-- `colonizing_species` when it names a species
+E.colonizing_species = function(kind, id)
+    local s = ref(world.field(colony_of(kind, id), "colonizing_species"))
+    return (s and obj("species", s)) and s or nil
+end
+-- E.district_set(kind, id) (CPlanetDistrictSetTrigger 0x1a09320): the planet class's `district_set`
+-- (common/planet_classes; "" without)
+E.district_set = function(kind, id)
+    local pid = kind == "planet" and id or nil
+    local class = pid and world.field(obj("planet", pid), "planet_class")
+    local d = class and defs().get("common/planet_classes", class)
+    return d and defs().field(d.block, "district_set") or ""
+end
+-- E.controller(kind, id) (CIsControlledByTrigger 0x194c0c0): a planet's `controller`, a
+-- starbase's, fleet's or ship's owner
+E.controller = function(kind, id)
+    if kind == "planet" then
+        return ref(world.field(obj("planet", id), "controller"))
+    end
+    return E.owner_of(kind, id)
+end
+-- E.species_being_integrated(species, country) (CSpeciesBeingIntegratedTrigger 0x1a27aa0 ->
+-- CSpecies::CheckRightsBeingIntegrated 0x3e6e30): the country's species rights module is enabled
+-- and the species' subspecies_integration type has `integration = yes`
+E.species_being_integrated = function(species, country)
+    local module = world.path(obj("country", country), "modules", "standard_species_rights_module")
+    if type(module) ~= "table" or world.field(module, "enabled") ~= "yes" then
+        return false
+    end
+    local t = E.species_right(country, species, "subspecies_integration")
+    local d = t and defs().get("common/species_rights/subspecies_integration_types", t)
+    return d ~= nil and defs().field(d.block, "integration") == "yes"
+end
+-- E.galactic_community_formed() (CIsGalacticCommunityFormedTrigger 0x1a062f0): the save's
+-- `galactic_community = { community_formed = <date> }` (written unless the end of time)
+E.galactic_community_formed = function()
+    local gc = world.meta and world.meta.galactic_community
+    return type(gc) == "table" and world.field(gc, "community_formed") ~= nil
 end
 
 E.has = function(kind, id, set, member)

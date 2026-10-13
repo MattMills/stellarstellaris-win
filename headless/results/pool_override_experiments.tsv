@@ -1,0 +1,40 @@
+# Pool override experiments: autosave_2210.01.01, run.sh defaults (-loadrandomseed -threads=1).
+# Each run replaces the values one pool hands out after the generator drew them (the generator advances as usual).
+# Baseline: the same run with no override. Compared with dev/gsdiff.sh (the AI unsynced counters masked).
+#
+# run	ticks	override	final random_count	changed lines
+baseline	1798	-	18815404	0
+ov_ship_xor	1798	1b31457=xor (ship pool, every tick)	18813755	7131
+ov_ship_zero	1798	1b31457=zero (ship pool, every tick)	18813562	7796
+ov_ship_from	1798	1b31457=xor from total tick 7956170 (after the last combat tick, 7956164)	18815404	0
+ov_daily_xor	1798	1b1c948=xor (daily pool)	18815119	6713
+ov_monthly_xor	1798	1b2d746=xor (monthly pool)	18813657	8129
+base170	170	-	14505356	0
+ov_ship170	170	1b31457=xor (ship pool, the 16 combat days)	14505367	373
+#
+# fields changed by the ship pool override over the combat (170 ticks), changed lines by key:
+#        52 y
+#        52 x
+#        38 rotation
+#        38 forward_y
+#        38 forward_x
+#        30 speed
+#        30 shots_fired
+#        28 cooldown
+#        14 action
+#        12 last_combat_activity
+#        10 post_move_angle
+#         6 pop_to_kill_from_devastation
+#         2 type
+#         2 time_since_last_path_update
+#         2 shield_recharge_time
+#         2 random_count
+#         2 last_roll
+#         2 last_damage
+#         2 hitpoints
+#         2 hit_points
+#         2 count
+#         2 clues
+#         2 armor_hitpoints
+#         2 angle
+#         1 disengagement_opportunities_used

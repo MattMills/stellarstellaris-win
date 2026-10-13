@@ -84,18 +84,21 @@ M.rand = rand
 -- ---------------------------------------------------------------------------------------------
 -- contexts
 
--- ctx: { this, root, from, fromfrom, prev, prevprev, targets, lists, created, file }
+-- ctx: { this, root, from, fromfrom, prev, prevprev, prevprevprev, prevprevprevprev, targets,
+-- lists, created, file }
 function M.new_ctx(this, from, targets, file)
     return {
         this = this or NONE, root = this or NONE, from = from or NONE, fromfrom = NONE,
-        prev = NONE, prevprev = NONE, targets = targets or {}, lists = {}, created = {}, file = file,
+        prev = NONE, prevprev = NONE, prevprevprev = NONE, prevprevprevprev = NONE,
+        targets = targets or {}, lists = {}, created = {}, file = file,
     }
 end
 
 local function push(ctx, sc)
     return {
         this = sc, root = ctx.root, from = ctx.from, fromfrom = ctx.fromfrom, prev = ctx.this,
-        prevprev = ctx.prev, targets = ctx.targets, lists = ctx.lists, created = ctx.created, file = ctx.file,
+        prevprev = ctx.prev, prevprevprev = ctx.prevprev, prevprevprevprev = ctx.prevprevprev,
+        targets = ctx.targets, lists = ctx.lists, created = ctx.created, file = ctx.file,
     }
 end
 M.push = push
@@ -106,6 +109,7 @@ local function with_file(ctx, file)
     end
     local c = push(ctx, ctx.this)
     c.prev, c.prevprev, c.file = ctx.prev, ctx.prevprev, file
+    c.prevprevprev, c.prevprevprevprev = ctx.prevprevprev, ctx.prevprevprevprev
     return c
 end
 
@@ -128,6 +132,8 @@ local function owner_of(sc)
         return p and country(E.get("planet", p, "owner")) or nil
     elseif sc.kind == "leader" then
         return country(E.get("leader", sc.id, "country"))
+    elseif E.owner_of then -- a starbase's, ship's, fleet's: its fleet's owner
+        return country(E.owner_of(sc.kind, sc.id))
     end
     return nil
 end
@@ -141,6 +147,8 @@ local LINKS = {
     fromfrom = function(_, ctx) return ctx.fromfrom end,
     prev = function(_, ctx) return ctx.prev end,
     prevprev = function(_, ctx) return ctx.prevprev end,
+    prevprevprev = function(_, ctx) return ctx.prevprevprev or NONE end,
+    prevprevprevprev = function(_, ctx) return ctx.prevprevprevprev or NONE end,
     owner = function(cur) return owner_of(cur) end,
     controller = function(cur) return owner_of(cur) end,
     capital_scope = function(cur)
@@ -201,6 +209,28 @@ LINKS.leader = function(cur)
     sync()
     local l = E.leader_of(cur.kind, cur.id)
     return l and S("leader", l) or nil
+end
+-- overlord: a country's overlord (`overlord = <country>`)
+LINKS.overlord = function(cur)
+    if cur.kind ~= "country" or not E.overlord then return nil end
+    sync()
+    local o = E.overlord(cur.id)
+    return o and S("country", o) or nil
+end
+-- federation: a country's federation
+LINKS.federation = function(cur)
+    if cur.kind == "federation" then return cur end
+    if cur.kind ~= "country" or not E.federation_of then return nil end
+    sync()
+    local f = E.federation_of(cur.id)
+    return f and S("federation", f) or nil
+end
+-- starbase: a system's starbase, a planet's (its system's), a starbase itself
+LINKS.starbase = function(cur)
+    if not E.starbase_of then return nil end
+    sync()
+    local s = E.starbase_of(cur.kind, cur.id)
+    return s and S("starbase", s) or nil
 end
 M.LINKS = LINKS
 
@@ -643,6 +673,65 @@ LISTS.owned_megastructure = function(sc)
     sync()
     return map_scopes("megastructure", E.megastructures(sc.id))
 end
+-- relation: the countries a country has a relation with (CRelationListBuilder)
+LISTS.relation = function(sc)
+    if sc.kind ~= "country" or not E.relations then return {} end
+    sync()
+    return map_scopes("country", E.relations(sc.id))
+end
+-- situation: a country's situations
+LISTS.situation = function(sc)
+    if sc.kind ~= "country" or not E.situations then return {} end
+    sync()
+    return map_scopes("situation", E.situations(sc.id))
+end
+-- member: a federation's members (a country's: its federation's)
+LISTS.member = function(sc)
+    if not E.federation_members then return {} end
+    sync()
+    local f = sc.kind == "federation" and sc.id or (sc.kind == "country" and E.federation_of(sc.id))
+    return f and map_scopes("country", E.federation_members(f)) or {}
+end
+-- subject: a country's subjects
+LISTS.subject = function(sc)
+    if sc.kind ~= "country" or not E.subjects then return {} end
+    sync()
+    return map_scopes("country", E.subjects(sc.id))
+end
+-- system_within_border / planet_within_border: the systems a country owns, and their planets
+LISTS.system_within_border = function(sc)
+    if sc.kind ~= "country" or not E.systems_within_border then return {} end
+    sync()
+    return map_scopes("system", E.systems_within_border(sc.id))
+end
+-- owned_starbase / owned_nonprimary_starbase: the starbases a country owns (not the systems' primary
+-- ones)
+LISTS.owned_starbase = function(sc)
+    if sc.kind ~= "country" or not E.owned_starbases then return {} end
+    sync()
+    return map_scopes("starbase", E.owned_starbases(sc.id, false))
+end
+LISTS.owned_nonprimary_starbase = function(sc)
+    if sc.kind ~= "country" or not E.owned_starbases then return {} end
+    sync()
+    return map_scopes("starbase", E.owned_starbases(sc.id, true))
+end
+LISTS.system_planet = function(sc)
+    if sc.kind ~= "system" or not E.system_planets then return {} end
+    sync()
+    return map_scopes("planet", E.system_planets(sc.id))
+end
+LISTS.planet_within_border = function(sc)
+    if sc.kind ~= "country" or not E.systems_within_border then return {} end
+    sync()
+    local out = {}
+    for _, sid in ipairs(E.systems_within_border(sc.id)) do
+        for _, pid in ipairs(E.system_planets(sid)) do
+            out[#out + 1] = S("planet", pid)
+        end
+    end
+    return out
+end
 M.LISTS = LISTS
 
 -- iterators that count amounts, not items: count_owned_pop_amount sums the pop groups' sizes
@@ -850,18 +939,69 @@ M.trigger1 = trigger1
 
 local function yes(e) return e.value.text ~= "no" end
 
-TRIG["and"] = function(e, ctx) return trigger(e.value, ctx) end
-TRIG["or"] = function(e, ctx)
-    for _, x in ipairs(e.value) do
-        if x.op and trigger1(x, ctx) then return true end
+-- an `if = { limit = { } ... }` with the `else_if` / `else` statements after it is one trigger of
+-- its block, in any block (OR, NOT, calc_true_if as well as AND): the game's reader chains them onto
+-- the if (CTriggerCollectionBase::ReadMember -> CIfTrigger::AddElse 0x1993910), and
+-- CIfTrigger::ActualEvaluate (0x1993380) is the body of the first whose limit holds, true when none
+-- does. if_chain(b, i, ctx) -> its result, and the index of the statement after the chain
+local LIMIT_ONLY = { limit = true }
+local function if_chain(b, i, ctx)
+    local result, taken = true, false
+    while true do
+        local e = b[i]
+        local lk = e.key.text:lower()
+        if not taken and e.value.text == nil then
+            local lim
+            for _, x in ipairs(e.value) do
+                if x.op and x.key.text:lower() == "limit" then lim = x.value end
+            end
+            if lk == "else" or not lim or trigger(lim, ctx) then
+                taken = true
+                result = trigger(e.value, ctx, LIMIT_ONLY)
+            end
+        end
+        local j = i + 1
+        while b[j] and not (b[j].op and b[j].key) do j = j + 1 end
+        local nk = b[j] and b[j].key.text:lower()
+        if lk == "else" or (nk ~= "else_if" and nk ~= "else") then
+            return result, j
+        end
+        i = j
     end
-    return false
 end
-TRIG["not"] = function(e, ctx) -- NOT = { a b } is true when none holds
-    for _, x in ipairs(e.value) do
-        if x.op and trigger1(x, ctx) then return false end
+M.if_chain = if_chain
+
+-- the triggers of a block that hold (an if chain counted as one; keys in skip are parameters):
+-- their number, stopping at the first when first_only
+local function holding(b, ctx, first_only, skip)
+    local n, i = 0, 1
+    while b[i] do
+        local x = b[i]
+        local r = false
+        if x.op and x.key then
+            local lk = x.key.text:lower()
+            if lk == "if" then
+                r, i = if_chain(b, i, ctx)
+            else
+                -- (an else_if / else not after an if: the game's reader rejects it)
+                r = not (skip and skip[lk]) and lk ~= "else_if" and lk ~= "else" and trigger1(x, ctx)
+                i = i + 1
+            end
+        else
+            i = i + 1
+        end
+        if r then
+            n = n + 1
+            if first_only then return n end
+        end
     end
-    return true
+    return n
+end
+
+TRIG["and"] = function(e, ctx) return trigger(e.value, ctx) end
+TRIG["or"] = function(e, ctx) return holding(e.value, ctx, true) > 0 end
+TRIG["not"] = function(e, ctx) -- NOT = { a b } is true when none holds
+    return holding(e.value, ctx, true) == 0
 end
 TRIG["nor"] = TRIG["not"]
 TRIG["nand"] = function(e, ctx) return not trigger(e.value, ctx) end
@@ -871,15 +1011,13 @@ TRIG["custom_tooltip"] = function(e, ctx)
     return trigger(e.value, ctx, { text = true, fail_text = true, success_text = true })
 end
 TRIG["custom_tooltip_fail"] = TRIG["custom_tooltip"]
+local AMOUNT = { amount = true }
 TRIG["calc_true_if"] = function(e, ctx)
-    local amount, n = 1, 0
+    local amount = 1
     for _, x in ipairs(e.value) do
-        if x.op then
-            if x.key.text:lower() == "amount" then amount = M.value(x.value, ctx, x)
-            elseif trigger1(x, ctx) then n = n + 1 end
-        end
+        if x.op and x.key.text:lower() == "amount" then amount = M.value(x.value, ctx, x) end
     end
-    return n >= amount
+    return holding(e.value, ctx, false, AMOUNT) >= amount
 end
 TRIG["always"] = function(e) return yes(e) end
 TRIG["exists"] = function(e, ctx)
@@ -1096,6 +1234,252 @@ local function species_right_trigger(key, none)
 end
 TRIG["has_citizenship_type"] = species_right_trigger("citizenship", nil)
 TRIG["has_population_control"] = species_right_trigger("population_control", "population_control_no")
+-- has_slavery_type = { country = <who> type = <slavery type> } (CHasSpeciesRightsTrigger<SHasSlaveryType>)
+TRIG["has_slavery_type"] = species_right_trigger("slavery", nil)
+
+-- the country `<trigger> = <target>` names (nil when it does not name one)
+local function target_country(e, ctx)
+    if not e.value.text then return nil end
+    local found, sc = M.resolve(e.value.text, ctx, e)
+    return (found and sc and sc.kind == "country") and sc or nil
+end
+-- `<trigger> <op> <value>` against a number, or false when there is none
+local function compare_num(v, e, ctx)
+    if v == nil then return false end
+    return compare(v, e.op, M.value(e.value, ctx, e))
+end
+local function yes_no(e) return e.value.text == "yes" or e.value.text == "no" end
+
+-- relation flags: `<trigger> = <country>` is the scope country's relation towards the country
+-- (CCountryRelationsManager::GetRelation, its flags written `<name> = yes` by
+-- CRelation::WriteMembers 0x669d30): is_under_societal_enlightenment
+-- (CIsUnderSocietalEnlightenmentTrigger 0x1a13120, bit 23), is_under_open_technological_enlightenment
+-- (0x1a13440, bit 24), is_under_stratified_technological_enlightenment (0x1a13760, bit 25),
+-- has_pre_ftl_trade (CHasPreFtlTradeTrigger 0x1a13a80, bit 26)
+for _, k in ipairs({ "is_under_societal_enlightenment", "is_under_open_technological_enlightenment",
+    "is_under_stratified_technological_enlightenment", "has_pre_ftl_trade" }) do
+    TRIG[k] = function(e, ctx)
+        local other = ctx.this.kind == "country" and E.relation_flag and target_country(e, ctx)
+        if not other then return false end
+        sync()
+        return E.relation_flag(ctx.this.id, other.id, k)
+    end
+end
+-- has_waystation_pact = <country> (CHasWaystationPactTrigger 0x19a2740): the relation's pact, or a
+-- federation's (E.has_waystation_pact)
+TRIG["has_waystation_pact"] = function(e, ctx)
+    local other = ctx.this.kind == "country" and E.has_waystation_pact and target_country(e, ctx)
+    if not other then return false end
+    sync()
+    return E.has_waystation_pact(ctx.this.id, other.id)
+end
+-- has_communications = <country> (CHasCommunicationsTrigger 0x198d8c0: bit 3 of the relation, false
+-- towards itself)
+TRIG["has_communications"] = function(e, ctx)
+    local other = ctx.this.kind == "country" and E.relation_flag and target_country(e, ctx)
+    if not other or other == ctx.this then return false end
+    sync()
+    return E.relation_flag(ctx.this.id, other.id, "communications")
+end
+-- is_federation_leader = yes/no (CIsFederationLeaderTrigger 0x1971120): the country's federation's
+-- `leader` (false without a federation)
+TRIG["is_federation_leader"] = function(e, ctx)
+    if ctx.this.kind ~= "country" or not E.federation_leader then return false end
+    sync()
+    local leader = E.federation_leader(ctx.this.id)
+    if leader == nil then return false end
+    return (leader == ctx.this.id) == yes(e)
+end
+-- num_communications <op> n: the country's relations with communications
+TRIG["num_communications"] = function(e, ctx)
+    if ctx.this.kind ~= "country" or not E.num_communications then return false end
+    sync()
+    return compare_num(E.num_communications(ctx.this.id), e, ctx)
+end
+-- is_controlled_by = <country> (CIsControlledByTrigger 0x194c0c0): a planet's controller, a
+-- starbase's, fleet's or ship's owner
+TRIG["is_controlled_by"] = function(e, ctx)
+    local other = E.controller and ctx.this ~= NONE and target_country(e, ctx)
+    if not other then return false end
+    sync()
+    return E.controller(ctx.this.kind, ctx.this.id) == other.id
+end
+
+-- a country's crisis, relics, focus, special projects, technologies (engine/interface.lua says
+-- where each is in the save)
+-- has_menace_perk = <perk> (CHasCrisisPerkTrigger 0x1a1cab0): a perk of an unlocked crisis level
+TRIG["has_menace_perk"] = function(e, ctx)
+    if ctx.this.kind ~= "country" or not E.has_menace_perk or not e.value.text then return false end
+    sync()
+    return E.has_menace_perk(ctx.this.id, e.value.text)
+end
+-- has_crisis_perk: the same trigger class
+TRIG["has_crisis_perk"] = TRIG["has_menace_perk"]
+-- has_relic = <relic> (CHasRelicTrigger 0x19b2990): the country's relics
+TRIG["has_relic"] = function(e, ctx)
+    if ctx.this.kind ~= "country" or not E.has_relic or not e.value.text then return false end
+    sync()
+    return E.has_relic(ctx.this.id, e.value.text)
+end
+-- has_active_focus = <focus card type> (CHasActiveFocusTrigger 0x1a19860): an active, not completed
+-- focus card of the type
+TRIG["has_active_focus"] = function(e, ctx)
+    if ctx.this.kind ~= "country" or not E.has_active_focus or not e.value.text then return false end
+    sync()
+    return E.has_active_focus(ctx.this.id, e.value.text)
+end
+-- has_completed_special_project_in_log = <project> (CHasSpecialProjectStatusTrigger<Completed>
+-- 0x19e5740): a completed special project of the key
+TRIG["has_completed_special_project_in_log"] = function(e, ctx)
+    if ctx.this.kind ~= "country" or not E.completed_special_project or not e.value.text then return false end
+    sync()
+    return E.completed_special_project(ctx.this.id, e.value.text)
+end
+-- num_repeatable_techs <op> n (CNumRepeatableTechsTrigger 0x1990580): the levels of the
+-- multi-level technologies researched
+TRIG["num_repeatable_techs"] = function(e, ctx)
+    if ctx.this.kind ~= "country" or not E.num_repeatable_techs then return false end
+    sync()
+    return compare_num(E.num_repeatable_techs(ctx.this.id), e, ctx)
+end
+-- has_built_species = yes/no (CHasBuiltSpecies 0x19949c0): the country's built species exists
+TRIG["has_built_species"] = function(e, ctx)
+    if ctx.this.kind ~= "country" or not E.has_built_species then return false end
+    sync()
+    return E.has_built_species(ctx.this.id) == yes(e)
+end
+-- num_unique_species <op> n (CNumSpeciesTrigger<SExactNumSpeciesCounter> 0x19e5000: a country's
+-- CCountry::ListExactSpecies 0x6f99c0, the distinct species of its colonies' pop groups; a
+-- planet's, its pop groups')
+TRIG["num_unique_species"] = function(e, ctx)
+    local sc = ctx.this
+    if not E.owned_species or not E.species_of then return false end
+    sync()
+    local n = 0
+    if sc.kind == "country" then
+        n = #E.owned_species(sc.id)
+    elseif sc.kind == "planet" then
+        local seen = {}
+        for _, g in ipairs(E.pop_groups(sc.id)) do
+            local s = E.species_of("pop_group", g)
+            if s and not seen[s] then seen[s] = true; n = n + 1 end
+        end
+    end
+    return compare_num(n, e, ctx)
+end
+-- is_being_integrated_by = <country> (CSpeciesBeingIntegratedTrigger 0x1a27aa0): the scope's
+-- species' subspecies integration in the country integrates
+TRIG["is_being_integrated_by"] = function(e, ctx)
+    local other = E.species_being_integrated and ctx.this ~= NONE and target_country(e, ctx)
+    if not other then return false end
+    sync()
+    local sid = E.species_of(ctx.this.kind, ctx.this.id)
+    return sid ~= nil and E.species_being_integrated(sid, other.id)
+end
+-- has_monthly_income = { resource = r value <op> x } (CHasMonthlyIncomeTrigger 0x1992c90): the
+-- country's net income of r last month (the budget's last_month: income minus expenses)
+TRIG["has_monthly_income"] = function(e, ctx)
+    if e.value.text or ctx.this.kind ~= "country" or not E.budget_sum then return false end
+    local res, op, amount = nil, ">=", 0
+    for _, x in ipairs(e.value) do
+        local xk = x.op and x.key.text:lower()
+        if xk == "resource" then res = x.value.text
+        elseif xk == "value" then op = x.op; amount = M.value(x.value, ctx, x) end
+    end
+    if not res then return false end
+    sync()
+    return compare(E.budget_sum(ctx.this.id, "last_month", "balance", res), op, amount)
+end
+-- resource_income_compare / resource_expenses_compare = { resource = r value <op> x [category = c] }
+-- (CResourceCompareTrigger<SResourceIncomeCompare / SResourceExpensesCompare> 0x19e3b70,
+-- GetResourceAmount 0x19ae6e0 / 0x19ae780) on this month's budget (current_month), over all
+-- categories or the category's: the "income" one reads the balance, income minus expenses
+-- (CCountry +0x1f90, _Budget._CurrentMonth._Total._SummedBalance), not the gross income
+local function budget_compare(side)
+    return function(e, ctx)
+        if e.value.text or ctx.this.kind ~= "country" or not E.budget_sum then return false end
+        local res, op, amount, category = nil, "=", 0, nil
+        for _, x in ipairs(e.value) do
+            local xk = x.op and x.key.text:lower()
+            if xk == "resource" then res = x.value.text
+            elseif xk == "category" then category = x.value.text
+            elseif xk == "value" then op = x.op; amount = M.value(x.value, ctx, x) end
+        end
+        if not res then return false end
+        sync()
+        return compare(E.budget_sum(ctx.this.id, "current_month", side, res, category), op, amount)
+    end
+end
+TRIG["resource_income_compare"] = budget_compare("balance")
+TRIG["resource_expenses_compare"] = budget_compare("expenses")
+-- num_owned_colonies <op> n (CNumOwnedColoniesTrigger::GetTriggerValue 0x1959a30): the country's
+-- colonies (`owned_planets`, colony ids)
+TRIG["num_owned_colonies"] = function(e, ctx)
+    if ctx.this.kind ~= "country" then return false end
+    sync()
+    return compare_num(tonumber(E.get("country", ctx.this.id, "num_colonies")) or 0, e, ctx)
+end
+
+-- colonies (a planet's, a pop group's)
+-- has_branch_office = yes / no / <country> (CHasBranchOfficeTrigger 0x19a0dc0): the colony has a
+-- branch office (of the country)
+TRIG["has_branch_office"] = function(e, ctx)
+    if not E.branch_office_owner or ctx.this == NONE then return false end
+    sync()
+    local owner = E.branch_office_owner(ctx.this.kind, ctx.this.id)
+    if yes_no(e) then return (owner ~= nil) == yes(e) end
+    local other = target_country(e, ctx)
+    return other ~= nil and owner == other.id
+end
+-- has_district = yes / no / <district type> (CHasDistrictTrigger 0x196ed70)
+TRIG["has_district"] = function(e, ctx)
+    if not E.has_district or ctx.this == NONE or not e.value.text then return false end
+    sync()
+    if yes_no(e) then return (E.num_districts(ctx.this.kind, ctx.this.id) > 0) == yes(e) end
+    return E.has_district(ctx.this.kind, ctx.this.id, e.value.text)
+end
+-- num_zones <op> n, or num_zones = { type = <zone type> value <op> n } (CNumZonesTrigger 0x196fed0)
+TRIG["num_zones"] = function(e, ctx)
+    if not E.num_zones or ctx.this == NONE then return false end
+    local ztype, op, want = nil, e.op, nil
+    if e.value.text then
+        want = M.value(e.value, ctx, e)
+    else
+        for _, x in ipairs(e.value) do
+            local xk = x.op and x.key.text:lower()
+            if xk == "type" then ztype = x.value.text
+            elseif xk == "value" then op = x.op; want = M.value(x.value, ctx, x) end
+        end
+    end
+    sync()
+    return compare(E.num_zones(ctx.this.kind, ctx.this.id, ztype), op, want or 0)
+end
+-- is_under_colonization = yes/no (CIsUnderColonizationTrigger 0x1966c10): the colony's colonizing
+-- species (false without a colony)
+TRIG["is_under_colonization"] = function(e, ctx)
+    if not E.colonizing_species or ctx.this == NONE then return false end
+    sync()
+    if ctx.this.kind == "planet" and not E.get("planet", ctx.this.id, "colony") then return false end
+    return (E.colonizing_species(ctx.this.kind, ctx.this.id) ~= nil) == yes(e)
+end
+-- uses_district_set = <set> (CPlanetDistrictSetTrigger 0x1a09320): the planet class's district_set
+TRIG["uses_district_set"] = function(e, ctx)
+    if not E.district_set or ctx.this.kind ~= "planet" or not e.value.text then return false end
+    sync()
+    return E.district_set(ctx.this.kind, ctx.this.id) == e.value.text
+end
+
+-- the galaxy
+-- is_galactic_community_formed = yes/no (CIsGalacticCommunityFormedTrigger 0x1a062f0)
+TRIG["is_galactic_community_formed"] = function(e)
+    if not E.galactic_community_formed then return false end
+    return E.galactic_community_formed() == yes(e)
+end
+-- days_passed <op> n (CDaysPassedTrigger::GetTriggerValue 0x1959010): (year - START_YEAR) * 360 +
+-- the day of the year, the days since 2200.01.01
+TRIG["days_passed"] = function(e, ctx)
+    return compare(M.today() - 2200 * 360, e.op, M.value(e.value, ctx, e))
+end
 
 -- numeric engine reads: key -> scope kind, field
 local NUMS = {
@@ -1532,6 +1916,17 @@ EFF["give_technology"] = function(e, ctx)
 end
 EFF["kill_leader"] = function(e, ctx)
     if ctx.this.kind == "leader" then push_engine({ type = "kill_leader", kind = "leader", id = ctx.this.id }) end
+end
+-- merge_species = yes (CMergeSpeciesEffect 0x17b9840, on a country): the country's identical species
+-- merged (E.identical_species). Without any (none in the 2210 saves) it does nothing; a merge itself
+-- (CCountry::HandleIdenticalSpeciesMerge 0x71a160: the merged species' pop groups re-keyed to the
+-- other and joined, the founder species moved) is not modelled yet: it is pushed unmodelled
+EFF["merge_species"] = function(e, ctx)
+    if e.value.text ~= "yes" or ctx.this.kind ~= "country" or not E.identical_species then return end
+    sync()
+    if #E.identical_species(ctx.this.id) > 0 then
+        unmodelled("merge_species", ctx, e)
+    end
 end
 
 -- the status of a keyword for the coverage report: "lua" (implemented here), "scripted",

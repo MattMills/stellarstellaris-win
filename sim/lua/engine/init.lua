@@ -149,7 +149,7 @@ function engine.report()
     if engine.modifier_source then
         lines[#lines + 1] = engine.modifier_source.report()
     end
-    for _, m in ipairs({ "engine.research", "engine.leaders", "engine.construction", "engine.traditions", "engine.ai", "engine.ai.attitudes", "engine.ai.traditions", "engine.pops", "engine.colonies" }) do
+    for _, m in ipairs({ "engine.research", "engine.leaders", "engine.construction", "engine.traditions", "engine.ai", "engine.ai.attitudes", "engine.ai.strategy", "engine.ai.traditions", "engine.pops", "engine.colonies", "engine.ethics", "engine.situations", "engine.first_contact" }) do
         local mod = package.loaded[m]
         if type(mod) == "table" and mod.report then
             lines[#lines + 1] = mod.report()

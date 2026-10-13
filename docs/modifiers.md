@@ -306,6 +306,8 @@ everything above it. Some objects also keep plain `CModifier` caches outside the
   mult, mask)`, then if `_AllowInvalidateFromAddModifier`, `InvalidateChildren(this, the
   categories added)`, and finally `AddExplicitDependency(this, parent)` (`0x232a90`): this node's
   id into the parent's `_ChildNodes`. The edges are discovered while computing.
+- What the Country, Planet, Colony and PopGroup nodes add from their own sources (the save fields,
+  definitions, conditions and scales of each part): [modifier_sources.md](modifier_sources.md).
 
 ### Invalidation
 
@@ -413,7 +415,10 @@ Reads **[V]**: `GetModifier()` returns the node's `_Modifier` as it is (`CShip::
 
 ## The economy
 
-From the economy agent's analysis, all **[V]** unless marked.
+From the economy agent's analysis, all **[V]** unless marked. Unit by unit (the game's classes,
+the save fields, scales, modifier nodes, categories and special cases of jobs, buildings, pop
+groups, leaders, deposits, starbases, ships, diplomacy, planetary deficits and the trade policy):
+[economy.md](economy.md).
 
 ### Categories and units
 
