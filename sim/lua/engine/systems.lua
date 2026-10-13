@@ -186,9 +186,11 @@ P["daily.script_state_expiry"] = function(host)
     each_object(other_stores(), count_down_flags)
     host.daily_script_state()
 end
--- CCountry::DailyUpdateSelfDontReadOthers: the timed modifiers
+-- CCountry::DailyUpdateSelfDontReadOthers: the timed modifiers; CCountry::DailyUpdateOnlyChangeSafePrivate:
+-- every 30 days a country's ethics attraction (engine.ethics: UpdateCountryEthicsSafePrivate, no draws)
 P["daily.countries_parallel"] = function(host, date)
     each_object({ "country" }, count_down_modifiers)
+    call_optional("engine.ethics", "countries_daily", host, date)
 end
 -- NColonyUpdate::DailyParallelUpdate: the timed modifiers; the colonies' own day (engine.colonies,
 -- once it is there: stability, amenities, happiness, crime, ...)
@@ -267,6 +269,12 @@ P["daily.pop_groups"] = function(host, date)
     end
     -- the pop groups' happiness, power, crime, amenities usage (engine.colonies; no random draws)
     if call_optional("engine.colonies", "pop_groups_daily", host, date) then
+        ran = true
+    end
+    -- the pop groups' ethics drift and faction-change remnant (engine.ethics: EthicChangeSafePrivate,
+    -- CheckPopFactionChange, then CPopGroup::DailyUpdateSerial's ethics part; the day's pool, no
+    -- global draws: OnEthicsDivergence's two are counted, not made, until a serial pop group phase)
+    if call_optional("engine.ethics", "pop_groups_daily", host, date) then
         ran = true
     end
     if not ran then

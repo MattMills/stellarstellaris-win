@@ -288,7 +288,7 @@ days (`(id + a day counter) % interval == 0`), a draw from the noise stream of `
 the ethos resized and diffed (`CBasePopGroupStat<CEthic>::Resize`, `CalcPopsDiff`),
 `OnEthicsDivergence` (`on_daily_pop_ethics_divergence`), factions validated and
 `PopulateWithTargetedFactions`. The save's `ethos.pops`, `fractions`, `factions`, `wanted_factions`,
-`ethics_attraction`, `total_attraction` come from here. Not modelled.
+`ethics_attraction`, `total_attraction` come from here: [ethics.md](ethics.md) (`engine/ethics.lua`).
 
 ## 7. Checks
 
