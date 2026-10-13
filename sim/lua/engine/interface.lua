@@ -58,10 +58,15 @@ E.countries = function()
     return world.all("country")
 end
 
--- a country's planets (its `owned_planets`), or every owned planet
+-- a country's planets (its `owned_planets`: colony ids, given as their planets), or every
+-- owned planet
 E.colonies = function(owner)
-    if owner and owner ~= 0 then
-        return ids_of_list(world.field(obj("country", owner), "owned_planets"))
+    if owner then
+        local out = {}
+        for _, c in ipairs(ids_of_list(world.field(obj("country", owner), "owned_planets"))) do
+            out[#out + 1] = world.colony_planet[c]
+        end
+        return out
     end
     local out = {}
     for o, list in pairs(world.planets_of) do
@@ -88,8 +93,12 @@ end
 local function government(c, key)
     return world.field(world.field(c, "government"), key)
 end
+-- `ethos = { ethics = { "ethic_x" ... } }` (4.5)
 local function has_ethic(c, ethic)
-    return values_set(world.field(c, "ethos"), "ethic")[ethic] == true
+    for _, v in ipairs(world.list(world.field(world.field(c, "ethos"), "ethics"))) do
+        if v == ethic then return true end
+    end
+    return false
 end
 
 local DERIVED = {
@@ -106,19 +115,29 @@ local DERIVED = {
         num_colonies = function(c) return #world.list(world.field(c, "owned_planets")) end,
         num_leaders = function(c) return #world.list(world.field(c, "owned_leaders")) end,
         num_pops = function(c) return world.field(c, "num_sapient_pops") end,
+        -- the capital is a colony id: its planet
+        capital = function(c)
+            local col = tonumber(world.field(c, "capital"))
+            return col and world.colony_planet[col]
+        end,
     },
     planet = {
         is_planet_class = function(p) return world.field(p, "planet_class") end,
         has_owner = function(p) return world.field(p, "owner") ~= nil and "yes" or "no" end,
         is_capital = function(p, id)
             local owner = world.field(p, "owner")
-            return (owner and world.field(obj("country", owner), "capital") == id) and "yes" or "no"
+            local col = world.planet_colony[id]
+            return (owner and col and world.field(obj("country", owner), "capital") == col) and "yes" or "no"
         end,
-        is_colony = function(p, id) return (world.pop_groups_of[id] and "yes") or "no" end,
+        is_colony = function(p, id) return (world.planet_colony[id] and "yes") or "no" end,
         num_pops = function(p) return world.field(p, "num_sapient_pops") end,
     },
     pop_group = {
-        colony = function(g) return world.field(g, "planet") end,
+        -- its `planet` is its colony's id: the colony's planet
+        colony = function(g)
+            local col = tonumber(world.field(g, "planet"))
+            return col and world.colony_planet[col]
+        end,
     },
 }
 
@@ -177,6 +196,17 @@ SETS.country.has_valid_civic = SETS.country.has_civic
 -- a leader's traits are repeated `traits = "x"`; a species' are `traits = { trait = "x" ... }`
 SETS.leader = {
     has_trait = function(l, m) return values_set(l, "traits")[m] == true end,
+}
+-- a pop group's traits are its species'
+local function species_has_trait(sp, m)
+    return values_set(world.field(sp, "traits"), "trait")[m] == true
+end
+SETS.pop_group = {
+    has_trait = function(g, m)
+        local key = world.field(g, "key")
+        local sp = type(key) == "table" and world.object("species", tonumber(world.field(key, "species")))
+        return sp ~= nil and sp ~= false and species_has_trait(sp, m)
+    end,
 }
 SETS.species = {
     has_trait = function(s, m) return values_set(world.field(s, "traits"), "trait")[m] == true end,

@@ -42,7 +42,7 @@ local function is_store(block)
 end
 
 world.entries = {}   -- store name -> { [id] = its entry in the tree (removal writes 'id = none') }
-world.blocks = {}    -- store name -> the tree's block that holds it (new objects are added there)
+world.store_blocks = {}  -- store name -> the tree's block that holds it (new objects are added there)
 
 local function add_store(name, block)
     local store, ids, entries = world.stores[name] or {}, world.ids[name] or {}, world.entries[name] or {}
@@ -55,7 +55,41 @@ local function add_store(name, block)
         end
     end
     world.stores[name], world.ids[name], world.entries[name] = store, ids, entries
-    world.blocks[name] = block
+    world.store_blocks[name] = block
+end
+
+-- world.find_stores(tree, visit): every store of a gamestate tree, visit(name, block). A top-level
+-- store is named by its key (`country`); one inside a wrapper by the inner key (`planets = {
+-- planet = { } }` -> `planet`, `starbase_mgr = { starbases = { } }` -> `starbases`); one deeper by
+-- its path (`construction = { item_mgr = { items = { } } }` -> `construction.item_mgr.items`).
+-- Returns the top-level keys that held no store (plain values or blocks).
+function world.find_stores(tree, visit)
+    local plain = {}
+    local function walk(v, path, key, depth)
+        if is_store(v) then
+            visit(depth <= 2 and key or path, v)
+            return true
+        end
+        if depth >= 3 then
+            return false
+        end
+        local any = false
+        for _, inner in ipairs(v) do
+            if inner.op and inner.key and inner.value.text == nil then
+                any = walk(inner.value, path .. "." .. inner.key.text, inner.key.text, depth + 1) or any
+            end
+        end
+        return any
+    end
+    for _, e in ipairs(tree) do
+        if e.op and e.key then
+            local key, v = e.key.text, e.value
+            if v.text ~= nil or not walk(v, key, key, 1) then
+                plain[#plain + 1] = e
+            end
+        end
+    end
+    return plain
 end
 
 -- world.load(text) -> true | nil, message
@@ -66,31 +100,37 @@ function world.load(text)
         return nil, message
     end
     world.tree = tree
-    for _, e in ipairs(tree) do
-        if e.op and e.key then
-            local key, v = e.key.text, e.value
-            if v.text ~= nil then
-                world.meta[key] = v.text
-            elseif is_store(v) then
-                add_store(key, v)
-            else
-                -- a wrapper of stores (`planets = { planet = { ... } }`), or a plain block
-                local wrapped = false
-                for _, inner in ipairs(v) do
-                    if inner.op and inner.key and inner.value.text == nil and is_store(inner.value) then
-                        add_store(inner.key.text, inner.value)
-                        wrapped = true
-                    end
-                end
-                if not wrapped then
-                    world.meta[key] = v
-                end
-            end
-        end
+    for _, e in ipairs(world.find_stores(tree, add_store)) do
+        world.meta[e.key.text] = e.value.text or e.value
     end
     world.seconds = RUST.clock() - t0
     world.index()
     return true
+end
+
+-- world.parse_stores(text) -> { name -> { [id] = block } } | nil, message: the stores of another
+-- gamestate, apart from this world (to compare with it: engine.diff)
+function world.parse_stores(text)
+    local tree, message = pdxscript.parse(text, "gamestate")
+    if not tree then
+        return nil, message
+    end
+    local stores = {}
+    world.find_stores(tree, function(name, block)
+        local store = stores[name] or {}
+        for _, e in ipairs(block) do
+            if e.value.text == nil then
+                store[tonumber(e.key.text)] = e.value
+            end
+        end
+        stores[name] = store
+    end)
+    for _, e in ipairs(tree) do
+        if e.op and e.key and e.value.text then
+            stores["@" .. e.key.text] = e.value.text
+        end
+    end
+    return stores
 end
 
 -- the fields of an object, indexed once: key -> { values } (tokens' text, or blocks)
@@ -216,6 +256,18 @@ function world.remove_value(block, text)
     end
 end
 
+-- world.remove_entry(block, entry): one entry taken out of a block (a statement or a list element)
+function world.remove_entry(block, entry)
+    for i = #block, 1, -1 do
+        if block[i] == entry then
+            table.remove(block, i)
+            fields_of[block] = nil
+            return true
+        end
+    end
+    return false
+end
+
 -- world.remove(kind, id): the object taken out of its store
 function world.remove(kind, id)
     local name = world.KINDS[kind] or kind
@@ -238,7 +290,7 @@ end
 -- world.create(kind, id, block): a new object in its store (and in the save, at the store's end)
 function world.create(kind, id, block)
     local name = world.KINDS[kind] or kind
-    local holder = world.blocks[name]
+    local holder = world.store_blocks[name]
     if not holder then
         return nil
     end
@@ -267,6 +319,16 @@ end
 -- the relations the script layer walks, from the objects' own fields
 function world.index()
     world.planets_of, world.pop_groups_of, world.leaders_of = {}, {}, {}
+    -- a colony (the `colony` store) is the colony of the planet whose `colony` field names it; in
+    -- 4.5 a pop group's `planet`, a pop job's `planet` and a country's `capital` and
+    -- `owned_planets` are colony ids
+    world.colony_planet, world.planet_colony = {}, {}
+    for _, pid in ipairs(world.all("planet")) do
+        local c = tonumber(world.field(world.object("planet", pid), "colony"))
+        if c then
+            world.colony_planet[c], world.planet_colony[pid] = pid, c
+        end
+    end
     local function push(t, k, v)
         if k then
             local l = t[k]
@@ -281,11 +343,48 @@ function world.index()
         push(world.planets_of, tonumber(world.field(world.object("planet", id), "owner")), id)
     end
     for _, id in ipairs(world.all("pop_group")) do
-        push(world.pop_groups_of, tonumber(world.field(world.object("pop_group", id), "planet")), id)
+        local colony = tonumber(world.field(world.object("pop_group", id), "planet"))
+        push(world.pop_groups_of, colony and world.colony_planet[colony], id)
     end
     for _, id in ipairs(world.all("leader")) do
         push(world.leaders_of, tonumber(world.field(world.object("leader", id), "country")), id)
     end
+    -- owners the save does not write on the object: a fleet's is the country whose
+    -- fleets_manager.owned_fleets lists it; a system's is its starbase's (starbase -> its station
+    -- ship -> that ship's fleet -> the fleet's owner)
+    world.fleet_owner, world.system_owner = {}, {}
+    for _, cid in ipairs(world.all("country")) do
+        local owned = world.path(world.object("country", cid), "fleets_manager", "owned_fleets")
+        for _, entry in ipairs(world.blocks(owned)) do
+            local fleet = tonumber(world.field(entry, "fleet"))
+            if fleet then
+                world.fleet_owner[fleet] = cid
+            end
+        end
+    end
+    for _, sid in ipairs(world.all("system")) do
+        for _, sb in ipairs(world.list(world.field(world.object("system", sid), "starbases"))) do
+            local station = tonumber(world.field(world.object("starbase", tonumber(sb)), "station"))
+            local fleet = station and tonumber(world.field(world.object("ship", station), "fleet"))
+            local owner = fleet and world.fleet_owner[fleet]
+            if owner and world.system_owner[sid] == nil then
+                world.system_owner[sid] = owner
+            end
+        end
+    end
+end
+
+-- the blocks of a list block (`hyperlane = { { to = 1 } { to = 2 } }`)
+function world.blocks(block)
+    local out = {}
+    if type(block) == "table" then
+        for _, e in ipairs(block) do
+            if not e.text and not e.op then
+                out[#out + 1] = e
+            end
+        end
+    end
+    return out
 end
 
 -- world.summary() -> text

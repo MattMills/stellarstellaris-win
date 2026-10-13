@@ -76,9 +76,104 @@ local function each_country(f)
     end
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- countdowns: what counts its days on the objects themselves
+
+-- flags with a duration (`flags = { name = { flag_date = <hour set> flag_days = <days left> } }`):
+-- a day less each day, gone at 0 (CPdxIntegerFlags::UpdateFlags in the daily task graph)
+local function count_down_flags(obj)
+    local flags = world.field(obj, "flags")
+    if type(flags) ~= "table" then
+        return
+    end
+    for i = #flags, 1, -1 do
+        local e = flags[i]
+        if e.op and e.value.text == nil then
+            local days_e
+            for _, f in ipairs(e.value) do
+                if f.op and f.key.text == "flag_days" then
+                    days_e = f
+                end
+            end
+            local days = days_e and tonumber(days_e.value.text)
+            if days and days > 0 then
+                if days <= 1 then
+                    world.remove_entry(flags, e)
+                else
+                    days_e.value.text = tostring(days - 1)
+                end
+            end
+        end
+    end
+end
+
+-- timed modifiers (`timed_modifier = { items = { { modifier = x days = n } } }`, -1 for ever): a
+-- day less each day, gone at 0
+local function count_down_modifiers(obj)
+    local items = world.field(world.field(obj, "timed_modifier"), "items")
+    if type(items) ~= "table" then
+        return
+    end
+    for i = #items, 1, -1 do
+        local item = items[i]
+        if type(item) == "table" and not item.text and not item.op then
+            for _, f in ipairs(item) do
+                if f.op and f.key.text == "days" then
+                    local days = tonumber(f.value.text)
+                    if days and days > 0 then
+                        if days <= 1 then
+                            world.remove_entry(items, item)
+                        else
+                            f.value.text = tostring(days - 1)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function each_object(stores, f)
+    for _, name in ipairs(stores) do
+        local store = world.stores[name]
+        for _, id in ipairs(world.ids[name] or {}) do
+            local obj = store[id]
+            if obj then
+                f(obj)
+            end
+        end
+    end
+end
+
+-- every store but the ones the countries and colonies phases count down
+local OTHER_STORES
+local function other_stores()
+    if not OTHER_STORES then
+        OTHER_STORES = {}
+        for name in pairs(world.stores) do
+            if name ~= "country" and name ~= "planet" then
+                OTHER_STORES[#OTHER_STORES + 1] = name
+            end
+        end
+        table.sort(OTHER_STORES)
+    end
+    return OTHER_STORES
+end
+
 local P = systems.phases
 P["daily.script_state_expiry"] = function(host)
+    each_object({ "country", "planet" }, count_down_flags)
+    each_object(other_stores(), count_down_flags)
     host.daily_script_state()
+end
+P["daily.countries_parallel"] = function()
+    each_object({ "country" }, count_down_modifiers)
+end
+P["daily.colonies_parallel"] = function()
+    each_object({ "planet" }, count_down_modifiers)
+end
+P["daily.galaxy"] = function()
+    each_object(other_stores(), count_down_modifiers)
 end
 P["daily.countries_serial"] = function(host)
     each_country(function(id) host.scope_daily_events("country", id) end)

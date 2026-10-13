@@ -113,6 +113,13 @@ impl Runtime {
         f.call((game_dir.replace('\\', "/"), gs, docs_dir.map(|d| d.replace('\\', "/"))))
     }
 
+    /// Reads only the world from a save's gamestate (no definitions, no script layer): for tools
+    /// and the renderer, which need the world fast.
+    pub fn load_world(&self, gamestate: &str) -> mlua::Result<String> {
+        let f: Function = self.engine.get("load_world")?;
+        f.call(self.lua.create_string(gamestate)?)
+    }
+
     /// One phase of the tick (`kind`: micro, ai, daily, monthly, yearly); whether something models it.
     pub fn phase(&self, kind: &str, name: &str) -> mlua::Result<bool> {
         let d = self.date.get();

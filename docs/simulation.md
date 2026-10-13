@@ -398,33 +398,41 @@ and research are a small part of their classes' census (about 0.8 M instructions
 it reading, validation and UI support): perhaps 20,000 to 40,000 lines of C++ to reproduce, against
 100,000 to 200,000 for everything.
 
-## 6. The Rust skeleton (`sim/`)
+## 6. The engine (`sim/`): Rust the platform, the game in Lua from its own files
 
-A standalone crate (`stellar-sim`; one dependency, `mlua` with a vendored LuaJIT, section 7) with
-the minimal simulation's shape:
+The first skeleton modelled the game by hand (a 10-resource enum, job, building and technology
+structs, a sample world). That is gone. Nothing of the game is written in the engine; everything
+comes from the game's files and a save:
 
-| file | |
-|---|---|
-| `src/rng.rs` | the game's RNG (`noise(position, seed)`, draws, the daily pool, the forbidden zone), tested against values computed from a literal transliteration of the instructions of `GetIntegerForMacro` |
-| `src/date.rs`, `src/fixed.rs` | `CDate` (hours, 12 x 30 days) and `CFixedPoint` (int64, 1.0 = 100000) |
-| `src/state.rs` | `GameState` (date, tick counter, cached month and year, RNG, `World`), `World` (definitions, countries, colonies, pop groups, leaders, fleets, modifier sources) in id order |
-| `src/script.rs` | the `ScriptHost` trait (`eval_trigger`, `run_effect`, `on_action`, `weight`, `daily_script_state`, `scope_daily_events`; the context gives the `World` (changed only through the queue), the RNG, the queue and `flush`, the barrier) and `MockScriptHost` (scripted ops: flags, engine effects, random branches, `create_pop_group` with `last_created`) |
-| `src/lua_host.rs`, `lua/simscript/*.lua` | `LuaScriptHost`: the real script layer in embedded LuaJIT (section 7) |
-| `src/sample.rs` | a vanilla-like world of three empires for runs with the game's script |
-| `src/queue.rs` | the engine-effect queue: FIFO, provisional handles for created objects, drained at the barriers |
-| `src/scheduler.rs` | `HandleTurnTick` (commands, tick count, date, `MicroUpdate` every tick, `ProcessAI` on tick 4, daily / monthly / yearly phases in the game's order, a flush after every root effect and at the end of the tick) |
-| `src/engine/*.rs` | one module per subsystem, each naming the C++ it replaces: working minimal models for economy (the budget formula), pops (jobs by script weight, growth), colonies, construction, research (weighted picks with the RNG), country and leaders (the daily pool), modifiers (with expiry), checksums; stubs for fleets (movement only), combat, diplomacy; a trivial AI that returns commands |
-| `tests/progression.rs` | tick order (ten ticks a day, AI on the 4th, daily phases after the 10th `MicroUpdate`, months and years after that day's phases), determinism per seed (checksums over two simulated years), the barrier (script effects at once, engine effects at the flush, handles resolved), modifiers changing production, a five-year progression |
-| `tests/lua_slice.rs` | the vertical slice through LuaJIT on a small script tree written to a temp dir (section 7), and its determinism |
-| `tests/vanilla.rs` | the game's own script read in place: parse and keyword coverage, then a multi-year run (skipped unless `STELLARIS_DIR` is set) |
-| `examples/run.rs` | a one-colony world for N years (mock script) |
-| `examples/vanilla.rs` | the vanilla run with its report: `-- <Stellaris dir> [years] [seed] [--coverage]` |
+| part | where | what |
+|---|---|---|
+| platform | `src/runtime.rs` | the LuaJIT state (require paths, `RUST.list_files`, `clock`, `date`, `rand`), `Runtime::load` / `load_world` / `phase` / `save_text` / `eval` |
+| | `src/save.rs` | reading a save (`gamestate`, `meta`) and writing one (a zip of both, deflated as the game does) |
+| | `src/scheduler.rs` | `HandleTurnTick`: commands, the tick count, the date, `MicroUpdate` every tick, `ProcessAI` on tick 4, and the daily, monthly and yearly phases in the game's order (section 1); parallel phases with random draws forbidden, the daily pool of 1,000 draws |
+| | `src/rng.rs`, `date.rs`, `fixed.rs` | the game's RNG, `CDate`, `CFixedPoint` |
+| definitions | `lua/engine/defs.lua` | every folder of `common/` of the vanilla file set, read in place the game's way (`stellar.script.source.definitions`): 247 folders, 21,128 definitions |
+| script | `lua/simscript/*` | events, on_actions, scripted triggers, effects and values (section 7) |
+| world | `lua/engine/world.lua` | the game state from a save's gamestate, kept in the save's own form: every store of id-keyed objects (`country`, `planet`, `pop_groups`, `fleet`, `ships`, `galactic_object`, `construction.item_mgr.items`, ...), fields read with `world.field` / `fields` / `list` / `blocks` / `path`, changes made as edits of the save's tree (`set`, `append`, `create`, `remove`), owners the save keeps only indirectly indexed (`system_owner`, `fleet_owner`) |
+| engine interface | `lua/engine/interface.lua` | `E`, what the script layer reads of the engine (answered from the save's own fields; reads nothing answers yet are counted) and the engine effects it queues |
+| systems | `lua/engine/systems.lua` | the engine effects applied to the world; per phase, what the engine does: the pulses and daily events through the script layer, the countdowns of flags and timed modifiers; the rest is added phase by phase |
+| saves | `engine.save()` | the world written back as a gamestate (pdxscript.write over the save's tree), dated today |
+| check | `lua/engine/diff.lua`, `examples/diff.rs` | the simulation from one save to the date of a later save the game wrote, compared store by store and field by field |
+| renderer | `render/` (`stellar-render`) | the galaxy map of a save (systems, hyperlanes, owners' colours) with wgpu on Vulkan, headless to a PNG or in a window |
 
-The crate was first built on hippo (the 13 tests of the skeleton); with LuaJIT it is built and run
-on Windows, where the game's files are, read in place (section 7 has the command). The mock
-example simulates ten years (36,000 ticks) in about 30 ms. Not done: loading the economy's
-definitions (buildings, jobs, technologies) from the game files, the deferred subsystems, deficits
-and the market, and any parity with the game's own numbers.
+Tests (`tests/world.rs`; skipped without the game's files and the 2210.01.01 save): the vanilla
+files and the save load (247 folders, 21,128 definitions, 10,105 events; 55 countries, 6,080
+planets, 171 pop groups, 123 systems and 804 fleets with an owner); a month from the save twice is
+the same; a save written after a month reads back the same.
+
+Where to run: a Linux machine with the game's data installed (`/opt/stellaris`, `STELLARIS_DIR`) and
+the saves (`/opt/stellaris-saves`), `cargo test --release` with a local `CARGO_TARGET_DIR`; on
+Windows, `sim\cargo_msvc.cmd`.
+
+Against the game: 2210.01.01 + 180 days against the game's own 2210.07.01 save (`examples/diff`):
+95.0% of 734k fields equal. What differs is what the engine does not do yet: ship movement and fleet
+orders (the AI), pop growth, leader experience, construction progress (it needs the modifiers), and
+the AI's own state; the player's and the AI's commands between the saves are not in them, so part of
+the difference is theirs.
 
 ## 7. The script layer in the simulation: PDXScript through LuaJIT
 

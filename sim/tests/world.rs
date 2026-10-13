@@ -60,6 +60,15 @@ fn the_vanilla_files_and_the_save_load() {
         rt.eval(r#"local w = require("engine.world") return E.resource(0, "energy"), w.field(w.object("country", 0), "capital")"#).expect("reads");
     assert!(energy > 0.0);
     assert!(capital.is_some());
+    // owners the save keeps only through starbases and fleets (world.index)
+    let (systems_owned, fleets_owned): (u32, u32) = rt
+        .eval(r#"local w, n, m = require("engine.world"), 0, 0
+            for _ in pairs(w.system_owner) do n = n + 1 end
+            for _ in pairs(w.fleet_owner) do m = m + 1 end
+            return n, m"#)
+        .expect("owners");
+    println!("{systems_owned} systems and {fleets_owned} fleets with an owner");
+    assert!(systems_owned > 100 && fleets_owned > systems_owned);
 }
 
 /// Every country's stockpile of every resource, and the stores' sizes, as text.

@@ -26,6 +26,9 @@ pub mod runtime;
 pub mod save;
 pub mod scheduler;
 
+/// The Lua binding, for callers that pass tables to and from the runtime.
+pub use mlua;
+
 pub use date::Date;
 pub use fixed::Fixed;
 pub use rng::NoiseRandom;

@@ -29,8 +29,19 @@ function engine.load(game_dir, gamestate, docs_dir)
     if gamestate then
         local ok, message = engine.world.load(gamestate)
         lines[#lines + 1] = ok and ("world: " .. engine.world.summary()) or ("world: not loaded: " .. tostring(message))
+        if ok then
+            -- the script's flags and variables are the save's
+            require("engine.scriptstate").install()
+        end
     end
     return table.concat(lines, "\n")
+end
+
+-- engine.load_world(gamestate) -> report: only the world (tools, the renderer: no definitions, no
+-- script layer)
+function engine.load_world(gamestate)
+    local ok, message = engine.world.load(gamestate)
+    return ok and ("world: " .. engine.world.summary()) or ("world: not loaded: " .. tostring(message))
 end
 
 -- engine.phase(kind, name, year, month, day) -> whether something models it: one phase of the
