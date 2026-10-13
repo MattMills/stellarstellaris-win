@@ -69,6 +69,11 @@ pub fn new_lua() -> mlua::Result<Lua> {
     )?;
     let start = std::time::Instant::now();
     rust.set("clock", lua.create_function(move |_, ()| Ok(start.elapsed().as_secs_f64()))?)?;
+    // the game's noise function, for generators kept in Lua (the AI's own, one per country)
+    rust.set(
+        "noise",
+        lua.create_function(|_, (position, seed): (u32, u32)| Ok(crate::rng::noise(position, seed)))?,
+    )?;
     lua.globals().set("RUST", rust)?;
     lua.globals().set("E", lua.create_table()?)?;
     Ok(lua)
