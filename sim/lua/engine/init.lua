@@ -34,13 +34,15 @@ function engine.load(game_dir, gamestate, docs_dir)
             require("engine.scriptstate").install()
             -- the modifiers every system reads (economy.modifiers): by default the rewrite's own
             -- graph built from the world (engine.economy.world_source, rebuilt each month), its
-            -- modifier types from the game's modifier documentation (STELLAR_MODIFIER_TYPES, else
-            -- modifiers.log in docs_dir); with STELLAR_MODIFIERS=capture, or when the world graph
-            -- cannot be built, the game's capture of the save's moment (STELLAR_CAPTURE), held as it was
+            -- modifier types built from the game's files (or read from the game's modifier
+            -- documentation given in STELLAR_MODIFIER_TYPES); with STELLAR_MODIFIERS=capture, or
+            -- when the world graph cannot be built, the game's capture of the save's moment
+            -- (STELLAR_CAPTURE), held as it was
             local capture = os.getenv("STELLAR_CAPTURE")
             local mode = os.getenv("STELLAR_MODIFIERS") or "world"
             local types = os.getenv("STELLAR_MODIFIER_TYPES")
-            if (types == nil or types == "") and docs_dir then
+            if (types == nil or types == "") and docs_dir
+                and not require("stellar.graph.modifiers").game_definitions then
                 types = docs_dir .. "/modifiers.log"
             end
             local built = false

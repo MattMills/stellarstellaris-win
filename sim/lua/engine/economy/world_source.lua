@@ -11,11 +11,12 @@
 --
 -- The graph is built from the world as it is when built; the engine builds it again in the monthly
 -- modifier phase (the game updates its nodes daily: between two builds the values are held). The
--- modifier types (names, categories) come from the game's modifier documentation
--- (script_documentation/modifiers.log), STELLAR_MODIFIER_TYPES.
+-- modifier types (names, categories) are built from the game's files (stellar.graph.modifiers
+-- game_definitions), or read from the game's modifier documentation when one is given
+-- (script_documentation/modifiers.log, STELLAR_MODIFIER_TYPES).
 --
 --   local ws = require("engine.economy.world_source")
---   local source, why = ws.new(types_log_path)
+--   local source, why = ws.new([types_log_path])
 --   economy.set_modifier_source(source.get)
 --   source.rebuild()                   -- the world changed (a month passed)
 
@@ -37,22 +38,31 @@ local function read_file(path)
     return text
 end
 
--- ws.new(types_log) -> source | nil, message: source.get(kind, id), source.rebuild(), source.stats
+-- ws.new([types_log]) -> source | nil, message: source.get(kind, id), source.rebuild(),
+-- source.stats. The modifier types are built from the game's files (stellar.graph.modifiers
+-- game_definitions: the types the game defines in code, and those it generates from the
+-- databases); a modifiers log given (the game's script_documentation/modifiers.log) is read instead.
 function M.new(types_log)
     local ok_mw, mw = pcall(require, "engine.modifiers.world")
     if not ok_mw or not mw.world_graph or not mw.values then
         return nil, "engine.modifiers.world has no world_graph/values (the modifiers branch is not merged)"
     end
-    local text = read_file(types_log)
-    if not text then
-        return nil, "no modifier types at " .. tostring(types_log) .. " (STELLAR_MODIFIER_TYPES)"
-    end
     local gmod = require("stellar.graph.modifiers")
-    local defs = gmod.definitions()
-    defs:read_log(text)
-    text = nil
     local world = require("engine.world")
     local edefs = require("engine.defs")
+    local defs, types_from
+    local text = types_log and types_log ~= "" and read_file(types_log)
+    if text then
+        defs = gmod.definitions()
+        defs:read_log(text)
+        types_from = types_log
+    elseif gmod.game_definitions then
+        defs = gmod.game_definitions(edefs.folder)
+        types_from = "the game's files"
+    else
+        return nil, "no modifier types: no log at " .. tostring(types_log) .. " (STELLAR_MODIFIER_TYPES) and no game_definitions"
+    end
+    text = nil
     local okdb, db = pcall(require, "simscript.db")
     local fs = okdb and db.fs or nil
 
@@ -89,8 +99,8 @@ function M.new(types_log)
     end
     function source.report()
         local s = source.stats
-        return string.format("modifiers: from the world (engine.modifiers.world), %d builds in %.1f s, %d nodes asked, %d not in the world",
-            s.builds, s.seconds, s.asked, s.missing)
+        return string.format("modifiers: from the world (engine.modifiers.world; types from %s), %d builds in %.1f s, %d nodes asked, %d not in the world",
+            types_from, s.builds, s.seconds, s.asked, s.missing)
     end
     return source
 end
