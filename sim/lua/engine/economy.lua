@@ -513,6 +513,10 @@ function economy.capacity(country, r)
     if not max then
         return nil
     end
+    -- `fixed_max_amount = yes` (influence): the max as written, no capacity added
+    if defs.field(def.block, "fixed_max_amount") == "yes" then
+        return max
+    end
     local dyn = def and defs.field(def.block, "dynamic_capacity")
     if type(dyn) == "table" then
         max = max + (tonumber(defs.field(dyn, "base")) or 0)
