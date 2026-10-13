@@ -127,24 +127,158 @@ void pop_hook(void* self) {
 	record("pop", 0, 0, 0, pushed, std::string());
 }
 
+// The bar, Lua's (stellar.loading_map, stellar.loading_schedule, stellar.loading_tick). The game
+// shows each phase of the startup load on a part of the bar it fixed (interface 5-30%, graphics
+// 30-80%, databases 80-100%) and nothing after the databases (16 seconds at 100%). Lua gives each
+// phase its part of a bar for the whole load (from the times of the last load) and a schedule for
+// what comes after: a segment of the bar for each function marked (its entry starts it), crossed
+// in the time it took last. The bar moves through the game's own LoadingScreenCallback, which
+// also keeps the game's services and window alive: called with (p, 100, 0, 100) it draws p% (when
+// p is more than it drew last). Only on the game's thread, at most ten times a second.
+// RenderLoadScreen called by the game outside a step (at the start of a phase: its own 30%, 80%)
+// draws nothing while the bar is Lua's. The schedule's last segment ends it.
+struct BarMap {
+	unsigned start, span, new_start, new_span;
+};
+struct Segment {
+	double from = 0, to = 0, seconds = 0;
+	bool last = false;  // the load screen goes: the bar is the game's again
+};
+struct Scheduled {
+	uint64_t id;        // the mark that starts it
+	Segment segment;
+	bool used;          // a mark entered again (a second call) starts the next one with its id
+};
+std::mutex bar_lock;
+std::vector<BarMap> bar_maps;
+std::vector<Scheduled> schedule;                      // in the order of the last load
+Segment segment;                                      // the current one
+double segment_start = 0;
+std::atomic<bool> bar_active{false};
+void* bar_application = nullptr;                      // CGameApplication, from the game's steps
+std::atomic<DWORD> game_thread{0};
+double last_tick = 0;
+int drawn = -1;                 // the progress on the screen (the most drawn yet)
+int* bar_gate = nullptr;        // LoadingScreenCallback's last progress: it draws only above it
+int direct_limit = 100;         // before the phases, the game's own frames are drawn up to this
+thread_local bool in_step = false;
+
+using step_function = void (*)(void* application, unsigned current, unsigned total, unsigned start, unsigned span);
+step_function original_step = nullptr;
+
+// the game's step draws anything above what is on the screen (its own last progress may be
+// another: its phases' numbers, before the bar was Lua's)
+void sync_gate() {
+	if (bar_gate != nullptr) {
+		*bar_gate = drawn < 0 ? 0 : drawn;
+	}
+}
+
+// draws p% through the game's step (on the game's thread, the bar Lua's)
+void tick(int p) {
+	if (in_step || bar_application == nullptr || p <= drawn || p > 100) {
+		return;
+	}
+	last_tick = now();
+	sync_gate();
+	in_step = true;
+	original_step(bar_application, static_cast<unsigned>(p), 100, 0, 100);
+	in_step = false;
+}
+
+// the current segment's progress by now, drawn if it moved (main thread, every 100 ms at most)
+void maybe_tick() {
+	if (!bar_active.load() || in_step || GetCurrentThreadId() != game_thread.load()) {
+		return;
+	}
+	const double t = now();
+	if (t - last_tick < 0.1) {
+		return;
+	}
+	double p = segment.from;
+	if (segment.seconds > 0) {
+		const double f = (t - segment_start) / segment.seconds;
+		p = segment.from + (segment.to - segment.from) * (f < 0.98 ? f : 0.98);
+	}
+	tick(static_cast<int>(p));
+}
+
+// a mark entered: the segment it starts, if the schedule has one
+void bar_enter(uint64_t id) {
+	if (!bar_active.load() || GetCurrentThreadId() != game_thread.load()) {
+		return;
+	}
+	// (the schedule may still be filled from Lua's thread; the lock is not held while drawing)
+	bool found = false;
+	{
+		std::lock_guard<std::mutex> guard(bar_lock);
+		for (auto& s : schedule) {
+			if (s.id == id && !s.used) {
+				s.used = true;
+				segment = s.segment;
+				segment_start = now();
+				found = true;
+				break;
+			}
+		}
+	}
+	if (!found) {
+		maybe_tick();
+		return;
+	}
+	tick(static_cast<int>(segment.from));
+	if (segment.last) {
+		bar_active.store(false);
+	}
+}
+
 // RenderLoadScreen(screen, const CString& text, int progress, ..., bool)
 using render_function = uintptr_t (*)(void* screen, const void* text, int progress, uintptr_t r9, uintptr_t stack5);
 render_function original_render = nullptr;
 
 uintptr_t render_hook(void* screen, const void* text, int progress, uintptr_t r9, uintptr_t stack5) {
+	if (bar_active.load() && !in_step && (bar_application != nullptr || progress > direct_limit)) {
+		// the game's own number outside a step (once the phases began, or ahead of where the
+		// first phase begins on Lua's bar): the bar is Lua's
+		record("render", progress, 1, 0, false, read_cstring(text));
+		return 0;
+	}
 	record("render", progress, 0, 0, false, read_cstring(text));
+	if (progress > drawn) {
+		drawn = progress;
+	}
 	return original_render(screen, text, progress, r9, stack5);
 }
 
 // CGameApplication::LoadingScreenCallback(this, current, total, start, span): a step of a phase of
-// the startup load, which has the part [start, start + span] of the bar
-using step_function = void (*)(void* application, unsigned current, unsigned total, unsigned start, unsigned span);
-step_function original_step = nullptr;
-
+// the startup load, which has the part [start, start + span] of the bar (moved to Lua's part of
+// it, see above)
 void step_hook(void* application, unsigned current, unsigned total, unsigned start, unsigned span) {
 	record("step", static_cast<int>(current), static_cast<int>(total), static_cast<int>(start), false, std::string(),
 		static_cast<int>(span));
+	if (in_step) {
+		original_step(application, current, total, start, span);
+		return;
+	}
+	bar_application = application;
+	game_thread.store(GetCurrentThreadId());
+	const bool lua_bar = bar_active.load();
+	if (lua_bar) {
+		for (const BarMap& m : bar_maps) {
+			if (m.start == start && m.span == span) {
+				start = m.new_start;
+				span = m.new_span;
+				break;
+			}
+		}
+		sync_gate();
+	}
+	in_step = true;
 	original_step(application, current, total, start, span);
+	in_step = false;
+	if (lua_bar) {
+		last_tick = now();
+	}
 }
 
 // Entry hooks: a stub per function records "enter" with the function's id, then runs the function.
@@ -154,6 +288,7 @@ void step_hook(void* application, unsigned current, unsigned total, unsigned sta
 // event (stellar.set_entry_skip; the original still runs through its trampoline).
 void record_entry(uint64_t id) {
 	record("enter", static_cast<int>(id), 0, 0, false, std::string());
+	bar_enter(id);
 }
 
 // the skip flags of the stubs, by id (1, 2, ... across every hook_entries call)
@@ -285,6 +420,8 @@ void file_dtor_hook(void* self) {
 		}
 	}
 	original_file_dtor(self);
+	// a file read: the bar moves on, if it is the game's thread's
+	maybe_tick();
 }
 
 // void VFSGetEnumeratedFiles(const char* folder, CPdxArray<CString>& files, const char*, const char*, int)
@@ -416,11 +553,18 @@ int l_set_entry_skip(lua_State* L) {
 // done, progress) in the main state, which initializes databases itself and sets the skip flags of
 // their CreateInstance and InitInstance; then the game's SetupDatabases runs as always, its loop
 // skipping those, and the rest of it (deferred references, PostReadInitInstance) runs on every
-// database. The skip flags are cleared after.
+// database. The skip flags Lua's loop set are cleared after (not those set meanwhile by hooks
+// inside the game's SetupDatabases: CModifier::InitDefinitionIcons is called from it).
 using setup_function = void (*)(void* a, void* done, void* progress);
 setup_function original_setup = nullptr;
 
 void setup_hook(void* a, void* done, void* progress) {
+	// the flags Lua's loop sets are cleared after the game's; flags set later, while the game's
+	// SetupDatabases runs (from hooks inside it, such as InitDefinitionIcons'), are left alone
+	std::vector<uint8_t> before(entry_flags.size(), 0);
+	for (size_t i = 1; i < entry_flags.size(); ++i) {
+		before[i] = *entry_flags[i];
+	}
 	{
 		std::lock_guard<std::recursive_mutex> guard(stellar_lua_lock());
 		lua_State* L = stellar_lua_state();
@@ -441,8 +585,14 @@ void setup_hook(void* a, void* done, void* progress) {
 			lua_settop(L, top);
 		}
 	}
+	std::vector<size_t> set_by_lua;
+	for (size_t i = 1; i < entry_flags.size() && i < before.size(); ++i) {
+		if (*entry_flags[i] != 0 && before[i] == 0) {
+			set_by_lua.push_back(i);
+		}
+	}
 	original_setup(a, done, progress);
-	for (size_t i = 1; i < entry_flags.size(); ++i) {
+	for (size_t i : set_by_lua) {
 		*entry_flags[i] = 0;
 	}
 }
@@ -631,9 +781,83 @@ int l_loading_events(lua_State* L) {
 	return 1;
 }
 
+// stellar.loading_map(start, span, new_start, new_span): the phase the game shows on [start,
+// start + span] of the bar is shown on [new_start, new_start + new_span] (set before
+// stellar.loading_bar(true))
+int l_loading_map(lua_State* L) {
+	BarMap m{static_cast<unsigned>(luaL_checknumber(L, 1)), static_cast<unsigned>(luaL_checknumber(L, 2)),
+		static_cast<unsigned>(luaL_checknumber(L, 3)), static_cast<unsigned>(luaL_checknumber(L, 4))};
+	std::lock_guard<std::mutex> guard(bar_lock);
+	bar_maps.push_back(m);
+	return 0;
+}
+
+// stellar.loading_schedule(id, from, to, seconds[, last]): entering the mark id starts the
+// segment [from, to] of the bar, crossed in about `seconds`; with last, the bar is the game's again
+// once it is drawn (set before stellar.loading_bar(true))
+int l_loading_schedule(lua_State* L) {
+	Segment s;
+	s.from = luaL_checknumber(L, 2);
+	s.to = luaL_checknumber(L, 3);
+	s.seconds = luaL_checknumber(L, 4);
+	s.last = lua_toboolean(L, 5) != 0;
+	std::lock_guard<std::mutex> guard(bar_lock);
+	schedule.push_back(Scheduled{static_cast<uint64_t>(luaL_checknumber(L, 1)), s, false});
+	return 0;
+}
+
+// stellar.loading_gate(address, limit): LoadingScreenCallback's last progress (a global: it draws
+// only above it), kept at what is on the screen; and the most the game's own frames before the
+// phases may draw (where the first phase begins on Lua's bar)
+int l_loading_gate(lua_State* L) {
+	bar_gate = reinterpret_cast<int*>(check_address(L, 1));
+	direct_limit = static_cast<int>(luaL_optnumber(L, 2, 100));
+	return 0;
+}
+
+// stellar.loading_bar(on): the bar is Lua's (the maps and the schedule set) or the game's
+int l_loading_bar(lua_State* L) {
+	bar_active.store(lua_toboolean(L, 1) != 0);
+	return 0;
+}
+
+// stellar.loading_segment(from, to, seconds): the current segment, from Lua (on the game's thread:
+// a part Lua runs itself, such as the PostReadInitInstance calls)
+int l_loading_segment(lua_State* L) {
+	if (!bar_active.load() || GetCurrentThreadId() != game_thread.load()) {
+		return 0;
+	}
+	segment.from = luaL_checknumber(L, 1);
+	segment.to = luaL_checknumber(L, 2);
+	segment.seconds = luaL_checknumber(L, 3);
+	segment.last = false;
+	segment_start = now();
+	tick(static_cast<int>(segment.from));
+	return 0;
+}
+
+// stellar.loading_tick(): the current segment's progress drawn, if it moved (game's thread only)
+int l_loading_tick(lua_State* L) {
+	(void)L;
+	maybe_tick();
+	return 0;
+}
+
 } // namespace
 
 void stellar_loading_open(lua_State* L) {
+	lua_pushcfunction(L, l_loading_map);
+	lua_setfield(L, -2, "loading_map");
+	lua_pushcfunction(L, l_loading_schedule);
+	lua_setfield(L, -2, "loading_schedule");
+	lua_pushcfunction(L, l_loading_bar);
+	lua_setfield(L, -2, "loading_bar");
+	lua_pushcfunction(L, l_loading_gate);
+	lua_setfield(L, -2, "loading_gate");
+	lua_pushcfunction(L, l_loading_segment);
+	lua_setfield(L, -2, "loading_segment");
+	lua_pushcfunction(L, l_loading_tick);
+	lua_setfield(L, -2, "loading_tick");
 	lua_pushcfunction(L, l_hook_loading);
 	lua_setfield(L, -2, "hook_loading");
 	lua_pushcfunction(L, l_loading_events);

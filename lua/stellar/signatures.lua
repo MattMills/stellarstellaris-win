@@ -2986,6 +2986,37 @@ return {
                 } },
             },
         },
+        ["CEconomicCategory::LogUnusedGeneratedAddModifiers"] = {
+            { -- overload 1
+                { reference = 1, rva = 0x1654e70, signatures = {
+                    "str:3b2a8a8dbccaa6a", "strset:296bf2209c37bba", "mnem:0010b48af79e4a9", "bagcfg:235ea1b7cc604eb",
+                    "callee_shapes:2cba6bd58d2db35", "caller_shapes:3b07eb5bc11712f", "wl1:0c01bc39b1225fd", "layout3:2c970764e68b4ad",
+                    "a_callee_ord:02b3d17804acd31", "a_callee_ord:0acd463a6a27cd7", "a_callset:23438e6fb695c9f", "a_callset:387c7cb3c587bb5",
+                    "a_callee_pair:1c63868619c368f", "a_callee_pair:3e3e1d1f867222c", "exact:261082af84a68b0", "pic:1cc7a79b27d46cc",
+                    "block:000000021ae6f80", "block:000000085182ac5", "block:0000000c5b044fb", "block:0000000e46eb0d0",
+                    "a_caller:03aaf7300c9dad1", "a_caller:06c86151088c2ff", "a_caller:07374aeba2c10fb", "a_caller:0880245d45a34dd",
+                    "a_caller:088b1a356c0f4a2", "a_caller:0fa6470bb3bb114", "a_caller:10df8c4c7af5614", "a_caller:15978d0f4e64498",
+                    "a_caller:16e1d26caca39fc", "a_caller:1a985ab6d5f0af8", "a_caller:1db1ee2d9347f3d", "a_caller:2527b6ec38d2ba8",
+                    "a_caller:3001e0e626e342a", "a_caller:3426f07a30feb78", "a_caller:344467411f2d785", "a_caller:3738ec81ebfd635",
+                    "a_caller:3b7299096cc97e3", "a_caller:3be6ef42f47cf5d", "a_layout_prev:0ad22a7a88923b3", "a_layout_prev:15fec8026d2df0c",
+                    "a_layout_prev:1b6766a28aa1027", "a_layout_prev:1c426d197975729", "a_layout_prev:1cb59150bfc4c82", "a_layout_prev:21e49a7d38849d7",
+                    "a_layout_prev:270d12362e9d379", "a_layout_prev:36f9146476c3c4a", "a_layout_next:04e3cd0667898d1", "a_layout_next:14cc5ba15c87c05",
+                    "a_layout_next:1e6abc4c39e3414", "a_layout_next:2a5a426d1b3fcc4", "a_layout_next:2afd950522d1935", "a_layout_next:31c1c5f247f64c1",
+                    "a_layout_next:365986b66c805d8", "s_callee_ord:3fe1fb777b0ed25", "s_caller:043c72d127836ec", "s_caller:04d68e63cbc2b5e",
+                    "s_caller:1302597df42c8ad", "s_caller:1333a8fd43b97e0", "s_caller:133d1501ff7f601", "s_caller:251b91be962c250",
+                    "s_caller:2e56e6b19b6e37b", "s_caller:2f316742543a7e6", "s_caller:3701f0297d8d339", "s_callset:3bafcdb86f1f03f",
+                } },
+                { reference = 2, rva = 0x1654580, signatures = {
+                    "caller_shapes:08bb40325e6c887", "a_callee_ord:35753a51d1d2ddf", "a_callee_ord:36d2d063b5e5ce4", "a_callset:07d369d930f2ed6",
+                    "a_callee_pair:15c025ac9803a58", "exact:1a0d151350d46f2", "a_caller:01e88627970df54", "a_caller:02daecd42ec0ad6",
+                    "a_caller:06c99e115b5a694", "a_caller:0cb4a3b5faaf1e9", "a_caller:10c67e097250655", "a_caller:1b8256264fc0307",
+                    "a_caller:1cc117e69b1cdc0", "a_caller:1ffe9f00df77162", "a_layout_prev:26d756fc4ef00e2", "a_layout_prev:2719f5c4cdc06d5",
+                    "a_layout_prev:35c04c6b3bc765c", "a_layout_next:0555854bac86055", "a_layout_next:100274cee544ead", "s_callee_pair:1fb6df5844de84e",
+                    "s_layout_prev:025b7fe47f1f208", "s_layout_prev:1a072429f757913", "s_layout_prev:1a5448c275a2376", "s_layout_prev:3138854c2dd9981",
+                    "s_layout_next:01d9678d3e1ae69", "s_layout_next:033080172c67264", "s_layout_next:09d3ea9c886e044", "s_layout_next:2dfec96edd79781",
+                } },
+            },
+        },
         ["CGameApplication::PrintScriptingDocumentation"] = {
             { -- overload 1
                 { reference = 1, rva = 0x1bb5d0, signatures = {

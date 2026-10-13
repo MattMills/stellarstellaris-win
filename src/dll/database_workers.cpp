@@ -260,6 +260,69 @@ int l_db_call(lua_State* L) {
 	return 2;
 }
 
+// Background calls (stellar.run_async, stellar.join_async): a step of the load the game would run
+// on its own thread, run on a thread of its own meanwhile (a function without arguments, under the
+// same handler as the databases), and waited for where its result is needed.
+struct AsyncCall {
+	HANDLE thread = nullptr;
+	uintptr_t function = 0;
+	DWORD code = 0;
+	Failure failure;
+	double start = 0, finish = 0;
+};
+std::vector<AsyncCall*> async_calls;
+
+DWORD WINAPI async_main(void* p) {
+	AsyncCall* call = static_cast<AsyncCall*>(p);
+	call->start = now();
+	call->code = call_guarded(0, call->function, &call->failure);
+	call->finish = now();
+	return 0;
+}
+
+// stellar.run_async(function) -> id: a thread calls function()
+int l_run_async(lua_State* L) {
+	AsyncCall* call = new AsyncCall();
+	call->function = check_address(L, 1);
+	call->thread = CreateThread(nullptr, 0, async_main, call, 0, nullptr);
+	if (call->thread == nullptr) {
+		delete call;
+		lua_pushnil(L);
+		lua_pushliteral(L, "CreateThread failed");
+		return 2;
+	}
+	async_calls.push_back(call);
+	lua_pushnumber(L, static_cast<lua_Number>(async_calls.size()));
+	return 1;
+}
+
+// stellar.join_async(id[, seconds]) -> exception, { start, finish, address, stack, type } | nil,
+// "running": waits for the call (at most that long)
+int l_join_async(lua_State* L) {
+	const size_t id = static_cast<size_t>(luaL_checknumber(L, 1));
+	if (id < 1 || id > async_calls.size()) {
+		return luaL_argerror(L, 1, "no such call");
+	}
+	AsyncCall* call = async_calls[id - 1];
+	const double seconds = luaL_optnumber(L, 2, -1);
+	const DWORD wait = seconds < 0 ? INFINITE : static_cast<DWORD>(seconds * 1000);
+	if (WaitForSingleObject(call->thread, wait) != WAIT_OBJECT_0) {
+		lua_pushnil(L);
+		lua_pushliteral(L, "running");
+		return 2;
+	}
+	lua_pushnumber(L, call->code);
+	lua_createtable(L, 0, 5);
+	lua_pushnumber(L, call->start);
+	lua_setfield(L, -2, "start");
+	lua_pushnumber(L, call->finish);
+	lua_setfield(L, -2, "finish");
+	if (call->code != 0) {
+		push_failure(L, call->failure);
+	}
+	return 2;
+}
+
 // stellar.exit_process(code): ends the game now (after a database failed: the load cannot go on)
 int l_exit_process(lua_State* L) {
 	TerminateProcess(GetCurrentProcess(), static_cast<UINT>(luaL_optnumber(L, 1, 1)));
@@ -620,6 +683,10 @@ void stellar_database_workers_open(lua_State* L) {
 	lua_setfield(L, -2, "db_call");
 	lua_pushcfunction(L, l_exit_process);
 	lua_setfield(L, -2, "exit_process");
+	lua_pushcfunction(L, l_run_async);
+	lua_setfield(L, -2, "run_async");
+	lua_pushcfunction(L, l_join_async);
+	lua_setfield(L, -2, "join_async");
 	lua_pushcfunction(L, l_serialize);
 	lua_setfield(L, -2, "serialize");
 	lua_pushcfunction(L, l_serialized);

@@ -18,6 +18,7 @@
 --   loading.poll(stellar.read)       -- every heartbeat
 
 local ffi = require("ffi")
+local fnmatch = require("fnmatch")
 local stellar = require("stellar")
 local resolve = require("stellar.resolve")
 local code = require("stellar.code")
@@ -55,7 +56,27 @@ function loading.locate(image, read)
     if first == nil then
         return nil, "no global read in SPushLoadScreenState"
     end
-    return { push = push, pop = pop, render = render, step = step, context = code.relative(read, first + 3, first + 7) }
+    -- LoadingScreenCallback's last progress: cmp reg, [rip+x], then mov [rip+x], reg (the bar is
+    -- drawn only above it)
+    local gate
+    local bytes, pos = read(step, 512), 1
+    local recent = {}
+    while bytes and pos <= #bytes - 15 and not gate do
+        local i = fnmatch.decode(bytes, step, pos)
+        if i == nil then
+            break
+        end
+        if i.rip_relative and i.target then
+            if i.text:match("^cmp e%w+,") then
+                recent[i.target] = pos
+            elseif i.text:match("^mov %[") and recent[i.target] and pos - recent[i.target] < 24 then
+                gate = i.target
+            end
+        end
+        pos = pos + i.length
+    end
+    return { push = push, pop = pop, render = render, step = step, gate = gate,
+        context = code.relative(read, first + 3, first + 7) }
 end
 
 -- CLoadScreenProgressContext (4.5.2 PDB): _Stack, a CPdxArray of SState (24 bytes:
@@ -202,20 +223,127 @@ local function write_files()
     return files_path()
 end
 
--- loading.milestone(name): records entering a milestone that has no mark (a function with a hook
--- of its own), from the thread that calls it
-local virtual_marks = {}
-function loading.milestone(name)
+-- the id of a milestone that has no mark (a function with a hook of its own), made the first time
+local virtual_marks, virtual_count = {}, 0
+local function virtual_id(name)
     local id = virtual_marks[name]
     if id == nil then
-        id = 1000000 + #marks + 1
-        for _ in pairs(virtual_marks) do
-            id = id + 1
-        end
+        virtual_count = virtual_count + 1
+        id = 1000000 + virtual_count
         virtual_marks[name] = id
         marks[id] = { kind = "milestone", name = name }
     end
-    stellar.mark(id)
+    return id
+end
+
+-- loading.milestone(name): records entering a milestone that has no mark, from the thread that
+-- calls it
+function loading.milestone(name)
+    stellar.mark(virtual_id(name))
+end
+
+-- The bar (src/dll/loading_hook.cpp): each load keeps its timeline on the game's thread (when each
+-- phase and milestone began, from the first frame of the load screen) in the file loading.bar
+-- names; the next load shows each phase on its part of a bar for the whole load and crosses the
+-- milestones after the databases in the time they took, instead of 16 seconds at 100%.
+local timeline_path
+local timeline, t0, game_thread = {}, nil, nil
+
+local function read_timeline(path)
+    local f = path and io.open(path, "r")
+    if f == nil then
+        return nil
+    end
+    local out = {}
+    for line in f:lines() do
+        local name, at = line:match("^([^\t]+)\t([^\t]+)$")
+        if name and tonumber(at) then
+            out[#out + 1] = { name = name, time = tonumber(at) }
+        end
+    end
+    f:close()
+    return out
+end
+
+local function write_timeline()
+    local f = timeline_path and io.open(timeline_path, "w")
+    if f == nil then
+        return nil
+    end
+    for _, entry in ipairs(timeline) do
+        f:write(string.format("%s\t%.3f\n", entry.name, entry.time))
+    end
+    f:close()
+    return timeline_path
+end
+
+-- loading.bar(path) -> report | nil, why: the bar is Lua's, from the timeline of the last load in
+-- path (this load's is kept there when it is done): the phases at once (the interface phase may
+-- begin while Lua is still starting), the milestones after the databases with loading.bar_schedule
+-- once they are hooked
+local last_timeline, last_total
+local function pct(t)
+    return math.max(0, math.min(100, t / last_total * 100))
+end
+
+function loading.bar(path)
+    timeline_path = path
+    local last = read_timeline(path)
+    if last == nil or #last == 0 then
+        return nil, "no timeline kept yet (" .. tostring(path) .. "): the bar is the game's this load"
+    end
+    for _, entry in ipairs(last) do
+        if entry.name == "mark:DestroyLoadScreen" then
+            last_total = entry.time
+        end
+    end
+    if not last_total or last_total <= 0 then
+        return nil, "the last timeline has no end"
+    end
+    if not (where_hooked and where_hooked.gate) then
+        return nil, "LoadingScreenCallback's last progress not found"
+    end
+    last_timeline = last
+    local maps, first_start = {}, nil
+    for i, entry in ipairs(last) do
+        local next_time = last[i + 1] and last[i + 1].time or last_total
+        local start, span = entry.name:match("^phase:(%d+)%+(%d+)$")
+        if start then
+            local a, b = math.floor(pct(entry.time)), math.floor(pct(next_time))
+            stellar.loading_map(tonumber(start), tonumber(span), a, math.max(1, b - a))
+            maps[#maps + 1] = string.format("%s-%s%% -> %d-%d%%", start, tonumber(start) + tonumber(span), a, math.max(a + 1, b))
+            first_start = first_start or a
+        end
+    end
+    -- the game's own frames before the first phase drawn up to where it begins on this bar
+    stellar.loading_gate(where_hooked.gate, first_start or 0)
+    stellar.loading_bar(true)
+    return string.format("%.1fs last load; phases %s", last_total, table.concat(maps, ", "))
+end
+
+-- loading.bar_schedule() -> count: the milestones of the last timeline, each the segment of the bar
+-- it began last time (call when the marks are hooked)
+function loading.bar_schedule()
+    if last_timeline == nil then
+        return 0
+    end
+    local by_name = {}
+    for id, m in pairs(marks) do
+        if m.kind == "milestone" and m.id == id then
+            by_name[m.name] = id
+        end
+    end
+    local scheduled = 0
+    for i, entry in ipairs(last_timeline) do
+        local next_time = last_timeline[i + 1] and last_timeline[i + 1].time or last_total
+        local name = entry.name:match("^mark:(.+)$")
+        if name then
+            stellar.loading_schedule(by_name[name] or virtual_id(name), pct(entry.time), pct(next_time),
+                next_time - entry.time, name == "DestroyLoadScreen")
+            scheduled = scheduled + 1
+        end
+    end
+    return scheduled
 end
 
 -- the post read running on the thread of e ends at e
@@ -309,7 +437,10 @@ function loading.poll(read)
                     s.file, s.line, e.time - s.time))
             end
         elseif e.kind == "render" then
-            if e.a ~= last_progress then
+            t0 = t0 or e.time
+            if e.b == 1 then
+                -- the game's own number outside a step, not drawn: the bar is Lua's
+            elseif e.a ~= last_progress then
                 log(e, string.format("progress %d%%%s", e.a, e.text ~= "" and (" '" .. e.text .. "'") or ""))
                 last_progress = e.a
             end
@@ -323,6 +454,11 @@ function loading.poll(read)
                 phase_order[#phase_order + 1] = p
                 log(e, string.format("phase %s begins: %d%% to %d%% of the bar, step %d of %d (thread %d)", p.name,
                     p.start, p.start + p.span, e.a, e.b, e.thread))
+                t0 = t0 or e.time
+                game_thread = game_thread or e.thread
+                if e.thread == game_thread then
+                    timeline[#timeline + 1] = { name = "phase:" .. key, time = e.time - t0 }
+                end
             end
             p.steps, p.current, p.total, p.last = p.steps + 1, e.a, e.b, e.time
             p.threads[e.thread] = true
@@ -379,6 +515,9 @@ function loading.poll(read)
                     log(e, string.format("%s begins (thread %d%s; %d texts, %d tokens so far)", m.name, e.thread, since,
                         e.texts, e.tokens))
                     milestone = { name = m.name, time = e.time, calls = 1 }
+                    if t0 and e.thread == game_thread then
+                        timeline[#timeline + 1] = { name = "mark:" .. m.name, time = e.time - t0 }
+                    end
                 end
             end
         end
@@ -391,6 +530,15 @@ function loading.poll(read)
         closed = true
         stellar.log(string.format("load: the load screen is gone (its progress context is null): loaded, %.1fs after the hook; last progress %s%%, %d stages open",
             util.now() - started, tostring(last_progress), #stack))
+        -- this load's timeline, for the next load's bar
+        local ended = false
+        for _, entry in ipairs(timeline) do
+            ended = ended or entry.name == "mark:DestroyLoadScreen"
+        end
+        if ended then
+            stellar.log(string.format("load: the timeline (%d steps) kept for the next load's bar: %s", #timeline,
+                tostring(write_timeline())))
+        end
         for _, p in ipairs(phase_order) do
             local threads = 0
             for _ in pairs(p.threads) do

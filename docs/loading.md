@@ -21,6 +21,45 @@ The bar has three phases, each a part of it. A function per phase calls
 `RenderLoadScreen` draws the bar only when the progress goes up. Loading a save or starting a new
 game uses named stages instead (`SPushLoadScreenState(start, end, __FILE__, __LINE__)`).
 
+## The bar, Lua's
+
+`CGameApplication::Init` runs `InitBase` (the interface phase), `CGraphics::Init3DTypes` and
+`CApplication::LoadAssetsAndEntities` (graphics), then `InitGame`. `LoadingScreenCallback(app,
+current, total, start, span)` draws `start + current * span / total` when that is more than it drew
+last (a global, its gate), and keeps the game's services alive while it does
+(`galaxy::api::ProcessData`, `CPdxAccount::Update`, `CPdxNakamaWrapper::Update`); nothing calls it
+after the databases, so the bar stood at 100% for 16 seconds.
+
+Each load keeps its timeline (`cache/load_timeline-<md5>.tsv`: when each phase and each milestone
+on the game's thread began, from the first frame). The next load (`loading.bar`,
+`src/dll/loading_hook.cpp`):
+
+- shows each phase on its part of one bar for the whole load: the step hook gives
+  `LoadingScreenCallback` the phase's new start and span, so the game draws the number and its
+  text itself;
+- crosses the milestones after it: entering a milestone starts its segment of the bar, and the
+  game's thread moves along it (at most ten times a second, at marks and at each file read) by
+  calling the game's own `LoadingScreenCallback(p, 100, 0, 100)`; `DestroyLoadScreen` draws 100%
+  and gives the bar back to the game (a save's load screen is the game's);
+- draws nothing of the game's own numbers once the phases begin (`RenderLoadScreen` called
+  outside a step: its 30% and 80%), nor, before them, above where the first phase begins; and
+  keeps the gate at what is on the screen.
+
+The phases are mapped at once (`InitBase` may begin while Lua is still starting); the milestones
+are scheduled once they are hooked (`loading.bar_schedule`). `loading_bar.txt` "game" leaves the bar
+to the game. `C:\lfm\validate_load.sh` measures it: the frames drawn, out of order or not, the
+longest time without one, the biggest jump.
+
+## Beside the load
+
+`CModifier::LogDefinitions` writes `modifiers.log` (4.3s on the game's thread) and nothing reads it
+during the load. It runs on a thread of its own (`stellar.run_async`, its trampoline) from the end
+of the PostReads, when the definitions are final; `InitGame`'s own call returns at once (its skip
+flag), and the first call after it (`CEconomicCategory::LogUnusedGeneratedAddModifiers`) waits for
+it (`stellar.join_async`). `modifiers.log` stays identical to vanilla. `background.txt` "off" leaves
+it in its place. (`CModifier::InitDefinitionIcons` is called from inside `SetupDatabases`: the
+SetupDatabases hook clears only the skip flags Lua's loop set, not those set from hooks inside it.)
+
 ## CGameApplication::InitGame
 
 All on one thread, in this order. Times are from a run with the Lua lexer, in seconds from 0% on

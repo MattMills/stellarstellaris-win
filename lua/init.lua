@@ -99,6 +99,14 @@ if loading_where then
     local hooked, hook_message = loading.hook(loading_where, stellar.read)
     if not hooked then
         stellar.log("load: not hooked: " .. tostring(hook_message))
+    elseif setting("loading_bar.txt", "lua") == "game" then
+        stellar.log("load: the bar is the game's (loading_bar.txt)")
+    else
+        -- the bar: Lua's, from the last load's timeline, at once (the interface phase may begin
+        -- while Lua is still starting); the milestones after the databases are scheduled below,
+        -- once they are hooked (loading.bar_schedule)
+        local report, why = loading.bar(util.dirname(stellar.dll_path) .. "\\cache\\load_timeline-" .. image:md5() .. ".tsv")
+        stellar.log("load: the bar " .. (report and ("is Lua's: " .. report) or ("is the game's: " .. tostring(why))))
     end
 else
     stellar.log("load: " .. tostring(loading_message))
@@ -340,11 +348,44 @@ if databases_where and (database_mode == "lua" or database_mode == "parallel" or
     end
     -- InitDefinitionIcons comes right after the game's PostReadInitInstance loop (which skips
     -- those): they run here, in their order
+    -- CModifier::LogDefinitions (writes modifiers.log: 4.3s on the game's thread, nothing waits for
+    -- it) runs on a thread of its own once the definitions are final (after the PostReads), while
+    -- the game goes on; InitGame's own call returns at once, and the first call after it waits for
+    -- it (background.txt "off": in its place)
+    local log_definitions, log_definitions_call
+    for _, m in ipairs(marks) do
+        if m.kind == "milestone" and m.name == "CModifier::LogDefinitions" and m.trampoline then
+            log_definitions = m
+        end
+    end
+    local background = setting("background.txt", "on") ~= "off"
     stellar.before_definition_icons = function()
         loading.milestone("CModifier::InitDefinitionIcons")
         if post_reads then
             databases.run_post_reads(post_reads)
             post_reads = nil
+        end
+        if background and log_definitions and found["CEconomicCategory::LogUnusedGeneratedAddModifiers"] then
+            stellar.set_entry_skip(log_definitions.id, true)
+            log_definitions_call = stellar.run_async(log_definitions.trampoline)
+        end
+    end
+    stellar.before_log_unused = function()
+        if log_definitions_call then
+            local waited = util.system_time()
+            local code, what = stellar.join_async(log_definitions_call)
+            log_definitions_call = nil
+            stellar.set_entry_skip(log_definitions.id, false)
+            stellar.log(string.format("load: CModifier::LogDefinitions ran beside the load: %.2fs, waited for %.2fs%s",
+                (what.finish or 0) - (what.start or 0), util.system_time() - waited,
+                code ~= 0 and string.format(" (failed: exception 0x%08x)", code) or ""))
+        end
+    end
+    if background and log_definitions and found["CEconomicCategory::LogUnusedGeneratedAddModifiers"] then
+        local ok, why = stellar.hook_before(found["CEconomicCategory::LogUnusedGeneratedAddModifiers"], "before_log_unused")
+        if not ok then
+            background = false
+            stellar.log("load: LogDefinitions stays in its place: " .. tostring(why))
         end
     end
     local icons_hooked, icons_message = nil, "CModifier::InitDefinitionIcons not found"
@@ -357,6 +398,12 @@ if databases_where and (database_mode == "lua" or database_mode == "parallel" or
 else
     stellar.log("databases: the loop is the game's (" .. database_mode .. ")")
 end
+-- the bar's milestones after the databases, each crossed in the time it took last load
+local scheduled = loading.bar_schedule()
+if scheduled > 0 then
+    stellar.log(string.format("load: the bar: %d milestones scheduled", scheduled))
+end
+
 -- the read: the files listed, read and parsed
 local reads_hooked, reads_failed = loading.hook_reads(found)
 stellar.log(string.format("load: read hooks: %d of 4%s", reads_hooked,
