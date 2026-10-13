@@ -219,6 +219,16 @@ impl LuaScriptHost {
     /// Creates the Lua state and loads the game's script from `game_dir` (the Stellaris install);
     /// `docs_dir` is the game's `logs/script_documentation` (trigger and effect names), if any.
     pub fn new(game_dir: &str, docs_dir: Option<&str>) -> mlua::Result<LuaScriptHost> {
+        let lua = Self::new_lua()?;
+        let host: Table = lua.load("return require('simscript.host')").set_name("simscript").eval()?;
+        let init: Function = host.get("init")?;
+        init.call::<()>((game_dir.replace('\\', "/"), docs_dir.map(|d| d.replace('\\', "/"))))?;
+        Ok(LuaScriptHost { lua, host, errors: 0, first_errors: Vec::new() })
+    }
+
+    /// A LuaJIT state with the require paths (sim/lua, the pdxscript library, the repo's lua/) and
+    /// the `RUST` helpers (`list_files`, `clock`), without the script host loaded.
+    pub fn new_lua() -> mlua::Result<Lua> {
         // SAFETY: the full LuaJIT library (ffi included), as the game's runtime has it; the Lua
         // code is this repository's.
         let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::new()) };
@@ -236,10 +246,7 @@ impl LuaScriptHost {
         rust.set("clock", lua.create_function(move |_, ()| Ok(start.elapsed().as_secs_f64()))?)?;
         lua.globals().set("RUST", rust)?;
         lua.globals().set("E", lua.create_table()?)?;
-        let host: Table = lua.load("return require('simscript.host')").set_name("simscript").eval()?;
-        let init: Function = host.get("init")?;
-        init.call::<()>((game_dir.replace('\\', "/"), docs_dir.map(|d| d.replace('\\', "/"))))?;
-        Ok(LuaScriptHost { lua, host, errors: 0, first_errors: Vec::new() })
+        Ok(lua)
     }
 
     /// Calls a function of the host module with no engine context (reports, coverage).

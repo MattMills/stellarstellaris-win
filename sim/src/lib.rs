@@ -20,6 +20,7 @@ pub mod date;
 pub mod engine;
 pub mod fixed;
 pub mod lua_host;
+pub mod modcheck;
 pub mod queue;
 pub mod rng;
 pub mod sample;

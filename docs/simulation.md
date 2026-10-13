@@ -562,6 +562,103 @@ headers: one profile and `-j 1` build it once.
    `check_variable_arithmetic`, scripted lists beyond temp lists, localisation (`custom_tooltip`
    text), and the game's validation errors.
 
+## 8. Checking against the game's modifier nodes
+
+A capture of a live 4.5.2 game gives the ground truth for the modifier model:
+`C:\lfm\captures\modifier-nodes-2210.tsv`, every registered modifier node (15,678) right after
+loading the 2210.01.01 autosave, with each node's final values and its **parts** (each addition into
+the node: `multiplier|category_filter|values`, fixed point, 1.0 = 100000), and the session's
+`modifiers-2210.log` (45,583 types and their categories). Parts carry no names (12,765 of 13,080
+use `CPdxModifierNameEmptyImpl`), so they are identified by content. The save is
+`sacreduthabulanorder_-730439522\autosave_2210.01.01.sav`: its 55 country ids are the 55 Country
+nodes' owners, in the same order, and its 6,080 planets are the 6,080 Planet nodes.
+
+The check is `sim/lua/simscript/modcheck.lua`, run from Rust (`sim/src/modcheck.rs`: the save is
+read in memory with the `zip` crate, never copied; the vanilla script in place):
+
+```
+sim\cargo_msvc.cmd run --release -j 1 --example modcheck     (about 8 s)
+sim\cargo_msvc.cmd test --release -j 1 --test modcheck -- --nocapture
+  paths: MODCHECK_NODES, MODCHECK_TYPES, MODCHECK_SAVE, STELLARIS_DIR (defaults: the files above)
+```
+
+**1. The parts explain the nodes exactly.** For all 5,753 nodes that have parts, the node's values
+equal the sum over its parts of `value * multiplier / 100000` (truncated), a value counted only
+when its type's category mask meets the part's filter (`mask & filter != 0`; a filter of 0 or -1
+passes everything): 5,753 of 5,753, every type exact, no value without a part and no part value
+missing from its node. The other nodes: 9,924 are empty, and one has values and no parts (the
+Federation node: `federation_fleet_cap_add`, `federation_experience_add`,
+`federation_fleet_contribution_factor`, set outside `AddModifier`). The two labels docs/modifiers.md
+lists as combinations matter: `Ships` (16508) and `All` (every bit); without them 2,985 nodes
+fail (mostly ships, fleets and starbases, and 22 countries, whose ship types are in `Ships`). The SpyNetwork nodes are the clearest case of a filter: their one
+part is the whole country node with filter `0x880000` (Espionage | Economic Units), and only three
+of the country's types arrive.
+
+**2. Save sources.** Per country: technologies with their level, traditions, ascension perks,
+government type, authority, civics, origin, ethics, active policies (the selected option), edicts,
+timed modifiers (`timed_modifier.items`, static modifier names), country type, the council
+positions (top-level `council_positions`, with the leader's skill: `level + bonus_skill_level`) and
+the councilors' and ruler's traits, and the static modifiers the engine adds by name: `empire_base`
+(every country), `playable_ai_empire` (AI empires), `fallen_empire_base`.
+
+**3. The script index**: every block of `common/**` (inline scripts expanded with
+`stellar.script.source`) whose entries are modifier types: 17,963 blocks in 1,295 files, 7,426
+distinct contents. Type names are case-insensitive (`empire_base` writes
+`COUNTRY_NAVAL_COVERAGE_MULT = 1`) and some are upper case in the game's list
+(`ROBOT_species_trait_points_add`).
+
+**4. Country parts by source** (1,575 parts in 55 nodes; a part is attributed when its values,
+raw or times its multiplier, are exactly a block's, and the block's object is among the country's
+save sources):
+
+| source | parts | share |
+|---|---|---|
+| technologies (48 of them scaled by the repeatable's level) | 717 | 45.5% |
+| policies (the selected option) | 197 | 12.5% |
+| traits of the ruler and councilors | 180 | 11.4% |
+| ethics (`country_modifier`) | 89 | 5.7% |
+| engine static modifiers (`empire_base`, `playable_ai_empire`, `fallen_empire_base`) | 88 | 5.6% |
+| council positions (`modifier` x the councilor's skill) | 76 | 4.8% |
+| traditions | 41 | 2.6% |
+| authorities (`country_modifier`) | 34 | 2.2% |
+| civics, origin | 29 | 1.8% |
+| edicts | 18 | 1.1% |
+| **from the save's sources** | **1,469** | **93.3%** |
+| a script block, but not a source read from the save: `navy_coverage_shortage` (34), `difficulty_ensign_npc` (6), `federation_tax` (3), the shroud seal's `triggered_country_modifier` (11), council agendas in progress (10), others (11) | 75 | 4.8% |
+| unexplained | 31 | 2.0% |
+
+The unexplained parts look like sums of the colonies' contributions (`planet_physicists_trade_upkeep_add`
+with `pop_physicist_bonus_workforce_mult`, `country_naval_cap_add = 8.8`, `country_edict_fund_add =
+1.224`) **[I]**.
+
+Other node categories, matched by content to any script block (or to another node's values, a
+parent passed down): Colony 77% script and 23% parent; Fleet 25% script, 74% parent; Ship 36% script
+(component templates, traits, static modifiers, ship sizes), 45% parent, 18.5% unexplained; Planet
+41% script, 41% parent, 18% unexplained; PopGroup 76% script (pop categories, living standards),
+12% unexplained; Leader 15% script, 51% parent, 35% unexplained; Army 24% script, 60% parent, 17%
+unexplained; Starbase, Orbital, StarbaseCountry, Sector, GalacticObjectTimed fully matched.
+
+**5. The countries.** Summing each country's save sources' blocks (technologies x level,
+councilor positions x skill) gives 1,638 of 2,010 (country, type) values exactly (81.5%); 8 of 55
+countries match on every type. What is still missing, by the types that differ:
+
+- **state-dependent engine statics**: `navy_coverage_shortage` (34 countries: the whole
+  `country_power_projection_influence_produces_mult` gap), `unity_deficit`, the difficulty modifiers;
+- **conditional blocks**: `triggered_councilor_modifier` of traits, `triggered_country_modifier` of
+  megastructures and buildings, council agendas while in progress: they need the trigger
+  evaluated (the Lua layer can);
+- **contributions from other objects**: colonies' jobs, buildings and designations, starbases
+  (naval capacity), the federation (`federation_tax`): the country node sums them, scaled by their
+  amount (docs/modifiers.md, "Computing a node");
+- residual differences in `country_edict_fund_add` (17 countries) and `councilor_exp_gain` (12), where
+  a source is counted that the game does not count or the other way round.
+
+**Rules the simulation must model**, confirmed by the capture: one part per source, its values
+times the part's multiplier over 100000, truncated; the per-type category filter of each part (for
+parent nodes too); repeatable technologies scaled by level; council positions scaled by skill;
+engine statics added by name; modifier keys matched without case; inline scripts expanded in
+modifier blocks.
+
 ## Open questions
 
 - The checksum labels (`g_CheckSumLabels`, `.rdata`): read them from the executable to name the 131
@@ -574,3 +671,5 @@ headers: one profile and `-j 1` build it once.
   it): a runtime check with the game's own thread-safety asserts would tell.
 - Effect classification is by name: check each "engine: other" effect's class (`ExecuteActual`
   callees) to confirm it touches engine state.
+- The 31 country parts the modifier check cannot attribute (section 8): colony, starbase and
+  federation contributions summed into one part each, to be confirmed by computing them.
