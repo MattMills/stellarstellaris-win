@@ -167,6 +167,32 @@ thread_local bool in_step = false;
 using step_function = void (*)(void* application, unsigned current, unsigned total, unsigned start, unsigned span);
 step_function original_step = nullptr;
 
+// Work Lua gives the game's thread, done at its next step of the load (stellar.loading_step_work):
+// calls made there, between two files of the interface or graphics phase (no reader of the game's
+// thread is in the middle of a statement), then, if every call returned, skip flags set and code
+// patched (the game's own calls of what Lua ran turned off) before the game goes on. Entering the
+// mark `step_cancel` first (the game got there before a step came) cancels it.
+struct StepCall {
+	uintptr_t function;
+	uintptr_t args[4];
+};
+struct StepPatch {
+	uintptr_t address;
+	std::string bytes;
+};
+enum StepState { kStepIdle = 0, kStepQueued, kStepRunning, kStepDone, kStepFailed, kStepCancelled };
+std::atomic<int> step_state{kStepIdle};
+std::vector<StepCall> step_calls;
+std::vector<uint64_t> step_skips;
+std::vector<StepPatch> step_patches;
+uint64_t step_cancel = 0;
+HANDLE step_finished = nullptr;  // set when the work is done, failed or cancelled
+DWORD step_code = 0;             // the exception that stopped a call, which (from 1), where
+size_t step_failed_at = 0;
+uintptr_t step_address = 0;
+double step_started = 0, step_ended = 0;
+void run_step_work();
+
 // the game's step draws anything above what is on the screen (its own last progress may be
 // another: its phases' numbers, before the bar was Lua's)
 void sync_gate() {
@@ -263,6 +289,9 @@ void step_hook(void* application, unsigned current, unsigned total, unsigned sta
 	}
 	bar_application = application;
 	game_thread.store(GetCurrentThreadId());
+	if (step_state.load() == kStepQueued) {
+		run_step_work();
+	}
 	const bool lua_bar = bar_active.load();
 	if (lua_bar) {
 		for (const BarMap& m : bar_maps) {
@@ -299,6 +328,12 @@ std::atomic<bool> serial_until_joined{false};  // the shared lock is left when t
 
 uintptr_t* record_entry(uint64_t id) {
 	record("enter", static_cast<int>(id), 0, 0, false, std::string());
+	if (id == step_cancel && step_state.load() == kStepQueued) {
+		int queued = kStepQueued;
+		if (step_state.compare_exchange_strong(queued, kStepCancelled)) {
+			SetEvent(step_finished);
+		}
+	}
 	bar_enter(id);
 	size_t call = 0;
 	{
@@ -331,6 +366,57 @@ uintptr_t* record_entry(uint64_t id) {
 
 // the skip flags of the stubs, by id (1, 2, ... across every hook_entries call)
 std::vector<uint8_t*> entry_flags(1, nullptr);
+
+// one call of the step work, under a structured exception handler: 0, or the exception's code
+// (and where it was in *address)
+DWORD guarded_step_call(const StepCall& c, uintptr_t* address) {
+	using call4 = uintptr_t (*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+	__try {
+		reinterpret_cast<call4>(c.function)(c.args[0], c.args[1], c.args[2], c.args[3]);
+	} __except (*address = reinterpret_cast<uintptr_t>(GetExceptionInformation()->ExceptionRecord->ExceptionAddress),
+		EXCEPTION_EXECUTE_HANDLER) {
+		return GetExceptionCode();
+	}
+	return 0;
+}
+
+// the step work, on the game's thread (see step_calls)
+void run_step_work() {
+	int queued = kStepQueued;
+	if (!step_state.compare_exchange_strong(queued, kStepRunning)) {
+		return;
+	}
+	step_started = now();
+	for (size_t i = 0; i < step_calls.size(); ++i) {
+		const DWORD code = guarded_step_call(step_calls[i], &step_address);
+		if (code != 0) {
+			step_code = code;
+			step_failed_at = i + 1;
+			step_ended = now();
+			step_state.store(kStepFailed);
+			SetEvent(step_finished);
+			return;
+		}
+	}
+	for (uint64_t id : step_skips) {
+		if (id >= 1 && id < entry_flags.size()) {
+			*entry_flags[static_cast<size_t>(id)] = 1;
+		}
+	}
+	for (const StepPatch& p : step_patches) {
+		void* target = reinterpret_cast<void*>(p.address);
+		DWORD protect = 0;
+		if (VirtualProtect(target, p.bytes.size(), PAGE_EXECUTE_READWRITE, &protect)) {
+			std::memcpy(target, p.bytes.data(), p.bytes.size());
+			DWORD ignored = 0;
+			VirtualProtect(target, p.bytes.size(), protect, &ignored);
+			FlushInstructionCache(GetCurrentProcess(), target, p.bytes.size());
+		}
+	}
+	step_ended = now();
+	step_state.store(kStepDone);
+	SetEvent(step_finished);
+}
 
 const uint8_t kStubSkip[] = {
 	0x48, 0xB8,                                // mov rax, imm64 (the skip flag)
@@ -931,6 +1017,106 @@ int l_loading_tick(lua_State* L) {
 	return 0;
 }
 
+// stellar.loading_step_work(calls, skips, patches, cancel) -> true | nil, why: the game's thread, at
+// its next step of the load, makes the calls ({ { function, a1, ... a4 }, ... }, integer or pointer
+// arguments), then sets the skip flags of the marks `skips` ({ id, ... }) and writes `patches`
+// ({ { address, bytes }, ... }), unless a call failed. Entering the mark `cancel` before cancels it.
+// Once only.
+int l_loading_step_work(lua_State* L) {
+	luaL_checktype(L, 1, LUA_TTABLE);
+	if (step_state.load() != kStepIdle) {
+		lua_pushnil(L);
+		lua_pushliteral(L, "step work was given already");
+		return 2;
+	}
+	step_calls.clear();
+	const int n = static_cast<int>(lua_objlen(L, 1));
+	for (int k = 1; k <= n; ++k) {
+		lua_rawgeti(L, 1, k);
+		luaL_checktype(L, -1, LUA_TTABLE);
+		StepCall c{};
+		lua_rawgeti(L, -1, 1);
+		c.function = check_address(L, -1);
+		lua_pop(L, 1);
+		for (int i = 0; i < 4; ++i) {
+			lua_rawgeti(L, -1, i + 2);
+			c.args[i] = lua_isnumber(L, -1) ? static_cast<uintptr_t>(lua_tonumber(L, -1)) : 0;
+			lua_pop(L, 1);
+		}
+		lua_pop(L, 1);
+		step_calls.push_back(c);
+	}
+	step_skips.clear();
+	if (lua_istable(L, 2)) {
+		const int m = static_cast<int>(lua_objlen(L, 2));
+		for (int k = 1; k <= m; ++k) {
+			lua_rawgeti(L, 2, k);
+			step_skips.push_back(static_cast<uint64_t>(lua_tonumber(L, -1)));
+			lua_pop(L, 1);
+		}
+	}
+	step_patches.clear();
+	if (lua_istable(L, 3)) {
+		const int m = static_cast<int>(lua_objlen(L, 3));
+		for (int k = 1; k <= m; ++k) {
+			lua_rawgeti(L, 3, k);
+			luaL_checktype(L, -1, LUA_TTABLE);
+			lua_rawgeti(L, -1, 1);
+			const uintptr_t address = check_address(L, -1);
+			lua_rawgeti(L, -2, 2);
+			size_t size = 0;
+			const char* bytes = luaL_checklstring(L, -1, &size);
+			step_patches.push_back(StepPatch{address, std::string(bytes, size)});
+			lua_pop(L, 3);
+		}
+	}
+	step_cancel = static_cast<uint64_t>(luaL_optnumber(L, 4, 0));
+	if (step_finished == nullptr) {
+		step_finished = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+	}
+	step_state.store(kStepQueued);
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+// stellar.loading_step_work_wait([seconds]) -> nil (not done yet) | "done", { start, finish } |
+// "failed", { start, finish, code, index, address } | "cancelled"; with cancel (second argument
+// true), work not begun yet is cancelled first
+int l_loading_step_work_wait(lua_State* L) {
+	if (lua_toboolean(L, 2)) {
+		int queued = kStepQueued;
+		if (step_state.compare_exchange_strong(queued, kStepCancelled)) {
+			SetEvent(step_finished);
+		}
+	}
+	const double seconds = luaL_optnumber(L, 1, -1);
+	if (step_finished == nullptr || WaitForSingleObject(step_finished, seconds < 0 ? INFINITE
+		: static_cast<DWORD>(seconds * 1000)) != WAIT_OBJECT_0) {
+		lua_pushnil(L);
+		return 1;
+	}
+	const int state = step_state.load();
+	if (state == kStepCancelled) {
+		lua_pushliteral(L, "cancelled");
+		return 1;
+	}
+	lua_pushstring(L, state == kStepDone ? "done" : "failed");
+	lua_createtable(L, 0, 5);
+	lua_pushnumber(L, step_started);
+	lua_setfield(L, -2, "start");
+	lua_pushnumber(L, step_ended);
+	lua_setfield(L, -2, "finish");
+	if (state == kStepFailed) {
+		lua_pushnumber(L, step_code);
+		lua_setfield(L, -2, "code");
+		lua_pushnumber(L, static_cast<lua_Number>(step_failed_at));
+		lua_setfield(L, -2, "index");
+		lua_pushnumber(L, static_cast<lua_Number>(step_address));
+		lua_setfield(L, -2, "address");
+	}
+	return 2;
+}
+
 } // namespace
 
 void stellar_loading_open(lua_State* L) {
@@ -954,6 +1140,10 @@ void stellar_loading_open(lua_State* L) {
 	lua_setfield(L, -2, "loading_segment");
 	lua_pushcfunction(L, l_loading_tick);
 	lua_setfield(L, -2, "loading_tick");
+	lua_pushcfunction(L, l_loading_step_work);
+	lua_setfield(L, -2, "loading_step_work");
+	lua_pushcfunction(L, l_loading_step_work_wait);
+	lua_setfield(L, -2, "loading_step_work_wait");
 	lua_pushcfunction(L, l_hook_loading);
 	lua_setfield(L, -2, "hook_loading");
 	lua_pushcfunction(L, l_loading_events);

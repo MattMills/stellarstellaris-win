@@ -68,6 +68,10 @@ return {
     -- the steps of CGameApplication::InitGame around the databases (stellar.loading milestones)
     { name = "CGlobalScriptedVariablesDatabase::InitializeWithDirectory", what = "a milestone of the load: the scripted variables" },
     { name = "CModifier::InitDefinitions", what = "a milestone of the load: the modifier definitions" },
+    -- the start of InitGame Lua runs itself during the graphics phase (stellar.early): found in it,
+    -- the null objects' table and the loop that makes them
+    { name = "CGameApplication::InitGame", what = "the game's databases and what follows them: Lua runs its start during the graphics phase" },
+    { name = "CInlineScriptDatabase::CreateInstance", what = "makes the inline scripts' database and reads common/inline_scripts" },
     { name = "CModifier::InitDefinitionIcons", what = "a milestone of the load: the end of SetupDatabases" },
     { name = "CGameRules::InitInstance", what = "a milestone of the load: the game rules" },
     { name = "CAchievementsManager::InitFromFile", what = "a milestone of the load: the achievements" },

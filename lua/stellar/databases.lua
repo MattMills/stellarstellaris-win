@@ -549,12 +549,23 @@ end
 -- no handler sees (a broken heap ends the game at once) is learned by the next
 -- load from inflight_path (databases.recover_inflight). If a database cannot be given back to the
 -- game's loop (see databases.run), nothing runs in parallel: databases.run does the loop.
+--
+-- options.early: the databases start before SetupDatabases, from a thread of Lua's while the game's
+-- thread loads the interface and the graphics (stellar.early): only on the workers, without
+-- progress, and not those that need the game's thread (databases.MAIN_THREAD), a global not set
+-- yet, or the game's phases (e.late: databases.load_late); it returns once nothing more can start
+-- (resume, the sixth result, carries on). options.resume: carries on from that run, at
+-- SetupDatabases. The sixth result also says which databases failed or ran while the error log grew
+-- (failed: names).
 function databases.run_parallel(where, progress, read, workers, conflicts_path, inflight_path, after_path, order, errors_log,
-    durations)
+    durations, options)
     local stellar = require("stellar")
     local util = require("stellar.util")
+    options = options or {}
+    local early, resume = options.early, options.resume
     local entries, plan = where.entries, {}
-    local state, timeline = {}, {}
+    local state, timeline = resume and resume.state or {}, resume and resume.timeline or {}
+    local failed_names = {}
     -- what runs now and what ended in the last quarter second, kept in inflight_path: if the game
     -- dies of something no handler sees (the heap found broken: a fail-fast), the next load learns
     -- from it (databases.recover_inflight). A broken heap is found after the write that broke it,
@@ -564,6 +575,10 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
         local f = inflight_path and io.open(inflight_path, "w")
         if f == nil then
             return
+        end
+        -- (beside the game's phases: what ran then waits for them, databases.recover_inflight)
+        if early then
+            f:write("#early\n")
         end
         for e, s in pairs(state) do
             if s == "running" then
@@ -612,12 +627,13 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
         end
         before[e] = {}
         -- a global that is not a database's but is set already (CGui::_pGui: the GUI is loaded
-        -- before the databases) waits for nothing
+        -- before the databases) waits for nothing; early, one not set yet waits for SetupDatabases
         local barrier = false
         for _, g in ipairs(e.unknown_globals or {}) do
             barrier = barrier or ffi.cast("void **", g)[0] == nil
         end
-        if e.barrier and barrier then
+        e.unset_global = barrier
+        if e.barrier and barrier and not early then
             for k, other in ipairs(entries) do
                 if other ~= e and ((rank[e.name] and rank[other.name] and rank[other.name] < rank[e.name])
                     or (not (rank[e.name] and rank[other.name]) and k < e.index)) then
@@ -667,8 +683,15 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
     end)
     local count = stellar.db_workers(workers)
     local done, total, running = 0, #entries, 0
-    local t0 = util.system_time()
-    local started = {}
+    for _, s in pairs(state) do
+        done = done + (s == "done" and 1 or 0)
+    end
+    local t0 = resume and resume.t0 or util.system_time()
+    local started = resume and resume.started or {}
+    -- early: what waits for SetupDatabases
+    local function held(e, p)
+        return early and (p.main or e.late or (e.barrier and e.unset_global))
+    end
     local function ready(e)
         for _, d in ipairs(depends[e]) do
             if state[d] ~= "done" then
@@ -687,14 +710,17 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
         end
         return true
     end
-    where.done_order = {}
+    if not resume then
+        where.done_order = {}
+    end
     local failure
     -- a database that failed may have used what a database before it in the game's order makes,
     -- not made yet (no lock helps that): it waits for every one of those that was not done when
-    -- it started (after_path) -> how many
+    -- it started (after_path) -> how many. Beside the game's phases (early), what it missed is taken
+    -- to be the phases' (the caller makes it wait for them): no waits
     local function learn_waits(e, start)
         local waits = 0
-        if after_path and rank[e.name] then
+        if after_path and rank[e.name] and not early then
             local done_before = {}
             for _, t in ipairs(timeline) do
                 if t.start + t.seconds <= start then
@@ -727,7 +753,7 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
         f:close()
         return size or 0
     end
-    local errors_at_start, erred = {}, {}
+    local errors_at_start, erred = resume and resume.errors_at_start or {}, {}
     -- an address in the game as +rva (to name with the reference builds), else as is
     local function game_address(a)
         local base = stellar.module_base
@@ -743,6 +769,7 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
         local address = what.address or 0
         local e = entries[i]
         state[e] = "failed"
+        failed_names[#failed_names + 1] = e.name
         local with = {}
         for _, t in ipairs(timeline) do
             if t.entry ~= e and t.start < finish_time and t.start + t.seconds > start then
@@ -784,7 +811,7 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
     -- what held a database back when it started: the constraint that ended last before it (a
     -- dependency, or "before" for a barrier), or, when that ended well before, the loop (no
     -- worker was free, or this thread ran a database of its own)
-    local ended, gates = {}, {}
+    local ended, gates = resume and resume.ended or {}, resume and resume.gates or {}
     local function gate_of(e, at)
         local name, why, last = nil, nil, -1
         for _, d in ipairs(depends[e]) do
@@ -816,7 +843,9 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
             erred[#erred + 1] = e
         end
         write_inflight()
-        stellar.call_progress(progress, done, total)
+        if progress then
+            stellar.call_progress(progress, done, total)
+        end
     end
     while done < total and failure == nil do
         local progressed, ran_here = false, false
@@ -824,7 +853,7 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
         for _, e in ipairs(by_priority) do
             local i = e.index
             local p = plan[i]
-            if failure == nil and running < count and not p.main and state[e] == nil and ready(e) then
+            if failure == nil and running < count and not p.main and not held(e, p) and state[e] == nil and ready(e) then
                 state[e] = "running"
                 write_inflight()
                 errors_at_start[e] = errors_size()
@@ -839,7 +868,7 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
         for _, e in ipairs(by_priority) do
             local i = e.index
             local p = plan[i]
-            if failure == nil and p.main and state[e] == nil and ready(e) then
+            if failure == nil and not early and p.main and state[e] == nil and ready(e) then
                 state[e] = "running"
                 write_inflight()
                 errors_at_start[e] = errors_size()
@@ -870,6 +899,10 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
             if inflight_path then
                 os.remove(inflight_path)
             end
+            if early then
+                -- the rest waits for SetupDatabases
+                break
+            end
             -- what the first ones left wait for (a cycle is a bug: say where it is)
             local blocked = {}
             for _, e in ipairs(entries) do
@@ -891,6 +924,11 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
             return done, "no database left can start: " .. table.concat(blocked, "; "), nil, timeline
         end
     end
+    -- what a resumed run carries on from, and what failed
+    local function carry()
+        return { state = state, timeline = timeline, started = started, ended = ended, gates = gates,
+            errors_at_start = errors_at_start, t0 = t0, failed = failed_names }
+    end
     if failure then
         -- what still runs is waited for (it may never end: the failure may have broken what it uses)
         local deadline = util.system_time() + 10
@@ -902,7 +940,7 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
                 end
             end
         end
-        return done, nil, nil, timeline, failure
+        return done, nil, nil, timeline, failure, carry()
     end
     if inflight_path then
         os.remove(inflight_path)
@@ -913,12 +951,13 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
         local names, waits = {}, 0
         for _, e in ipairs(erred) do
             names[#names + 1] = e.name
+            failed_names[#failed_names + 1] = e.name
             waits = waits + learn_waits(e, started[e] or t0)
         end
         failure = string.format("the error log grew while %d databases ran (%s): they wait for %d before them in the game's order",
             #erred, table.concat(names, ", "), waits)
         stellar.log("databases: " .. failure)
-        return done, nil, nil, timeline, failure
+        return done, nil, nil, timeline, failure, carry()
     end
     -- the report: the time on the clock against the sum of the databases' times
     local sum, threads = 0, {}
@@ -930,27 +969,35 @@ function databases.run_parallel(where, progress, read, workers, conflicts_path, 
     for _ in pairs(threads) do
         n_threads = n_threads + 1
     end
-    return done, nil, string.format("parallel on %d workers and this thread (%d threads used): %.1fs on the clock for %.1fs of databases",
-        count, n_threads, util.system_time() - t0, sum), timeline
+    return done, nil, string.format("parallel on %d workers%s (%d threads used): %.1fs on the clock for %.1fs of databases",
+        count, early and ", beside the game's phases" or " and this thread", n_threads, util.system_time() - t0, sum),
+        timeline, nil, carry()
 end
 
--- databases.recover_inflight(inflight_path, conflicts_path) -> count, names | nil: if the last load
--- died while databases ran in parallel (its in-flight file is still there, see run_parallel),
--- those databases conflict with each other: every pair goes to conflicts_path, the file goes
-function databases.recover_inflight(inflight_path, conflicts_path)
+-- databases.recover_inflight(inflight_path, conflicts_path, late_path) -> count, names, late | nil:
+-- if the last load died while databases ran in parallel (its in-flight file is still there, see
+-- run_parallel), those databases conflict with each other: every pair goes to conflicts_path, the
+-- file goes. If they ran beside the game's phases (early), they wait for the phases instead
+-- (late_path, databases.save_late; late is true).
+function databases.recover_inflight(inflight_path, conflicts_path, late_path)
     local f = io.open(inflight_path, "r")
     if f == nil then
         return nil
     end
-    local names, seen = {}, {}
+    local names, seen, early = {}, {}, false
     for line in f:lines() do
-        if line ~= "" and not seen[line] then
+        if line == "#early" then
+            early = true
+        elseif line ~= "" and not seen[line] then
             seen[line] = true
             names[#names + 1] = line
         end
     end
     f:close()
     os.remove(inflight_path)
+    if early and late_path then
+        return databases.save_late(late_path, names), names, true
+    end
     local out, count = io.open(conflicts_path, "a"), 0
     if out then
         for i = 1, #names do
@@ -962,6 +1009,44 @@ function databases.recover_inflight(inflight_path, conflicts_path)
         out:close()
     end
     return count, names
+end
+
+-- The databases that wait for the game's phases (the interface and the graphics) when the
+-- databases start beside them (run_parallel, options.early): one name a line, learned from
+-- failures there (a database that failed, or ran while the error log grew or the game died)
+-- databases.save_late(path, names) -> how many were new
+function databases.save_late(path, names)
+    local known = {}
+    for _, name in ipairs(databases.load_names(path) or {}) do
+        known[name] = true
+    end
+    local out, added = io.open(path, "a"), 0
+    for _, name in ipairs(names) do
+        if not known[name] then
+            known[name] = true
+            added = added + 1
+            if out then
+                out:write(name, "\n")
+            end
+        end
+    end
+    if out then
+        out:close()
+    end
+    return added
+end
+
+-- databases.load_late(where, path) -> count: e.late for each of them
+function databases.load_late(where, path)
+    local late, count = {}, 0
+    for _, name in ipairs(databases.load_names(path) or {}) do
+        late[name] = true
+    end
+    for _, e in ipairs(where.entries) do
+        e.late = late[e.name] or nil
+        count = count + (e.late and 1 or 0)
+    end
+    return count
 end
 
 -- databases.load_durations(path) -> { name -> seconds } | nil: each database's time in the boot

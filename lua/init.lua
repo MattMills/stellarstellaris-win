@@ -148,6 +148,19 @@ local found = require("stellar.resolve").functions(image)
 for _, name in ipairs(loading.MILESTONES) do
     marks[#marks + 1] = { address = found[name], kind = "milestone", name = name }
 end
+-- the start of InitGame, run by Lua during the graphics phase so that the databases can start
+-- there (stellar.early; early.txt "game": in its place). Its functions are marked: Lua calls them
+-- past their hooks and turns the game's calls off
+local early = require("stellar.early")
+local early_where, early_message
+if setting("early.txt", "lua") ~= "game" then
+    early_where, early_message = early.locate(found, image, stellar.read)
+    if early_where then
+        marks[#marks + 1] = { address = early_where.inline, kind = "early", name = early.FUNCTIONS.inline }
+    end
+else
+    early_message = "off (early.txt)"
+end
 local marks_hooked, marks_failed = loading.hook_marks(marks)
 stellar.log(string.format("load: %d marks hooked%s", marks_hooked,
     #marks_failed > 0 and ("; not hooked: " .. table.concat(marks_failed, "; ")) or ""))
@@ -170,6 +183,8 @@ local function writers_path(o)
     return util.dirname(stellar.dll_path) .. "\\cache\\database_" .. o.file .. "-" .. image_md5 .. ".tsv"
 end
 local after_path = util.dirname(stellar.dll_path) .. "\\cache\\database_after-" .. image:md5() .. ".tsv"
+local late_path = util.dirname(stellar.dll_path) .. "\\cache\\database_late-" .. image:md5() .. ".tsv"
+local early_run  -- the databases' run beside the game's phases (stellar.early), which SetupDatabases carries on
 local game_order  -- the game's order of the databases (databases.load_order), for run_parallel
 local serialized = {}  -- name -> slot (databases.serialize)
 -- the script flags' names in id order (stellar.flags): kept by a load in the game's order, given
@@ -184,10 +199,15 @@ if not flags_where then
 end
 if databases_where and database_mode == "parallel" then
     -- a load that died in the databases without a handler seeing it: what ran then conflicts
-    local recovered, names = databases.recover_inflight(inflight_path, conflicts_path)
+    local recovered, names, late = databases.recover_inflight(inflight_path, conflicts_path, late_path)
     if recovered then
-        stellar.log(string.format("databases: the last load died while %d databases ran (%s): %d conflicts added",
-            #names, table.concat(names, ", "), recovered))
+        stellar.log(string.format("databases: the last load died while %d databases ran (%s): %d %s added",
+            #names, table.concat(names, ", "), recovered,
+            late and "waits for the game's phases (they ran beside them)" or "conflicts"))
+    end
+    local late_count = databases.load_late(databases_where, late_path)
+    if late_count > 0 then
+        stellar.log(string.format("databases: %d wait for the game's phases (learned: %s)", late_count, late_path))
     end
     local learned = databases.load(databases_where, dependencies_path)
     local conflicts = databases.load_conflicts(databases_where, conflicts_path)
@@ -234,6 +254,20 @@ end
 local init_steps = require("stellar.init_steps")
 local init_steps_on = false  -- set below (background.txt), before any of these runs
 local script_globals = {}    -- the trigger and effect databases' globals (catalog.locate, below)
+local errors_log = (os.getenv("USERPROFILE") or ".") .. "\\Documents\\Paradox Interactive\\Stellaris\\logs\\error.log"
+-- what the databases need before they run in parallel (once the modifier definitions are made)
+local function prepare_parallel()
+    -- room in the modifier definitions: added to while other databases read them, they never move
+    if found[databases.MODIFIER_RESERVE] and modifier_where then
+        stellar.call(found[databases.MODIFIER_RESERVE], modifier_where.data - 8, databases.MODIFIER_ROOM)
+    end
+    -- the flags' ids, in the game's order, before any database makes one
+    if flag_names then
+        local registered, mismatch = flags.register(flags_where, cstring_assign, flag_names)
+        stellar.log(mismatch and string.format("flags: %d names registered, but id %d is not the one kept: the ids are not the game's",
+            registered, mismatch) or string.format("flags: %d names given their ids, as the game gives them", registered))
+    end
+end
 if databases_where and (database_mode == "lua" or database_mode == "parallel" or database_mode == "trace") then
     stellar.setup_databases = function(a, done, progress)
         loading.milestone("NNullObjAndDatabaseInitUtil::SetupDatabases")
@@ -244,25 +278,20 @@ if databases_where and (database_mode == "lua" or database_mode == "parallel" or
         local n, stopped, report
         if database_mode == "parallel" then
             -- the workers' times are the system clock's
-            -- room in the modifier definitions: added to while other databases read them, they
-            -- never move
-            if found[databases.MODIFIER_RESERVE] and modifier_where then
-                stellar.call(found[databases.MODIFIER_RESERVE], modifier_where.data - 8, databases.MODIFIER_ROOM)
-            end
-            -- the flags' ids, in the game's order, before any database makes one
-            if flag_names then
-                local registered, mismatch = flags.register(flags_where, cstring_assign, flag_names)
-                stellar.log(mismatch and string.format("flags: %d names registered, but id %d is not the one kept: the ids are not the game's",
-                    registered, mismatch) or string.format("flags: %d names given their ids, as the game gives them", registered))
+            if not early_run then
+                prepare_parallel()
             end
             local t0 = util.system_time()
             local timeline, failure
             stellar.serialize_active(true)
             n, stopped, report, timeline, failure = databases.run_parallel(databases_where, progress, stellar.read,
-                tonumber(database_workers) or 4, conflicts_path, inflight_path, after_path, game_order,
-                (os.getenv("USERPROFILE") or ".") .. "\\Documents\\Paradox Interactive\\Stellaris\\logs\\error.log",
-                databases.load_durations(boot_order_path))
+                tonumber(database_workers) or 4, conflicts_path, inflight_path, after_path, game_order, errors_log,
+                databases.load_durations(boot_order_path), early_run and { resume = early_run.carry } or nil)
             stellar.serialize_active(false)
+            if early_run then
+                report = string.format("%d of them beside the game's phases, the rest here: %s", early_run.done,
+                    tostring(report))
+            end
             -- flags the kept names do not have were numbered in this load's order
             if flag_names then
                 local now = #flags.names(flags_where)
@@ -679,4 +708,52 @@ stellar.heartbeat = function()
     if catalog_done then
         dev.poll()
     end
+end
+
+-- Last, from Lua's thread: the start of InitGame at the game's next step of the load, then the
+-- databases on the workers while the game's thread loads the graphics (stellar.early). SetupDatabases
+-- carries on with what is left (it waits for this: it needs the Lua lock, held until the end).
+if early_where and databases_where and database_mode == "parallel" and next(serialized) ~= nil then
+    local by_name = {}
+    for _, m in ipairs(marks) do
+        if m.id and m.trampoline and m.name then
+            by_name[m.name] = by_name[m.name] or m
+        end
+    end
+    local t_wait = util.now()
+    local status, info = early.prepare(early_where, by_name)
+    if status == "done" then
+        stellar.log(string.format("early: the start of InitGame ran at a step of the load on the game's thread in %.2fs (waited %.2fs; %d null objects); the game's own is turned off",
+            info.finish - info.start, util.now() - t_wait, #early_where.nulls))
+        prepare_parallel()
+        if init_steps_on then
+            init_steps.start("databases")
+        end
+        local t0 = util.system_time()
+        stellar.serialize_active(true)
+        local n, _, report, _, failure, carried = databases.run_parallel(databases_where, nil, stellar.read,
+            tonumber(database_workers) or 4, conflicts_path, inflight_path, after_path, game_order, errors_log,
+            databases.load_durations(boot_order_path), { early = true })
+        stellar.serialize_active(false)
+        if failure then
+            -- what failed beside the game's phases waits for them next time; this load cannot go on
+            local added = databases.save_late(late_path, carried and carried.failed or {})
+            stellar.log(string.format("early: %s; %d databases wait for the game's phases from now on (%s): the game ends",
+                failure, added, late_path))
+            stellar.exit_process(3)
+        end
+        early_run = { carry = carried, done = n }
+        stellar.log(string.format("early: %d of %d databases done beside the game's phases in %.1fs (%s); the rest at SetupDatabases",
+            n, #databases_where.entries, util.system_time() - t0, tostring(report)))
+    elseif status == "failed" then
+        -- the calls before it ran, and the game would run them again: this load cannot go on
+        stellar.log(string.format("early: the start of InitGame failed at call %d (exception 0x%08x at %s): the game ends (early.txt \"game\" leaves it to the game)",
+            info.index or 0, info.code or 0, hex(info.address or 0)))
+        stellar.exit_process(3)
+    else
+        stellar.log("early: the start of InitGame not run (" .. tostring(status or info) .. "): the databases at SetupDatabases")
+    end
+elseif setting("early.txt", "lua") ~= "game" then
+    stellar.log("early: the databases at SetupDatabases: " .. (early_where and ("databases.txt is " .. tostring(database_mode))
+        or tostring(early_message)))
 end
