@@ -34,12 +34,13 @@ local util = require("stellar.util")
 
 local band = bit.band
 
-local shadow = { WINDOW = 400, SAMPLES = 60 }
+local shadow = { WINDOW = 400, SAMPLES = 60, MAX_LUA_MB = 700 }
 
 local S = nil   -- the state once installed
 
 local function new_counts()
     return { passes = 0, recomputed = 0, roots = 0, relinked = 0, new_nodes = 0, gone = 0, graph_only = 0, nodes = 0, values = 0,
+        ahead = 0, ahead_by = {}, missed = 0, missed_by = {}, wrong = 0, wrong_by = {},
         exact = 0, bad_values = 0, by_category = {}, marked = 0, computes = 0, seconds = 0, read_seconds = 0 }
 end
 
@@ -68,20 +69,33 @@ function shadow.install(found, game, index_where)
         return nil, why
     end
     S = { where = where, index_where = index_where, counts = new_counts(), samples = 0,
-        window_at = 0, failed = false }
+        window_at = 0, failed = false, ready = false, waited = false }
     stellar.modifier_pass = function(ids, count)
         local ok2, err = pcall(shadow.pass, ids, count)
         if not ok2 then
+            -- the shadow stops (an out-of-memory too): the game goes on without it
             S.failed = true
-            S.mirror = nil
+            S.mirror, S.g = nil, nil
+            collectgarbage()
             log("stopped: %s", tostring(err))
         end
     end
     game.before_tick(function()
-        if S.mirror == nil and not S.failed then
+        if S.mirror == nil and not S.failed and S.ready then
+            -- room in the Lua heap first: the build needs about 100 MB besides what is there
+            local mb = collectgarbage("count") / 1024
+            if mb > shadow.MAX_LUA_MB then
+                if not S.waited then
+                    S.waited = true
+                    log("waits: %.0f MB of Lua memory in use (at most %d to build)", mb, shadow.MAX_LUA_MB)
+                end
+                return
+            end
             local ok2, err = pcall(shadow.start)
             if not ok2 then
                 S.failed = true
+                S.mirror, S.g = nil, nil
+                collectgarbage()
                 log("not started: %s", tostring(err))
             end
         end
@@ -96,6 +110,16 @@ function shadow.install(found, game, index_where)
         end
     end)
     return true
+end
+
+-- shadow.ready(): the script catalog is read (init.lua's heartbeat; its reading is most of the Lua
+-- heap): the mirror may be built at the next tick
+function shadow.ready()
+    if S ~= nil and not S.ready then
+        S.ready = true
+        collectgarbage()
+        log("ready: %.0f MB of Lua memory in use after the script catalog", collectgarbage("count") / 1024)
+    end
 end
 
 -- the mirror from every node, checked whole
@@ -181,7 +205,7 @@ function shadow.pass(ids, count)
     if registry == nil then
         return
     end
-    local list = ffi.cast("const uint32_t *", ids)
+    local list = ffi.cast("const uint32_t *", ffi.cast("const char *", ids))
     local fresh, order = {}, {}
     for i = 0, count - 1 do
         local full = list[i]
@@ -238,23 +262,8 @@ function shadow.pass(ids, count)
             c.relinked = c.relinked + 1
         end
     end
-    -- the check: the recomputed nodes, then a window of the others
-    mirror:forget_types()
-    local report = nodes.new_report(0)
-    for _, index in ipairs(order) do
-        local n = fresh[index]
-        if not n.invalid then
-            local bad = mirror:compare_node(n, report)
-            if bad > 0 and S.samples < shadow.SAMPLES then
-                local r = nodes.new_report(3)
-                mirror:compare_node(n, r)
-                for _, s in ipairs(r.samples) do
-                    sample(c, "recomputed " .. s)
-                end
-            end
-        end
-    end
-    -- the nodes the graph marked (it expects them to change) that the game did not recompute
+    -- the nodes the graph marked (it expects them to change) that the game did not recompute,
+    -- before any read computes them
     local checked = {}
     g:each_pending(core.READ, function(x)
         local h = mirror.tree.owner[x]
@@ -262,21 +271,62 @@ function shadow.pass(ids, count)
             checked[h.key] = true
         end
     end)
+    -- the check: the recomputed nodes, the marked ones, then a window of the others
+    mirror:forget_types()
+    local report = nodes.new_report(0)
+    local function count(field, category)
+        c[field] = c[field] + 1
+        local by = c[field .. "_by"]
+        by[category] = (by[category] or 0) + 1
+    end
+    local function samples_of(n, label)
+        if S.samples < shadow.SAMPLES then
+            local r = nodes.new_report(3)
+            mirror:compare_node(n, r)
+            for _, s in ipairs(r.samples) do
+                sample(c, label .. s)
+            end
+        end
+    end
+    for _, index in ipairs(order) do
+        local n = fresh[index]
+        if not n.invalid and mirror:compare_node(n, report) > 0 then
+            -- read and given to the mirror in this pass: the graph's own error
+            count("wrong", n.category)
+            samples_of(n, "wrong, rebuilt by the game: ")
+        end
+    end
+    -- a node the game did not report rebuilt; a mismatch is classified by a fresh read of it: the
+    -- same parts as when the mirror last took it (the game did not rebuild it, its values are from
+    -- before a change the graph has: the graph is ahead), or other parts (rebuilt where the shadow
+    -- did not see it: taken again, and wrong if it still differs)
+    local function check_other(index, node, h, label)
+        local n = { id = index, category = h.kind, owner = ffi.cast("int32_t *", node + 0xc)[0],
+            values = capture.read_values(node) }
+        if mirror:compare_node(n, report) == 0 then
+            return
+        end
+        local now = capture.read_node(node, registry, rcount)
+        if nodes.parts_key(now) == h.parts_key then
+            count("ahead", h.kind)
+            samples_of(n, "graph ahead of the game (" .. label .. "): ")
+            return
+        end
+        count("missed", h.kind)
+        mirror:assign(now, parent_list(parents_idx, index, registry, rcount, cache))
+        mirror:forget_types()
+        local r = nodes.new_report(0)
+        if mirror:compare_node(now, r) > 0 then
+            count("wrong", h.kind)
+            samples_of(now, "wrong after a fresh read (" .. label .. "): ")
+        end
+    end
     for index in pairs(checked) do
         local node, full = capture.node_at(registry, rcount, index)
         local h = mirror.holders[index]
         if node ~= nil and h ~= nil and h.full_id == full and node[0x108] == 0 then
             c.graph_only = c.graph_only + 1
-            local n = { id = index, category = h.kind, owner = ffi.cast("int32_t *", node + 0xc)[0],
-                values = capture.read_values(node) }
-            local bad = mirror:compare_node(n, report)
-            if bad > 0 and S.samples < shadow.SAMPLES then
-                local r = nodes.new_report(3)
-                mirror:compare_node(n, r)
-                for _, s in ipairs(r.samples) do
-                    sample(c, "marked by the graph, not recomputed by the game: " .. s)
-                end
-            end
+            check_other(index, node, h, "marked by the graph")
         end
     end
     for _ = 1, shadow.WINDOW do
@@ -291,16 +341,7 @@ function shadow.pass(ids, count)
                     c.gone = c.gone + 1
                 end
             elseif h ~= nil and h.full_id == full and node[0x108] == 0 then
-                local n = { id = index, category = h.kind, owner = ffi.cast("int32_t *", node + 0xc)[0],
-                    values = capture.read_values(node) }
-                local bad = mirror:compare_node(n, report)
-                if bad > 0 and S.samples < shadow.SAMPLES then
-                    local r = nodes.new_report(3)
-                    mirror:compare_node(n, r)
-                    for _, s in ipairs(r.samples) do
-                        sample(c, "not recomputed " .. s)
-                    end
-                end
+                check_other(index, node, h, "window")
             end
         end
     end
@@ -309,28 +350,28 @@ function shadow.pass(ids, count)
     c.computes = c.computes + (after.computes - before.computes)
     c.nodes, c.values, c.exact = c.nodes + report.nodes, c.values + report.values, c.exact + report.exact_nodes
     c.bad_values = c.bad_values + report.wrong + report.missing + report.extra
-    for cat, rc in pairs(report.categories) do
-        local bad = rc.nodes - rc.exact_nodes
-        if bad > 0 then
-            c.by_category[cat] = (c.by_category[cat] or 0) + bad
-        end
-    end
     c.seconds = c.seconds + (util.now() - t0)
+end
+
+local function by_text(by)
+    local list = {}
+    for cat, n in pairs(by) do
+        list[#list + 1] = string.format("%s %d", cat, n)
+    end
+    table.sort(list)
+    return #list > 0 and (" (" .. table.concat(list, ", ") .. ")") or ""
 end
 
 -- shadow.format(counts) -> text
 function shadow.format(c)
-    local cats = {}
-    for cat, n in pairs(c.by_category) do
-        cats[#cats + 1] = string.format("%s %d", cat, n)
-    end
-    table.sort(cats)
     local cpp = stellar.modifier_shadow_stats and stellar.modifier_shadow_stats() or {}
-    return string.format("%d passes with recomputes; %d nodes recomputed by the game (%d roots: own parts changed, %d relinked, %d new, %d gone); graph: %d marked, %d computed, %d nodes it changed that the game did not recompute; checked %d nodes (%d values): %d exact, %d values off%s; %.1f ms in Lua (%.1f reading); game passes %s, deferred %s",
-        c.passes, c.recomputed, c.roots, c.relinked, c.new_nodes, c.gone, c.marked, c.computes, c.graph_only, c.nodes, c.values, c.exact,
-        c.bad_values, #cats > 0 and (" (" .. table.concat(cats, ", ") .. ")") or "", c.seconds * 1000, c.read_seconds * 1000,
-        tostring(cpp.passes), tostring(cpp.deferred))
+    return string.format("%d passes with rebuilds; %d nodes rebuilt by the game (%d roots: own parts changed, %d relinked, %d new, %d gone); graph: %d marked, %d computed, %d nodes it changed that the game did not rebuild; checked %d nodes (%d values): %d exact; graph ahead of the game %d%s; missed rebuilds %d%s; wrong %d%s (%d values off in all); %.1f ms in Lua (%.1f reading); game passes %s (%s nodes rebuilt inside them, %s through Update), deferred %s, failed deliveries %s",
+        c.passes, c.recomputed, c.roots, c.relinked, c.new_nodes, c.gone, c.marked, c.computes, c.graph_only, c.nodes, c.values,
+        c.exact, c.ahead, by_text(c.ahead_by), c.missed, by_text(c.missed_by), c.wrong, by_text(c.wrong_by), c.bad_values,
+        c.seconds * 1000, c.read_seconds * 1000, tostring(cpp.passes), tostring(cpp.pass_nodes), tostring(cpp.nodes),
+        tostring(cpp.deferred), tostring(cpp.failures))
 end
+
 
 -- shadow.report() -> text: the counts of the month so far
 function shadow.report()
