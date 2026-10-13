@@ -202,14 +202,20 @@ hot spots next to the node system: it holds every node.
   Fleet < Sector, Planet < Country (two masks), PopGroup < Country (Habitability),
   Ship < StarbaseDefensePlatform, Starbase < Sector.
 - `_ChildNodes` keeps stale edges. The game drops a child only when that parent invalidates it, so a
-  child invalidated otherwise (a ship moved to another fleet) stays listed. A parent with no part
-  whose values would pass the link's filter is such an edge, and it is left out.
+  child invalidated otherwise (a ship moved to another fleet) stays listed
+  ([bug_notes/modifier-node-stale-children.md](bug_notes/modifier-node-stale-children.md)). A parent
+  with no part whose values would pass the link's filter is such an edge, and it is left out.
 - The real structure is much denser than the parts show: 32,798 edges, 5,893 of them with a part.
   Every planet reads its system's GalacticObjectLeader, -CosmicStorm and -PsionicAura nodes, and
   every fleet its system's nodes, which are empty in this game. A capture without children (the
   first one) finds parents by content, among the categories each category declares it reads
   (`nodes.READS`). That gives the right values but guesses wrong edges: fleets "read" planets whose
-  values equal their sector's.
+  values equal their sector's, and fleets and armies "read" their leader's LeaderSkill node, whose
+  values equal the copy of the leader's class skill the fleet or army adds itself (no fleet reads a
+  LeaderSkill node in the 2211.07.01 capture's edges). Checked by own parts, the 2210 capture's
+  fleets and armies therefore seem to lack that copy; their values have it, and the world's graph
+  matches them exactly (`sim/tools/modifier_world.lua`, mode 3). It is not the game's state after a
+  load.
 
 `tools/graph_nodes.lua <capture> <modifiers.log>` builds the tree from a capture, materializes
 every value the game holds and compares each with the game's, exactly:
