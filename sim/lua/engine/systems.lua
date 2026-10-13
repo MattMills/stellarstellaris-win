@@ -204,6 +204,34 @@ P["monthly.countries_serial"] = function(host)
     require("engine.leaders").monthly()
     each_country(function(id) host.on_action("on_monthly_pulse_country", "country", id) end)
 end
+-- a module of the engine that may not be written yet: the module, or nil when there is no such file
+-- (an error inside one that is there is raised as usual)
+local present = {}
+local function optional(name)
+    if present[name] == nil then
+        present[name] = package.searchpath(name, package.path) ~= nil
+    end
+    return present[name] and require(name) or nil
+end
+-- NColonyUpdate::MonthlyUpdate: growth and decline of the colonies' pops (engine.pops, once it is
+-- there)
+P["monthly.colonies"] = function(host, date)
+    local pops = optional("engine.pops")
+    if pops then
+        pops.monthly(host, date)
+    else
+        systems.not_modelled["monthly.colonies"] = (systems.not_modelled["monthly.colonies"] or 0) + 1
+    end
+end
+-- CGameState::ProcessAI: the AI's decisions (engine.ai, once it is there; docs/ai.md)
+P["ai.process"] = function(host, date)
+    local ai = optional("engine.ai")
+    if ai then
+        ai.process(host, date)
+    else
+        systems.not_modelled["ai.process"] = (systems.not_modelled["ai.process"] or 0) + 1
+    end
+end
 P["monthly.on_monthly_pulse"] = function(host)
     host.on_action("on_monthly_pulse", "none", 0)
 end
