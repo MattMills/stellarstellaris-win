@@ -195,7 +195,9 @@ P["monthly.budget"] = function()
         systems.ran["monthly.budget (economy)"] = (systems.ran["monthly.budget (economy)"] or 0) + 1
     end
 end
+-- CCountry::MonthlyUpdateSerial: the leaders' experience (engine.leaders), the monthly pulse
 P["monthly.countries_serial"] = function(host)
+    require("engine.leaders").monthly()
     each_country(function(id) host.on_action("on_monthly_pulse_country", "country", id) end)
 end
 P["monthly.on_monthly_pulse"] = function(host)
