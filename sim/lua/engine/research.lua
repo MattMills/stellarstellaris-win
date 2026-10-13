@@ -85,6 +85,9 @@ local function defines()
         TECH_COST_MULT_FALLEN_EMPIRE = tonumber(define("NGameplay", "TECH_COST_MULT_FALLEN_EMPIRE")) or 2,
         TECH_RESEARCH_NO_LEADER_PENALTY = tonumber(define("NGameplay", "TECH_RESEARCH_NO_LEADER_PENALTY")) or -0.25,
         TECH_COST_DIFFICULTY_SCALE_MULT = tonumber(define("NGameplay", "TECH_COST_DIFFICULTY_SCALE_MULT")) or 0.025,
+        NUM_TECH_ALTERNATIVES = tonumber(define("NGameplay", "NUM_TECH_ALTERNATIVES")) or 3,
+        TECH_WEIGHT_POTENTIAL_ADD = tonumber(define("NGameplay", "TECH_WEIGHT_POTENTIAL_ADD")) or 0,
+        TECH_WEIGHT_PREVIOUS_OPTION = tonumber(define("NGameplay", "TECH_WEIGHT_PREVIOUS_OPTION")) or 0.5,
         RESEARCH_POSITIONS = {},
     }
     local positions = define("NGameplay", "COUNCIL_RESEARCH_POSITIONS")
@@ -326,6 +329,290 @@ function research.month(country, area)
 end
 
 -- ---------------------------------------------------------------------------------------------
+-- the alternatives: the technologies offered per area (tech_status.alternatives.<area>), drawn
+-- again when one completes (CTechnologyStatus::UpdateTechAlternatives with reset, after
+-- IncreasePotentialTechWeights) and topped up each day for an area not researching (without reset,
+-- at the end of DailyResearch)
+
+-- an area's technologies in the database's order (the files in load order, then their order)
+local area_techs
+local function techs_of_area(area)
+    if area_techs == nil then
+        area_techs = {}
+        local list = {}
+        for name, d in pairs(defs.folder("common/technology")) do
+            list[#list + 1] = { name = name, file = d.file or "", line = d.line or 0 }
+        end
+        table.sort(list, function(a, b)
+            if a.file ~= b.file then return a.file < b.file end
+            return a.line < b.line
+        end)
+        for _, e in ipairs(list) do
+            local t = tech(e.name)
+            if t and t.area then
+                area_techs[t.area] = area_techs[t.area] or {}
+                table.insert(area_techs[t.area], e.name)
+            end
+        end
+    end
+    return area_techs[area] or {}
+end
+
+-- CTechnology::CanResearch: not researched (or a repeatable below its levels), its prerequisites
+-- researched, its potential true for the country
+function research.can_research(country, name)
+    local t = tech(name)
+    if not t then
+        return false
+    end
+    local b = t.def.block
+    local levels = tonumber(defs.field(b, "levels"))
+    local level = research.level(country, name)
+    if level and not (levels == -1 or (levels and level < levels)) then
+        return false
+    end
+    for _, e in ipairs(b) do
+        if e.op and e.key and e.key.text == "prerequisites" and e.value.text == nil then
+            for _, p in ipairs(e.value) do
+                if p.text and not research.level(country, p.text) then
+                    return false
+                end
+            end
+        end
+    end
+    local potential = defs.field(b, "potential")
+    if type(potential) == "table" then
+        local ok, holds = pcall(eval.trigger, potential, eval.new_ctx(eval.S("country", country), nil, nil, t.def.file))
+        if ok and not holds then
+            return false
+        end
+    end
+    return true
+end
+
+-- a weight block as CMeanTimeToHappen reads it: `weight`/`factor`/`base` the base (1 without), then
+-- each `modifier = { factor = x add = y <triggers> }` whose triggers hold, in order
+function research.weight_block(block, ctx)
+    if block == nil then
+        return 1
+    end
+    if block.text then
+        return eval.value(block, ctx, block)
+    end
+    local acc = 1
+    for _, e in ipairs(block) do
+        local k = e.op and e.key and e.key.text
+        if k == "weight" or k == "factor" or k == "base" then
+            acc = eval.value(e.value, ctx, e)
+        end
+    end
+    for _, e in ipairs(block) do
+        if e.op and e.key and e.key.text == "modifier" and e.value.text == nil then
+            local cond, factor, add = {}, nil, nil
+            for _, x in ipairs(e.value) do
+                local k = x.op and x.key and x.key.text
+                if k == "factor" or k == "weight" then
+                    factor = eval.value(x.value, ctx, x)
+                elseif k == "add" then
+                    add = eval.value(x.value, ctx, x)
+                else
+                    cond[#cond + 1] = x
+                end
+            end
+            local ok, holds = pcall(eval.trigger, cond, ctx)
+            if ok and holds then
+                acc = acc * (factor or 1) + (add or 0)
+            end
+        end
+    end
+    return acc
+end
+
+-- the potential counts (`potential = { "tech_x" = "2" }`, _TechPotentialCount): name -> entry
+local function potential_entries(status)
+    local block = world.child(status, "potential")
+    local by = {}
+    for _, e in ipairs(block) do
+        if e.op and e.key and e.value.text then
+            by[e.key.text] = e
+        end
+    end
+    return block, by
+end
+
+-- CTechnologyStatus::GetTechWeight: 0 unless the technology's potential holds; (weight +
+-- potential count * TECH_WEIGHT_POTENTIAL_ADD) * weight_modifier (the country as scope) * (1 +
+-- the draw chance mult of each of its flags: rare, dangerous, insight). Not modelled: the
+-- categories' own weight blocks (none in the vanilla files) and a subject's weight for its
+-- overlord's technologies.
+function research.tech_weight(country, name, status)
+    local t = tech(name)
+    if not t then
+        return 0
+    end
+    local b = t.def.block
+    local ctx = eval.new_ctx(eval.S("country", country), nil, nil, t.def.file)
+    local potential = defs.field(b, "potential")
+    if type(potential) == "table" then
+        local ok, holds = pcall(eval.trigger, potential, ctx)
+        if ok and not holds then
+            return 0
+        end
+    end
+    local w = tonumber(eval.value({ text = tostring(defs.field(b, "weight") or 0) }, ctx)) or 0
+    local count = 0
+    if status then
+        local _, by = potential_entries(status)
+        count = by[name] and tonumber(by[name].value.text) or 0
+    end
+    w = w + count * defines().TECH_WEIGHT_POTENTIAL_ADD
+    local wm = defs.field(b, "weight_modifier")
+    if wm ~= nil then
+        w = w * research.weight_block(wm, ctx)
+    end
+    local M = modifiers_of(country)
+    if t.rare then w = w * (1 + (M.rare_tech_draw_chance_mult or 0)) end
+    if t.dangerous then w = w * (1 + (M.dangerous_tech_draw_chance_mult or 0)) end
+    if t.insight then w = w * (1 + (M.insight_tech_draw_chance_mult or 0)) end
+    return w
+end
+
+local function alternatives_of(status, area)
+    local alts = world.child(status, "alternatives")
+    return world.child(alts, area)
+end
+
+local function list_entries(block)
+    local out = {}
+    for _, e in ipairs(block) do
+        if e.text then
+            out[#out + 1] = e
+        end
+    end
+    return out
+end
+
+-- CTechnologyStatus::IncreasePotentialTechWeights(area): +1 to the potential count of each
+-- technology of the area the country can research that is not among the alternatives
+function research.increase_potential(country, area)
+    local status = world.field(world.object("country", country), "tech_status")
+    if type(status) ~= "table" then
+        return
+    end
+    local offered = {}
+    for _, e in ipairs(list_entries(alternatives_of(status, area))) do
+        offered[e.text] = true
+    end
+    local block, by = potential_entries(status)
+    for _, name in ipairs(techs_of_area(area)) do
+        if not offered[name] and research.can_research(country, name) then
+            local e = by[name]
+            if e then
+                e.value.text = tostring((tonumber(e.value.text) or 0) + 1)
+            else
+                world.append(block, name, "1", true)
+                by[name] = block[#block]
+                block[#block].key.quoted = true
+            end
+        end
+    end
+end
+
+local function is_researching(status, area)
+    local q = world.field(status, area .. "_queue")
+    for _, item in ipairs(world.blocks(q)) do
+        if world.field(item, "technology") or world.field(item, "special_project") then
+            return true
+        end
+    end
+    return false
+end
+
+-- CTechnologyStatus::UpdateTechAlternatives(area, reset)
+function research.update_alternatives(country, area, reset)
+    local status = world.field(world.object("country", country), "tech_status")
+    if type(status) ~= "table" then
+        return
+    end
+    if not reset and is_researching(status, area) then
+        return
+    end
+    local d = defines()
+    local M = modifiers_of(country)
+    local n = d.NUM_TECH_ALTERNATIVES + math.floor((M.num_tech_alternatives_add or 0) + 1e-9)
+    local block = alternatives_of(status, area)
+    local previous = {}
+    if reset then
+        for _, e in ipairs(list_entries(block)) do
+            previous[e.text] = true
+        end
+        for i = #block, 1, -1 do
+            if block[i].text then
+                table.remove(block, i)
+            end
+        end
+    else
+        for i = #block, 1, -1 do
+            local e = block[i]
+            if e.text then
+                if research.can_research(country, e.text) then
+                    n = n - 1
+                else
+                    table.remove(block, i)
+                end
+            end
+        end
+    end
+    if n < 1 then
+        return
+    end
+    local current = {}
+    for _, e in ipairs(list_entries(block)) do
+        current[e.text] = true
+    end
+    local names, weights = {}, {}
+    for _, name in ipairs(techs_of_area(area)) do
+        if not current[name] and research.can_research(country, name) then
+            local w = research.tech_weight(country, name, status)
+            if w > 0 then
+                if previous[name] then
+                    w = w * d.TECH_WEIGHT_PREVIOUS_OPTION
+                end
+                names[#names + 1] = name
+                weights[#weights + 1] = math.floor(w * 100000)
+            end
+        end
+    end
+    local rng = require("engine.ai.rng")
+    local added = 0
+    while added < n and #names > 0 do
+        local r = RUST.rand()
+        local i = rng.weighted(weights, r) or (r % #names + 1)
+        world.append_value(block, names[i])
+        block[#block].quoted = true
+        -- the chosen one out: the last candidate takes its place
+        names[i], weights[i] = names[#names], weights[#weights]
+        names[#names], weights[#weights] = nil, nil
+        added = added + 1
+    end
+    research.stats.alternatives_drawn = (research.stats.alternatives_drawn or 0) + added
+    -- then the technologies always available to the country (`always_available_tech`, from
+    -- add_research_option and the like) of this area that it can research
+    local present = {}
+    for _, e in ipairs(list_entries(block)) do
+        present[e.text] = true
+    end
+    for _, name in ipairs(world.fields(status, "always_available_tech")) do
+        local t = type(name) == "string" and tech(name)
+        if t and t.area == area and not present[name] and research.can_research(country, name) then
+            world.append_value(block, name)
+            block[#block].quoted = true
+            present[name] = true
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------------------------
 -- the queues
 
 local function item_field(item, key)
@@ -392,6 +679,16 @@ local function complete(host, country, queue, item, name)
     research.completed[#research.completed + 1] = { country = country, tech = name, date = today }
     if host and host.on_action then
         host.on_action("on_tech_increased", "country", country)
+    end
+    local status = world.field(world.object("country", country), "tech_status")
+    if type(status) == "table" then
+        world.set(status, "last_increased_tech", name)
+    end
+    -- the area's options drawn again (DoResearchTechnologyCompleted's end)
+    local t = tech(name)
+    if t and t.area then
+        research.increase_potential(country, t.area)
+        research.update_alternatives(country, t.area, true)
     end
 end
 
@@ -533,6 +830,8 @@ local function area_day(host, country, status, area, day)
     if monthly and slot and A > 0 then
         slot.text = world.number_text((tonumber(slot.text) or 0) + A)
     end
+    -- the options of an area not researching, topped up (UpdateTechAlternatives without reset)
+    research.update_alternatives(country, area, false)
 end
 
 -- research.daily(host, date): every country's research for the day (in the countries' serial phase)

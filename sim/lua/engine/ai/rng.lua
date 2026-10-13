@@ -56,8 +56,14 @@ function rng.weighted(weights, r)
     if total <= 0 then
         return r % n + 1
     end
-    -- (with a total above 2^31 - 1 the game scales the target; not seen with technology weights)
-    local target = r % total
+    -- above 2^31 - 1 the game scales the draw to the total: floor(r * floor(total * 1000 /
+    -- (2^31 - 1)) / 1000)
+    local target
+    if total <= 2147483647 then
+        target = r % total
+    else
+        target = math.floor(r * math.floor(total * 1000 / 2147483647) / 1000)
+    end
     local sum = 0
     for i = 1, n do
         if weights[i] > 0 then
