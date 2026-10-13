@@ -36,7 +36,13 @@ The Rust skeleton built on this is in [`sim/`](../sim) (section 6).
 - **One random number generator** for everything synchronized: `CRandom::_Random`, a counter-based
   noise function (Squirrel3 with a fourth round) over `{position, seed}` **[V]**, saved in the game,
   1,024 call sites. Parallel phases do not draw: the day draws a pool of 1,000 values first and
-  hands it to the parallel per-object updates **[V]**.
+  hands it to the parallel per-object updates **[V]**. The save holds the generator's state
+  (`random_seed`, `random_count`, the position); the simulation starts from it
+  (`save::random_of`). The game's 2210.07.01 save has another seed than 2210.01.01 and a count of
+  4,755,436: the game that wrote it reseeded when it loaded 2210.01.01 **[I]**, and drew about
+  26,000 values a day after that, where the simulation draws about 1,050 (the pools and its
+  events). Where the other 25,000 a day are drawn is open; the headless game (`headless/`) can
+  count them by phase.
 - **Out-of-sync checks** (`NOosChecksums::CalcChecksums`, 131 slots) hash the RNG seed and draw
   count, every object database's members, country stockpiles, pop groups, construction queues,
   fleet paths and orbit positions, ship health, flags **[V]** (globals and helpers referenced).
