@@ -188,6 +188,20 @@ LINKS.owner_main_species = function(cur)
     return s and S("species", s) or nil
 end
 LINKS.owner_species = LINKS.owner_main_species
+-- solar_system: the system an object is in; leader: a planet's governor, a fleet's leader, an
+-- army's general, a country's ruler
+LINKS.solar_system = function(cur)
+    if not E.system_of then return nil end
+    sync()
+    local s = E.system_of(cur.kind, cur.id)
+    return s and S("system", s) or nil
+end
+LINKS.leader = function(cur)
+    if not E.leader_of then return nil end
+    sync()
+    local l = E.leader_of(cur.kind, cur.id)
+    return l and S("leader", l) or nil
+end
 M.LINKS = LINKS
 
 -- resolve a scope reference (`owner`, `root.owner.capital_scope`, `event_target:x`,
@@ -619,6 +633,11 @@ LISTS.neighbor_country = function(sc)
     sync()
     return map_scopes("country", E.neighbors(sc.id))
 end
+LISTS.owned_species = function(sc)
+    if sc.kind ~= "country" or not E.owned_species then return {} end
+    sync()
+    return map_scopes("species", E.owned_species(sc.id))
+end
 LISTS.owned_megastructure = function(sc)
     if sc.kind ~= "country" or not E.megastructures then return {} end
     sync()
@@ -942,7 +961,11 @@ TRIG["resource_stockpile_compare"] = function(e, ctx)
     if have == nil then return false end
     return compare(have, op, amount)
 end
-TRIG["has_dlc"] = function() return true end
+-- has_dlc: the save's DLCs (E.has_dlc reads its required_dlcs; yes without a world)
+TRIG["has_dlc"] = function(e)
+    if E.has_dlc and e.value.text then return E.has_dlc(e.value.text) end
+    return true
+end
 -- the tutorial is off; the mid and end game start 100 and 200 years in (the default game rules)
 TRIG["is_tutorial_level"] = function(e, ctx) return compare(0, e.op, M.value(e.value, ctx, e)) end
 TRIG["mid_game_years_passed"] = function(e, ctx)
@@ -955,6 +978,20 @@ TRIG["host_has_dlc"] = TRIG["has_dlc"]
 TRIG["is_multiplayer"] = function(e) return not yes(e) end
 TRIG["is_ironman"] = function(e) return not yes(e) end
 
+-- uses_ship_category = <category>: the country's graphical culture's ship kinds
+TRIG["uses_ship_category"] = function(e, ctx)
+    if not E.uses_ship_category or ctx.this == NONE or ctx.this.kind ~= "country" or not e.value.text then return false end
+    sync()
+    return E.uses_ship_category(ctx.this.id, e.value.text) and true or false
+end
+-- capital_tier <op> n: the highest capital tier of the planet's colony's buildings
+TRIG["capital_tier"] = function(e, ctx)
+    if not E.capital_tier or ctx.this == NONE then return false end
+    local planet = ctx.this.kind == "planet" and ctx.this.id
+    if not planet then return false end
+    sync()
+    return compare(E.capital_tier(planet), e.op, M.value(e.value, ctx, e))
+end
 -- has_deficit = <resource>: a country out of the resource with a negative balance
 TRIG["has_deficit"] = function(e, ctx)
     if not E.has_deficit or ctx.this == NONE or not e.value.text then return false end

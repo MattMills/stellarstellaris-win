@@ -116,6 +116,7 @@ local DERIVED = {
         num_leaders = function(c) return #world.list(world.field(c, "owned_leaders")) end,
         num_pops = function(c) return world.field(c, "num_sapient_pops") end,
         last_increased_tech = function(c) return world.path(c, "tech_status", "last_increased_tech") end,
+        is_primitive = function(c) return world.field(c, "type") == "primitive" and "yes" or "no" end,
         -- the capital is a colony id: its planet
         capital = function(c)
             local col = tonumber(world.field(c, "capital"))
@@ -124,6 +125,11 @@ local DERIVED = {
     },
     planet = {
         is_planet_class = function(p) return world.field(p, "planet_class") end,
+        -- a planet answers for its owner (the primitives' capital buildings ask it)
+        is_primitive = function(p)
+            local c = obj("country", tonumber(world.field(p, "owner")))
+            return (c and world.field(c, "type") == "primitive") and "yes" or "no"
+        end,
         has_owner = function(p) return world.field(p, "owner") ~= nil and "yes" or "no" end,
         is_capital = function(p, id)
             local owner = world.field(p, "owner")
@@ -439,6 +445,110 @@ E.has_deficit = function(kind, id, res)
         end
     end
     return sum < 0
+end
+
+-- E.has_dlc(name): the DLC is in the save's required_dlcs (the meta's list); with no list, yes
+local dlc_set
+E.has_dlc = function(name)
+    if dlc_set == nil then
+        local list = world.meta and world.meta.required_dlcs
+        if type(list) ~= "table" then
+            return true
+        end
+        dlc_set = {}
+        for _, x in ipairs(list) do
+            if x.text then dlc_set[x.text] = true end
+        end
+    end
+    return dlc_set[name] == true
+end
+
+-- E.uses_ship_category(country, category): the category is in the ship_kinds of the country's
+-- graphical culture (common/graphical_culture); a culture without ship_kinds uses every category
+E.uses_ship_category = function(country, category)
+    local c = obj("country", country)
+    local culture = c and world.field(c, "graphical_culture")
+    local d = culture and defs().get("common/graphical_culture", culture)
+    if not d then
+        return false
+    end
+    local kinds = defs().field(d.block, "ship_kinds")
+    if type(kinds) ~= "table" then
+        return true
+    end
+    for _, k in ipairs(kinds) do
+        if k.text == category then return true end
+    end
+    return false
+end
+
+-- E.owned_species(country) -> species ids with pops in the country (its colonies' pop groups)
+E.owned_species = function(country)
+    local out, seen = {}, {}
+    for _, pid in ipairs(E.colonies(country)) do
+        for _, gid in ipairs(E.pop_groups(pid)) do
+            local g = obj("pop_group", gid)
+            local sid = g and world.field(g, "killed") ~= "yes" and E.species_of("pop_group", gid)
+            if sid and not seen[sid] then
+                seen[sid] = true
+                out[#out + 1] = sid
+            end
+        end
+    end
+    return out
+end
+
+-- E.system_of(kind, id) -> the system an object is in (`solar_system`): a planet's coordinate
+-- origin, a fleet's, a ship's fleet's, a system itself
+E.system_of = function(kind, id)
+    if kind == "system" then
+        return id
+    end
+    if kind == "ship" then
+        local s = obj("ship", id)
+        return s and E.system_of("fleet", tonumber(world.field(s, "fleet")))
+    end
+    if kind == "colony" then
+        return E.system_of("planet", world.colony_planet[id])
+    end
+    local o = obj(kind, id)
+    local coord = o and world.field(o, "coordinate")
+    return type(coord) == "table" and tonumber(world.field(coord, "origin")) or nil
+end
+
+-- E.leader_of(kind, id) -> the leader of an object (`leader`): a planet's governor (its colony's),
+-- a fleet's (a ship's fleet's) leader, an army's general, a country's ruler
+E.leader_of = function(kind, id)
+    local l
+    if kind == "planet" then
+        local col = world.planet_colony[id]
+        l = col and tonumber(world.field(obj("colony", col), "governor"))
+    elseif kind == "fleet" then
+        l = tonumber(world.field(obj("fleet", id), "leader"))
+    elseif kind == "ship" then
+        local s = obj("ship", id)
+        return s and E.leader_of("fleet", tonumber(world.field(s, "fleet")))
+    elseif kind == "army" then
+        l = tonumber(world.field(obj("army", id), "leader"))
+    elseif kind == "country" then
+        l = tonumber(world.field(obj("country", id), "ruler"))
+    end
+    return (l and l ~= 4294967295 and obj("leader", l)) and l or nil
+end
+
+-- E.capital_tier(planet) -> the highest capital_tier of its colony's buildings (0 without)
+E.capital_tier = function(planet)
+    local col = world.planet_colony[planet]
+    local c = col and obj("colony", col)
+    local tier = 0
+    for _, bid in ipairs(world.list(c and world.field(c, "buildings_cache"))) do
+        local b = obj("buildings", tonumber(bid))
+        local ty = b and world.field(b, "type")
+        local d = ty and defs().get("common/buildings", ty)
+        local t = d and tonumber(defs().field(d.block, "capital_tier"))
+        if t and t > tier then tier = t end
+    end
+    return tier
 end
 
 -- fleet power: a fleet's military_power; a country's, the sum over the fleets it owns
