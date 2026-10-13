@@ -301,7 +301,14 @@ function S:def_values(folder, name, key)
         if d then
             local block = d.block
             if key then
-                block = self.defs.field(d.block, key)
+                -- the last block of that key (civic_catalytic_processing has an empty `modifier`
+                -- and then its attunement one)
+                block = nil
+                for _, e in ipairs(d.block) do
+                    if e.op and e.key and e.key.text == key then
+                        block = e.value
+                    end
+                end
             end
             v = self:values(block, d.file) or false
         end
@@ -371,6 +378,18 @@ function REPLACED_TRIGGERS.has_dlc(self, e)
 end
 REPLACED_TRIGGERS.host_has_dlc = REPLACED_TRIGGERS.has_dlc
 
+-- is_primitive: a country of the primitive country type (the interface does not set it: the
+-- primitives' capital buildings' blocks need it)
+function REPLACED_TRIGGERS.is_primitive(self, e, ctx)
+    local w = self.world
+    local c = ctx.this.kind == "country" and ctx.this.id
+    if ctx.this.kind == "planet" then
+        c = tonumber(w.field(w.object("planet", ctx.this.id), "owner"))
+    end
+    local r = c ~= nil and unq(w.field(w.object("country", c), "type")) == "primitive"
+    return r == (e.value.text ~= "no")
+end
+
 -- scope links the sources read that the script layer does not answer yet (filled in below)
 local EXTRA_LINKS = {}
 
@@ -427,6 +446,20 @@ function S:trigger(block, kind, id, file, from)
         self.stats.triggers_true = self.stats.triggers_true + 1
     end
     return r and true or false
+end
+
+-- a potential written in the scope of an object a country owns (a situation's), evaluated for the
+-- country: its `owner = { }` entries in the country's scope, the others as they are
+function S:owner_trigger(block, country, file)
+    for _, e in ipairs(block) do
+        if e.op and e.key then
+            local b = (e.key.text == "owner" and type(e.value) == "table" and e.value.text == nil) and e.value or { e }
+            if not self:trigger(b, "country", country, file) then
+                return false
+            end
+        end
+    end
+    return true
 end
 
 -- the triggered blocks `key` of a definition (`key = { potential = { } <modifiers> }`, or with its
@@ -552,6 +585,21 @@ function S:script_mult(spec, link, kind, id, file)
         end
         local v = 1 + sum / 100000
         return math.floor(v * 100 + 0.5) * 1000
+    end
+    if p[1] == "natural_blocker_count" and kind == "planet" then
+        -- the planet's deposits of category deposit_cat_blockers_natural (a count_deposits
+        -- complex trigger, which the script layer does not evaluate)
+        local w = self.world
+        local n = 0
+        local deps = w.field(w.object("planet", id), "deposits")
+        for _, x in ipairs(type(deps) == "table" and deps or {}) do
+            local ty = x.text and unq(w.field(w.object("deposit", tonumber(x.text)), "type"))
+            local d = ty and self.defs.get("common/deposits", ty)
+            if d and unq(self.defs.field(d.block, "category")) == "deposit_cat_blockers_natural" then
+                n = n + 1
+            end
+        end
+        return n * 100000
     end
     if self.eval == nil then
         return nil
@@ -703,6 +751,66 @@ function EXTRA_LINKS.leader(self, cur)
     return l and self.leaders[l] and self.eval.S("leader", l) or nil
 end
 
+-- uses_ship_category = <category>: in the ship_kinds of the country's graphical culture
+-- (common/graphical_culture); a culture without ship_kinds uses every category (the caravaneers'
+-- and marauders' do, and take the bio-ship swaps of the hyperdrive technologies)
+function EXTRA_TRIGGERS.uses_ship_category(self, e, ctx)
+    local w = self.world
+    local c = ctx.this.kind == "country" and ctx.this.id
+    if not c then
+        return false
+    end
+    local culture = unq(w.field(w.object("country", c), "graphical_culture"))
+    local d = culture and self.defs.get("common/graphical_culture", culture)
+    if d == nil then
+        return false
+    end
+    local kinds = self.defs.field(d.block, "ship_kinds")
+    if type(kinds) ~= "table" then
+        return true
+    end
+    local want = unq(e.value.text)
+    for _, k in ipairs(kinds) do
+        if k.text == want then
+            return true
+        end
+    end
+    return false
+end
+
+-- any_owned_species = { }: a species with pops in the country (its pop groups on its colonies)
+-- for which the block holds
+function EXTRA_TRIGGERS.any_owned_species(self, e, ctx)
+    if ctx.this.kind ~= "country" or type(e.value) ~= "table" then
+        return false
+    end
+    local w = self.world
+    self.owned_species = self.owned_species or {}
+    local list = self.owned_species[ctx.this.id]
+    if list == nil then
+        list = {}
+        local seen = {}
+        for _, pid in ipairs(self.colonies_of[ctx.this.id] or {}) do
+            local col = w.object("colony", w.field(w.object("planet", pid), "colony"))
+            for _, gid in ipairs(col and list_of(w, col, "pop_groups") or {}) do
+                local g = w.object("pop_group", tonumber(gid))
+                local sp = g and w.field(g, "killed") ~= "yes" and tonumber(w.field(w.field(g, "key") or {}, "species"))
+                if sp and not seen[sp] then
+                    seen[sp] = true
+                    list[#list + 1] = sp
+                end
+            end
+        end
+        self.owned_species[ctx.this.id] = list
+    end
+    for _, sp in ipairs(list) do
+        if self.eval.trigger(e.value, self.eval.push(ctx, self.eval.S("species", sp))) then
+            return true
+        end
+    end
+    return false
+end
+
 -- capital_tier <op> n: the highest capital_tier of the buildings of a planet's colony (0 with no
 -- capital building)
 function EXTRA_TRIGGERS.capital_tier(self, e, ctx)
@@ -802,6 +910,17 @@ function S:index_world()
             self.governed[gov] = pid
         end
     end
+    -- the planets of each system
+    self.planets_of_system = {}
+    for _, pid in ipairs(w.all("planet")) do
+        local coord = w.field(w.object("planet", pid), "coordinate")
+        local sys = type(coord) == "table" and tonumber(w.field(coord, "origin"))
+        if sys then
+            local l = self.planets_of_system[sys] or {}
+            self.planets_of_system[sys] = l
+            l[#l + 1] = pid
+        end
+    end
     -- the governors of each system's colonies; the system of each starbase
     self.governors_of_system, self.system_of_starbase = {}, {}
     for gov, pid in pairs(self.governed) do
@@ -860,6 +979,16 @@ function S:index_world()
     for _, l in pairs(self.from_planet) do
         table.sort(l)
     end
+    -- the situations of each country
+    self.situations_of = {}
+    for _, sid in ipairs(w.all("situations")) do
+        local c = tonumber(w.field(w.object("situations", sid), "country"))
+        if c then
+            local l = self.situations_of[c] or {}
+            self.situations_of[c] = l
+            l[#l + 1] = sid
+        end
+    end
     -- the country each ruler rules
     self.ruler_of = {}
     for _, cid in ipairs(w.all("country")) do
@@ -909,23 +1038,30 @@ function S:country(id)
         self:triggered(parts, label, folder, name, "triggered_modifier", "country", id)
         self:triggered(parts, label, folder, name, "triggered_country_modifier", "country", id)
     end
-    -- technologies (a repeatable's level as the multiplier). A technology_swap whose trigger holds
-    -- for the country and that does not inherit the effects (tech_hyper_drive_3 as
-    -- tech_bio_hyper_drive_3) replaces the technology's modifier with its own, if it has one
-    local function swapped(name)
-        local d = self:def_block("common/technology", name)
+    -- a definition's swap (technology_swap, tradition_swap) whose trigger holds for the country,
+    -- the first: -> { values } (its own modifier; none when it does not inherit the effects; the
+    -- definition's otherwise), or nil with no swap active. tech_hyper_drive_2 and _3 swap to their
+    -- bio versions (no effects) for a country using bio ships; tr_unyielding_fortress_doctrine to
+    -- its Nemesis version (its own modifier)
+    local function swapped(folder, name, key)
+        local d = self:def_block(folder, name)
         for _, e in ipairs(d and d.block or {}) do
-            if e.op and e.key and e.key.text == "technology_swap" and type(e.value) == "table"
-                and self.defs.field(e.value, "inherit_effects") == "no" then
+            if e.op and e.key and e.key.text == key and type(e.value) == "table" then
                 local t = self.defs.field(e.value, "trigger")
                 if t and self:trigger(t, "country", id, d.file) then
                     local m = self.defs.field(e.value, "modifier")
-                    return { values = type(m) == "table" and self:values(m, d.file) or nil }
+                    if type(m) == "table" then
+                        return { values = self:values(m, d.file) }
+                    elseif self.defs.field(e.value, "inherit_effects") == "no" then
+                        return { values = nil }
+                    end
+                    return nil
                 end
             end
         end
         return nil
     end
+    -- technologies (a repeatable's level as the multiplier)
     local ts = w.field(c, "tech_status")
     local last
     for _, e in ipairs(type(ts) == "table" and ts or {}) do
@@ -933,7 +1069,7 @@ function S:country(id)
             last = unq(e.value.text)
         elseif e.op and e.key.text == "level" and last then
             local level = (tonumber(e.value.text) or 1) * 100000
-            local swap = swapped(last)
+            local swap = swapped("common/technology", last, "technology_swap")
             if swap then
                 add("technology:" .. last .. ".swap", swap.values, level)
             else
@@ -943,7 +1079,12 @@ function S:country(id)
         end
     end
     for _, t in ipairs(list_of(w, c, "traditions")) do
-        src("tradition:" .. t, "common/traditions", t, "modifier")
+        local swap = swapped("common/traditions", t, "tradition_swap")
+        if swap then
+            add("tradition:" .. t .. ".swap", swap.values)
+        else
+            src("tradition:" .. t, "common/traditions", t, "modifier")
+        end
     end
     for _, t in ipairs(list_of(w, c, "ascension_perks")) do
         src("ascension_perk:" .. t, "common/ascension_perks", t, "modifier")
@@ -961,6 +1102,18 @@ function S:country(id)
         end
         for _, civic in ipairs(list_of(w, gov, "civics")) do
             src("civic:" .. civic, "common/governments/civics", civic, "modifier")
+            -- a swap_type whose trigger holds adds its modifier, a part of its own
+            -- (civic_warrior_culture's enclave capacity with Overlord)
+            local d = self:def_block("common/governments/civics", civic)
+            for _, e in ipairs(d and d.block or {}) do
+                if e.op and e.key and e.key.text == "swap_type" and type(e.value) == "table" then
+                    local t = self.defs.field(e.value, "trigger")
+                    local m = self.defs.field(e.value, "modifier")
+                    if type(m) == "table" and (t == nil or self:trigger(t, "country", id, d.file)) then
+                        add("civic:" .. civic .. ".swap", self:values(m, d.file))
+                    end
+                end
+            end
         end
         local origin = unq(w.field(gov, "origin"))
         if origin then
@@ -1017,9 +1170,97 @@ function S:country(id)
         local name = "difficulty_" .. difficulty .. "_npc"
         add("static:" .. name, self:static(name), fixed(sdb * self:difficulty_scale()))
     end
-    -- a federation's members (its leader too) pay federation_tax
-    if self.federation_of[id] then
+    -- its situations: the active stage's modifier and triggered_modifier blocks, summed into one
+    -- part, and the chosen approach's modifier (common/situations; the potentials are written in
+    -- the situation's scope, `owner = { }` being the country)
+    for _, sid in ipairs(self.situations_of[id] or {}) do
+        local s = w.object("situations", sid)
+        local ty = unq(w.field(s, "type"))
+        local d = ty and self:def_block("common/situations", ty)
+        if d then
+            local stage = (tonumber(w.field(s, "stage")) or 0) + 1
+            local stages = self.defs.field(d.block, "stages")
+            local n, sum = 0, {}
+            for _, e in ipairs(type(stages) == "table" and stages or {}) do
+                if e.op and e.key and type(e.value) == "table" then
+                    n = n + 1
+                    if n == stage then
+                        for _, x in ipairs(e.value) do
+                            if x.op and x.key and type(x.value) == "table" then
+                                if x.key.text == "modifier" then
+                                    sum_into(sum, self:values(x.value, d.file))
+                                elseif x.key.text == "triggered_modifier" then
+                                    local pot = self.defs.field(x.value, "potential")
+                                    if pot == nil or self:owner_trigger(pot, id, d.file) then
+                                        local inner = self.defs.field(x.value, "modifier")
+                                        sum_into(sum, self:values(x.value, d.file))
+                                        if type(inner) == "table" then
+                                            sum_into(sum, self:values(inner, d.file))
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            add("situation:" .. ty, sum)
+            local approach = unq(w.field(s, "approach"))
+            for _, e in ipairs(d.block) do
+                if e.op and e.key and e.key.text == "approach" and type(e.value) == "table"
+                    and unq(self.defs.field(e.value, "name")) == approach then
+                    local m = self.defs.field(e.value, "modifier")
+                    add("situation:" .. ty .. "." .. approach, type(m) == "table" and self:values(m, d.file) or nil)
+                end
+            end
+        end
+    end
+    -- resource deficits: a resource's deficit_modifier (common/strategic_resources) when its
+    -- stockpile is empty and last month's balance of it negative (the resources with a
+    -- deficit_situation have it as a situation). Not for a fallen empire: the 2211.07.01 one
+    -- with no trade and -148 a month has no trade_deficit
+    local eco = w.path(c, "modules", "standard_economy_module", "resources")
+    local balance = w.path(c, "budget", "last_month", "balance")
+    local ctd = self.defs.get("common/country_types", unq(w.field(c, "type")) or "")
+    local fallen = ctd and self.defs.field(ctd.block, "fallen_empire") == "yes"
+    if type(eco) == "table" and type(balance) == "table" and not fallen then
+        for name, d in pairs(self.defs.folder("common/strategic_resources")) do
+            local dm = unq(self.defs.field(d.block, "deficit_modifier"))
+            local stock = tonumber(w.field(eco, name)) or 0
+            if dm and stock <= 0 then
+                local net = 0
+                for _, e in ipairs(balance) do
+                    if e.op and type(e.value) == "table" then
+                        net = net + (tonumber(w.field(e.value, name)) or 0)
+                    end
+                end
+                if net < 0 then
+                    add("deficit:" .. name, self:static(dm))
+                end
+            end
+        end
+    end
+    -- a federation's members (its leader too) pay federation_tax; its perks give each member their
+    -- members_modifier (the leader too) and the leader their leader_modifier, and the triggered
+    -- ones whose potential holds (common/federation_perks)
+    local fid = self.federation_of[id]
+    if fid then
         add("static:federation_tax", self:static("federation_tax"))
+        local fed = w.object("federation", fid)
+        local leader = tonumber(w.field(fed, "leader")) == id
+        local prog = w.field(fed, "federation_progression")
+        for _, b in ipairs(blocks_of(type(prog) == "table" and w.field(prog, "perks") or nil)) do
+            local perk = unq(w.field(b, "type"))
+            if perk then
+                local F = "common/federation_perks"
+                add("federation_perk:" .. perk, self:def_values(F, perk, "members_modifier"))
+                self:triggered(parts, "federation_perk:" .. perk, F, perk, "member_triggered_modifier", "country", id)
+                if leader then
+                    add("federation_perk:" .. perk .. ".leader", self:def_values(F, perk, "leader_modifier"))
+                    self:triggered(parts, "federation_perk:" .. perk .. ".leader", F, perk, "leader_triggered_modifier", "country", id)
+                end
+            end
+        end
     end
     -- naval capacity exceeded: navy_coverage_shortage times the shortage
     local cov = w.field(c, "navy_coverage")
@@ -1160,13 +1401,21 @@ function S:planet(id)
     end
     -- (the random planet modifier, `planet_modifier = pm_x`, arrives as a permanent timed modifier)
     self:timed(parts, p)
+    -- bombardment: planet_devastation times the devastation (bombardment_damage / 100, truncated)
+    local dev = tonumber(w.field(p, "bombardment_damage"))
+    if dev and dev > 0 then
+        add("static:planet_devastation", self:static("planet_devastation"), math.floor(dev * 1000 + 1e-6))
+    end
     -- the deposits, summed into one part: their planet_modifier and active triggered_planet_modifier
     -- blocks (a strategic resource's output once its technology is known)
+    -- (an unsurveyed shielded world's deposits, those of the planet under the shield, do nothing:
+    -- a guess from two worlds of the 2211.07.01 capture, the surveyed one's apply, the other's not)
+    local hidden = class == "pc_shielded" and w.field(p, "surveyed_by") == nil
     local dep = {}
     for _, did in ipairs(list_of(w, p, "deposits")) do
         local o = w.object("deposit", tonumber(did))
         local ty = o and unq(w.field(o, "type"))
-        if ty then
+        if ty and not hidden then
             sum_into(dep, self:def_values("common/deposits", ty, "planet_modifier"))
             for _, b in ipairs(self:active("common/deposits", ty, "triggered_planet_modifier", "planet", id)) do
                 sum_into(dep, b.values, b.mult)
@@ -1174,6 +1423,22 @@ function S:planet(id)
         end
     end
     add("deposits", dep)
+    -- a habitat: the habitat_modifier of the deposits of its system's bodies (the star's, the
+    -- asteroids'), one part
+    if class == "pc_habitat" then
+        local coord = w.field(p, "coordinate")
+        local sys = type(coord) == "table" and tonumber(w.field(coord, "origin"))
+        local hab = {}
+        for _, pid in ipairs(sys and self.planets_of_system[sys] or {}) do
+            for _, did in ipairs(list_of(w, w.object("planet", pid), "deposits")) do
+                local ty = unq(w.field(w.object("deposit", tonumber(did)), "type"))
+                if ty then
+                    sum_into(hab, self:def_values("common/deposits", ty, "habitat_modifier"))
+                end
+            end
+        end
+        add("habitat_deposits", hab)
+    end
     local colony = w.field(p, "colony")
     local col = type(colony) == "number" and w.object("colony", colony)
     if col then
