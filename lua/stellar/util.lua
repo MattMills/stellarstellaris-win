@@ -36,8 +36,16 @@ if ok and ffi.os == "Windows" then
         ffi.C.QueryPerformanceCounter(count)
         return tonumber(count[0]) * scale
     end
+    -- util.system_time() -> seconds since 1970 (the clock of the DLL's events and workers)
+    ffi.cdef [[ void GetSystemTimePreciseAsFileTime(uint64_t *time); ]]
+    local filetime = ffi.new("uint64_t[1]")
+    function util.system_time()
+        ffi.C.GetSystemTimePreciseAsFileTime(filetime)
+        return tonumber(filetime[0] - 116444736000000000ULL) / 1e7
+    end
 else
     util.now = os.clock
+    util.system_time = os.time
 end
 
 return util

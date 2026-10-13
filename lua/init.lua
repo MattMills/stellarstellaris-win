@@ -74,11 +74,13 @@ end
 -- the modifier definitions found by token through an index (stellar.modifier_index): the game's
 -- linear scans of them (about 10^9 compares at load) replaced
 -- (modifiers.txt next to the DLL: "off" to leave the game's scans)
+local modifier_where  -- where the definitions are (modifier_index.locate)
 if setting("modifiers.txt", "index") == "off" then
     stellar.log("modifiers: no index (modifiers.txt)")
 else
     local modifier_index = require("stellar.modifier_index")
     local where, message = modifier_index.locate(require("stellar.resolve").functions(image), stellar.read)
+    modifier_where = where
     local results = where and modifier_index.install(where)
     stellar.log(results and string.format("modifiers: the definitions' index: GetTypeFromToken %s, TryAddDynamicModifier %s, TryReadMember %s",
         tostring(results.get_type), tostring(results.add), tostring(results.read))
@@ -146,12 +148,51 @@ stellar.log(string.format("load: %d marks hooked%s", marks_hooked,
 local database_mode, database_workers = setting("databases.txt", "lua")
 local post_reads  -- the PostReadInitInstance Lua runs (databases.skip_post_reads)
 local dependencies_path = util.dirname(stellar.dll_path) .. "\\cache\\database_dependencies-" .. image:md5() .. ".tsv"
+local conflicts_path = util.dirname(stellar.dll_path) .. "\\cache\\database_conflicts-" .. image:md5() .. ".tsv"
+local boot_order_path = util.dirname(stellar.dll_path) .. "\\cache\\database_boot_order-" .. image:md5() .. ".tsv"
+local inflight_path = util.dirname(stellar.dll_path) .. "\\cache\\database_inflight-" .. image:md5() .. ".tsv"
+local order_path = util.dirname(stellar.dll_path) .. "\\cache\\database_order-" .. image:md5() .. ".tsv"
+local writers_path = util.dirname(stellar.dll_path) .. "\\cache\\database_modifier_writers-" .. image:md5() .. ".tsv"
+local after_path = util.dirname(stellar.dll_path) .. "\\cache\\database_after-" .. image:md5() .. ".tsv"
+local game_order  -- the game's order of the databases (databases.load_order), for run_parallel
+local serialized = {}  -- name -> slot (databases.serialize)
 if databases_where and database_mode == "parallel" then
+    -- a load that died in the databases without a handler seeing it: what ran then conflicts
+    local recovered, names = databases.recover_inflight(inflight_path, conflicts_path)
+    if recovered then
+        stellar.log(string.format("databases: the last load died while %d databases ran (%s): %d conflicts added",
+            #names, table.concat(names, ", "), recovered))
+    end
     local learned = databases.load(databases_where, dependencies_path)
-    stellar.log(learned and string.format("databases: %d dependencies learned in a trace added", learned)
+    local conflicts = databases.load_conflicts(databases_where, conflicts_path)
+    stellar.log(learned and string.format("databases: %d dependencies learned in a trace added; %d conflicts learned in failed loads",
+        learned, conflicts or 0)
         or "databases: no dependencies learned yet (run once with databases.txt \"trace\"): one at a time")
     if not learned then
         database_mode = "lua"
+    else
+        -- what they share, under one lock
+        local failed
+        serialized, failed = databases.serialize(found, stellar.read)
+        local count = 0
+        for _ in pairs(serialized) do
+            count = count + 1
+        end
+        stellar.log(string.format("databases: %d of %d shared writers serialized%s", count, #databases.SHARED,
+            #failed > 0 and ("; not: " .. table.concat(failed, "; ")) or ""))
+        -- the databases that make modifier types, in the game's order
+        local writers, order = databases.load_names(writers_path), databases.load_order(order_path)
+        game_order = order
+        -- what failed loads learned the databases wait for
+        local waits = databases.load_after(databases_where, after_path)
+        stellar.log(string.format("databases: %d waits learned in failed loads", waits or 0))
+        if writers and order then
+            stellar.log(string.format("databases: %d databases make modifier types: %d links keep them in the game's order",
+                #writers, databases.chain(databases_where, writers, order)))
+        else
+            stellar.log("databases: the databases that make modifier types are not known yet (" .. tostring(writers_path)
+                .. ") or the game's order (" .. order_path .. "): the types may be numbered otherwise this load")
+        end
     end
 end
 if databases_where and (database_mode == "lua" or database_mode == "parallel" or database_mode == "trace") then
@@ -160,13 +201,63 @@ if databases_where and (database_mode == "lua" or database_mode == "parallel" or
         local t0 = util.now()
         local n, stopped, report
         if database_mode == "parallel" then
-            local timeline
-            n, stopped, report, timeline = databases.run_parallel(databases_where, progress, stellar.read,
-                tonumber(database_workers) or 4)
+            -- the workers' times are the system clock's
+            -- room in the modifier definitions: added to while other databases read them, they
+            -- never move
+            if found[databases.MODIFIER_RESERVE] and modifier_where then
+                stellar.call(found[databases.MODIFIER_RESERVE], modifier_where.data - 8, databases.MODIFIER_ROOM)
+            end
+            local t0 = util.system_time()
+            local timeline, failure
+            stellar.serialize_active(true)
+            n, stopped, report, timeline, failure = databases.run_parallel(databases_where, progress, stellar.read,
+                tonumber(database_workers) or 4, conflicts_path, inflight_path, after_path, game_order,
+                (os.getenv("USERPROFILE") or ".") .. "\\Documents\\Paradox Interactive\\Stellaris\\logs\\error.log")
+            stellar.serialize_active(false)
+            -- what the lock cost: per function, the calls under it and how long they waited for it
+            local costs = {}
+            for _, name in ipairs(databases.SHARED) do
+                if serialized[name] then
+                    local calls, _, contended, waited = stellar.serialized(serialized[name])
+                    if calls > 0 then
+                        costs[#costs + 1] = string.format("%s %d calls, %d waited %.2fs", name:match("[^:]*::[^:]*$") or name,
+                            calls, contended or 0, waited or 0)
+                    end
+                end
+            end
+            stellar.log("databases: the shared lock: " .. table.concat(costs, "; "))
+            -- the databases that made modifier types (Create or Init), with those known before
+            local slot = serialized[databases.MODIFIER_WRITER]
+            if slot then
+                local _, ids = stellar.serialized(slot)
+                local names, seen = databases.load_names(writers_path) or {}, {}
+                for _, name in ipairs(names) do
+                    seen[name] = true
+                end
+                local added = 0
+                for _, id in ipairs(ids) do
+                    local e = databases_where.entries[id]
+                    if e and not seen[e.name] then
+                        seen[e.name] = true
+                        names[#names + 1] = e.name
+                        added = added + 1
+                    end
+                end
+                databases.save_names(writers_path, names)
+                stellar.log(string.format("databases: %d databases made modifier types (%d new)", #ids, added))
+            end
+            if failure then
+                -- the conflict is learned (and said, by run_parallel); this load cannot go on (a
+                -- database is half made)
+                stellar.log("databases: conflict learned (" .. conflicts_path .. "): the game ends, the next load keeps those apart")
+                stellar.exit_process(3)
+            end
             for _, t in ipairs(timeline or {}) do
                 stellar.log(string.format("databases:   %s on thread %d: +%.3fs, %.3fs", t.name, t.thread, t.start - t0,
                     t.seconds))
             end
+            stellar.log("databases: the boot order that worked: " .. tostring(databases.save_boot_order(timeline or {}, t0,
+                boot_order_path)))
         else
             n, stopped = databases.run(databases_where, progress, stellar.read, database_mode == "trace")
             if database_mode == "trace" then
@@ -189,8 +280,19 @@ if databases_where and (database_mode == "lua" or database_mode == "parallel" or
             #databases_where.entries, util.now() - t0, stopped and ("; the game does the rest from " .. stopped) or "",
             report and ("; " .. report) or ""))
         -- their PostReadInitInstance in the order they were initialized, as in the game's loop: the
-        -- game's own pass would call them in the table's order (every database is ready by then)
-        post_reads = databases.skip_post_reads(databases_where)
+        -- game's own pass would call them in the table's order (every database is ready by then).
+        -- In parallel, the order of the game's loop, kept by a load that ran it in Lua
+        local order
+        if database_mode == "parallel" then
+            order = databases.load_order(order_path)
+            if order == nil then
+                stellar.log("databases: no game order kept yet (" .. order_path .. ", run once with databases.txt \"lua\"): "
+                    .. "the PostReads run in the order the databases were done, the modifier types may be numbered otherwise")
+            end
+        elseif n == #databases_where.entries then
+            databases.save_order(databases_where, order_path)
+        end
+        post_reads = databases.skip_post_reads(databases_where, order)
     end
     -- InitDefinitionIcons comes right after the game's PostReadInitInstance loop (which skips
     -- those): they run here, in their order

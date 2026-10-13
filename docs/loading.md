@@ -82,3 +82,41 @@ longest:
 Most of the time is not reading: `CJobTypeDatabase`, `CShipSizeDatabase` and
 `CAnomalyTypeDatabase` read few tokens and spend seconds after the read. `CEventManager` reads 12.75
 MB in about 1.5 seconds.
+
+### In parallel (`databases.txt`: `parallel N`)
+
+`databases.run_parallel` starts a database when the databases it depends on are done (from
+`CanInitialize` and the access trace, `databases.txt` `trace`), on N workers and the game's
+thread. The databases were written to run one at a time, and the declared dependencies are not
+all of them. Each database runs under an exception handler (`stellar.db_start` /
+`stellar.db_call`, `src/dll/database_workers.cpp`), and a failure ends the load (the database is
+half made) and teaches the next load:
+
+- **conflicts** (`cache/database_conflicts-<md5>.tsv`): the failed database and each database
+  that ran while it did never run at the same time again;
+- **waits** (`cache/database_after-<md5>.tsv`): the failed database waits for every database
+  before it in the game's order (`cache/database_order-<md5>.tsv`, kept by a `lua` load) that was
+  not done when it started: it may have used something not made yet, which no exclusion fixes
+  (`CSituationTypeDatabase` reads the event namespaces `CEventManager` makes; the trace does not
+  see it, they are not the instance's);
+- a failure no handler sees (a broken heap is a fail-fast: the process ends at once) leaves
+  `cache/database_inflight-<md5>.tsv`, what ran then and in the quarter second before: the next
+  load adds those as conflicts.
+
+`C:\lfm\learn_boot.ps1` loads the game until a load gets through. The faults, named through the
+GOG build (the same code at other addresses), were mostly not between two databases but in tables
+every database writes. Those functions run under one recursive lock (`stellar.serialize`,
+`databases.SHARED`), left by a `__finally` when a database fails:
+
+| fault in | the table | serialized |
+|---|---|---|
+| `CPdxArray<SDatabaseObjectReference>::MoveInitDestroy` | the deferred database object references, resolved after the load | `CGlobalDeferredDatabaseObjectResolver::Register_Internal` |
+| `CPdxRobinHoodTable<CTrigger*>::EmplaceWithHash`, `Rehash` | the trigger database's set of every trigger | `CTriggerDatabase::AddTrigger`, `CTrigger::~CTrigger` (and `CScriptableLookupValue`'s, a table of the same kind) |
+| `CEffectDatabase::PostInit` (after the databases) | the effect database's set of every effect, broken without a fault while the databases ran | `CEffect::CEffect`, `CEffect::~CEffect` |
+| `CModifier::~CModifier` | the post-init modifiers (modifiers read from script, finished after the databases): a list every modifier searches when it goes | `CPostInitModifierDatabase::CreatePostInitModifier`, `CModifier::~CModifier` |
+| `CHashTable<CString, CNameSpace>::Find` | the event namespaces | `CEventManager::GetNameSpace`, `Find` (found as `GetNameSpace`'s first call) |
+| `CPdxArray<CPdxModifierDefinition>::SetNewDataAndCapacity` | the modifier definitions | `CModifier::TryAddDynamicModifier`; the array is reserved for 131,072 first so it never moves under a reader |
+
+Modifier types are numbered as they are made, so the databases that make them in `InitInstance`
+(recorded by the lock: `cache/database_modifier_writers-<md5>.tsv`) are chained in the game's
+order, and the `PostReadInitInstance` calls run in the game's order too.

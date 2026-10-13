@@ -299,17 +299,271 @@ local function on_main_thread(name)
     return false
 end
 
--- databases.run_parallel(where, progress, read, workers) -> initialized, stopped, report: the
--- loop of SetupDatabases in parallel. A database starts when the databases it depends on are done
--- (their InitInstance too, not only their CreateInstance as CanInitialize checks), from
--- databases.dependencies; one whose CanInitialize reads a global that is no database's waits for
--- every database before it in the table. It runs on a worker (stellar.db_start), or on this thread
--- (the game's) if it may need it (databases.MAIN_THREAD), meanwhile the workers go on. This
--- thread reports the progress as databases are done. If a database cannot be given back to the
--- game's loop (see databases.run), nothing runs in parallel: databases.run does the loop.
-function databases.run_parallel(where, progress, read, workers)
+-- What the databases share and write while they initialize, found by the exception handler
+-- (run_parallel: where the failures were, named with the reference builds): run under one lock
+-- when they run in parallel (stellar.serialize, src/dll/database_workers.cpp).
+databases.SHARED = {
+    -- the global list of references to other databases' objects, resolved after the load
+    -- (CPdxArray<SDatabaseObjectReference> grown under a reader)
+    "CGlobalDeferredDatabaseObjectResolver::Register_Internal",
+    -- the trigger database's set of every trigger (a CPdxRobinHoodTable<CTrigger*> rehashed):
+    -- added to by AddTrigger, taken from by ~CTrigger (triggers made and dropped while reading)
+    "CTriggerDatabase::AddTrigger",
+    "CTrigger::~CTrigger",
+    -- the effect database's set of every effect (the same; broken, it was found only by
+    -- CEffectDatabase::PostInit after the databases)
+    "CEffect::CEffect",
+    "CEffect::~CEffect",
+    -- the lookup values' set (a table of the same kind)
+    "CScriptableLookupValue::CScriptableLookupValue (the one that adds)",
+    "CScriptableLookupValue::~CScriptableLookupValue",
+    -- the script flags' names (CPdxIntegerFlags::_AllFlags, name -> id, and _AllFlagsReverse):
+    -- names lost to a race came out as "Invalid script flag" in the effects' PostValidate
+    "CPdxIntegerFlags::CreateFlagIndex",
+    "CPdxIntegerFlags::GetFlagIndex",
+    "CPdxIntegerFlags::GetFlagString",
+    -- the post-init modifiers (modifiers read from script, finished after the databases): added
+    -- to by CreatePostInitModifier, searched and taken from by ~CModifier
+    "CPostInitModifierDatabase::CreatePostInitModifier",
+    "CModifier::~CModifier",
+    -- the event namespaces (a CHashTable<CString, CNameSpace>): made by GetNameSpace, found by
+    -- IsValidIDTag and COnActionList::ReadList
+    "CEventManager::GetNameSpace",
+    "CHashTable<CString,CNameSpace,ClassicHashKeyTraits<CString,CNameSpace> >::Find",
+    -- the modifier definitions (CPdxArray<CPdxModifierDefinition> grown under a reader: also
+    -- reserved, databases.MODIFIER_ROOM): the types are numbered as they are made, so the
+    -- databases that make them keep the game's order (databases.chain)
+    "CModifier::TryAddDynamicModifier",
+}
+databases.MODIFIER_WRITER = "CModifier::TryAddDynamicModifier"
+databases.MODIFIER_RESERVE = "CPdxArray<CPdxModifierDefinition<enum ModifierType,enum ModifierCategory>,int>::Reserve"
+-- room for this many modifier definitions before the databases (vanilla 4.5.2 makes 45,583)
+databases.MODIFIER_ROOM = 131072
+
+-- functions of databases.SHARED the signatures may miss (none in the Steam 4.5.2 build), found as
+-- the first call of a function they find
+databases.SHARED_FIRST_CALL = {
+    ["CHashTable<CString,CNameSpace,ClassicHashKeyTraits<CString,CNameSpace> >::Find"] = "CEventManager::GetNameSpace",
+    ["CScriptableLookupValue::CScriptableLookupValue (the one that adds)"] = "CScriptableLookupValue::CScriptableLookupValue",
+}
+
+local function first_call(read, address)
+    local bytes, pos = read(address, 96), 1
+    for _ = 1, 16 do
+        local i = bytes and pos <= #bytes - 15 and fnmatch.decode(bytes, address, pos)
+        if not i then
+            return nil
+        end
+        if i.flow == "call" then
+            return i.target
+        end
+        pos = pos + i.length
+    end
+end
+
+-- databases.serialize(found, read) -> slots, failed: each function of databases.SHARED runs under
+-- the lock (slots[name] = its slot for stellar.serialized), failed lists what could not be
+function databases.serialize(found, read)
     local stellar = require("stellar")
+    local slots, failed = {}, {}
+    -- every address first: a hook rewrites the start of the function a first call is read from
+    local addresses = {}
+    for _, name in ipairs(databases.SHARED) do
+        addresses[name] = found[name]
+        local from = databases.SHARED_FIRST_CALL[name]
+        if addresses[name] == nil and from and found[from] then
+            addresses[name] = first_call(read, found[from])
+        end
+    end
+    for _, name in ipairs(databases.SHARED) do
+        local slot, why
+        local address = addresses[name]
+        if address then
+            -- the modifier types' writer also holds the index's lock: no lookup indexes a definition
+            -- it added before it filled it
+            slot, why = stellar.serialize(address, name == databases.MODIFIER_WRITER)
+        else
+            why = "not found"
+        end
+        if slot then
+            slots[name] = slot
+        else
+            failed[#failed + 1] = name .. ": " .. tostring(why)
+        end
+    end
+    return slots, failed
+end
+
+-- databases.load_names(path) -> names | nil, and databases.save_names(path, names): a file of
+-- database names, one a line
+function databases.load_names(path)
+    local f = io.open(path, "r")
+    if f == nil then
+        return nil
+    end
+    local names = {}
+    for line in f:lines() do
+        if line ~= "" then
+            names[#names + 1] = line
+        end
+    end
+    f:close()
+    return names
+end
+
+function databases.save_names(path, names)
+    local f = io.open(path, "w")
+    if f == nil then
+        return nil
+    end
+    for _, name in ipairs(names) do
+        f:write(name, "\n")
+    end
+    f:close()
+    return path
+end
+
+-- databases.chain(where, names, order) -> count: the databases named run one after another in the
+-- game's order (order: names, databases.load_order): each depends on the one before it. For what
+-- numbers things as they are made (the modifier types): parallel, they would be numbered otherwise
+function databases.chain(where, names, order)
+    local by_name, rank = {}, {}
+    for _, e in ipairs(where.entries) do
+        by_name[e.name] = e
+    end
+    for i, name in ipairs(order) do
+        rank[name] = i
+    end
+    local list = {}
+    for _, name in ipairs(names) do
+        if by_name[name] and rank[name] then
+            list[#list + 1] = by_name[name]
+        end
+    end
+    table.sort(list, function(a, b) return rank[a.name] < rank[b.name] end)
+    local count = 0
+    for i = 2, #list do
+        local e, before = list[i], list[i - 1]
+        e.depends = e.depends or {}
+        local has = false
+        for _, d in ipairs(e.depends) do
+            has = has or d == before
+        end
+        if not has then
+            e.depends[#e.depends + 1] = before
+            count = count + 1
+        end
+    end
+    return count
+end
+
+-- databases.load_conflicts(where, path) -> count | nil: the conflicts learned in earlier loads (a
+-- database that failed while others ran: "database<TAB>database" lines), symmetric, in each
+-- entry's conflicts: two databases in conflict never run at the same time
+function databases.load_conflicts(where, path)
+    local f = io.open(path, "r")
+    if f == nil then
+        return nil
+    end
+    local by_name, count = {}, 0
+    for _, e in ipairs(where.entries) do
+        by_name[e.name] = e
+        e.conflicts = e.conflicts or {}
+    end
+    for line in f:lines() do
+        local a, b = line:match("^([^\t]+)\t([^\t]+)$")
+        local ea, eb = by_name[a or ""], by_name[b or ""]
+        if ea and eb and ea ~= eb and not ea.conflicts[eb] then
+            ea.conflicts[eb], eb.conflicts[ea] = true, true
+            count = count + 1
+        end
+    end
+    f:close()
+    return count
+end
+
+-- databases.load_after(where, path) -> count | nil: what failed loads learned a database waits for
+-- ("database<TAB>what it waits for" lines, run_parallel), added to the entries' depends
+function databases.load_after(where, path)
+    local f = io.open(path, "r")
+    if f == nil then
+        return nil
+    end
+    local by_name, count = {}, 0
+    for _, e in ipairs(where.entries) do
+        by_name[e.name] = e
+    end
+    for line in f:lines() do
+        local a, b = line:match("^([^\t]+)\t([^\t]+)$")
+        local ea, eb = by_name[a or ""], by_name[b or ""]
+        if ea and eb and ea ~= eb then
+            ea.depends = ea.depends or {}
+            local has = false
+            for _, d in ipairs(ea.depends) do
+                has = has or d == eb
+            end
+            if not has then
+                ea.depends[#ea.depends + 1] = eb
+                count = count + 1
+            end
+        end
+    end
+    f:close()
+    return count
+end
+
+-- databases.run_parallel(where, progress, read, workers, conflicts_path, inflight_path, after_path, order,
+-- errors_log) -> initialized, stopped,
+-- report, timeline, failure: the loop of SetupDatabases in parallel. A database starts when the
+-- databases it depends on are done (their InitInstance too, not only their CreateInstance as
+-- CanInitialize checks), from databases.dependencies; one whose CanInitialize reads a global that
+-- is no database's waits for every database before it in the table; none starts while a database
+-- it conflicts with runs (databases.load_conflicts). It runs on a worker (stellar.db_start), or on
+-- this thread (the game's) if it may need it (databases.MAIN_THREAD), meanwhile the workers go on.
+-- This thread reports the progress as databases are done.
+--
+-- Each database runs under an exception handler (src/dll/database_workers.cpp). When one fails,
+-- it conflicts with every database that ran while it did: those pairs are added to conflicts_path,
+-- nothing more starts, the running ones are waited for (10s at most), and failure says what
+-- happened (the load cannot go on: the database is half made; the next load knows the conflict).
+-- With the game's order (order, names: databases.load_order), the failed database also waits, in
+-- the next loads, for the databases before it in that order that were not done when it started
+-- (after_path, databases.load_after): what it used may not have been made yet, which no exclusion
+-- fixes. The game's error log (errors_log) is a failure too: the game logs no error while its
+-- databases initialize, so the databases that ran while it grew learn the same waits. A failure
+-- no handler sees (a broken heap ends the game at once) is learned by the next
+-- load from inflight_path (databases.recover_inflight). If a database cannot be given back to the
+-- game's loop (see databases.run), nothing runs in parallel: databases.run does the loop.
+function databases.run_parallel(where, progress, read, workers, conflicts_path, inflight_path, after_path, order, errors_log)
+    local stellar = require("stellar")
+    local util = require("stellar.util")
     local entries, plan = where.entries, {}
+    local state, timeline = {}, {}
+    -- what runs now and what ended in the last quarter second, kept in inflight_path: if the game
+    -- dies of something no handler sees (the heap found broken: a fail-fast), the next load learns
+    -- from it (databases.recover_inflight). A broken heap is found after the write that broke it,
+    -- by whoever uses that block next: the quarter second is a guess at how long that takes (a
+    -- whole second named 35 databases once, most of them short and innocent)
+    local function write_inflight()
+        local f = inflight_path and io.open(inflight_path, "w")
+        if f == nil then
+            return
+        end
+        for e, s in pairs(state) do
+            if s == "running" then
+                f:write(e.name, "\n")
+            end
+        end
+        local now = util.system_time()
+        for k = #timeline, 1, -1 do
+            local t = timeline[k]
+            if t.start + t.seconds < now - 0.25 then
+                break
+            end
+            f:write(t.name, "\n")
+        end
+        f:close()
+    end
     for i, e in ipairs(entries) do
         local create, create_mark = callable(read, e.create, e.create_mark)
         local init, init_mark = callable(read, e.init, e.init_mark)
@@ -320,27 +574,137 @@ function databases.run_parallel(where, progress, read, workers)
         plan[i] = { create = create, init = init, create_mark = create_mark, init_mark = init_mark,
             main = on_main_thread(e.name), index = i }
         e.index = i
+        e.conflicts = e.conflicts or {}
     end
-    local count = stellar.db_workers(workers)
-    local state, done, total, running = {}, 0, #entries, 0
-    local t0 = (require("stellar.util")).now()
-    local timeline = {}
-    local function ready(e)
+    -- with the game's order: every database it made before another can be waited for by it, none
+    -- after (in the game, the later one was not made yet: a read of it found nothing, or only
+    -- checked it was there), so what waits for a later one is dropped (it would make a cycle
+    -- with the waits learned), and a barrier waits for what the game made before it
+    local rank = {}
+    for k, name in ipairs(order or {}) do
+        rank[name] = k
+    end
+    local depends, before, dropped = {}, {}, 0
+    for _, e in ipairs(entries) do
+        depends[e] = {}
         for _, d in ipairs(e.depends or {}) do
+            if rank[e.name] and rank[d.name] and rank[d.name] > rank[e.name] then
+                dropped = dropped + 1
+            else
+                depends[e][#depends[e] + 1] = d
+            end
+        end
+        before[e] = {}
+        if e.barrier then
+            for k, other in ipairs(entries) do
+                if other ~= e and ((rank[e.name] and rank[other.name] and rank[other.name] < rank[e.name])
+                    or (not (rank[e.name] and rank[other.name]) and k < e.index)) then
+                    before[e][#before[e] + 1] = other
+                end
+            end
+        end
+    end
+    where.dropped_depends = dropped
+    local count = stellar.db_workers(workers)
+    local done, total, running = 0, #entries, 0
+    local t0 = util.system_time()
+    local started = {}
+    local function ready(e)
+        for _, d in ipairs(depends[e]) do
             if state[d] ~= "done" then
                 return false
             end
         end
-        if e.barrier then
-            for k = 1, e.index - 1 do
-                if state[entries[k]] ~= "done" then
-                    return false
-                end
+        for _, d in ipairs(before[e]) do
+            if state[d] ~= "done" then
+                return false
+            end
+        end
+        for other in pairs(e.conflicts) do
+            if state[other] == "running" then
+                return false
             end
         end
         return true
     end
     where.done_order = {}
+    local failure
+    -- a database that failed may have used what a database before it in the game's order makes,
+    -- not made yet (no lock helps that): it waits for every one of those that was not done when
+    -- it started (after_path) -> how many
+    local function learn_waits(e, start)
+        local waits = 0
+        if after_path and rank[e.name] then
+            local done_before = {}
+            for _, t in ipairs(timeline) do
+                if t.start + t.seconds <= start then
+                    done_before[t.entry] = true
+                end
+            end
+            local out = io.open(after_path, "a")
+            if out then
+                for _, other in ipairs(entries) do
+                    if other ~= e and rank[other.name] and rank[other.name] < rank[e.name] and not done_before[other] then
+                        out:write(e.name, "\t", other.name, "\n")
+                        waits = waits + 1
+                    end
+                end
+                out:close()
+            end
+        end
+        return waits
+    end
+    -- the game's error log: the game logs no error while its databases initialize (vanilla
+    -- 4.5.2), so one that grows while a database runs says that it ran before what it needed (an
+    -- event it names, a modifier's category, ...): a failure without an exception
+    local errors_path = errors_log
+    local function errors_size()
+        local f = errors_path and io.open(errors_path, "rb")
+        if f == nil then
+            return 0
+        end
+        local size = f:seek("end")
+        f:close()
+        return size or 0
+    end
+    local errors_at_start, erred = {}, {}
+    -- a database stopped by an exception: it conflicts with every database that ran while it did
+    local function failed(i, thread, start, finish_time, code, address)
+        local e = entries[i]
+        state[e] = "failed"
+        local with = {}
+        for _, t in ipairs(timeline) do
+            if t.entry ~= e and t.start < finish_time and t.start + t.seconds > start then
+                with[#with + 1] = t.entry
+            end
+        end
+        for other, s in pairs(started) do
+            if other ~= e and state[other] == "running" and s < finish_time then
+                with[#with + 1] = other
+            end
+        end
+        local names = {}
+        local f = conflicts_path and io.open(conflicts_path, "a")
+        for _, other in ipairs(with) do
+            names[#names + 1] = other.name
+            if f then
+                f:write(e.name, "\t", other.name, "\n")
+            end
+        end
+        if f then
+            f:close()
+        end
+        local waits = learn_waits(e, start)
+        local text = string.format("%s failed on thread %d (exception 0x%08x at %s, +%.3fs) while %d others ran: %s; it waits for %d before it in the game's order",
+            e.name, thread, code, util.hex(address), start - t0, #names, table.concat(names, ", "), waits)
+        -- said now: what the failure broke may end the game before the caller can say it
+        stellar.log("databases: " .. text)
+        failure = failure or text
+        -- learned: the in-flight file goes (the pairs above say more)
+        if inflight_path then
+            os.remove(inflight_path)
+        end
+    end
     local function finish(i, thread, start, finish_time)
         local e, p = entries[i], plan[i]
         state[e] = "done"
@@ -352,24 +716,36 @@ function databases.run_parallel(where, progress, read, workers)
             stellar.set_entry_skip(p.init_mark.id, true)
         end
         done = done + 1
-        timeline[#timeline + 1] = { name = e.name, thread = thread, start = start, seconds = finish_time - start }
+        timeline[#timeline + 1] = { entry = e, name = e.name, thread = thread, start = start, seconds = finish_time - start }
+        if errors_size() > (errors_at_start[e] or math.huge) then
+            erred[#erred + 1] = e
+        end
+        write_inflight()
         stellar.call_progress(progress, done, total)
     end
-    local util = require("stellar.util")
-    while done < total do
+    while done < total and failure == nil do
         local progressed = false
         for i, e in ipairs(entries) do
-            if state[e] == nil and ready(e) then
+            if failure == nil and state[e] == nil and ready(e) then
                 local p = plan[i]
                 if p.main then
                     state[e] = "running"
-                    local start = util.now()
-                    stellar.call(p.create)
-                    stellar.call(p.init)
-                    finish(i, stellar.thread_id(), start, util.now())
+                    write_inflight()
+                    errors_at_start[e] = errors_size()
+                    local start = util.system_time()
+                    started[e] = start
+                    local code, address = stellar.db_call(p.create, p.init, i)
+                    if code ~= 0 then
+                        failed(i, stellar.thread_id(), start, util.system_time(), code, address)
+                    else
+                        finish(i, stellar.thread_id(), start, util.system_time())
+                    end
                     progressed = true
                 elseif running < count then
                     state[e] = "running"
+                    write_inflight()
+                    errors_at_start[e] = errors_size()
+                    started[e] = util.system_time()
                     running = running + 1
                     stellar.db_start(i, p.create, p.init)
                     progressed = true
@@ -379,11 +755,65 @@ function databases.run_parallel(where, progress, read, workers)
         if running > 0 then
             for _, r in ipairs(stellar.db_wait()) do
                 running = running - 1
-                finish(r.id, r.thread, r.start, r.finish)
+                if r.exception ~= 0 then
+                    failed(r.id, r.thread, r.start, r.finish, r.exception, r.address)
+                else
+                    finish(r.id, r.thread, r.start, r.finish)
+                end
             end
         elseif not progressed then
-            return done, "no database left can start", timeline
+            if inflight_path then
+                os.remove(inflight_path)
+            end
+            -- what the first ones left wait for (a cycle is a bug: say where it is)
+            local blocked = {}
+            for _, e in ipairs(entries) do
+                if state[e] == nil and #blocked < 5 then
+                    local missing = {}
+                    for _, d in ipairs(depends[e]) do
+                        if state[d] ~= "done" then
+                            missing[#missing + 1] = d.name
+                        end
+                    end
+                    for _, d in ipairs(before[e]) do
+                        if state[d] ~= "done" and #missing < 8 then
+                            missing[#missing + 1] = d.name .. " (before it)"
+                        end
+                    end
+                    blocked[#blocked + 1] = e.name .. " waits for " .. table.concat(missing, ", ")
+                end
+            end
+            return done, "no database left can start: " .. table.concat(blocked, "; "), nil, timeline
         end
+    end
+    if failure then
+        -- what still runs is waited for (it may never end: the failure may have broken what it uses)
+        local deadline = util.system_time() + 10
+        while running > 0 and util.system_time() < deadline do
+            for _, r in ipairs(stellar.db_wait(1)) do
+                running = running - 1
+                if r.exception ~= 0 then
+                    failed(r.id, r.thread, r.start, r.finish, r.exception, r.address)
+                end
+            end
+        end
+        return done, nil, nil, timeline, failure
+    end
+    if inflight_path then
+        os.remove(inflight_path)
+    end
+    -- errors logged while databases ran: each of them waits for what it ran before (the load goes
+    -- on in a state the game's order would not make: a failure)
+    if #erred > 0 then
+        local names, waits = {}, 0
+        for _, e in ipairs(erred) do
+            names[#names + 1] = e.name
+            waits = waits + learn_waits(e, started[e] or t0)
+        end
+        failure = string.format("the error log grew while %d databases ran (%s): they wait for %d before them in the game's order",
+            #erred, table.concat(names, ", "), waits)
+        stellar.log("databases: " .. failure)
+        return done, nil, nil, timeline, failure
     end
     -- the report: the time on the clock against the sum of the databases' times
     local sum, threads = 0, {}
@@ -396,24 +826,94 @@ function databases.run_parallel(where, progress, read, workers)
         n_threads = n_threads + 1
     end
     return done, nil, string.format("parallel on %d workers and this thread (%d threads used): %.1fs on the clock for %.1fs of databases",
-        count, n_threads, util.now() - t0, sum), timeline
+        count, n_threads, util.system_time() - t0, sum), timeline
 end
 
--- databases.skip_post_reads(where) -> list: after Lua's loop, the PostReadInitInstance of every
--- database Lua initialized, in that order, that the game's loop will skip (the skip flags of their
--- marks set): databases.run_post_reads calls them in that order, as the game would have
-function databases.skip_post_reads(where)
+-- databases.recover_inflight(inflight_path, conflicts_path) -> count, names | nil: if the last load
+-- died while databases ran in parallel (its in-flight file is still there, see run_parallel),
+-- those databases conflict with each other: every pair goes to conflicts_path, the file goes
+function databases.recover_inflight(inflight_path, conflicts_path)
+    local f = io.open(inflight_path, "r")
+    if f == nil then
+        return nil
+    end
+    local names, seen = {}, {}
+    for line in f:lines() do
+        if line ~= "" and not seen[line] then
+            seen[line] = true
+            names[#names + 1] = line
+        end
+    end
+    f:close()
+    os.remove(inflight_path)
+    local out, count = io.open(conflicts_path, "a"), 0
+    if out then
+        for i = 1, #names do
+            for j = i + 1, #names do
+                out:write(names[i], "\t", names[j], "\n")
+                count = count + 1
+            end
+        end
+        out:close()
+    end
+    return count, names
+end
+
+-- databases.save_boot_order(timeline, t0, path): the order a load initialized the databases in,
+-- when each started and how long it took, on which thread (the boot order that worked)
+function databases.save_boot_order(timeline, t0, path)
+    local f = io.open(path, "w")
+    if f == nil then
+        return nil
+    end
+    f:write("database\tstart\tseconds\tthread\n")
+    for _, t in ipairs(timeline) do
+        f:write(string.format("%s\t%.3f\t%.3f\t%d\n", t.name, t.start - t0, t.seconds, t.thread))
+    end
+    f:close()
+    return path
+end
+
+-- databases.skip_post_reads(where, order) -> list: after Lua's loop, the PostReadInitInstance of
+-- every database Lua initialized, in that order, that the game's loop will skip (the skip flags of
+-- their marks set): databases.run_post_reads calls them in that order, as the game would have.
+-- order (names, databases.load_order) is the game's order where the loop's is not (in parallel):
+-- the modifier types the PostReads make are numbered as they are made
+function databases.skip_post_reads(where, order)
     local stellar = require("stellar")
-    local list = {}
-    for _, e in ipairs(where.done_order or {}) do
+    local list, rank = {}, {}
+    for i, name in ipairs(order or {}) do
+        rank[name] = i
+    end
+    for k, e in ipairs(where.done_order or {}) do
         local m = e.post_mark
         if m and m.trampoline then
             stellar.set_entry_skip(m.id, true)
             list[#list + 1] = e
+            e.done_rank = k
         end
+    end
+    if order then
+        table.sort(list, function(a, b)
+            local ra, rb = rank[a.name] or (#order + a.done_rank), rank[b.name] or (#order + b.done_rank)
+            return ra < rb
+        end)
     end
     return list
 end
+
+-- databases.save_order(where, path): the order the game's loop (or Lua's, the same) initialized
+-- the databases in, one name a line (databases.load_order)
+function databases.save_order(where, path)
+    local names = {}
+    for _, e in ipairs(where.done_order or {}) do
+        names[#names + 1] = e.name
+    end
+    return databases.save_names(path, names)
+end
+
+-- databases.load_order(path) -> names | nil
+databases.load_order = databases.load_names
 
 -- databases.run_post_reads(list): their PostReadInitInstance, in order (through the trampolines,
 -- with the event of their mark for the logs), then their skip flags cleared

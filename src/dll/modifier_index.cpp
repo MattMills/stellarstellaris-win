@@ -32,14 +32,16 @@ uint8_t* const* definitions_data = nullptr;  // &_Definitions._pData
 const int32_t* definitions_size = nullptr;   // &_Definitions._nSize
 const size_t kDefinitionSize = 176, kToken = 0x90, kType = 0x94;
 
-std::mutex index_lock;
+// recursive: TryAddDynamicModifier holds it (stellar_modifier_index_enter) while its own scan's
+// stub looks up
+std::recursive_mutex index_lock;
 std::vector<int32_t> by_token;  // token -> index + 1 (0: none)
 int32_t indexed = 0;
 uint64_t lookups = 0, found = 0;
 
 // the index of the first definition with this token, or -1
 int64_t find_index(int32_t token) {
-	std::lock_guard<std::mutex> guard(index_lock);
+	std::lock_guard<std::recursive_mutex> guard(index_lock);
 	++lookups;
 	const int32_t size = *definitions_size;
 	const uint8_t* data = *definitions_data;
@@ -236,7 +238,7 @@ int l_modifier_index(lua_State* L) {
 
 // stellar.modifier_index_stats() -> lookups, found, indexed
 int l_modifier_index_stats(lua_State* L) {
-	std::lock_guard<std::mutex> guard(index_lock);
+	std::lock_guard<std::recursive_mutex> guard(index_lock);
 	lua_pushnumber(L, static_cast<lua_Number>(lookups));
 	lua_pushnumber(L, static_cast<lua_Number>(found));
 	lua_pushnumber(L, static_cast<lua_Number>(indexed));
@@ -244,6 +246,14 @@ int l_modifier_index_stats(lua_State* L) {
 }
 
 } // namespace
+
+void stellar_modifier_index_enter() {
+	index_lock.lock();
+}
+
+void stellar_modifier_index_leave() {
+	index_lock.unlock();
+}
 
 void stellar_modifier_index_open(lua_State* L) {
 	lua_pushcfunction(L, l_modifier_index);

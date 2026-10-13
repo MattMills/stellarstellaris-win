@@ -42,6 +42,22 @@ return {
     { name = "CPdxModifier<enum ModifierType,enum ModifierCategory,CModifier,CDefaultPdxModifierValueReader>::TryReadMember", what = "reads a modifier key from script (after a linear scan): the scan is replaced" },
     -- the game databases (stellar.databases)
     { name = "NNullObjAndDatabaseInitUtil::SetupDatabases", what = "initializes the game databases: their table is in its code" },
+    -- what the databases share, serialized when they run in parallel (stellar.serialize)
+    { name = "CGlobalDeferredDatabaseObjectResolver::Register_Internal", what = "adds a reference to another database's object to the global list resolved later" },
+    { name = "CTriggerDatabase::AddTrigger", what = "adds a trigger to the trigger database's set of every trigger" },
+    { name = "CTrigger::~CTrigger", what = "takes a trigger out of the trigger database's set" },
+    { name = "CEffect::CEffect", what = "adds an effect to the effect database's set of every effect" },
+    { name = "CEffect::~CEffect", what = "takes an effect out of the effect database's set" },
+    { name = "CScriptableLookupValue::CScriptableLookupValue", what = "a lookup value: the first overload calls the one that adds it to a set" },
+    { name = "CScriptableLookupValue::~CScriptableLookupValue", what = "takes a lookup value out of its set" },
+    { name = "CPdxIntegerFlags::CreateFlagIndex", what = "gives a script flag name its id (adds it to _AllFlags and _AllFlagsReverse)" },
+    { name = "CPdxIntegerFlags::GetFlagIndex", what = "a script flag's id from its name" },
+    { name = "CPdxIntegerFlags::GetFlagString", what = "a script flag's name from its id" },
+    { name = "CPostInitModifierDatabase::CreatePostInitModifier", what = "adds a modifier read from script to the list finished after the databases" },
+    { name = "CModifier::~CModifier", what = "takes a modifier out of the post-init modifier list" },
+    { name = "CEventManager::GetNameSpace", what = "an event namespace by name, made if missing" },
+    { name = "CHashTable<CString,CNameSpace,ClassicHashKeyTraits<CString,CNameSpace> >::Find", what = "finds an event namespace (read while GetNameSpace adds)" },
+    { name = "CPdxArray<CPdxModifierDefinition<enum ModifierType,enum ModifierCategory>,int>::Reserve", what = "makes room in the modifier definitions: reserved once, they never move while read" },
     -- the steps of CGameApplication::InitGame around the databases (stellar.loading milestones)
     { name = "CGlobalScriptedVariablesDatabase::InitializeWithDirectory", what = "a milestone of the load: the scripted variables" },
     { name = "CModifier::InitDefinitions", what = "a milestone of the load: the modifier definitions" },
