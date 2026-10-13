@@ -32,10 +32,23 @@ function engine.load(game_dir, gamestate, docs_dir)
         if ok then
             -- the script's flags and variables are the save's
             require("engine.scriptstate").install()
-            -- the economy's modifiers: until the graph is built from the world, the game's capture
-            -- of the save's moment (STELLAR_CAPTURE), held as it was
+            -- the modifiers every system reads (economy.modifiers): with STELLAR_MODIFIERS=world the
+            -- rewrite's own graph built from the world (engine.economy.world_source, rebuilt each
+            -- month); else the game's capture of the save's moment (STELLAR_CAPTURE), held as it was
             local capture = os.getenv("STELLAR_CAPTURE")
-            if capture and capture ~= "" then
+            local mode = os.getenv("STELLAR_MODIFIERS")
+            if mode == "world" then
+                local economy = require("engine.economy")
+                local source, why = require("engine.economy.world_source").new(os.getenv("STELLAR_MODIFIER_TYPES"))
+                if source then
+                    source.rebuild()
+                    economy.set_modifier_source(source.get)
+                    engine.modifier_source = source
+                    lines[#lines + 1] = "economy: modifiers from the world (" .. source.report() .. ")"
+                else
+                    lines[#lines + 1] = "economy: no modifiers: " .. tostring(why)
+                end
+            elseif capture and capture ~= "" then
                 local economy = require("engine.economy")
                 local done, why = economy.use_capture(capture)
                 lines[#lines + 1] = done and ("economy: modifiers from the capture " .. capture .. " (held as captured)")
@@ -122,6 +135,9 @@ function engine.report()
     local missing, n_missing = top(engine.systems.not_modelled, 40)
     lines[#lines + 1] = "engine: phases run: " .. ran
     lines[#lines + 1] = string.format("engine: phases not modelled yet (%d): %s", n_missing, missing)
+    if engine.modifier_source then
+        lines[#lines + 1] = engine.modifier_source.report()
+    end
     for _, m in ipairs({ "engine.research", "engine.leaders", "engine.construction", "engine.ai", "engine.pops" }) do
         local mod = package.loaded[m]
         if type(mod) == "table" and mod.report then

@@ -188,6 +188,15 @@ P["daily.colonies_serial"] = function(host)
         end
     end
 end
+-- CModifierNodeManager::Update in the monthly update: the world's modifier graph built again (when
+-- the modifiers come from the world: engine.economy.world_source)
+P["monthly.modifiers"] = function()
+    local engine = package.loaded["engine"]
+    local source = engine and engine.modifier_source
+    if source and source.rebuild then
+        source.rebuild()
+    end
+end
 -- CEconomicUnitManager::CalculateTablesOrUpdateBudget<0>: every country's budget from its economic
 -- units through the modifiers, and the month's balance to its stockpile (engine.economy), once the
 -- economy has a modifier source (engine.load: the capture in STELLAR_CAPTURE until the modifier
