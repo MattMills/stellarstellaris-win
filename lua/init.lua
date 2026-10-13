@@ -152,7 +152,12 @@ local conflicts_path = util.dirname(stellar.dll_path) .. "\\cache\\database_conf
 local boot_order_path = util.dirname(stellar.dll_path) .. "\\cache\\database_boot_order-" .. image:md5() .. ".tsv"
 local inflight_path = util.dirname(stellar.dll_path) .. "\\cache\\database_inflight-" .. image:md5() .. ".tsv"
 local order_path = util.dirname(stellar.dll_path) .. "\\cache\\database_order-" .. image:md5() .. ".tsv"
-local writers_path = util.dirname(stellar.dll_path) .. "\\cache\\database_modifier_writers-" .. image:md5() .. ".tsv"
+-- the databases that call what numbers things as it makes them (databases.ORDERED); the md5 now,
+-- the image is closed by the time the databases run
+local image_md5 = image:md5()
+local function writers_path(o)
+    return util.dirname(stellar.dll_path) .. "\\cache\\database_" .. o.file .. "-" .. image_md5 .. ".tsv"
+end
 local after_path = util.dirname(stellar.dll_path) .. "\\cache\\database_after-" .. image:md5() .. ".tsv"
 local game_order  -- the game's order of the databases (databases.load_order), for run_parallel
 local serialized = {}  -- name -> slot (databases.serialize)
@@ -180,18 +185,21 @@ if databases_where and database_mode == "parallel" then
         end
         stellar.log(string.format("databases: %d of %d shared writers serialized%s", count, #databases.SHARED,
             #failed > 0 and ("; not: " .. table.concat(failed, "; ")) or ""))
-        -- the databases that make modifier types, in the game's order
-        local writers, order = databases.load_names(writers_path), databases.load_order(order_path)
+        local order = databases.load_order(order_path)
         game_order = order
         -- what failed loads learned the databases wait for
         local waits = databases.load_after(databases_where, after_path)
         stellar.log(string.format("databases: %d waits learned in failed loads", waits or 0))
-        if writers and order then
-            stellar.log(string.format("databases: %d databases make modifier types: %d links keep them in the game's order",
-                #writers, databases.chain(databases_where, writers, order)))
-        else
-            stellar.log("databases: the databases that make modifier types are not known yet (" .. tostring(writers_path)
-                .. ") or the game's order (" .. order_path .. "): the types may be numbered otherwise this load")
+        -- the databases that make what is numbered as it is made, in the game's order
+        for _, o in ipairs(databases.ORDERED) do
+            local writers = databases.load_names(writers_path(o))
+            if writers and order then
+                stellar.log(string.format("databases: %d databases make %s: %d links keep them in the game's order",
+                    #writers, o.what, databases.chain(databases_where, writers, order)))
+            else
+                stellar.log("databases: the databases that make " .. o.what .. " are not known yet (" .. writers_path(o)
+                    .. ") or the game's order (" .. order_path .. "): they may be numbered otherwise this load")
+            end
         end
     end
 end
@@ -226,25 +234,27 @@ if databases_where and (database_mode == "lua" or database_mode == "parallel" or
                 end
             end
             stellar.log("databases: the shared lock: " .. table.concat(costs, "; "))
-            -- the databases that made modifier types (Create or Init), with those known before
-            local slot = serialized[databases.MODIFIER_WRITER]
-            if slot then
-                local _, ids = stellar.serialized(slot)
-                local names, seen = databases.load_names(writers_path) or {}, {}
-                for _, name in ipairs(names) do
-                    seen[name] = true
-                end
-                local added = 0
-                for _, id in ipairs(ids) do
-                    local e = databases_where.entries[id]
-                    if e and not seen[e.name] then
-                        seen[e.name] = true
-                        names[#names + 1] = e.name
-                        added = added + 1
+            -- the databases that made what is numbered (in Create or Init), with those known before
+            for _, o in ipairs(databases.ORDERED) do
+                local slot = serialized[o.name]
+                if slot then
+                    local _, ids = stellar.serialized(slot)
+                    local names, seen = databases.load_names(writers_path(o)) or {}, {}
+                    for _, name in ipairs(names) do
+                        seen[name] = true
                     end
+                    local added = 0
+                    for _, id in ipairs(ids) do
+                        local e = databases_where.entries[id]
+                        if e and not seen[e.name] then
+                            seen[e.name] = true
+                            names[#names + 1] = e.name
+                            added = added + 1
+                        end
+                    end
+                    databases.save_names(writers_path(o), names)
+                    stellar.log(string.format("databases: %d databases made %s (%d new)", #ids, o.what, added))
                 end
-                databases.save_names(writers_path, names)
-                stellar.log(string.format("databases: %d databases made modifier types (%d new)", #ids, added))
             end
             if failure then
                 -- the conflict is learned (and said, by run_parallel); this load cannot go on (a

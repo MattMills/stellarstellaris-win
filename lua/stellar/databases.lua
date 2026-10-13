@@ -310,6 +310,10 @@ databases.SHARED = {
     -- added to by AddTrigger, taken from by ~CTrigger (triggers made and dropped while reading)
     "CTriggerDatabase::AddTrigger",
     "CTrigger::~CTrigger",
+    -- a switch's condition is read with adding triggers turned off (a flag of the trigger
+    -- database): the triggers other threads made meanwhile were not added (243 of them)
+    "CTriggerSwitchBase<CSwitchEffectBase<0>,CPdxScopedPtrImpl<CEffect,0> >::ReadCondition",
+    "CTriggerSwitchBase<CSwitchTriggerBase<0>,CAndTrigger>::ReadCondition",
     -- the effect database's set of every effect (the same; broken, it was found only by
     -- CEffectDatabase::PostInit after the databases)
     "CEffect::CEffect",
@@ -336,6 +340,12 @@ databases.SHARED = {
     "CModifier::TryAddDynamicModifier",
 }
 databases.MODIFIER_WRITER = "CModifier::TryAddDynamicModifier"
+-- what numbers things as they are made: the databases that call it (recorded by the lock, in
+-- cache/database_<file>-<md5>.tsv) run one after another in the game's order (databases.chain)
+databases.ORDERED = {
+    { name = "CModifier::TryAddDynamicModifier", file = "modifier_writers", what = "modifier types" },
+    { name = "CPdxIntegerFlags::CreateFlagIndex", file = "flag_writers", what = "script flag ids" },
+}
 databases.MODIFIER_RESERVE = "CPdxArray<CPdxModifierDefinition<enum ModifierType,enum ModifierCategory>,int>::Reserve"
 -- room for this many modifier definitions before the databases (vanilla 4.5.2 makes 45,583)
 databases.MODIFIER_ROOM = 131072

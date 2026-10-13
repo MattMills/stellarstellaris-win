@@ -112,11 +112,23 @@ every database writes. Those functions run under one recursive lock (`stellar.se
 |---|---|---|
 | `CPdxArray<SDatabaseObjectReference>::MoveInitDestroy` | the deferred database object references, resolved after the load | `CGlobalDeferredDatabaseObjectResolver::Register_Internal` |
 | `CPdxRobinHoodTable<CTrigger*>::EmplaceWithHash`, `Rehash` | the trigger database's set of every trigger | `CTriggerDatabase::AddTrigger`, `CTrigger::~CTrigger` (and `CScriptableLookupValue`'s, a table of the same kind) |
+| none: 243 triggers missing from the census | a switch's condition is read with adding triggers turned off (a flag of the trigger database): the triggers other threads made meanwhile were not added | `CTriggerSwitchBase<…>::ReadCondition` (the effect's and the trigger's) |
+| none: "Invalid script flag" in the effects' `PostValidate` | the script flags' names (`CPdxIntegerFlags::_AllFlags`, `_AllFlagsReverse`) | `CPdxIntegerFlags::CreateFlagIndex`, `GetFlagIndex`, `GetFlagString` |
 | `CEffectDatabase::PostInit` (after the databases) | the effect database's set of every effect, broken without a fault while the databases ran | `CEffect::CEffect`, `CEffect::~CEffect` |
 | `CModifier::~CModifier` | the post-init modifiers (modifiers read from script, finished after the databases): a list every modifier searches when it goes | `CPostInitModifierDatabase::CreatePostInitModifier`, `CModifier::~CModifier` |
 | `CHashTable<CString, CNameSpace>::Find` | the event namespaces | `CEventManager::GetNameSpace`, `Find` (found as `GetNameSpace`'s first call) |
 | `CPdxArray<CPdxModifierDefinition>::SetNewDataAndCapacity` | the modifier definitions | `CModifier::TryAddDynamicModifier`; the array is reserved for 131,072 first so it never moves under a reader |
 
-Modifier types are numbered as they are made, so the databases that make them in `InitInstance`
-(recorded by the lock: `cache/database_modifier_writers-<md5>.tsv`) are chained in the game's
-order, and the `PostReadInitInstance` calls run in the game's order too.
+Modifier types and script flag ids are numbered as they are made, so the databases that make them
+in `InitInstance` (recorded by the lock: `cache/database_modifier_writers-<md5>.tsv`,
+`cache/database_flag_writers-<md5>.tsv`, `databases.ORDERED`) are chained in the game's order,
+and the `PostReadInitInstance` calls run in the game's order too.
+
+A load that gets through is checked against vanilla with `C:\lfm\validate_load.sh`: error.log
+(558 bytes), `modifiers.log` (identical), the census (1,318,141 triggers, 424,716 effects).
+
+The wrapper forwards integer arguments only (16: `TryAddDynamicModifier` takes 12; forwarding 8
+lost its category, and every modifier type came out with none). The lock is taken on every thread
+while the databases run (a database's `InitInstance` hands work to the game's task threads), and
+on none after: after, the game calls some of these holding its own locks, and taking this one too
+spun the load forever.

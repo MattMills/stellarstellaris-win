@@ -46,6 +46,8 @@ return {
     { name = "CGlobalDeferredDatabaseObjectResolver::Register_Internal", what = "adds a reference to another database's object to the global list resolved later" },
     { name = "CTriggerDatabase::AddTrigger", what = "adds a trigger to the trigger database's set of every trigger" },
     { name = "CTrigger::~CTrigger", what = "takes a trigger out of the trigger database's set" },
+    { name = "CTriggerSwitchBase<CSwitchEffectBase<0>,CPdxScopedPtrImpl<CEffect,0> >::ReadCondition", what = "a switch effect's condition: turns off adding triggers to the trigger database while it reads it" },
+    { name = "CTriggerSwitchBase<CSwitchTriggerBase<0>,CAndTrigger>::ReadCondition", what = "a switch trigger's condition: turns off adding triggers to the trigger database while it reads it" },
     { name = "CEffect::CEffect", what = "adds an effect to the effect database's set of every effect" },
     { name = "CEffect::~CEffect", what = "takes an effect out of the effect database's set" },
     { name = "CScriptableLookupValue::CScriptableLookupValue", what = "a lookup value: the first overload calls the one that adds it to a set" },
