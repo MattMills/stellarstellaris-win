@@ -33,6 +33,13 @@ function engine.load(game_dir, gamestate, docs_dir)
     return table.concat(lines, "\n")
 end
 
+-- engine.load_world(gamestate) -> report: only the world (tools, the renderer: no definitions, no
+-- script layer)
+function engine.load_world(gamestate)
+    local ok, message = engine.world.load(gamestate)
+    return ok and ("world: " .. engine.world.summary()) or ("world: not loaded: " .. tostring(message))
+end
+
 -- engine.phase(kind, name, year, month, day) -> whether something models it: one phase of the
 -- tick, then the barrier (the engine effects queued in it applied)
 function engine.phase(kind, name, year, month, day)

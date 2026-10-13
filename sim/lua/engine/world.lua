@@ -286,6 +286,42 @@ function world.index()
     for _, id in ipairs(world.all("leader")) do
         push(world.leaders_of, tonumber(world.field(world.object("leader", id), "country")), id)
     end
+    -- owners the save does not write on the object: a fleet's is the country whose
+    -- fleets_manager.owned_fleets lists it; a system's is its starbase's (starbase -> its station
+    -- ship -> that ship's fleet -> the fleet's owner)
+    world.fleet_owner, world.system_owner = {}, {}
+    for _, cid in ipairs(world.all("country")) do
+        local owned = world.path(world.object("country", cid), "fleets_manager", "owned_fleets")
+        for _, entry in ipairs(world.blocks(owned)) do
+            local fleet = tonumber(world.field(entry, "fleet"))
+            if fleet then
+                world.fleet_owner[fleet] = cid
+            end
+        end
+    end
+    for _, sid in ipairs(world.all("system")) do
+        for _, sb in ipairs(world.list(world.field(world.object("system", sid), "starbases"))) do
+            local station = tonumber(world.field(world.object("starbase", tonumber(sb)), "station"))
+            local fleet = station and tonumber(world.field(world.object("ship", station), "fleet"))
+            local owner = fleet and world.fleet_owner[fleet]
+            if owner and world.system_owner[sid] == nil then
+                world.system_owner[sid] = owner
+            end
+        end
+    end
+end
+
+-- the blocks of a list block (`hyperlane = { { to = 1 } { to = 2 } }`)
+function world.blocks(block)
+    local out = {}
+    if type(block) == "table" then
+        for _, e in ipairs(block) do
+            if not e.text and not e.op then
+                out[#out + 1] = e
+            end
+        end
+    end
+    return out
 end
 
 -- world.summary() -> text

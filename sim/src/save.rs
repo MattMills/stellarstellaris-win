@@ -61,17 +61,30 @@ pub fn date_of(gamestate: &str) -> Option<Date> {
     Some(Date::from_ymd(y, m, d))
 }
 
-/// The user's save of 2210.01.01 (the capture's), or `STELLAR_SAVE`; None when it is not there.
+/// The save of 2210.01.01 (the modifier capture's): `STELLAR_SAVE`, else the first of the known
+/// places that has it; None when none does.
 pub fn default_save() -> Option<String> {
+    if let Ok(path) = std::env::var("STELLAR_SAVE") {
+        return std::path::Path::new(&path).exists().then_some(path);
+    }
     let home = std::env::var("USERPROFILE").unwrap_or_default();
-    let path = std::env::var("STELLAR_SAVE").unwrap_or(format!(
-        r"{home}\Documents\Paradox Interactive\Stellaris\save games\sacreduthabulanorder_-730439522\autosave_2210.01.01.sav"
-    ));
-    std::path::Path::new(&path).exists().then_some(path)
+    [
+        r"C:\lfm\saves\autosave_2210.01.01.sav".to_string(),
+        format!(r"{home}\Documents\Paradox Interactive\Stellaris\save games\sacreduthabulanorder_-730439522\autosave_2210.01.01.sav"),
+        "/opt/stellaris-saves/autosave_2210.01.01.sav".to_string(),
+    ]
+    .into_iter()
+    .find(|p| std::path::Path::new(p).exists())
 }
 
-/// The Stellaris install (`STELLARIS_DIR`, default the Steam one); None when it is not there.
+/// The Stellaris install: `STELLARIS_DIR`, else the Steam one on Windows or `/opt/stellaris`;
+/// None when it is not there.
 pub fn game_dir() -> Option<String> {
-    let dir = std::env::var("STELLARIS_DIR").unwrap_or(r"C:\Program Files (x86)\Steam\steamapps\common\Stellaris".into());
-    std::path::Path::new(&dir).join("common").exists().then_some(dir)
+    if let Ok(dir) = std::env::var("STELLARIS_DIR") {
+        return std::path::Path::new(&dir).join("common").exists().then_some(dir);
+    }
+    [r"C:\Program Files (x86)\Steam\steamapps\common\Stellaris", "/opt/stellaris"]
+        .into_iter()
+        .find(|d| std::path::Path::new(d).join("common").exists())
+        .map(str::to_string)
 }
