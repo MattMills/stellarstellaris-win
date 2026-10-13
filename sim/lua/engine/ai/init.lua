@@ -128,8 +128,10 @@ end
 ai.counters = counters
 
 -- the interior minister's periodic parts, in its modules' order: modules engine.ai.<name> with
--- weekly / monthly / yearly(country, today, commands) functions, called when they are there
-ai.INTERIOR = { "traditions" }
+-- weekly / monthly / yearly(country, today, commands) functions, called when they are there (the
+-- economic plan and build plan come first in CAIInteriorMinister::MonthlyUpdate, the traditions
+-- later)
+ai.INTERIOR = { "economy", "traditions" }
 
 -- ai.process(host, date): the day's AI (CGameState::ProcessAI)
 function ai.process(host, date)
@@ -149,6 +151,14 @@ function ai.process(host, date)
                 research.daily(country, today, commands)
             end
             local due = tick_counters(country)
+            -- CCountryAI::MonthlyUpdate: the AI's budget (engine.ai.budget, once it is there),
+            -- before the modules' monthly updates
+            if due.month then
+                local budget = optional("engine.ai.budget")
+                if budget and budget.monthly then
+                    budget.monthly(country, today, commands, host)
+                end
+            end
             if interior then
                 for _, period in ipairs({ "week", "month", "year" }) do
                     if due[period] then
