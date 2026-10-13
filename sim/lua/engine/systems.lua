@@ -208,7 +208,12 @@ end
 -- CCountry::DailyUpdateSerial: the country's events, then (after diplomacy and elections) its
 -- research (engine.research)
 P["daily.countries_serial"] = function(host, date)
-    each_country(function(id) host.scope_daily_events("country", id) end)
+    each_country(function(id)
+        -- CCountry::UpdateContacts -> CFirstContactsData::DailyUpdate: the country's first
+        -- contacts (engine.first_contact), before its events
+        call_optional("engine.first_contact", "country_daily", host, date, id)
+        host.scope_daily_events("country", id)
+    end)
     require("engine.research").daily(host, date)
 end
 -- NColonyUpdate::DailySerialUpdate: the planets' daily events; the colonies' serial day
@@ -244,9 +249,16 @@ end
 -- AIs' strategic data (engine.ai.strategy); then CCountry::MonthlyUpdateSerial: the leaders'
 -- experience (engine.leaders), the monthly pulse
 P["monthly.countries_serial"] = function(host, date)
+    -- the situations' monthly progress (engine.situations: the game's parallel lambda right after
+    -- the budget, before the strategy pass; no draws)
+    call_optional("engine.situations", "monthly_progress", host, date)
     call_optional("engine.ai.strategy", "monthly", host, date)
     require("engine.leaders").monthly()
-    each_country(function(id) host.on_action("on_monthly_pulse_country", "country", id) end)
+    each_country(function(id)
+        -- CCountryEventManager::MonthlyUpdateSerial: the country's situations, before its pulse
+        call_optional("engine.situations", "country_monthly", host, date, id)
+        host.on_action("on_monthly_pulse_country", "country", id)
+    end)
 end
 -- NColonyUpdate::MonthlyUpdate: growth and decline of the colonies' pops (engine.pops, once it is
 -- there)

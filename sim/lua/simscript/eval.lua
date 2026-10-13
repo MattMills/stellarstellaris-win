@@ -1392,8 +1392,9 @@ TRIG["has_monthly_income"] = function(e, ctx)
 end
 -- resource_income_compare / resource_expenses_compare = { resource = r value <op> x [category = c] }
 -- (CResourceCompareTrigger<SResourceIncomeCompare / SResourceExpensesCompare> 0x19e3b70,
--- GetResourceAmount 0x19ae6e0 / 0x19ae780): the country's income / expenses of r this month (the
--- budget's current_month), over all categories or the category's
+-- GetResourceAmount 0x19ae6e0 / 0x19ae780) on this month's budget (current_month), over all
+-- categories or the category's: the "income" one reads the balance, income minus expenses
+-- (CCountry +0x1f90, _Budget._CurrentMonth._Total._SummedBalance), not the gross income
 local function budget_compare(side)
     return function(e, ctx)
         if e.value.text or ctx.this.kind ~= "country" or not E.budget_sum then return false end
@@ -1409,7 +1410,7 @@ local function budget_compare(side)
         return compare(E.budget_sum(ctx.this.id, "current_month", side, res, category), op, amount)
     end
 end
-TRIG["resource_income_compare"] = budget_compare("income")
+TRIG["resource_income_compare"] = budget_compare("balance")
 TRIG["resource_expenses_compare"] = budget_compare("expenses")
 -- num_owned_colonies <op> n (CNumOwnedColoniesTrigger::GetTriggerValue 0x1959a30): the country's
 -- colonies (`owned_planets`, colony ids)
