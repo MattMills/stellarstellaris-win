@@ -126,6 +126,14 @@ impl Runtime {
         f.call(("effect", effect, kind, id))
     }
 
+    /// The world as a save's gamestate, as it is now (dated today), and that date ("y.mm.dd").
+    pub fn save_text(&self) -> mlua::Result<(String, String)> {
+        let f: Function = self.engine.get("save")?;
+        let text: mlua::String = f.call(())?;
+        let date: Function = self.engine.get("date_text")?;
+        Ok((text.to_str()?.to_string(), date.call(())?))
+    }
+
     /// What ran, and what the world does not answer yet.
     pub fn report(&self) -> String {
         let f: mlua::Result<Function> = self.engine.get("report");

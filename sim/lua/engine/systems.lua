@@ -36,7 +36,7 @@ function systems.effects.add_modifier(t)
     end
     local items = world.child(world.child(o, "timed_modifier"), "items")
     local item = {}
-    world.append(item, "modifier", '"' .. tostring(t.source) .. '"')
+    world.append(item, "modifier", tostring(t.source), true)
     world.append(item, "days", t.days or -1)
     items[#items + 1] = item
     return true
@@ -48,7 +48,7 @@ function systems.effects.give_technology(t)
         return nil
     end
     local status = world.child(c, "tech_status")
-    world.append(status, "technology", '"' .. tostring(t.tech) .. '"')
+    world.append(status, "technology", tostring(t.tech), true)
     world.append(status, "level", 1)
     return true
 end

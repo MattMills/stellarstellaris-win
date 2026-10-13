@@ -54,6 +54,27 @@ function engine.command(kind, a, b, c)
     end
 end
 
+-- the date as the save writes it ("2210.02.01") from the platform's hours
+local function date_text()
+    local days = math.floor((E.date() - 43800000) / 24)
+    local year = math.floor(days / 360)
+    local in_year = days - year * 360
+    return string.format("%d.%02d.%02d", year, math.floor(in_year / 30) + 1, in_year % 30 + 1)
+end
+engine.date_text = date_text
+
+-- engine.save() -> the gamestate's text: the world as it is now, dated today
+function engine.save()
+    local world = engine.world
+    for _, e in ipairs(world.tree or {}) do
+        if e.op and e.key and e.key.text == "date" and e.value.text then
+            e.value.text, e.value.quoted = date_text(), true
+        end
+    end
+    world.meta.date = date_text()
+    return world.write()
+end
+
 local function top(t, n)
     local l = {}
     for k, v in pairs(t) do

@@ -41,16 +41,21 @@ local function is_store(block)
     return n > 0
 end
 
+world.entries = {}   -- store name -> { [id] = its entry in the tree (removal writes 'id = none') }
+world.blocks = {}    -- store name -> the tree's block that holds it (new objects are added there)
+
 local function add_store(name, block)
-    local store, ids = world.stores[name] or {}, world.ids[name] or {}
+    local store, ids, entries = world.stores[name] or {}, world.ids[name] or {}, world.entries[name] or {}
     for _, e in ipairs(block) do
         if e.value.text == nil then
             local id = tonumber(e.key.text)
             store[id] = e.value
+            entries[id] = e
             ids[#ids + 1] = id
         end
     end
-    world.stores[name], world.ids[name] = store, ids
+    world.stores[name], world.ids[name], world.entries[name] = store, ids, entries
+    world.blocks[name] = block
 end
 
 -- world.load(text) -> true | nil, message
@@ -189,8 +194,9 @@ function world.child(obj, key)
 end
 
 -- world.append(obj, key, value): another `key = value` (a token's text, or a block)
-function world.append(obj, key, value)
-    local v = type(value) == "table" and value or { text = type(value) == "number" and number_text(value) or tostring(value) }
+function world.append(obj, key, value, quoted)
+    local v = type(value) == "table" and value
+        or { text = type(value) == "number" and number_text(value) or tostring(value), quoted = quoted or nil }
     obj[#obj + 1] = { key = { text = key }, op = "=", value = v }
     fields_of[obj] = nil
 end
@@ -216,12 +222,37 @@ function world.remove(kind, id)
     local store, ids = world.stores[name], world.ids[name]
     if store and store[id] then
         store[id] = nil
+        -- the save keeps the slot: 'id = none'
+        local e = world.entries[name] and world.entries[name][id]
+        if e then
+            e.value = { text = 'none' }
+        end
         for i = #ids, 1, -1 do
             if ids[i] == id then
                 table.remove(ids, i)
             end
         end
     end
+end
+
+-- world.create(kind, id, block): a new object in its store (and in the save, at the store's end)
+function world.create(kind, id, block)
+    local name = world.KINDS[kind] or kind
+    local holder = world.blocks[name]
+    if not holder then
+        return nil
+    end
+    local e = { key = { text = tostring(id) }, op = '=', value = block }
+    holder[#holder + 1] = e
+    world.stores[name][id] = block
+    world.entries[name][id] = e
+    world.ids[name][#world.ids[name] + 1] = id
+    return block
+end
+
+-- world.write() -> the gamestate's text: the world in the save's form (pdxscript.write)
+function world.write()
+    return pdxscript.write(world.tree)
 end
 
 function world.object(kind, id)

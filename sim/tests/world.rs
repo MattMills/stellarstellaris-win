@@ -62,6 +62,51 @@ fn the_vanilla_files_and_the_save_load() {
     assert!(capital.is_some());
 }
 
+/// Every country's stockpile of every resource, and the stores' sizes, as text.
+fn state_of(rt: &Runtime) -> String {
+    rt.eval(
+        r#"
+        local world = require("engine.world")
+        local parts = {}
+        for _, store in ipairs({ "country", "planet", "pop_group", "leader", "fleet", "ship", "system" }) do
+            parts[#parts + 1] = store .. "=" .. #world.all(store)
+        end
+        for _, id in ipairs(world.all("country")) do
+            local res = world.path(world.object("country", id), "modules", "standard_economy_module", "resources")
+            local r = {}
+            for _, e in ipairs(type(res) == "table" and res or {}) do
+                if e.op then r[#r + 1] = e.key.text .. ":" .. e.value.text end
+            end
+            parts[#parts + 1] = id .. "{" .. table.concat(r, ",") .. "}"
+        end
+        return table.concat(parts, " ")
+        "#,
+    )
+    .expect("state")
+}
+
+#[test]
+fn a_save_written_after_a_month_loads_back() {
+    let Some(rt) = load() else {
+        eprintln!("skipped: no Stellaris install or no save");
+        return;
+    };
+    let mut sim = Simulation::new(rt);
+    sim.run_days(31);
+    let (text, date) = sim.runtime.save_text().expect("save");
+    let meta = save::read_meta(&save::default_save().unwrap()).expect("meta");
+    let out = std::env::temp_dir().join("stellar_sim_month.sav");
+    let out = out.to_str().unwrap();
+    save::write_save(out, &text, &meta, &date).expect("write");
+
+    let gamestate = save::read_gamestate(out).expect("read back");
+    assert_eq!(save::date_of(&gamestate), Some(sim.date()));
+    let back = Runtime::new(sim.date(), 7).expect("runtime");
+    back.load(&save::game_dir().unwrap(), Some(&gamestate), None).expect("load back");
+    assert_eq!(state_of(&back), state_of(&sim.runtime));
+    println!("{date}: {} bytes of gamestate, read back the same", text.len());
+}
+
 #[test]
 fn a_month_from_the_save_is_deterministic() {
     let (Some(a), Some(b)) = (load(), load()) else {
