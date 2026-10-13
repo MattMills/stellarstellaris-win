@@ -1931,6 +1931,22 @@ function S:ship(id)
     if s == nil then
         return parts
     end
+    -- its timed modifiers; a military ship's rank by experience (SHIP_EXP_EXPERIENCED / _VETERAN /
+    -- _ELITE: ship_rank_experienced, ...; ship_rank_regular below). The transports and
+    -- constructors with 100 experience in the 2211.07.01 capture have no rank
+    self:timed(parts, s)
+    local fleet = tonumber(w.field(s, "fleet"))
+    if unq(w.field(fleet and w.object("fleet", fleet), "ship_class")) == "shipclass_military" then
+        local exp = tonumber(w.field(s, "experience")) or 0
+        local rank = "regular"
+        for _, r in ipairs({ { "elite", "SHIP_EXP_ELITE", 10000 }, { "veteran", "SHIP_EXP_VETERAN", 1000 },
+            { "experienced", "SHIP_EXP_EXPERIENCED", 100 } }) do
+            if rank == "regular" and exp >= (tonumber(self:define(r[2])) or r[3]) then
+                rank = r[1]
+            end
+        end
+        parts.add("static:ship_rank_" .. rank, self:static("ship_rank_" .. rank))
+    end
     local impl = w.field(s, "ship_design_implementation")
     local did = type(impl) == "table" and w.field(impl, "design")
     local stage = type(impl) == "table" and tonumber(w.field(impl, "growth_stage")) or 0
