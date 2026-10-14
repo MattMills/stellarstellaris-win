@@ -157,12 +157,22 @@ end
 -- the event run in its scope ctx (CEventManager::TriggerEvent): immediate, the option (the AI's
 -- choice; a human's event takes its first valid option at once [I]), after. The trigger is the
 -- caller's (CEvent::IsValid where the game checks it).
+-- after each root effect (immediate, option, after): what the game does at the end of
+-- CRootEffect::Execute (its modifier nodes updated: engine.script.creation)
+local function after_root()
+    local c = package.loaded["engine.script.creation"]
+    if c and c.after_root_effect then
+        eval.sync()
+        c.after_root_effect()
+    end
+end
+
 local function run(ev, ctx)
     local id = ev.id
     stats.fired[id] = (stats.fired[id] or 0) + 1
     stats.fired_total = stats.fired_total + 1
     if ev.once then state.fired_once[id] = true end
-    if ev.immediate then eval.effect(ev.immediate, ctx) end
+    if ev.immediate then eval.effect(ev.immediate, ctx); after_root() end
     if #ev.options > 0 then
         local opt
         if is_human(target_country(ctx)) and not ev.hidden then
@@ -176,9 +186,10 @@ local function run(ev, ctx)
         if opt then
             stats.options = stats.options + 1
             eval.effect(opt, ctx, OPTION_PARAMS)
+            after_root()
         end
     end
-    if ev.after then eval.effect(ev.after, ctx) end
+    if ev.after then eval.effect(ev.after, ctx); after_root() end
     return true
 end
 
