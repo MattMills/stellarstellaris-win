@@ -286,6 +286,15 @@ the same choices, and the random outcomes repeat. The headless game did this fro
 choices ([random.md](random.md)). `-loadrandomseed` does the same from the numbers stored in the
 save, so you do not need to know them.
 
+The position is set when the game state is read, and the rest of the load draws from the generator
+too. In the headless game (Linux 4.5.2) a load drew 112 values, so after `-rng_pos=0` the first tick
+started at position 112. With `-loadrandomseed`, it started 112 after the save's `random_count`.
+
+Replays are not exact forever. The AI's own generators are not set by these options. In the
+headless game, two runs of the same game matched byte for byte for about five years and then
+drifted, even with task threads off and address-space randomization off (headless/README.md,
+"Correctness standard").
+
 `-rng_pos=<n>` is a position in the sequence of random numbers (how many have been drawn since the
 seed was set), not a place in the galaxy. No option puts an empire at a chosen spot (say, "2
 o'clock"). The home systems are part of the star map that the galaxy seed makes. Only a static galaxy
