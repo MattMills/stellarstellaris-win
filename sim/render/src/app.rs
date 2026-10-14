@@ -1104,6 +1104,26 @@ impl App {
         specs.push(bottom);
         let layout = gui::layout_specs(&self.runtime, w, h, &specs)?;
         let mut items = layout.items;
+        // the map modes (common/map_modes in file order; the cosmic storm forecast's left out
+        // [I]): a main_gui_map_mode_entry each in the gridbox `map_modes` (LOWER_LEFT: from the
+        // bottom left, four a row, 34 apart)
+        if let Some(r) = layout.rects.get("/maingui_bottombar/mapmodes/map_modes") {
+            let modes = ["default", "unions", "diplomatic", "intel", "opinion", "attitude", "neighbours"];
+            let mut mspecs = Vec::new();
+            for (k, m) in modes.iter().enumerate() {
+                let mut e = gui::WindowSpec::new("interface/main_bottom.gui", "main_gui_map_mode_entry");
+                let prefix = format!("/map_modes/{k}");
+                e.parent = Some([r[0] + (k % 4) as f32 * 34.0, r[1] + r[3] - ((k / 4) + 1) as f32 * 34.0, 0.0, 0.0]);
+                e.sprites.push((format!("{prefix}/main_gui_map_mode_entry/icon"), format!("GFX_map_mode_{m}")));
+                // the active mode (the default after a load) in its second frame
+                if k == 0 {
+                    e.frames.push((format!("{prefix}/main_gui_map_mode_entry/icon"), 2));
+                }
+                e.prefix = Some(prefix);
+                mspecs.push(e);
+            }
+            items.extend(gui::layout_specs(&self.runtime, w, h, &mspecs)?.items);
+        }
         let map = self.map.as_mut().unwrap();
         for it in items.iter_mut() {
             if let GuiItem::Sprite { path, .. } = it {

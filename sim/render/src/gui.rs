@@ -75,6 +75,8 @@ pub struct Layout {
     pub items: Vec<GuiItem>,
     pub missing: Vec<String>,
     pub note: String,
+    /// the elements' rectangles (x, y, w, h) by path (layout_specs)
+    pub rects: HashMap<String, [f32; 4]>,
 }
 
 /// Makes a runtime ready for the GUI: the renderer's Lua modules on the path, the game
@@ -300,7 +302,7 @@ pub fn menu(runtime: &Runtime, width: u32, height: u32, version: &str, modal: bo
             ),
             None => format!("background: none ({})", t.get::<Option<String>>("background_missing")?.unwrap_or_default()),
         };
-        Ok(Layout { items: read_items(t.get("items")?)?, missing: missing(&report)?, note })
+        Ok(Layout { items: read_items(t.get("items")?)?, missing: missing(&report)?, note, rects: HashMap::new() })
     };
     read().map_err(|e| format!("render.frontend.menu: {e}"))
 }
@@ -336,6 +338,7 @@ pub fn load_window(runtime: &Runtime, width: u32, height: u32, saves: &[SaveRow]
             items: read_items(t.get("items")?)?,
             missing: missing(&report)?,
             note: format!("{} of {} saves listed", shown.unwrap_or(0), saves.len()),
+            rects: HashMap::new(),
         })
     };
     read().map_err(|e| format!("render.frontend.load_window: {e}"))
@@ -422,7 +425,7 @@ pub fn windows(runtime: &Runtime, width: u32, height: u32, outliner: &[OutlinerG
             ))
             .eval()?;
         let report: Table = t.get("report")?;
-        Ok(Layout { items: read_items(t.get("items")?)?, missing: missing(&report)?, note: String::new() })
+        Ok(Layout { items: read_items(t.get("items")?)?, missing: missing(&report)?, note: String::new(), rects: HashMap::new() })
     };
     read().map_err(|e| format!("render.windows: {e}"))
 }
@@ -517,7 +520,14 @@ pub fn layout_specs(runtime: &Runtime, width: u32, height: u32, specs: &[WindowS
             ))
             .eval()?;
         let report: Table = t.get("report")?;
-        Ok(Layout { items: read_items(t.get("items")?)?, missing: missing(&report)?, note: String::new() })
+        let mut rects = HashMap::new();
+        if let Some(r) = report.get::<Option<Table>>("rects")? {
+            for p in r.pairs::<String, Table>() {
+                let (k, v) = p?;
+                rects.insert(k, [v.get("x")?, v.get("y")?, v.get("w")?, v.get("h")?]);
+            }
+        }
+        Ok(Layout { items: read_items(t.get("items")?)?, missing: missing(&report)?, note: String::new(), rects })
     };
     read().map_err(|e| format!("render.windows.specs: {e}"))
 }
