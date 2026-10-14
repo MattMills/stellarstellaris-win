@@ -516,6 +516,17 @@ function R.system_list(sid, key)
     return out
 end
 
+-- R.star_planet(system) -> its star (CGalacticObject::GetStarPlanetObject 0x862bb0: the first of its
+-- planets whose class has IsStar, `star = yes`), or nil
+function R.star_planet(sid)
+    local s = obj("system", sid)
+    for _, v in ipairs(s and world.fields(s, "planet") or {}) do
+        local p = tonumber(v)
+        if p and obj("planet", p) and R.planet_class_flag(p, "star") then return p end
+    end
+    return nil
+end
+
 -- R.capital_system(country) -> the system of the country's capital colony's carrier
 function R.capital_system(country)
     local c = obj("country", country)
@@ -1208,13 +1219,12 @@ end
 -- the ESpatialObjectType of a scope kind (a site's `location = { type id }`)
 local SPATIAL = { ship = 0, ambient_object = 1, planet = 2, fleet = 3, megastructure = 6 }
 -- R.site_at(kind, id) -> the archaeological site at the scope's spatial object
--- (CArchaeologicalSiteManager::GetSiteFromLocation 0x964de0; a system's: its star, the first of
--- its planets [I]; a starbase's: its station ship), or nil
+-- (CArchaeologicalSiteManager::GetSiteFromLocation 0x964de0; a system's: its star; a starbase's: its
+-- station ship), or nil
 function R.site_at(kind, id)
     if kind == "archaeological_site" then return obj("archaeological_site", id) and id or nil end
     if kind == "system" then
-        local s = obj("system", id)
-        kind, id = "planet", s and tonumber(world.fields(s, "planet")[1])
+        kind, id = "planet", R.star_planet(id)
     elseif kind == "starbase" then
         local sb = obj("starbase", id)
         kind, id = "ship", sb and ref(world.field(sb, "station"))

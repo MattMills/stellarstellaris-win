@@ -2317,6 +2317,49 @@ return function(eval)
         return nil
     end
 
+    -- star (token 10778): the star of a system, or of the system a planet, ship, fleet, starbase,
+    -- megastructure or ambient object is in (GetStarPlanetObject: its first planet of a star class)
+    LINKS["star"] = function(cur)
+        local r = rt()
+        if not r or cur == NONE then return nil end
+        local k = cur.kind
+        if k ~= "system" and k ~= "planet" and k ~= "ship" and k ~= "fleet" and k ~= "starbase"
+            and k ~= "megastructure" and k ~= "ambient_object" then return nil end
+        sync()
+        local sid = r.system_of(k, cur.id)
+        local p = sid and r.star_planet(sid)
+        return p and S("planet", p) or nil
+    end
+    -- is_homeworld = yes/no (CIsHomeworld 0x1957e00, a planet, ship or colony): the carrier is the
+    -- home (`home_planet = { type reference }`, CSpecies +0x28) of its owner's founder species; no
+    -- carrier: `= no` holds
+    TRIG["is_homeworld"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r then return false end
+        sync()
+        local kind, id = r.carrier_of(sc.kind, sc.id)
+        if not kind then return not yes(e) end
+        local owner = kind == "planet" and r.planet_owner(id) or r.fleet_owner(r.ship_fleet(id))
+        local sp = owner and r.ref(r.country_field(owner, "founder_species_ref"))
+        local so = sp and r.obj("species", sp)
+        local home = so and wfield(so, "home_planet")
+        local is = type(home) == "table" and wfield(home, "type") == kind and tonumber(wfield(home, "reference")) == id
+        return (is and true or false) == yes(e)
+    end
+    -- system_planet_colony (a system): its planets that are colonies (CGalacticObject
+    -- _PlanetColonies +0x4a8, a cache the save does not hold whole: rebuilt from the planets with a
+    -- colony, in the system's planet order [I: the cache's order])
+    LISTS["system_planet_colony"] = function(sc)
+        local r = rt()
+        if not r or sc.kind ~= "system" then return {} end
+        sync()
+        local out = {}
+        for _, pid in ipairs(E.system_planets and E.system_planets(sc.id) or {}) do
+            if r.colony_of("planet", pid) then out[#out + 1] = S("planet", pid) end
+        end
+        return out
+    end
+
     -- lists: envoy (COwnedEnvoyListBuilder 0x18144d0: a country's leaders whose class has
     -- can_be_envoy), system_ambient_object (a system's `ambient_object`)
     LISTS["envoy"] = function(sc)
