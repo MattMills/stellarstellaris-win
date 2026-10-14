@@ -28,6 +28,8 @@
 //                     `autosave`); HEADLESS_AUTOSAVE_DIR: move each autosave there when written
 //   HEADLESS_NO_TASK_THREADS  1: the game's parallel-fors run inline on the main thread
 //   (the profiler's other options are described at the profiler below)
+//   HEADLESS_MODE=view: the game's own frames, driven by commands (HEADLESS_LISTEN,
+//                     HEADLESS_SCRIPT; see "view mode" below and view.sh)
 #define _GNU_SOURCE
 #include <dirent.h>
 #include <dlfcn.h>
@@ -46,6 +48,12 @@
 #include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
+// view mode (below): types only, the functions are looked up at run time (no new link flags)
+#include <X11/Xlib.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <zlib.h>
 
 // ---------------------------------------------------------------- log
 
@@ -775,12 +783,23 @@ static const char *g_save = "save games/headless/save.sav";
 static int g_menu_frames, g_launched;
 static double g_menu_at;
 
+// view mode (below)
+static int g_viewmode;
+static int g_view_autoload;
+static void view_menu(void);
+static void view_game(void *gs);
+
 static void my_FrontendDlcViewUpdate(void *view) {
 	(void)view;
 	if (g_launched) return;
 	if (g_menu_frames++ == 0) {
 		g_menu_at = now() - g_t0;
 		hlog("main menu after %.3f s", g_menu_at);
+	}
+	if (g_viewmode && !g_view_autoload) {
+		// the save comes with a `load` command
+		if (g_menu_frames >= 3) view_menu();
+		return;
 	}
 	if (g_menu_frames < 3) return;
 	void *fe = *(void **)a_g_CurrentFrontEndIdler;
@@ -1012,6 +1031,10 @@ static _Bool my_CheckTick(void *idler, float dt) {
 	(void)dt;
 	void *gs = game_state();
 	if (!gs || !U8((char *)gs + 0xa0)) return 0; // no game, or not started
+	if (g_viewmode) {
+		view_game(gs);
+		return 0;
+	}
 	if (g_state == ST_DONE) return 0;
 	if (g_state == ST_WAIT) {
 		if (++g_frames_ready < g_wait_frames) return 0;
@@ -1063,6 +1086,800 @@ static _Bool my_CheckTick(void *idler, float dt) {
 	return 0;
 }
 
+// ---------------------------------------------------------------- view mode
+//
+// HEADLESS_MODE=view: the game stays up, never ticking on its own, and renders its frames (Xvfb,
+// Mesa llvmpipe) while it runs commands, from HEADLESS_SCRIPT (a file, one command a line, `#`
+// comments; the replies go to HEADLESS_REPLIES or the log) and then from HEADLESS_LISTEN
+// ([addr:]port, 127.0.0.1 by default; one client at a time). One reply per command, sent when the
+// command is complete. The protocol is the renderer's (sim/render/src/engine.rs, docs/render.md),
+// so sim/render/tools/ctl.py drives both:
+//
+//   load PATH          the save (copied into the user dir, then CFrontEndIdler::LaunchSave), from
+//                      the main menu: one save per game run (the reply waits until the game is in)
+//   pause              the game is always paused here (ticks only come from `step`): ok
+//   step DAYS          runs ticks until the date moved DAYS days (loop mode, nothing rendered)
+//   view galaxy        CGameCamera::LeaveSystem;  view system ID: CGameCamera::EnterSystem
+//   focus system ID    the galaxy camera's target over the system
+//   camera X Y Z YAW PITCH DISTANCE   the game camera's orientation, set every frame from then
+//                      on (`camera off` lets it go): the target (X, Z) on the plane in map units
+//                      (the save's coordinates: the game's world is them x GALAXY_SPACE_SCALE_MULT
+//                      = 2 on the galaxy, x SYSTEM_SPACE_SCALE_MULT = 10 in a system), DISTANCE in
+//                      map units, YAW and PITCH in degrees as the game keeps them (CGameCamera +0x22c,
+//                      +0x228: the eye is target + distance (-cos p sin y, sin p, cos p cos y))
+//   resize W H         the window is fixed at start (view.sh --size): ok if it is W x H
+//   gui off|on         g_bNoGUI (the hide-GUI key's flag)
+//   frame PATH.png     waits for the picture to settle (from HEADLESS_FRAME_WAIT seconds, 2, and
+//                      HEADLESS_FRAME_MIN frames, 10, on: two captures in a row nearly equal, or
+//                      HEADLESS_FRAME_TIMEOUT seconds, 30), captures the window (X11 XGetImage),
+//                      writes the PNG: `ok frame PATH W H MS FRAMES` ("unsettled" if timed out)
+//   frame -            the same, the PNG's bytes after `ok frame - W H MS BYTES` (listener only)
+//   state [planet ID]  JSON: the date, the view, the camera (its orientation, eye, look-at, up,
+//                      FOV, aspect, near, far, the view and projection matrices as the game keeps
+//                      them: column-major, left-handed); with a planet, its entity scale
+//                      (CPlanet::CalcCurrentEntityScale), display size and world transform
+//   quit               exits (no gamestate written)
+//
+// The layouts used (4.5.2 Linux, read from the code):
+//   CInGameIdler +0x218: its CGameCamera (CInGameIdler::CInGameIdler); CGameCamera starts with a
+//   CCamera: +0x00 view matrix (MatrixLookAtLH), +0x40 projection (UpdateMatrices: x scale, y scale
+//   1/tan(fov/2), z f/(f-n), w = z), +0x180 eye, +0x18c look-at, +0x198 up, +0x1a4 vertical FOV
+//   (radians), +0x1a8 aspect, +0x1ac near, +0x1b0 far. CGameCamera +0x218 the current orientation
+//   {x, y, z, distance, pitch, yaw}, +0x230 the target one (UpdateOrientation smooths the first
+//   toward the second), +0x26c a lock flag, +0x274 the system it is in (-1 the galaxy).
+//   Planets: CGameState +0x918 the planet manager, its +0xdc0 entries of 16 bytes (+8 the CPlanet),
+//   +0xdc8 their count (GetPlanetFromIndex); CPlanet +0x18 its id, +0x150 its size, +0xc20 its
+//   entity instance (GetDisplaySize). Systems: TPdxRef<CGalacticObject>::_pDatabase +0x18 entries
+//   of 16 bytes (+8 the object, whose +8 is its id), +0x20 their count (GetCurrentSystem).
+
+static uintptr_t a_GameCameraUpdate;      // CGameCamera::Update(CKeyBoard const*, CMouse*, CPdxGameController const*, CList<CInputEvent>&, float)
+static uintptr_t a_UpdateInternalCamera;  // CGameCamera::UpdateInternalCamera()
+static uintptr_t a_EnterSystem;           // CGameCamera::EnterSystem(CGalacticObject const*)
+static uintptr_t a_LeaveSystem;           // CGameCamera::LeaveSystem()
+static uintptr_t a_InGameUpdateInternal;  // CInGameIdler::UpdateInternal(bool): calls CGameCamera::Update
+static uintptr_t a_PlanetEntityScale;     // CPlanet::CalcCurrentEntityScale() const
+static uintptr_t a_PlanetDisplaySize;     // CPlanet::GetDisplaySize() const
+static uintptr_t a_EntityWorldTransform;  // EntityInstanceGetWorldTransform
+static uintptr_t a_g_bNoGUI;              // bool
+static uintptr_t a_GalacticObjectDb;      // TPdxRef<CGalacticObject>::_pDatabase
+static uintptr_t a_GalaxyScaleMult;       // NDefines::NCamera::GALAXY_SPACE_SCALE_MULT
+static uintptr_t a_SystemScaleMult;       // NDefines::NCamera::SYSTEM_SPACE_SCALE_MULT
+
+static struct symreq g_view_syms[] = {
+	{"_ZN11CGameCamera6UpdateEPK9CKeyBoardP6CMousePK18CPdxGameControllerR5CListI11CInputEventEf", &a_GameCameraUpdate},
+	{"_ZN11CGameCamera20UpdateInternalCameraEv", &a_UpdateInternalCamera},
+	{"_ZN11CGameCamera11EnterSystemEPK15CGalacticObject", &a_EnterSystem},
+	{"_ZN11CGameCamera11LeaveSystemEv", &a_LeaveSystem},
+	{"_ZN12CInGameIdler14UpdateInternalEb", &a_InGameUpdateInternal},
+	{"_ZNK7CPlanet22CalcCurrentEntityScaleEv", &a_PlanetEntityScale},
+	{"_ZNK7CPlanet14GetDisplaySizeEv", &a_PlanetDisplaySize},
+	{"EntityInstanceGetWorldTransform", &a_EntityWorldTransform},
+	{"g_bNoGUI", &a_g_bNoGUI},
+	{"_ZN7TPdxRefI15CGalacticObjectE10_pDatabaseE", &a_GalacticObjectDb},
+	{"_ZN8NDefines7NCamera23GALAXY_SPACE_SCALE_MULTE", &a_GalaxyScaleMult},
+	{"_ZN8NDefines7NCamera23SYSTEM_SPACE_SCALE_MULTE", &a_SystemScaleMult},
+	{NULL, NULL},
+};
+
+#define F32(a) (*(volatile float *)(a))
+
+static void *camera(void) {
+	void *idler = *(void **)a_g_CurrentInGameIdler;
+	return idler ? (char *)idler + 0x218 : NULL;
+}
+
+static int camera_system(void *cam) { return I32((char *)cam + 0x274); }
+
+static float space_scale(void *cam) {
+	return camera_system(cam) == -1 ? F32(a_GalaxyScaleMult) : F32(a_SystemScaleMult);
+}
+
+static void *galactic_object(int id) {
+	char *db = *(char **)a_GalacticObjectDb;
+	if (!db || id < 0) return NULL;
+	uint32_t i = (uint32_t)id & 0xffffff;
+	if (i >= *(uint32_t *)(db + 0x20)) return NULL;
+	char *o = *(char **)(*(char **)(db + 0x18) + 16 * (size_t)i + 8);
+	return o && I32(o + 8) == id ? o : NULL;
+}
+
+static void *planet(void *gs, int id) {
+	char *mgr = *(char **)((char *)gs + 0x918);
+	if (!mgr) return NULL;
+	uint32_t n = *(uint32_t *)(mgr + 0xdc8);
+	char *arr = *(char **)(mgr + 0xdc0);
+	for (uint32_t i = 0; i < n; i++) {
+		char *p = *(char **)(arr + 16 * (size_t)i + 8);
+		if (p && I32(p + 0x18) == id) return p;
+	}
+	return NULL;
+}
+
+// --- the camera, set every frame after the game's own update (CGameCamera::Update is called from
+// CInGameIdler::UpdateInternal after CheckTick and before the frame is drawn: that call is sent
+// through cam_update, which calls it and then puts our orientation back)
+
+static int g_cam_set;
+static float g_cam[6]; // the game's world units and radians: x y z distance pitch yaw
+
+static void apply_camera(void *cam) {
+	float *cur = (float *)((char *)cam + 0x218), *tgt = (float *)((char *)cam + 0x230);
+	for (int i = 0; i < 6; i++) cur[i] = tgt[i] = g_cam[i];
+	((void (*)(void *))a_UpdateInternalCamera)(cam);
+}
+
+static void cam_update(void *cam, void *kb, void *mouse, void *pad, void *events, float dt) {
+	((void (*)(void *, void *, void *, void *, void *, float))a_GameCameraUpdate)(cam, kb, mouse, pad, events, dt);
+	if (g_cam_set) apply_camera(cam);
+}
+
+static void hook_camera_update(void) {
+	// the `call rel32` to CGameCamera::Update inside CInGameIdler::UpdateInternal
+	uint8_t *p = (uint8_t *)a_InGameUpdateInternal, *site = NULL;
+	for (int i = 0; i < 0x2000; i++)
+		if (p[i] == 0xE8 && (uintptr_t)(p + i + 5) + *(int32_t *)(p + i + 1) == a_GameCameraUpdate) {
+			site = p + i;
+			break;
+		}
+	if (!site) die(2, "view: no call to CGameCamera::Update in CInGameIdler::UpdateInternal");
+	uint8_t *thunk = alloc_near(4096);
+	if (!thunk) die(2, "view: no memory near the executable");
+	uint8_t code[12] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0};
+	void *to = (void *)cam_update;
+	memcpy(code + 2, &to, 8);
+	memcpy(thunk, code, sizeof code);
+	int32_t rel = (int32_t)((intptr_t)thunk - (intptr_t)(site + 5));
+	uintptr_t page = (uintptr_t)site & ~(uintptr_t)0xfff;
+	if (mprotect((void *)page, 0x2000, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) die(2, "mprotect");
+	memcpy(site + 1, &rel, 4);
+	mprotect((void *)page, 0x2000, PROT_READ | PROT_EXEC);
+	hlog("view: CGameCamera::Update call at +%#lx sent through the camera hook", (unsigned long)(site - (uint8_t *)g_base));
+}
+
+// --- the window, captured from the X server (Xvfb) after the game presented its frame
+
+struct xfns {
+	Display *(*open)(const char *);
+	Window (*root)(Display *);
+	Status (*tree)(Display *, Window, Window *, Window *, Window **, unsigned int *);
+	Status (*attrs)(Display *, Window, XWindowAttributes *);
+	XImage *(*image)(Display *, Drawable, int, int, unsigned int, unsigned int, unsigned long, int);
+	int (*sync)(Display *, Bool);
+	int (*xfree)(void *);
+};
+static struct xfns X;
+static Display *g_dpy;
+static int (*z_compress2)(Bytef *, uLongf *, const Bytef *, uLong, int);
+static uLong (*z_bound)(uLong);
+static uLong (*z_crc32)(uLong, const Bytef *, uInt);
+
+static int view_libs(void) {
+	void *x = dlopen("libX11.so.6", RTLD_NOW | RTLD_GLOBAL), *z = dlopen("libz.so.1", RTLD_NOW);
+	if (!x || !z) return -1;
+	X.open = dlsym(x, "XOpenDisplay");
+	X.root = dlsym(x, "XDefaultRootWindow");
+	X.tree = dlsym(x, "XQueryTree");
+	X.attrs = dlsym(x, "XGetWindowAttributes");
+	X.image = dlsym(x, "XGetImage");
+	X.sync = dlsym(x, "XSync");
+	X.xfree = dlsym(x, "XFree");
+	z_compress2 = dlsym(z, "compress2");
+	z_bound = dlsym(z, "compressBound");
+	z_crc32 = dlsym(z, "crc32");
+	return X.open && X.root && X.tree && X.attrs && X.image && X.sync && X.xfree && z_compress2 && z_bound && z_crc32 ? 0 : -1;
+}
+
+// The game's window: the largest mapped top-level window. RGB rows into *out (malloc'd).
+static int capture(uint8_t **out, int *w, int *h) {
+	if (!g_dpy && !(g_dpy = X.open(NULL))) return -1;
+	X.sync(g_dpy, False);
+	Window root = X.root(g_dpy), r, parent, *kids = NULL, best = root;
+	unsigned int n = 0;
+	long area = 0;
+	XWindowAttributes a;
+	if (X.tree(g_dpy, root, &r, &parent, &kids, &n)) {
+		for (unsigned int i = 0; i < n; i++)
+			if (X.attrs(g_dpy, kids[i], &a) && a.map_state == IsViewable && (long)a.width * a.height > area) {
+				area = (long)a.width * a.height;
+				best = kids[i];
+			}
+		if (kids) X.xfree(kids);
+	}
+	if (!X.attrs(g_dpy, best, &a)) return -1;
+	XImage *im = X.image(g_dpy, best, 0, 0, a.width, a.height, AllPlanes, ZPixmap);
+	if (!im) return -1;
+	if (im->bits_per_pixel != 32) {
+		im->f.destroy_image(im);
+		return -1;
+	}
+	*w = im->width;
+	*h = im->height;
+	*out = malloc((size_t)im->width * im->height * 3);
+	int rs = __builtin_ctzl(im->red_mask), gs = __builtin_ctzl(im->green_mask), bs = __builtin_ctzl(im->blue_mask);
+	for (int y = 0; y < im->height; y++) {
+		uint32_t *row = (uint32_t *)(im->data + (size_t)y * im->bytes_per_line);
+		uint8_t *o = *out + (size_t)y * im->width * 3;
+		for (int x = 0; x < im->width; x++) {
+			uint32_t v = row[x];
+			o[3 * x] = v >> rs;
+			o[3 * x + 1] = v >> gs;
+			o[3 * x + 2] = v >> bs;
+		}
+	}
+	im->f.destroy_image(im);
+	return 0;
+}
+
+static void be32(uint8_t *p, uint32_t v) {
+	p[0] = v >> 24;
+	p[1] = v >> 16;
+	p[2] = v >> 8;
+	p[3] = v;
+}
+
+// An RGB PNG in memory (zlib's compress2 makes the IDAT stream).
+static uint8_t *png_encode(const uint8_t *rgb, int w, int h, size_t *len) {
+	size_t raw_len = (size_t)(w * 3 + 1) * h;
+	uint8_t *raw = malloc(raw_len);
+	for (int y = 0; y < h; y++) {
+		raw[(size_t)y * (w * 3 + 1)] = 0;
+		memcpy(raw + (size_t)y * (w * 3 + 1) + 1, rgb + (size_t)y * w * 3, (size_t)w * 3);
+	}
+	uLongf zlen = z_bound(raw_len);
+	uint8_t *out = malloc(zlen + 64);
+	static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+	memcpy(out, sig, 8);
+	size_t o = 8;
+	// IHDR
+	be32(out + o, 13);
+	memcpy(out + o + 4, "IHDR", 4);
+	be32(out + o + 8, w);
+	be32(out + o + 12, h);
+	out[o + 16] = 8, out[o + 17] = 2, out[o + 18] = 0, out[o + 19] = 0, out[o + 20] = 0;
+	be32(out + o + 21, z_crc32(0, out + o + 4, 17));
+	o += 25;
+	// IDAT
+	z_compress2(out + o + 8, &zlen, raw, raw_len, 3);
+	be32(out + o, zlen);
+	memcpy(out + o + 4, "IDAT", 4);
+	be32(out + o + 8 + zlen, z_crc32(0, out + o + 4, zlen + 4));
+	o += 12 + zlen;
+	// IEND
+	be32(out + o, 0);
+	memcpy(out + o + 4, "IEND", 4);
+	be32(out + o + 8, z_crc32(0, out + o + 4, 4));
+	o += 12;
+	free(raw);
+	*len = o;
+	return out;
+}
+
+// --- commands: from the script, then the listener
+
+struct reply {
+	char line[65536];
+	uint8_t *bytes;
+	size_t nbytes;
+	int quit;
+};
+
+static pthread_mutex_t g_mx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
+static char *g_inbox;            // a listener's command waiting for the main thread
+static struct reply *g_outbox;   // its reply
+static FILE *g_script, *g_replies;
+
+struct cmd {
+	int active, from_listener;
+	char line[1024];
+	int frames;    // frames since it started
+	double t0;
+	uint8_t *prev; // the last capture (frame)
+	int pw, ph;
+	int stage;
+};
+static struct cmd C;
+
+static void reply_done(struct reply *r) {
+	if (C.from_listener) {
+		pthread_mutex_lock(&g_mx);
+		g_outbox = r;
+		pthread_cond_broadcast(&g_cv);
+		pthread_mutex_unlock(&g_mx);
+	} else {
+		FILE *f = g_replies ? g_replies : stdout;
+		fprintf(f, "> %s\n%s\n", C.line, r->line);
+		fflush(f);
+		hlog("%s -> %s", C.line, r->line);
+		int quit = r->quit;
+		free(r->bytes);
+		free(r);
+		if (quit) {
+			fflush(NULL);
+			_exit(0);
+		}
+	}
+	free(C.prev);
+	memset(&C, 0, sizeof C);
+}
+
+static void reply_fmt(const char *fmt, ...) {
+	struct reply *r = calloc(1, sizeof *r);
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(r->line, sizeof r->line, fmt, ap);
+	va_end(ap);
+	reply_done(r);
+}
+
+// The next command, if none is running: the script's next line, else the listener's.
+static int next_command(void) {
+	if (C.active) return 1;
+	if (g_script) {
+		char line[1024];
+		while (fgets(line, sizeof line, g_script)) {
+			char *s = line;
+			while (*s == ' ' || *s == '\t') s++;
+			s[strcspn(s, "\r\n")] = 0;
+			if (!*s || *s == '#') continue;
+			memset(&C, 0, sizeof C);
+			snprintf(C.line, sizeof C.line, "%s", s);
+			C.active = 1;
+			C.t0 = now();
+			return 1;
+		}
+		fclose(g_script);
+		g_script = NULL;
+		if (!getenv("HEADLESS_LISTEN") || !*getenv("HEADLESS_LISTEN")) {
+			hlog("view: the script is done");
+			fflush(NULL);
+			_exit(0);
+		}
+	}
+	pthread_mutex_lock(&g_mx);
+	if (g_inbox) {
+		memset(&C, 0, sizeof C);
+		snprintf(C.line, sizeof C.line, "%s", g_inbox);
+		free(g_inbox);
+		g_inbox = NULL;
+		C.active = C.from_listener = 1;
+		C.t0 = now();
+	}
+	pthread_mutex_unlock(&g_mx);
+	return C.active;
+}
+
+static void *listener(void *arg) {
+	const char *spec = arg;
+	char host[256] = "127.0.0.1";
+	int port;
+	const char *colon = strrchr(spec, ':');
+	if (colon) {
+		snprintf(host, sizeof host, "%.*s", (int)(colon - spec), spec);
+		port = atoi(colon + 1);
+	} else {
+		port = atoi(spec);
+	}
+	int s = socket(AF_INET, SOCK_STREAM, 0), one = 1;
+	setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+	struct sockaddr_in sa = {.sin_family = AF_INET, .sin_port = htons(port)};
+	inet_pton(AF_INET, host, &sa.sin_addr);
+	if (bind(s, (struct sockaddr *)&sa, sizeof sa) || listen(s, 1)) {
+		hlog("view: cannot listen on %s:%d", host, port);
+		return NULL;
+	}
+	hlog("view: listening on %s:%d", host, port);
+	for (;;) {
+		int c = accept(s, NULL, NULL);
+		if (c < 0) continue;
+		FILE *in = fdopen(dup(c), "r");
+		char line[1024];
+		while (in && fgets(line, sizeof line, in)) {
+			line[strcspn(line, "\r\n")] = 0;
+			if (!line[0]) continue;
+			pthread_mutex_lock(&g_mx);
+			g_inbox = strdup(line);
+			g_outbox = NULL;
+			while (!g_outbox) pthread_cond_wait(&g_cv, &g_mx);
+			struct reply *r = g_outbox;
+			g_outbox = NULL;
+			pthread_mutex_unlock(&g_mx);
+			hlog("%s -> %s", line, r->line);
+			char nl = '\n';
+			int ok = write(c, r->line, strlen(r->line)) >= 0 && write(c, &nl, 1) == 1;
+			if (ok && r->bytes) ok = write(c, r->bytes, r->nbytes) == (ssize_t)r->nbytes;
+			int quit = r->quit;
+			free(r->bytes);
+			free(r);
+			if (quit) {
+				fflush(NULL);
+				_exit(0);
+			}
+			if (!ok) break;
+		}
+		if (in) fclose(in);
+		close(c);
+	}
+	return NULL;
+}
+
+// --- the commands themselves (on the main thread, from the main menu or from CheckTick)
+
+static char g_loaded[1024];
+static int g_in_game_frames;
+
+static const char *user_dir(char *buf, size_t n) {
+	const char *home = getenv("HOME");
+	snprintf(buf, n, "%s/.local/share/Paradox Interactive/Stellaris", home ? home : ".");
+	return buf;
+}
+
+static int copy_file(const char *src, const char *dst) {
+	FILE *in = fopen(src, "rb"), *out = in ? fopen(dst, "wb") : NULL;
+	if (!in || !out) {
+		if (in) fclose(in);
+		return -1;
+	}
+	char buf[65536];
+	size_t n;
+	while ((n = fread(buf, 1, sizeof buf, in)) > 0) fwrite(buf, 1, n, out);
+	fclose(in);
+	fclose(out);
+	return 0;
+}
+
+static void launch(const char *rel) {
+	void *fe = *(void **)a_g_CurrentFrontEndIdler;
+	_Alignas(16) uint8_t path[0x30];
+	((void (*)(void *, const char *))a_CStringCtor)(path, rel);
+	g_launched = 1;
+	hlog("LaunchSave(\"%s\")", rel);
+	((void (*)(void *, const void *, int, const void *))a_LaunchSave)(fe, path, 0, (char *)fe + 0x250);
+}
+
+static void date_str(void *gs, char *buf, size_t n) {
+	int d = I32((char *)gs + 0xc4); // days since 0.01.01, 360-day years
+	snprintf(buf, n, "%04d.%02d.%02d", d / 360, d % 360 / 30 + 1, d % 30 + 1);
+}
+
+static void view_menu(void) {
+	if (!*(void **)a_g_CurrentFrontEndIdler || !next_command()) return;
+	char verb[64] = "", arg[960] = "";
+	sscanf(C.line, "%63s %959[^\n]", verb, arg);
+	if (!strcmp(verb, "load")) {
+		if (g_launched) return; // the game is loading it: the reply comes from CheckTick
+		char ud[1024], dst[2048], rel[1024];
+		const char *base = strrchr(arg, '/');
+		base = base ? base + 1 : arg;
+		snprintf(rel, sizeof rel, "save games/headless/%s", base);
+		snprintf(dst, sizeof dst, "%s/%s", user_dir(ud, sizeof ud), rel);
+		char dir[2048];
+		snprintf(dir, sizeof dir, "%s/save games", ud);
+		mkdir(dir, 0755);
+		snprintf(dir, sizeof dir, "%s/save games/headless", ud);
+		mkdir(dir, 0755);
+		if (copy_file(arg, dst) != 0) {
+			reply_fmt("error load %s: cannot read it", arg);
+			return;
+		}
+		snprintf(g_loaded, sizeof g_loaded, "%s", arg);
+		launch(rel);
+		return;
+	}
+	if (!strcmp(verb, "quit")) {
+		struct reply *r = calloc(1, sizeof *r);
+		snprintf(r->line, sizeof r->line, "ok quit");
+		r->quit = 1;
+		reply_done(r);
+		return;
+	}
+	if (!strcmp(verb, "pause") || !strcmp(verb, "resize") || !strcmp(verb, "gui")) {
+		reply_fmt("ok %s (main menu)", verb);
+		return;
+	}
+	if (!strcmp(verb, "state")) {
+		reply_fmt("ok {\"screen\":\"menu\"}");
+		return;
+	}
+	reply_fmt("error %s: no game loaded (load SAVE first)", verb);
+}
+
+static void json_floats(char **p, char *end, const char *name, const float *v, int n, int last) {
+	*p += snprintf(*p, end - *p, "\"%s\":[", name);
+	for (int i = 0; i < n; i++) *p += snprintf(*p, end - *p, "%s%.6g", i ? "," : "", v[i]);
+	*p += snprintf(*p, end - *p, "]%s", last ? "" : ",");
+}
+
+static void state_json(void *gs, const char *arg) {
+	struct reply *r = calloc(1, sizeof *r);
+	char *p = r->line, *end = r->line + sizeof r->line;
+	char date[32];
+	date_str(gs, date, sizeof date);
+	char *cam = camera();
+	int sys = camera_system(cam);
+	float k = space_scale(cam), rad = 180.0f / 3.14159265f;
+	float *cur = (float *)(cam + 0x218), *tgt = (float *)(cam + 0x230);
+	int w = 0, h = 0;
+	if (g_dpy || (g_dpy = X.open(NULL))) {
+		XWindowAttributes a;
+		Window root = X.root(g_dpy), rr, par, *kids = NULL;
+		unsigned int n = 0;
+		long area = 0;
+		if (X.tree(g_dpy, root, &rr, &par, &kids, &n)) {
+			for (unsigned int i = 0; i < n; i++)
+				if (X.attrs(g_dpy, kids[i], &a) && a.map_state == IsViewable && (long)a.width * a.height > area)
+					area = (long)a.width * a.height, w = a.width, h = a.height;
+			if (kids) X.xfree(kids);
+		}
+	}
+	p += snprintf(p, end - p, "ok {\"screen\":\"game\",\"date\":\"%s\",\"days\":%d,\"ticks\":%d,", date,
+	              I32((char *)gs + 0xc4), total_ticks(gs));
+	if (sys == -1)
+		p += snprintf(p, end - p, "\"view\":\"galaxy\",");
+	else
+		p += snprintf(p, end - p, "\"view\":\"system %d\",", sys);
+	p += snprintf(p, end - p, "\"window\":[%d,%d],\"gui\":%s,\"space_scale\":%g,\"camera_set\":%s,", w, h,
+	              U8(a_g_bNoGUI) ? "false" : "true", k, g_cam_set ? "true" : "false");
+	p += snprintf(p, end - p, "\"camera\":{\"target\":[%.4f,%.4f,%.4f],\"distance\":%.4f,\"pitch\":%.4f,\"yaw\":%.4f,",
+	              cur[0], cur[1], cur[2], cur[3], cur[4] * rad, cur[5] * rad);
+	p += snprintf(p, end - p, "\"to\":{\"target\":[%.4f,%.4f,%.4f],\"distance\":%.4f,\"pitch\":%.4f,\"yaw\":%.4f},",
+	              tgt[0], tgt[1], tgt[2], tgt[3], tgt[4] * rad, tgt[5] * rad);
+	json_floats(&p, end, "eye", (float *)(cam + 0x180), 3, 0);
+	json_floats(&p, end, "lookat", (float *)(cam + 0x18c), 3, 0);
+	json_floats(&p, end, "up", (float *)(cam + 0x198), 3, 0);
+	p += snprintf(p, end - p, "\"fov\":%.5f,\"aspect\":%.5f,\"near\":%.5g,\"far\":%.5g,", F32(cam + 0x1a4) * rad,
+	              F32(cam + 0x1a8), F32(cam + 0x1ac), F32(cam + 0x1b0));
+	json_floats(&p, end, "view", (float *)cam, 16, 0);
+	json_floats(&p, end, "proj", (float *)(cam + 0x40), 16, 1);
+	p += snprintf(p, end - p, "}");
+	// the zoom steps (CGameCamera::GetZoomStepArray: NCamera::ZOOM_STEPS_GALAXY on the galaxy,
+	// the system's own at +0x2c8, a CPdxArray<float>: data +8, count +0x14); the zoom is the
+	// distance (+0x224, read as CInGameIdler +0x43c by CPlanet::CalcCurrentEntityScale)
+	{
+		char *arr = sys == -1 ? NULL : cam + 0x2c8;
+		if (arr) {
+			int n = I32(arr + 0x14);
+			if (n > 0 && n < 64) {
+				p += snprintf(p, end - p, ",");
+				json_floats(&p, end, "zoom_steps", *(float **)(arr + 8), n, 1);
+			}
+		}
+	}
+	int pid;
+	if (sscanf(arg, "planet %d", &pid) == 1) {
+		char *pl = planet(gs, pid);
+		if (!pl) {
+			p += snprintf(p, end - p, ",\"planet\":null");
+		} else {
+			void *e = *(void **)(pl + 0xc20);
+			float scale = ((float (*)(void *))a_PlanetEntityScale)(pl);
+			float size = ((float (*)(void *))a_PlanetDisplaySize)(pl);
+			p += snprintf(p, end - p, ",\"planet\":{\"id\":%d,\"size\":%d,\"entity_scale\":%.5f,\"display_size\":%.5f,", pid,
+			              I32(pl + 0x150), scale, size);
+			if (e) {
+				const float *m = ((const float *(*)(void *))a_EntityWorldTransform)(e);
+				json_floats(&p, end, "world", m, 16, 1);
+			} else {
+				p += snprintf(p, end - p, "\"world\":null");
+			}
+			p += snprintf(p, end - p, "}");
+		}
+	}
+	snprintf(p, end - p, "}");
+	reply_done(r);
+}
+
+// Runs ticks until the date has moved `days` days: the loop mode's turns (nothing rendered; frame
+// smoothing off so that no frame is drawn from inside a tick).
+static void step_days(void *gs, int days) {
+	uint8_t s_ggs = U8(a_g_AllowGlobalGameStateAccess), s_gp = U8(a_g_AllowGetPlayer),
+	        s_pc = U8(a_g_AllowPostCommandToSession), s_fs = U8(a_g_bFrameSmoothing);
+	U8(a_g_bFrameSmoothing) = 0;
+	int target = I32((char *)gs + 0xc4) + days, stalls = 0;
+	while (I32((char *)gs + 0xc4) < target) {
+		int before = total_ticks(gs);
+		U8(a_g_AllowPostCommandToSession) = 1;
+		for (int i = 0, k = per_turn(); i < k; i++) post_tick();
+		app_update();
+		if (g_autosave) handle_autosave(gs);
+		if (total_ticks(gs) == before && ++stalls > 100) break;
+	}
+	U8(a_g_AllowGlobalGameStateAccess) = s_ggs;
+	U8(a_g_AllowGetPlayer) = s_gp;
+	U8(a_g_AllowPostCommandToSession) = s_pc;
+	U8(a_g_bFrameSmoothing) = s_fs;
+}
+
+static int g_frame_min = 10;
+static double g_frame_wait = 2.0, g_frame_timeout = 30.0;
+
+// `frame`: from HEADLESS_FRAME_WAIT seconds (default 2: the GUI's fades, the camera's last
+// smoothing) and HEADLESS_FRAME_MIN frames on, a capture a frame; done when two in a row differ by
+// less than 0.25/255 on average (sampled), or after HEADLESS_FRAME_TIMEOUT seconds (default 30).
+static void frame_cmd(const char *arg) {
+	C.frames++;
+	double t = now() - C.t0;
+	if (C.frames < g_frame_min || t < g_frame_wait) return;
+	uint8_t *img;
+	int w, h;
+	if (capture(&img, &w, &h) != 0) {
+		reply_fmt("error frame: cannot capture the window");
+		return;
+	}
+	double diff = 1e9;
+	if (C.prev && C.pw == w && C.ph == h) {
+		uint64_t sum = 0, cnt = 0;
+		for (size_t i = 0; i < (size_t)w * h * 3; i += 7, cnt++) sum += abs((int)img[i] - (int)C.prev[i]);
+		diff = cnt ? (double)sum / cnt : 0;
+	}
+	free(C.prev);
+	C.prev = img, C.pw = w, C.ph = h;
+	if (diff > 0.25 && t < g_frame_timeout) return;
+	size_t len;
+	uint8_t *png = png_encode(img, w, h, &len);
+	double ms = (now() - C.t0) * 1000;
+	if (!strcmp(arg, "-")) {
+		struct reply *r = calloc(1, sizeof *r);
+		snprintf(r->line, sizeof r->line, "ok frame - %d %d %.0f %zu", w, h, ms, len);
+		r->bytes = png, r->nbytes = len;
+		reply_done(r);
+		return;
+	}
+	FILE *f = fopen(arg, "wb");
+	if (!f) {
+		free(png);
+		reply_fmt("error frame %s: cannot write it", arg);
+		return;
+	}
+	fwrite(png, 1, len, f);
+	fclose(f);
+	free(png);
+	reply_fmt("ok frame %s %d %d %.0f %d%s", arg, w, h, ms, C.frames, diff > 0.25 ? " unsettled" : "");
+}
+
+static void view_game(void *gs) {
+	if (g_in_game_frames++ == 0) {
+		hlog("view: in game after %.3f s", now() - g_t0);
+		if (g_rng_pos_set >= 0) {
+			*(volatile uint32_t *)a_Random = (uint32_t)g_rng_pos_set;
+			*(volatile uint32_t *)a_nRandomCount = (uint32_t)g_rng_pos_set;
+		}
+	}
+	if (g_in_game_frames < g_wait_frames || !next_command()) return;
+	char verb[64] = "", arg[960] = "";
+	sscanf(C.line, "%63s %959[^\n]", verb, arg);
+	char *cam = camera();
+	char date[32];
+	date_str(gs, date, sizeof date);
+	if (!strcmp(verb, "load")) {
+		if (!strcmp(arg, g_loaded) || !g_loaded[0])
+			reply_fmt("ok load %s %.1f s", date, now() - g_t0);
+		else
+			reply_fmt("error load: %s is loaded (one save per game run)", g_loaded);
+	} else if (!strcmp(verb, "pause")) {
+		reply_fmt("ok pause");
+	} else if (!strcmp(verb, "quit")) {
+		struct reply *r = calloc(1, sizeof *r);
+		snprintf(r->line, sizeof r->line, "ok quit");
+		r->quit = 1;
+		reply_done(r);
+	} else if (!strcmp(verb, "step")) {
+		int days = atoi(arg);
+		double t = now();
+		step_days(gs, days);
+		date_str(gs, date, sizeof date);
+		reply_fmt("ok step %d days in %.1f s to %s", days, now() - t, date);
+	} else if (!strcmp(verb, "gui")) {
+		U8(a_g_bNoGUI) = !strcmp(arg, "off");
+		reply_fmt("ok gui %s", U8(a_g_bNoGUI) ? "off" : "on");
+	} else if (!strcmp(verb, "resize")) {
+		int w = 0, h = 0, ww = 0, wh = 0;
+		sscanf(arg, "%d %d", &w, &h);
+		uint8_t *img;
+		if (capture(&img, &ww, &wh) == 0) free(img);
+		if (w == ww && h == wh)
+			reply_fmt("ok resize %d %d", w, h);
+		else
+			reply_fmt("error resize: the window is %d x %d (view.sh --size)", ww, wh);
+	} else if (!strcmp(verb, "view")) {
+		int id;
+		if (C.stage == 0) {
+			if (!strcmp(arg, "galaxy")) {
+				g_cam_set = 0;
+				((void (*)(void *))a_LeaveSystem)(cam);
+			} else if (sscanf(arg, "system %d", &id) == 1) {
+				void *o = galactic_object(id);
+				if (!o) {
+					reply_fmt("error view: no system %d", id);
+					return;
+				}
+				g_cam_set = 0;
+				((void (*)(void *, void *))a_EnterSystem)(cam, o);
+			} else {
+				reply_fmt("error view %s: galaxy or system ID", arg);
+				return;
+			}
+			C.stage = 1;
+			return;
+		}
+		// a few frames for the camera to arrive
+		if (++C.frames < 4) return;
+		int sys = camera_system(cam);
+		if (sys == -1)
+			reply_fmt("ok view galaxy");
+		else
+			reply_fmt("ok view system %d", sys);
+	} else if (!strcmp(verb, "focus")) {
+		int id;
+		void *o = sscanf(arg, "system %d", &id) == 1 ? galactic_object(id) : NULL;
+		if (!o) {
+			reply_fmt("error focus: system ID (in the galaxy)");
+			return;
+		}
+		// CGalacticObject::GetCoordinate: its CCelestialCoordinate at +0x408 (x, y: CFixedPoint
+		// int64 x 1e5 at +0x8, +0x10), shown on the galaxy at x GALAXY_SPACE_SCALE_MULT
+		// (CCelestialCoordinate::GetDisplayCoordinate): the camera's target goes there
+		float *cur = (float *)(cam + 0x218);
+		int was_galaxy = camera_system(cam) == -1;
+		for (int i = 0; i < 6; i++) g_cam[i] = cur[i];
+		// the distance and pitch kept on the galaxy, at most 360 (the renderer's `focus`: 180 map
+		// units); from a system, 360 at 57.5 degrees (the galaxy camera's pitch after a load)
+		if (!was_galaxy || g_cam[3] > 360) g_cam[3] = 360;
+		if (!was_galaxy) g_cam[4] = 57.5f * 3.14159265f / 180.0f, g_cam[5] = 0;
+		double x = *(int64_t *)((char *)o + 0x410) * 1e-5, y = *(int64_t *)((char *)o + 0x418) * 1e-5;
+		g_cam[0] = (float)(x * F32(a_GalaxyScaleMult));
+		g_cam[1] = 0;
+		g_cam[2] = (float)(y * F32(a_GalaxyScaleMult));
+		if (camera_system(cam) != -1) ((void (*)(void *))a_LeaveSystem)(cam);
+		g_cam_set = 1;
+		apply_camera(cam);
+		reply_fmt("ok focus system %d at %.2f %.2f", id, x, y);
+	} else if (!strcmp(verb, "camera")) {
+		float v[6];
+		if (!strcmp(arg, "off")) {
+			g_cam_set = 0;
+			reply_fmt("ok camera off");
+		} else if (sscanf(arg, "%f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) == 6) {
+			float k = space_scale(cam), deg = 3.14159265f / 180.0f;
+			g_cam[0] = v[0] * k, g_cam[1] = v[1] * k, g_cam[2] = v[2] * k;
+			g_cam[3] = v[5] * k, g_cam[4] = v[4] * deg, g_cam[5] = v[3] * deg;
+			g_cam_set = 1;
+			apply_camera(cam);
+			reply_fmt("ok camera");
+		} else {
+			reply_fmt("error camera X Y Z YAW PITCH DISTANCE, or camera off");
+		}
+	} else if (!strcmp(verb, "frame")) {
+		frame_cmd(arg[0] ? arg : "frame.png");
+	} else if (!strcmp(verb, "state")) {
+		state_json(gs, arg);
+	} else {
+		reply_fmt("error unknown command %s", verb);
+	}
+}
+
+static void view_init(void) {
+	if (resolve(g_view_syms) != 0) die(2, "view: missing symbols");
+	if (view_libs() != 0) die(2, "view: libX11 / libz not found");
+	const char *e;
+	if ((e = getenv("HEADLESS_FRAME_MIN")) && *e) g_frame_min = atoi(e);
+	if ((e = getenv("HEADLESS_FRAME_WAIT")) && *e) g_frame_wait = atof(e);
+	if ((e = getenv("HEADLESS_FRAME_TIMEOUT")) && *e) g_frame_timeout = atof(e);
+	if ((e = getenv("HEADLESS_REPLIES")) && *e) g_replies = fopen(e, "w");
+	if ((e = getenv("HEADLESS_SCRIPT")) && *e && !(g_script = fopen(e, "r"))) die(2, "view: cannot open HEADLESS_SCRIPT");
+	g_view_autoload = getenv("HEADLESS_SAVE") && *getenv("HEADLESS_SAVE");
+	if (g_view_autoload) {
+		g_wait_frames = 3;
+	}
+	hook_camera_update();
+	if ((e = getenv("HEADLESS_LISTEN")) && *e) {
+		pthread_t t;
+		pthread_create(&t, NULL, listener, (void *)e);
+		pthread_detach(t);
+	}
+	hlog("view mode: %s%s", g_script ? "script, " : "", e && *e ? "listening" : "no listener");
+}
+
 // ---------------------------------------------------------------- start
 
 static int g_timeout = 1200;
@@ -1094,7 +1911,7 @@ __attribute__((constructor)) static void headless_init(void) {
 	if ((e = getenv("HEADLESS_PROFILE_OUT"))) g_profile_out = e;
 	if ((e = getenv("HEADLESS_WAIT"))) g_wait_frames = atoi(e);
 	if ((e = getenv("HEADLESS_TIMEOUT"))) g_timeout = atoi(e);
-	if ((e = getenv("HEADLESS_MODE"))) g_frame_mode = strcmp(e, "frame") == 0;
+	if ((e = getenv("HEADLESS_MODE"))) g_frame_mode = strcmp(e, "frame") == 0, g_viewmode = strcmp(e, "view") == 0;
 	if ((e = getenv("HEADLESS_DLCS"))) {
 		g_dlcs = malloc(strlen(e) + 3);
 		sprintf(g_dlcs, ";%s;", e);
@@ -1108,6 +1925,7 @@ __attribute__((constructor)) static void headless_init(void) {
 	detour(a_VerifyAllDLCOwnership, (void *)my_VerifyAllDLCOwnership);
 	detour(a_CheckTick, (void *)my_CheckTick);
 	detour(a_FrontendDlcViewUpdate, (void *)my_FrontendDlcViewUpdate);
+	if (g_viewmode) view_init();
 	if ((e = getenv("HEADLESS_PROFILE")) && *e) profile_install(e);
 	if ((e = getenv("HEADLESS_AUTOSAVE")) && atoi(e) > 0) {
 		g_autosave = 1;

@@ -126,6 +126,33 @@ impl M4 {
         ])
     }
 
+    /// A left-handed look-at, the game's (MatrixLookAtLH, CCamera::UpdateMatrices): the view's z
+    /// points from the eye to the target, x = up x z, y = z x x.
+    pub fn look_at_lh(eye: V3, at: V3, up: V3) -> M4 {
+        let z = at.sub(eye).norm();
+        let x = up.cross(z).norm();
+        let y = z.cross(x);
+        M4([
+            [x.0, x.1, x.2, -x.dot(eye)],
+            [y.0, y.1, y.2, -y.dot(eye)],
+            [z.0, z.1, z.2, -z.dot(eye)],
+            [0.0, 0.0, 0.0, 1.0],
+        ])
+    }
+
+    /// A left-handed perspective projection, depth 0 (near) .. 1 (far), w = the view's z: the
+    /// game's (CCamera::UpdateMatrices: x scale = y scale / aspect, y scale = 1 / tan(fov / 2),
+    /// z = f / (f - n), -n f / (f - n)).
+    pub fn perspective_lh(fov_y: f32, aspect: f32, near: f32, far: f32) -> M4 {
+        let ys = 1.0 / (fov_y / 2.0).tan();
+        M4([
+            [ys / aspect, 0.0, 0.0, 0.0],
+            [0.0, ys, 0.0, 0.0],
+            [0.0, 0.0, far / (far - near), -near * far / (far - near)],
+            [0.0, 0.0, 1.0, 0.0],
+        ])
+    }
+
     /// A right-handed perspective projection, depth 0 (near) .. 1 (far).
     pub fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> M4 {
         let f = 1.0 / (fov_y / 2.0).tan();

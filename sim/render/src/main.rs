@@ -75,6 +75,9 @@ pub struct Map {
     pub borders_texture: usize,
     pub fonts: Option<HashMap<String, Font>>,
     pub models: models::Library,
+    /// the GUI drawn (the top bar; a system's orbit lines): `gui off` hides it, as the game's
+    /// g_bNoGUI
+    pub gui: bool,
 }
 
 /// One frame's content for a target size.
@@ -107,6 +110,7 @@ impl Map {
             borders_texture,
             fonts: None,
             models: models::Library::default(),
+            gui: true,
         })
     }
 
@@ -184,6 +188,7 @@ impl Map {
             borders_texture: self.borders_texture,
             topbar: &topbar,
             fonts: self.fonts.as_ref().unwrap(),
+            gui: self.gui,
             game_dir: &self.game_dir,
         };
         let scene = scene::build(&inputs, &mut self.textures, &mut self.cache.borrow_mut(), width, height, camera);
@@ -383,6 +388,30 @@ fn main() {
                                 let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
                                 if dot(n, out([(a[0] + b[0] + d[0]) / 3.0, (a[1] + b[1] + d[1]) / 3.0, (a[2] + b[2] + d[2]) / 3.0])) > 0.0 {
                                     ccw += 1;
+                                }
+                            }
+                            if std::env::var("MESH_INFO_TRIANGLES").is_ok() {
+                                // the largest triangles: corners, uv, the normal of the first corner
+                                let mut tris: Vec<(f32, usize)> = sm
+                                    .indices
+                                    .chunks(3)
+                                    .enumerate()
+                                    .map(|(k, t)| {
+                                        let (a, b, d) = (sm.positions[t[0] as usize], sm.positions[t[1] as usize], sm.positions[t[2] as usize]);
+                                        let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
+                                        let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                                        ((n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() * 0.5, k)
+                                    })
+                                    .collect();
+                                tris.sort_by(|x, y| y.0.total_cmp(&x.0));
+                                for &(area, k) in tris.iter().take(8) {
+                                    let t = &sm.indices[3 * k..3 * k + 3];
+                                    println!(
+                                        "    triangle {k} area {area:.3}: {:?} uv {:?} n {:?}",
+                                        t.iter().map(|&i| sm.positions[i as usize]).collect::<Vec<_>>(),
+                                        t.iter().map(|&i| sm.uv0.get(i as usize).copied().unwrap_or_default()).collect::<Vec<_>>(),
+                                        sm.normals.get(t[0] as usize)
+                                    );
                                 }
                             }
                             println!(

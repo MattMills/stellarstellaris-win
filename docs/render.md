@@ -16,7 +16,11 @@ or saves (the file is named), or confirmed by a string in the game's executable 
 marks what is inferred: the renderer's choice where the files do not say, or a reading of how the
 engine uses data that the engine's code was not checked for. There are no function addresses: the
 engine functions that draw the map and the GUI are still to be found in the GOG build (open
-questions at the end).
+questions at the end). The exception is section 10 and the `headless/view.sh` driver: the 3D
+camera, the scales and the display coordinates were read in the Linux 4.5.2 build's code (its
+symbols name every function: CGameCamera, CCamera::UpdateMatrices, CPlanet::CalcCurrentEntityScale,
+CCelestialCoordinate::GetDisplayCoordinate; the field offsets from that code, the Linux layout),
+and checked against the game's own frames and values; **[V]** there also marks those.
 
 Machines: `10.5.0.24` (Linux, GT 730 with NVK, Mesa 26.0.8; game data in `/opt/stellaris`, saves in
 `/opt/stellaris-saves`), the Windows laptop (Radeon RX Vega M and Intel HD 630; the Steam install).
@@ -65,12 +69,15 @@ Machines: `10.5.0.24` (Linux, GT 730 with NVK, Mesa 26.0.8; game data in `/opt/s
   alpha; the atmospheres are drawn on the back faces of a larger sphere; the stars are lava over
   noise with colours from `gfx/worldgfx` (section 8). The renderer ports these, without shadows,
   bloom or tone mapping.
-- **3D**: an orbit camera over the galaxy (stars as billboards, dust above and below the plane,
-  nebulae, borders on the plane, lanes and FTL trails in 3D), a system view (its bodies with the
-  game's meshes at their save coordinates, orbit rings, ships and stations built from frame and
-  section entities) and single models; sizes in the system are the renderer's **[I]** (section 10).
+- **3D, calibrated against the game's own frames**: the game's camera (CGameCamera: an orbit
+  camera, left-handed, a 35 degree field of view), a system's scale (its world is the map x 10,
+  its bodies at -150, each scaled by CPlanet::CalcCurrentEntityScale), ship placement and facing
+  match the real game's frames from the same commands; the galaxy with star billboards, dust,
+  nebulae, borders, lanes and FTL trails, a system view with the game's meshes, and single models
+  (section 10). Not matched yet: the sky box, terra incognita, the border style, bloom.
 - **Headless, driven by commands** over TCP or from a script, one reply per command after it
-  completes (section 9).
+  completes (section 9); the real game speaks the same protocol (`headless/view.sh`), so one
+  script takes the same shots of both.
 
 ## 1. The galaxy map from a save
 
@@ -86,8 +93,11 @@ Machines: `10.5.0.24` (Linux, GT 730 with NVK, Mesa 26.0.8; game data in `/opt/s
 | player | `player = { { name = "unknown" country = 0 } }` (top level) | **[V]** |
 | date | `date = "2210.01.01"` (top level, quoted) | **[V]** |
 
-The map is drawn mirrored in x (the save's x grows to the left), the convention of save viewers
-such as Stellaris Dashboard; it is not checked against the game's own camera **[I]**.
+The map is drawn with the save's x growing to the left and its y growing downwards: the galaxy as
+the game's camera shows it from above at yaw 0 (its view is left-handed: screen right = world -x,
+screen top = world -z, the world being the map x 2) **[V]** (CGameCamera, checked on the game's
+frames, section 10). Until the reference shots the 2D map had y growing upwards (a mirror of the
+game's map, the convention of save viewers such as Stellaris Dashboard).
 
 ### Colours
 
@@ -306,8 +316,9 @@ For the 3D work: `--mesh-census DIR...` reads every mesh and checks every index 
 reference; `--mesh-info FILE...` prints a mesh's shapes, materials, skins, locators, and the share
 of outward normals and counter-clockwise triangles; `--model-census` resolves every entity to its
 mesh and textures (section 7); the scripted example of section 9 renders the galaxy from three
-angles, a system and the models, with frame times. These are looked at, not compared with the
-game's pixels (no reference shots yet).
+angles, a system and the models, with frame times. The 3D views are compared with the real game's
+frames of the same commands (`headless/view.sh`, section 10), by eye and by the places of known
+objects on the screen (no pixel-difference check yet).
 
 ## 7. Meshes and entities (`gfx/models`)
 
@@ -379,17 +390,23 @@ pdxmeshes in 531 files (257 `.gfx`, 274 `.asset`, `gfx/models/portraits` left ou
 - **a pdxmesh** (`.gfx`): `objectTypes = { pdxmesh = { name file scale meshsettings = { name index
   texture_diffuse texture_normal texture_specular shader } animation = { id type } } }`. The
   `meshsettings` `name` is the shape it applies to; it may be a Maya path (`a|g_body|g_bodyShape`:
-  the last part is the shape) or absent (all shapes) **[I]**. `index` is not used **[I]**.
+  the last part is the shape) or absent (all shapes) **[I]**. `index` is not used **[I]**. A
+  repeated key counts with its last value **[I]** (`mammalian_01_science_mesh` says `scale = 1.0`,
+  then `scale = 2.8`: 2.8 is used).
+- **Collision shapes** (material shader `Collision`, 3,396 shapes) are never drawn, whatever a
+  meshsettings says: `mammalian_01_science_mesh`'s nameless `meshsettings = { shader =
+  "PdxMeshShip" }` gave its collision box (`pCubeShape1`) the ship shader, and that box was the grey
+  slab behind the science ship in the first model renders (fixed).
 - **an entity** (`.asset`): `entity = { name pdxmesh scale meshsettings attach = { <locator> =
   "<entity>" } state = { ... } locator = { name position rotation } clone = "<entity>" }`. 1,036
   entities attach others; `clone` copies another entity (its mesh and settings, its own settings
   over them **[I]**).
 - **the census** (`--model-census`): 6,347 entities load as a model; 1,606 have no pdxmesh (locator
-  dummies such as `crystal_ship_small_section_entity`, weapon and hit effects); 1,821 of the loaded
+  dummies such as `crystal_ship_small_section_entity`, weapon and hit effects); 1,822 of the loaded
   have no part to draw (frames made of locators, effects). The shaders of the drawn parts:
-  PdxMeshShip 4772, PdxMeshShipDiffuseEmissive 692, PdxMeshTerra 327, PdxMeshClouds 283,
+  PdxMeshShip 4282, PdxMeshShipDiffuseEmissive 682, PdxMeshTerra 324, PdxMeshClouds 283,
   PdxMeshAtmosphere 123, PdxMeshPlanet 84, PdxMeshStar 15, PdxMeshAtmosphereStar 16, others; not
-  drawn: Collision 2813 shapes, the additive, flow and alpha-blended effect shaders.
+  drawn: Collision 3,396 shapes, the additive, flow and alpha-blended effect shaders.
 - **Texture names** are file names. They are found **[I]**, in order: beside the file that
   defined the entity, beside the pdxmesh's file, beside the mesh, then anywhere in `gfx/models`
   by name (`nonormal.dds` and `nospec.dds` are in `gfx/models/`; the starbases' meshes in
@@ -407,6 +424,13 @@ pdxmeshes in 531 files (257 `.gfx`, 274 `.asset`, `gfx/models/portraits` left ou
   and `clouds_shadow_geosphereShape` and `polesShape` PdxMeshClouds, `atmosphere_geosphereShape`
   PdxMeshAtmosphere, `pCubeShape1` Collision; 1 bone per vertex on the skeleton `root
   planet_rotation planet clouds end`); stars `base_star.mesh` (PdxMeshStar, PdxMeshAtmosphereStar).
+  **The size** **[V]** (CPlanet::CalcCurrentEntityScale, and the game's own values for system
+  401's bodies): `planet_size` x 0.1 x the class's `entity_scale` x NGraphics.PLANET_SCALE_SYSTEM
+  at the zoom (interpolated over the zoom steps; 0.35 when `g_bDisableScaling` is set, which it
+  is in 4.5.2 by default: 0.35 at every distance) x MOON_SCALE (0.7) for a moon; the entity's own
+  `scale` on top (in system 401: 1.6 for the A star's, 1.2 for the gas giant's, 0.5 for the brown
+  dwarf's).
+  E.g. the A star of size 34: 34 x 0.1 x 20 x 0.35 = 23.8, x 1.6 in its world transform.
 - **A ship**: `ship_design_implementation.design` -> the design's first `growth_stages` -> its
   `ship_size` and `section`s (`template`, `slot`). The frame is `<graphical_culture>_<size>_entity`
   (`molluscoid_01_corvette_entity`, a mesh of locators); each section's template
@@ -432,7 +456,16 @@ simplifications **[I]** (named).
   colour mixed toward the diffuse by it), alpha the glossiness, red the empire colour / city
   lights mask. **The normal map's blue is the emissive** (`EMISSIVE`: PdxMeshTerra,
   PdxMeshPlanet): `colour = mix(lit, diffuse, emissive)` (a ship's windows); on planets only on
-  the night side with city lights, not drawn here.
+  the night side with city lights, not drawn here, except where `NO_PLANET_EMISSIVE` is defined
+  (PdxMeshPlanetEmissive, PdxMeshMoltenPlanet and their skinned forms): there everywhere (the
+  molten planets' lava).
+- **The planets' lights** (CalculateSystemPointLight with IS_PLANET) **[V]**: the star's point
+  light, plus `system_back_light_diffuse` (A stars: hsv 0.58 0.25 0.55) on the side away from the
+  star (`CalculateLight(N, L, colour)` takes `dot(N, -L)`); the renderer's strengths (x 1.3, an
+  ambient of 0.08) are fitted by eye to the game's frames **[I]**.
+- **Winding and culling** **[V]**: the game's meshes are front-facing clockwise under its
+  left-handed view (D3D); the renderer culls back faces with that winding (and the atmospheres'
+  front faces), as the frames of both agree.
 - **The planets' atmosphere tint** (IS_PLANET) **[V]**: `toCamera = saturate(dot(N, -V) + width)`,
   `toSun = dot(N, L) x 0.5 + 0.5`, `a = lerp(toCamera, toCamera x toSun, 0.5)`, the colour mixed
   toward `atmosphere_color` by `a² x intensity`.
@@ -469,7 +502,10 @@ simplifications **[I]** (named).
 127.0.0.1) serves one client at a time; `--script FILE` runs the same commands from a file. One
 command per line, one reply per command, sent when the command is complete (a frame is rendered
 and written before its reply), so a client scripts exact sequences. Replies: `ok ...` or `error
-...`. `sim/render/src/engine.rs`.
+...`. `sim/render/src/engine.rs`. **The real game speaks it too**: `headless/view.sh` (section 10)
+runs the Linux 4.5.2 build with its frames drawn and serves the same commands (`load`, `pause`,
+`step`, `view`, `focus`, `camera`, `resize`, `gui`, `frame`, `state`, `quit`), so one command file
+takes the same shots of both.
 
 | command | reply / effect |
 |---|---|
@@ -477,9 +513,10 @@ and written before its reply), so a client scripts exact sequences. Replies: `ok
 | `step DAYS` | runs the simulation (a world-only map is loaded again as a simulation first) |
 | `view galaxy` / `3d` / `2d` / `system ID` / `model NAME` / `menu` | what the map screen shows |
 | `focus system ID`, `focus fleet ID` | the galaxy camera over it |
-| `camera X Y Z YAW PITCH DISTANCE` | the camera's target (map x = X, map y = Z), angles in degrees |
+| `camera X Y Z YAW PITCH DISTANCE` | the game's camera (section 10): its target (map x = X, map y = Z), angles in degrees, the distance in map units |
 | `orbit DYAW DPITCH`, `zoom FACTOR`, `pan DX DY` | relative moves (pan in fractions of the distance) |
 | `resize W H`, `key NAME down\|up`, `mouse X Y [left\|right down\|up]`, `scroll DY` | input |
+| `gui off\|on`, `pause` | the GUI (the top bar, a system's orbit lines) hidden or shown; ok |
 | `frame PATH.png` | `ok frame PATH W H MS` (MS: scene, upload, GPU and read-back) |
 | `frame -` | `ok frame - W H MS BYTES`, then the PNG's bytes |
 | `state` | JSON: screen, view, camera, date, systems, fleets by movement state, FTL trails, size |
@@ -500,47 +537,83 @@ python3 sim/render/tools/ctl.py example /opt/stellaris-saves/autosave_2210.01.01
   OUT/example_system.png    1600x900  2743 ms  (first system frame: ~40 textures load)
 ```
 
-## 10. The 3D views
+## 10. The 3D views, checked against the game
 
-### The camera **[I]**
+### Reference shots from the real game (`headless/view.sh`)
 
-- **World space**: the galactic plane is y = 0; a map position (x, y) is the point (x, 0, y); a
-  system's own space (its planets' and ships' `coordinate` with `origin` the system) the same way.
-  Right-handed, depth 0..1. The orbit camera (`sim/render/src/camera.rs`) looks at a target on the
-  plane from `distance` at `yaw` (0: from the south, -z) and `pitch` above the plane; at yaw 0
-  screen-right is map -x, the same mirror as the 2D map (section 1).
-- **Galaxy**: field of view 45° vertical, pitch 60° (30..89°), the distance fitting the galaxy's
-  radius (20 to 3x that); near = 1% of the distance, far = 4x + 2000. **A system**: pitch 40°
-  (5..89°), the distance 0.62x the fit of its outermost orbit. **A model**: pitch 25°, yaw 35°.
-- **Window**: right-drag orbits, left-drag pans, the wheel zooms; W A S D / arrows pan, Q E turn,
-  R F tilt, + - zoom, V switches the 2D map and 3D, a click on a star opens its system, Escape
-  goes back; Space steps a day, P runs a day per frame.
+`headless/view.sh [--size WxH] [--listen PORT] [--script FILE] SAVE` on 10.5.0.24 runs the Linux
+4.5.2 build under Xvfb with its frames drawn (Mesa llvmpipe: 10 to 20 ms a frame at 1600x900),
+loads the save and serves the protocol (`headless/README.md`, view mode). Its `camera` sets the
+game camera's orientation every frame after the game's own update; its `frame` waits for the
+picture to settle (2 s, then two captures in a row nearly equal) and captures the window from the
+X server; its `state` returns the game's camera as the game keeps it (orientation, eye, look-at,
+FOV, near, far, the view and projection matrices) and, for `state planet ID`, the body's entity
+scale and world transform. The comparisons below are the same command files run on both
+(`H:\code_working\tmp_sym\render3d\reference\compare_*.png`: the game, the renderer at 170064e,
+the renderer now).
 
-### The galaxy in 3D **[I]** (the placement), **[V]** (the art, section 1)
+### The camera **[V]**
 
-Stars are billboards of their class's sprite (at least 5 px); the dust (`dust.dds`, coloured by
-`galaxycolor.dds`) billboards with a little height above and below the plane; `center.dds` a
-billboard at the centre; the nebulae (the save's top-level `nebula = { coordinate radius name }`,
-9 in 2210.01.01) clouds of `nebula.dds` on the plane coloured by `nebulacolor.dds`; the territory
-the border texture on the plane; hyperlanes and the fleets' FTL trails lines in 3D. Fleets are
-discs in their owner's colour (a fleet's owner is the country whose `owned_fleets` lists it)
-**[V]**; a fleet in an FTL state (`movement_manager.state` `move_wind_up`, `move_galaxy`,
-`move_jump_anim`, `move_wind_down`; the saves hold the first, the simulation all four) whose
-`path` leads to another system draws a trail from where it is to that system **[I]**. On the
-running simulation the map is read again after each `step` (2210.01.01 + 6 days: 1 fleet in
-`move_galaxy`, 7 winding up, 8 trails).
+The game's (CGameCamera, read from the code; its `state` and its frames agree):
+
+- **The orientation** (CGameCamera +0x218: target x y z, distance, pitch, yaw; a target
+  orientation at +0x230 that the current one is smoothed toward): the eye is target + distance x
+  (-cos pitch sin yaw, sin pitch, cos pitch cos yaw) (UpdateInternalCamera, SetCameraPosition).
+- **The view** is left-handed (MatrixLookAtLH: z from the eye to the target, x = up x z); **the
+  projection** a left-handed perspective, depth 0..1, w = the view's z, a vertical field of view
+  of NCamera.FOV = 35 degrees (CCamera::UpdateMatrices). At yaw 0 the eye is on the +z side:
+  screen right is world -x and screen top world -z.
+- **The world**: the galaxy is the map x GALAXY_SPACE_SCALE_MULT = 2, a system the map x
+  SYSTEM_SPACE_SCALE_MULT = 10 (CCelestialCoordinate::GetDisplayCoordinate: a coordinate's fixed
+  point x 1e-5 x the multiplier; z = the save's y). The renderer works in map units: the same
+  picture, every distance / 2 or / 10.
+- **Limits and defaults**: galaxy pitch 30..85 (57.5 after a load, distance 200 of the game's
+  world; ZOOM_STEPS_GALAXY 100..3000); system pitch 20..80 (50 on entering; its zoom steps are
+  ZOOM_STEPS_SYSTEM_PERCENTAGES x the system's size: 92.5 .. 11,100 for system 401); near 1 and
+  far 5000 on the galaxy.
+- **The renderer** (`sim/render/src/camera.rs`) now uses that camera; the 2D map follows the same
+  orientation (x to the left, y downwards). Window: right-drag orbits, left-drag pans, the wheel
+  zooms; W A S D / arrows pan, Q E turn, R F tilt, + - zoom, V switches the 2D map and 3D, a click
+  on a star opens its system, Escape goes back; Space steps a day, P runs a day per frame.
 
 ### The system view
 
 Built from the world on every frame (`sim/render/lua/render/system.lua`, `src/system.rs`), so it
-follows the simulation. **[V]** the data: the system's `planet` list (stars are planets whose
+follows the simulation. The data **[V]**: the system's `planet` list (stars are planets whose
 class says `star = yes`), each planet's `coordinate`, `planet_size`, `moon_of`, `entity`, class;
 the fleets whose `movement_manager.coordinate.origin` is the system and their ships'
-`coordinate` and `forward_x`/`forward_y`. **[I]** the drawing: a planet's radius 0.3 x
-`planet_size`, a star's 0.45 x (the game's `entity_scale` is read, its use not found); ships and
-stations at 0.25 of their model, turned to `atan2(-forward_x, -forward_y)`; the light a point
-at the first star; orbit rings around the system's centre (moons: around their planet); the
-star's map sprite as a faint halo; a few dust clouds below.
+`coordinate` and `forward_x`/`forward_y`. From the game's frames and its `state`:
+
+- **Bodies** at the save's coordinate x 10, at y = -150 of the game's world **[V]** (every body of
+  system 401: their world transforms), each scaled as CPlanet::CalcCurrentEntityScale (section 7)
+  **[V]**: the places and sizes of the stars, the brown dwarf and the molten planets match the
+  game's frames within a pixel or two at 1600x900.
+- **Ships** at y = 0, above the bodies' plane **[V]** (the starbase's place on the screen), at
+  their model's size in the game's world **[I]** (fitted: the starbase's size within a few percent),
+  turned to `atan2(-forward_x, -forward_y)` about y with the model's -z forward: the starbase's
+  place and facing match the game's frames **[V]**.
+- **Light**: a point light at the first star; orbit rings with the GUI.
+
+### The galaxy in 3D
+
+Stars are billboards of their class's sprite, half size 1.5 x CGalaxyGraphics::CalcCurrentStarScale
+in the game's world (`galaxy_stars.shader`; the scale grows from 1 to 2.5 as the camera zooms out)
+**[V]**, x the class's icon scale **[I]**; the dust (`dust.dds`, coloured by `galaxycolor.dds`)
+billboards with a little height; `center.dds` at the centre; the nebulae (the save's top-level
+`nebula = { coordinate radius name }`, 9 in 2210.01.01) clouds of `nebula.dds` coloured by
+`nebulacolor.dds`; the territory the border texture on the plane; hyperlanes and the fleets' FTL
+trails lines in 3D. Fleets are discs in their owner's colour **[V]** (the owner: section 1); a
+fleet in an FTL state (`movement_manager.state` `move_wind_up`, `move_galaxy`, `move_jump_anim`,
+`move_wind_down`; the saves hold the first, the simulation all four) whose `path` leads to another
+system draws a trail to that system **[I]**. The stars' places match the game's frames.
+
+### What matches and what does not (the reference shots of 2210.01.01)
+
+| | matches | does not |
+|---|---|---|
+| camera | field of view, orientation, handedness, distances: the stars and bodies at the same pixels | |
+| system | the bodies' places and sizes; the starbase's place, size and facing; the molten planets' glow | the sky box (the game's system background is a nebula cube map, `gfx/map/sky_*.dds` in YCoCg: not drawn); the star's surface (the game's is finer and brighter, with HDR and bloom; the noise is the renderer's); the ships' empire colours; the A star's corona flares |
+| galaxy | the stars' places and icon size | terra incognita (the game shows only what the player knows: lanes and borders around the home, unknown stars dimmed; the renderer shows everything); the border style and extent (the game: a soft fill around the owned systems; the renderer: bolder, wider blobs); the player's colour (the game's border is beige, the renderer's green: the colour choice of section 1 is to be checked); the dust (the game's is grey, the renderer's tinted by `galaxycolor.dds`) |
 
 ### Frame times
 
@@ -548,11 +621,13 @@ The time of `frame` (scene, upload, the GPU's frame and the read-back; not the P
 
 | machine | galaxy 1600x900 | system 1600x900 | planet 1024² | ship 1024² |
 |---|---|---|---|---|
-| 10.5.0.24, GT 730 (NVK, Vulkan) | 295 ms first, 48 to 113 ms | 2.7 s first, 48 ms | 0.75 s first, 37 ms (star) | 24 ms |
-| laptop, Radeon RX Vega M GL (DX12) | 519 ms first, 10 to 15 ms | 4.8 s first, 8 ms | 1.3 s first | 24 ms |
+| 10.5.0.24, GT 730 (NVK, Vulkan) | 295 ms first, 48 to 113 ms | 2.5 s first, 40 to 50 ms | 0.65 s first, 37 ms (star) | 24 to 70 ms |
+| laptop, Radeon RX Vega M GL (DX12) | 500 ms first, 10 to 15 ms | 4.8 to 6.5 s first, 7 to 8 ms | 1.3 s first | 24 to 140 ms |
+| the game under Xvfb (llvmpipe) | 10 to 20 ms a frame; a `frame` takes 2 to 2.3 s (the settling wait) | same | | |
 
 The first frames are the textures' loading and decoding on the CPU (the planets' 2048x1024 maps,
-the ships' sets). The simulation behind it: `load-sim` 7.7 s, a day 0.35 to 0.6 s.
+the ships' sets). The simulation behind it: `load-sim` 7.7 s, a day 0.35 to 0.6 s. The game:
+22 s from start to the loaded save, `step` about 30 ms a day.
 
 ## Open questions
 
@@ -562,21 +637,20 @@ the ships' sets). The simulation behind it: `load-sim` 7.7 s, a day 0.35 to 0.6 
   the GUI's anchor, margin, percent and `if_scaled_resolution` rules; button frame order; the top
   bar's number formatting and which groups show. In the GOG build these are next: the strings
   above lead to their users.
-- The galaxy map's handedness (the x mirror).
 - Localisation: per-header reading of multi-language files, `$KEY|format$` formats, icons in text.
-- The 3D front end scene and the sky cube map (YCoCg) are not drawn.
+- The 3D front end scene is not drawn.
 - Why AMD's 2018 Windows Vulkan driver draws no lanes (the lane pipeline: an instanced quad with
   `select()` in the vertex shader; replacing `select` with `mix`, a vec4 width attribute, and
   rebinding group 0 did not help).
-- **3D, not checked against the game**: no screenshot of the game was compared yet. The game's
-  camera (field of view, pitch, zoom limits), the scale of planets, stars and ships in a system
-  (how `entity_scale` and `planet_size` combine), ship facing from `forward_x`/`forward_y` and
-  `rotation`, the planet entity variant (`entity` + 1), the star class to `gfx/worldgfx` mapping,
-  and the texture lookup order are **[I]**. Reference shots from the real game driven by the same
-  commands would settle them.
+- **3D, still [I]**: the ships' scale (fitted to one starbase), the planet entity variant
+  (`entity` + 1), the star class to `gfx/worldgfx` mapping, the texture lookup order, a repeated
+  key's last value, and the lights' strengths. A ship's world transform from the game (`state
+  ship ID`: CShipGraphics' entity) would settle the first.
+- **3D, to match the game** (section 10): the sky box, terra incognita, the borders' style and
+  extent and the player's colour, the dust's colour, the star's surface, bloom and tone mapping.
 - **3D, not drawn yet**: animation (skeletons and `.anim`), LOD selection, the attachments of
   entities' `attach` (turrets, lights), the ships' empire colours and engine trails, planetary
   rings, asteroid belts, gas giants' and black holes' own shaders, the `PdxMeshShipFlow` and
-  additive effect shaders, shadows, bloom, tone mapping and colour correction, the sky box, the
-  system's hyperlane exits, fleets moving between their save positions (they are drawn where the
-  world puts them each day), and smooth transitions between the galaxy and a system.
+  additive effect shaders, shadows, the system's hyperlane exits, fleets moving between their save
+  positions (they are drawn where the world puts them each day), and smooth transitions between
+  the galaxy and a system.

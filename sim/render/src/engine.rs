@@ -9,9 +9,11 @@
 //! - `view galaxy`, `view system ID` (the save's system id), `view model NAME` (an entity or a
 //!   pdxmesh of gfx/models alone), `view menu`, `view 2d`, `view 3d`
 //! - `focus system ID`, `focus fleet ID`: the galaxy camera over it
-//! - `camera X Y Z YAW PITCH DISTANCE` (the target on the plane is X, Z = the map's x, y),
+//! - `camera X Y Z YAW PITCH DISTANCE` (the target on the plane is X, Z = the map's x, y; the
+//!   game's camera: the eye at target + distance (-cos p sin y, sin p, cos p cos y), camera.rs),
 //!   `orbit DYAW DPITCH`, `zoom FACTOR` (< 1 closer), `pan DX DY` (fractions of the distance)
-//! - `resize W H`
+//! - `resize W H`, `gui off|on` (the top bar, a system's orbit lines), `pause` (ok: the simulation
+//!   only moves on `step`)
 //! - `key NAME down|up`, `mouse X Y [left|right down|up]`, `scroll DY`
 //! - `frame PATH.png` (renders the view, writes the PNG: `ok frame PATH W H MS`), `frame -`
 //! - `state` (JSON: screen, view, camera, date, size), `quit`
@@ -224,6 +226,14 @@ impl Engine {
                 self.app.set_camera(c);
                 Ok(Reply::ok("camera"))
             }
+            "gui" => {
+                let on = a.first().copied() != Some("off");
+                let m = self.app.map.as_mut().ok_or("no map loaded")?;
+                m.gui = on;
+                self.app.invalidate();
+                Ok(Reply::ok(format!("gui {}", if on { "on" } else { "off" })))
+            }
+            "pause" => Ok(Reply::ok("pause")),
             "orbit" => {
                 self.app.orbit(num(a.first(), "dyaw")?, num(a.get(1), "dpitch")?);
                 Ok(Reply::ok("orbit"))

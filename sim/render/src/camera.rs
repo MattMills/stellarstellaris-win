@@ -1,18 +1,24 @@
-//! The 3D view: an orbit camera over the galactic plane, and the view parameters a scene is
+//! The 3D view: the game's camera over the galactic plane, and the view parameters a scene is
 //! drawn with (the view-projection matrix, the camera's axes for billboards, the eye, the light).
 //!
-//! World space: the galactic plane is y = 0; a save's map coordinate (x, y) is the world point
-//! (x, 0, y). With the camera south of its target looking north (yaw 0), the screen's right is
-//! -x: the save's x grows to the left, as on the 2D map (docs/render.md). The game's galaxy camera
-//! is pitched between NCamera.GALAXY_MIN_PITCH (30) and GALAXY_MAX_PITCH (85) degrees and zooms
-//! over ZOOM_STEPS_GALAXY (100 .. 3000).
+//! The camera is the game's CGameCamera (4.5.2, read from the code and checked against the game's
+//! frames, docs/render.md section 10) **[V]**: it orbits a target at `distance`, `pitch` above the
+//! plane and `yaw` around it, the eye at target + distance (-cos p sin y, sin p, cos p cos y); the
+//! view is left-handed (MatrixLookAtLH: z from the eye to the target), the projection a
+//! left-handed perspective with a vertical field of view of NCamera.FOV = 35 degrees and depth
+//! 0..1. World space: the galactic plane is y = 0 and a save's map coordinate (x, y) is the point
+//! (x, 0, y), in map units (the game's world is them x GALAXY_SPACE_SCALE_MULT = 2 on the galaxy,
+//! x SYSTEM_SPACE_SCALE_MULT = 10 in a system: the same picture). At yaw 0 the screen's right is
+//! -x and its top -y: the save's x grows to the left and its y downwards, as the game shows them.
+//! The galaxy camera is pitched between NCamera.GALAXY_MIN_PITCH (30) and GALAXY_MAX_PITCH (85)
+//! degrees (57.5 on a load), a system's between SYSTEM_MIN_PITCH (20) and SYSTEM_MAX_PITCH (80).
 
 use crate::math::{M4, V3};
 
 #[derive(Clone, Copy, Debug)]
 pub struct OrbitCamera {
     pub target: V3,
-    /// radians: 0 = the camera south of the target looking north
+    /// radians: 0 = the eye on the +z side of the target (the game's CGameCamera +0x22c)
     pub yaw: f32,
     /// radians above the plane
     pub pitch: f32,
@@ -27,18 +33,18 @@ pub struct OrbitCamera {
 impl OrbitCamera {
     /// A camera that shows a disc of `radius` around the origin, pitched like the game's.
     pub fn galaxy(radius: f32) -> OrbitCamera {
-        let fov_y = 45f32.to_radians();
+        let fov_y = 35f32.to_radians();
         let distance = radius / (fov_y / 2.0).tan() * 1.05;
         OrbitCamera {
             target: V3(0.0, 0.0, 0.0),
             yaw: 0.0,
-            pitch: 60f32.to_radians(),
+            pitch: 57.5f32.to_radians(),
             distance,
             fov_y,
             min_distance: 20.0,
             max_distance: distance * 3.0,
             min_pitch: 30f32.to_radians(),
-            max_pitch: 89f32.to_radians(),
+            max_pitch: 85f32.to_radians(),
         }
     }
 
@@ -46,17 +52,19 @@ impl OrbitCamera {
     /// orbits filling the height of the screen at 40 degrees.
     pub fn system(radius: f32) -> OrbitCamera {
         let mut c = OrbitCamera::galaxy(radius);
-        c.pitch = 40f32.to_radians();
+        c.pitch = 50f32.to_radians();
         c.distance *= 0.62;
         c.min_distance = 2.0;
-        c.min_pitch = 5f32.to_radians();
+        c.min_pitch = 20f32.to_radians();
+        c.max_pitch = 80f32.to_radians();
         c
     }
 
     pub fn eye(&self) -> V3 {
         let (sy, cy) = self.yaw.sin_cos();
         let (sp, cp) = self.pitch.sin_cos();
-        self.target.add(V3(cp * sy, sp, -cp * cy).scale(self.distance))
+        // CGameCamera::UpdateInternalCamera
+        self.target.add(V3(-cp * sy, sp, cp * cy).scale(self.distance))
     }
 
     pub fn orbit(&mut self, dyaw: f32, dpitch: f32) {
@@ -74,17 +82,17 @@ impl OrbitCamera {
     pub fn pan(&mut self, dx: f32, dy: f32) {
         let (sy, cy) = self.yaw.sin_cos();
         // on the plane: the camera's forward (toward the target) and its right
-        let forward = V3(-sy, 0.0, cy);
+        let forward = V3(sy, 0.0, -cy);
         let right = V3(-cy, 0.0, -sy);
         self.target = self.target.add(right.scale(dx * self.distance)).add(forward.scale(dy * self.distance));
     }
 
     pub fn view_params(&self, width: u32, height: u32) -> ViewParams {
         let eye = self.eye();
-        let view = M4::look_at(eye, self.target, V3(0.0, 1.0, 0.0));
+        let view = M4::look_at_lh(eye, self.target, V3(0.0, 1.0, 0.0));
         let near = (self.distance * 0.01).max(0.05);
         let far = self.distance * 4.0 + 2000.0;
-        let proj = M4::perspective(self.fov_y, width.max(1) as f32 / height.max(1) as f32, near, far);
+        let proj = M4::perspective_lh(self.fov_y, width.max(1) as f32 / height.max(1) as f32, near, far);
         ViewParams {
             view_proj: proj.mul(&view),
             right: V3(view.0[0][0], view.0[0][1], view.0[0][2]),

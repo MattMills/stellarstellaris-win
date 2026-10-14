@@ -122,7 +122,7 @@ fn star(i: VsOut) -> vec4<f32> {
     // PixelPdxMeshStar: the noise (the game samples the cube map LavaNoise at the direction
     // three times, at the same direction: 3 x (noise - 0.5)), animated by time (0 here)
     let dir = normalize(i.local);
-    let noise = 3.0 * (noise3(dir * 3.0) * 0.6 + noise3(dir * 9.0) * 0.4 - 0.5);
+    let noise = 3.0 * (noise3(dir * 7.0) * 0.6 + noise3(dir * 21.0) * 0.4 - 0.5);
     let animated = sin(noise * 10.0);
     let inv = (1.0 - animated) * 0.5;
     let inv2 = inv * inv;
@@ -141,7 +141,8 @@ fn star(i: VsOut) -> vec4<f32> {
     c = mix(c, draw.atmosphere.rgb, a * a * draw.atmosphere.a);
     let rim = smoothstep(0.5, 1.0, 1.0 - dot(n0, to_camera));
     c = clamp(c + c * rim * 3.5, vec3<f32>(0.0), vec3<f32>(1.0));
-    return output(c * 2.0, 1.0);
+    // x 2 as the game; its HDR and bloom brighten it further: a little of the star's colour added
+    return output(c * 2.0 + draw.atmosphere.rgb * 0.35, 1.0);
 }
 
 @fragment
@@ -198,8 +199,15 @@ fn fs_mesh(i: VsOut) -> @location(0) vec4<f32> {
     let ndl = max(dot(n, l), 0.0);
     var light = vec3<f32>(ndl);
     var spec_light = spec_colour * specular(n, l, v, sp.a) * ndl * draw.params.z;
-    let ship = draw.extra.y > 1.5;
-    let planet = draw.extra.y > 0.5 && draw.extra.y < 1.5;
+    let ship = draw.extra.y > 1.5 && draw.extra.y < 2.5;
+    let planet = (draw.extra.y > 0.5 && draw.extra.y < 1.5) || draw.extra.y > 2.5;
+    let planet_glow = draw.extra.y > 2.5;
+    if (planet) {
+        // the star's light, and the system's back light on the side away from it
+        // (CalculateSystemPointLight with IS_PLANET: system_back_light_diffuse, about hsv 0.58
+        // 0.25 0.55 for the star classes of gfx/worldgfx)
+        light = light * 1.3 + vec3<f32>(0.41, 0.48, 0.55) * max(dot(n, -l), 0.0);
+    }
     if (ship) {
         // the ship camera lights (gfx/worldgfx: cam_light_2 from the right, cam_light_3 from
         // above, blue)
@@ -221,9 +229,10 @@ fn fs_mesh(i: VsOut) -> @location(0) vec4<f32> {
     }
     spec_light = spec_light + sky * fresnel * cubemap * (0.3 + 0.7 * sp.a);
     var c = diffuse * (vec3<f32>(draw.params.w) + light) + spec_light;
-    // emissive: the normal map's blue (EMISSIVE), on planets only on the dark side
+    // emissive: the normal map's blue (EMISSIVE); on planets with NO_PLANET_EMISSIVE everywhere,
+    // on the others only the night side's city lights (not drawn)
     var emissive = nm.b;
-    if (planet) {
+    if (planet && !planet_glow) {
         emissive = 0.0;
     }
     c = mix(c, albedo, emissive);

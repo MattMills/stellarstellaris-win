@@ -1,20 +1,19 @@
 //! A system in 3D, and a model alone. The system's own space (planets' and ships' coordinates in
-//! the save, `origin` the system) is the world here: its plane y = 0, a coordinate (x, y) the
-//! point (x, 0, y), as the galaxy (camera.rs).
+//! the save, `origin` the system) is the world here in map units, a coordinate (x, y) the point
+//! (x, h, y), as the galaxy (camera.rs); the game's world is it x 10. Checked against the game's
+//! own frames (headless/view.sh, docs/render.md section 10):
 //!
-//! - stars: their class's entity (common/planet_classes `entity`, e.g. g_star_class_star_entity:
-//!   star_mesh, PdxMeshStar) glowing in the class's `atmosphere_color`, with the class's map sprite
-//!   as a halo; the scene's light is at the first star;
-//! - planets: their class's entity variant (`entity` = the variant: desert_planet_02_entity), lit,
-//!   with clouds and an atmosphere rim in `atmosphere_color`; moons around their planet;
-//! - orbits: a ring at each body's distance from what it orbits;
-//! - ships: their culture's frame entity for the design's ship size with the design's sections'
-//!   entities at the size's section slots' locators, at the ship's coordinate, turned to its
-//!   forward_x / forward_y (a ship's model faces -z).
-//!
-//! Sizes are the renderer's (the game's scale factors are not found yet, docs/render.md):
-//! a planet's radius is 0.3 x planet_size, a star's 0.45 x, ships and stations are drawn at 0.25
-//! of their model's size.
+//! - bodies at h = -15 (the game's -150) **[V]**, each its entity scaled by the game's
+//!   CPlanet::CalcCurrentEntityScale (`entity_scale`) **[V]**: stars, their class's entity
+//!   (g_star_class_star_entity: base_star.mesh, PdxMeshStar); planets, their class's entity
+//!   variant (`entity` = the variant: desert_planet_02_entity), lit by the first star (a point
+//!   light), with clouds and an atmosphere in `atmosphere_color`;
+//! - orbits: a ring at each body's distance from what it orbits, with the GUI (`gui off` hides
+//!   them, as the game's g_bNoGUI does);
+//! - ships at h = 0 **[V]** (their place on the game's screen): their culture's frame entity for the
+//!   design's ship size with the design's sections' entities at the size's section slots'
+//!   locators, at the ship's coordinate, turned to its forward_x / forward_y (a ship's model
+//!   faces -z), at their model's size in the game's world **[I]**.
 
 use std::collections::HashMap;
 
@@ -25,13 +24,25 @@ use crate::camera::{OrbitCamera, ViewParams};
 use crate::dds::Cache;
 use crate::gui;
 use crate::math::{M4, V3};
-use crate::models::{self, Library, Model};
+use crate::models::{self, Library};
 use crate::scene::{self, Blend, Gui, Layer, Layout, Line, Look, Quad, Scene, Textures};
 use crate::{Map, Source};
 
-pub const PLANET_RADIUS_PER_SIZE: f32 = 0.3;
-pub const STAR_RADIUS_PER_SIZE: f32 = 0.45;
-pub const SHIP_SCALE: f32 = 0.25;
+/// The system's plane: the game draws a system's bodies at y = -150 of its world (x 10: -15 map
+/// units) **[V]** (their entities' world transforms, `state planet ID` of headless/view.sh).
+pub const PLANE_Y: f32 = -15.0;
+/// The game's world in a system is the map's x SYSTEM_SPACE_SCALE_MULT = 10 **[V]**.
+pub const SYSTEM_SPACE_SCALE: f32 = 10.0;
+/// A ship's model scale in map units: 1 in the game's world (x 10) **[I]**, fitted to the game's
+/// frames of system 401 (its starbase within a few percent, at the same place and facing).
+pub const SHIP_SCALE: f32 = 0.1;
+
+/// A body's entity scale in the game's world (CPlanet::CalcCurrentEntityScale) **[V]**: planet_size
+/// x 0.1 x the class's entity_scale x PLANET_SCALE_SYSTEM at the zoom (0.35 when g_bDisableScaling
+/// is set, as in 4.5.2's defaults: the value seen at every zoom) x MOON_SCALE (0.7) for a moon.
+pub fn entity_scale(size: f32, class_scale: f32, moon: bool) -> f32 {
+    size * 0.1 * class_scale * 0.35 * if moon { 0.7 } else { 1.0 }
+}
 
 #[derive(Clone, Debug)]
 pub struct Body {
@@ -43,6 +54,8 @@ pub struct Body {
     pub x: f32,
     pub y: f32,
     pub moon_of: i64,
+    /// the class's entity_scale (common/planet_classes)
+    pub class_scale: f32,
     pub look: Look,
 }
 
@@ -93,6 +106,7 @@ pub fn extract(rt: &Runtime, game_dir: &str, id: u32) -> Result<SystemData, Stri
                 x: b.get("x")?,
                 y: b.get("y")?,
                 moon_of: b.get("moon_of")?,
+                class_scale: b.get::<Option<f32>>("entity_scale")?.unwrap_or(1.0),
                 look: read_look(&b.get::<Table>("look")?)?,
             });
         }
@@ -171,17 +185,9 @@ pub fn camera_for(map: &mut Map, index: usize) -> OrbitCamera {
     OrbitCamera::system(radius)
 }
 
-/// The transform placing a model (its draws: [`models::draws`] applies the model's own scale)
-/// centred at `at`, `radius` world units across its half diagonal, turned by `yaw`.
-fn place(model: &Model, at: V3, radius: f32, yaw: f32) -> M4 {
-    let r = model.radius().max(1e-3);
-    M4::translation(at).mul(&M4::rotation_y(yaw)).mul(&M4::scaling(radius / r)).mul(&M4::translation(model.centre().scale(-1.0)))
-}
-
 /// The system's scene.
 pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, height: u32) -> Result<Scene, String> {
     let id = map.galaxy.systems[index].id;
-    let star_sprite = map.galaxy.systems[index].texture.clone();
     let gd = map.game_dir.clone();
     // the top bar, as on the map
     let topbar = gui::topbar(map.rt(), &gd, &map.cache, width, height)?;
@@ -190,7 +196,7 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
         gui::fonts(map.rt(), &gd, &topbar.items, &mut fonts)?;
         map.fonts = Some(fonts);
     }
-    let Map { source, models: lib, textures: tex, cache, fonts, .. } = map;
+    let Map { source, models: lib, textures: tex, cache, fonts, gui, .. } = map;
     let rt = source_rt(source);
     lib.ensure(rt, &gd)?;
     let data = extract(rt, &gd, id)?;
@@ -216,27 +222,26 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
     let positions: HashMap<u32, (f32, f32)> = data.bodies.iter().map(|b| (b.id, (b.x, b.y))).collect();
     let mut missing = Vec::new();
     for b in &data.bodies {
-        let at = V3(b.x, 0.0, b.y);
-        let radius = b.size * if b.star { STAR_RADIUS_PER_SIZE } else { PLANET_RADIUS_PER_SIZE };
+        let at = V3(b.x, PLANE_Y, b.y);
+        // the entity's scale in map units: the game's (x 10 world) over the space scale
+        let scale = entity_scale(b.size, b.class_scale, b.moon_of >= 0) / SYSTEM_SPACE_SCALE;
         if b.star && first_star {
-            light = [b.x, 0.0, b.y, 1.0];
+            light = [b.x, PLANE_Y, b.y, 1.0];
             first_star = false;
         }
         match (!b.entity.is_empty()).then(|| lib.model(rt, &gd, &b.entity)) {
             Some(Ok(model)) => {
+                // its world transform: the position, a turn, the scale (the entity's own scale is
+                // applied by models::draws), as the game's (`state planet ID`)
                 let spin = (b.id as f32 * 1.7) % std::f32::consts::TAU;
-                meshes.extend(models::draws(&model, place(&model, at, radius, spin), [1.0; 4], &b.look, tex, &mut cache, &gd));
+                let m = M4::translation(at).mul(&M4::rotation_y(spin)).mul(&M4::scaling(scale));
+                meshes.extend(models::draws(&model, m, [1.0; 4], &b.look, tex, &mut cache, &gd));
             }
             Some(Err(e)) => missing.push(format!("{} ({}): {e}", b.class, b.entity)),
             None => missing.push(format!("{}: no entity", b.class)),
         }
-        if b.star {
-            // the halo: the class's map sprite, added
-            if let Some(t) = tex.game(&mut cache, &gd, &star_sprite) {
-                let c = b.look.atmosphere;
-                batches_push(&mut batches, Layer::Stars, Blend::Add, t, Quad::billboard(b.x, b.y, 0.0, radius * 3.0, [c[0].max(0.5), c[1].max(0.5), c[2].max(0.5), 0.5], 0.0, 0.0));
-            }
-        } else {
+        // (the game draws no sprite over a star in a system: its glow is the star atmosphere)
+        if !b.star && *gui {
             // the orbit: around the planet a moon orbits, else around the system's centre
             let (cx, cy) = if b.moon_of >= 0 { positions.get(&(b.moon_of as u32)).copied().unwrap_or((0.0, 0.0)) } else { (0.0, 0.0) };
             let r = ((b.x - cx).powi(2) + (b.y - cy).powi(2)).sqrt();
@@ -244,8 +249,8 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
             for k in 0..n {
                 let (a0, a1) = (k as f32 / n as f32 * std::f32::consts::TAU, (k + 1) as f32 / n as f32 * std::f32::consts::TAU);
                 lines.push(Line {
-                    a: V3(cx + r * a0.cos(), 0.0, cy + r * a0.sin()),
-                    b: V3(cx + r * a1.cos(), 0.0, cy + r * a1.sin()),
+                    a: V3(cx + r * a0.cos(), PLANE_Y, cy + r * a0.sin()),
+                    b: V3(cx + r * a1.cos(), PLANE_Y, cy + r * a1.sin()),
                     colour: [0.45, 0.6, 0.85, if b.moon_of >= 0 { 0.25 } else { 0.35 }],
                     width: 1.2,
                 });
@@ -258,6 +263,7 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
     let ship_look = Look::default();
     let mut ships_drawn = 0;
     for s in &data.ships {
+        // ships fly at the camera's plane, above the bodies' (their screen positions in the game's frames)
         let at = V3(s.x, 0.0, s.y);
         let yaw = (-s.fx).atan2(-s.fy);
         let base = M4::translation(at).mul(&M4::rotation_y(yaw)).mul(&M4::scaling(SHIP_SCALE));
@@ -297,7 +303,9 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
     }
 
     let mut g = Gui::default();
-    scene::add_gui(&mut batches, &mut g, &topbar.items, fonts.as_ref().unwrap(), tex, &mut cache, &gd, &HashMap::new());
+    if *gui {
+        scene::add_gui(&mut batches, &mut g, &topbar.items, fonts.as_ref().unwrap(), tex, &mut cache, &gd, &HashMap::new());
+    }
     Ok(Scene {
         layout: Layout { width, height, world_to_ndc: [1.0, 1.0, 0.0, 0.0], scale: 1.0, lane_width: 1.0 },
         view,

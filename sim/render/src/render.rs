@@ -358,7 +358,8 @@ impl Renderer {
                     compilation_options: Default::default(),
                     buffers: &[Some(wgpu::VertexBufferLayout { array_stride: stride as u64, step_mode: step, attributes: attrs })],
                 },
-                primitive: wgpu::PrimitiveState { cull_mode: cull, ..Default::default() },
+                // the game's meshes wind clockwise seen from outside under its left-handed view (D3D)
+                primitive: wgpu::PrimitiveState { front_face: wgpu::FrontFace::Cw, cull_mode: cull, ..Default::default() },
                 depth_stencil,
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
@@ -381,8 +382,8 @@ impl Renderer {
             quad_alpha: pipeline("quads", &shader, &quad_layout, "vs_quad", "fs_quad", qs, inst, &quad_attrs, Some(wgpu::BlendState::ALPHA_BLENDING), tested.clone(), None),
             quad_add: pipeline("quads added", &shader, &quad_layout, "vs_quad", "fs_quad", qs, inst, &quad_attrs, Some(additive), tested.clone(), None),
             line_pipeline: pipeline("lines", &shader, &line_layout, "vs_lane", "fs_lane", ls, inst, &line_attrs, Some(wgpu::BlendState::ALPHA_BLENDING), tested.clone(), None),
-            mesh_opaque: pipeline("meshes", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, None, depth(true, wgpu::CompareFunction::Less), None),
-            mesh_alpha: pipeline("meshes blended", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, Some(wgpu::BlendState::ALPHA_BLENDING), tested.clone(), None),
+            mesh_opaque: pipeline("meshes", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, None, depth(true, wgpu::CompareFunction::Less), Some(wgpu::Face::Back)),
+            mesh_alpha: pipeline("meshes blended", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, Some(wgpu::BlendState::ALPHA_BLENDING), tested.clone(), Some(wgpu::Face::Back)),
             mesh_add: pipeline("meshes added", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, Some(additive), tested, Some(wgpu::Face::Front)),
             uniform,
             view_bind,

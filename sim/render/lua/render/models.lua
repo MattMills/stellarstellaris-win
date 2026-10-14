@@ -14,14 +14,17 @@ local source = require("stellar.script.source")
 
 local models = {}
 
+-- a key's value; the last one when the key is repeated, as the game reads it [I]
+-- (mammalian_01_science_mesh: `scale = 1.0` ... `scale = 2.8`)
 local function get(block, key)
     key = key:lower()
+    local found
     for _, e in ipairs(type(block) == "table" and block or {}) do
         if e.op and e.key and e.key.text:lower() == key then
-            return e.value.text or e.value
+            found = e.value.text or e.value
         end
     end
-    return nil
+    return found
 end
 
 local function each(block, key, f)

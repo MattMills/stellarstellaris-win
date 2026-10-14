@@ -237,6 +237,12 @@ impl Library {
             // the shape's settings, else settings naming no shape (all shapes) [I]
             let over = settings.iter().find(|s| s.0 == shape.name).or_else(|| settings.iter().find(|s| s.0.is_empty()));
             for (k, sm) in shape.meshes.iter().enumerate() {
+                // a collision volume stays one whatever the settings say: a meshsettings naming no
+                // shape (`shader = "PdxMeshShip"` in mammalian_01_science_mesh) does not draw it
+                if sm.material.shader.to_ascii_lowercase().contains("collision") {
+                    skipped.push(format!("{} ({})", shape.name, sm.material.shader));
+                    continue;
+                }
                 let shader = over.and_then(|o| o.4.clone()).unwrap_or_else(|| sm.material.shader.clone());
                 let Some(shading) = shading_of(&shader) else {
                     skipped.push(format!("{} ({shader})", shape.name));
@@ -292,10 +298,14 @@ fn part_texture(tex: &mut Textures, cache: &mut Cache, game_dir: &str, path: &st
 pub const LAVA_TEXTURES: [&str; 2] = ["gfx/worldgfx/lava_d.dds", "gfx/worldgfx/stone_d.dds"];
 
 /// What a part of the game's shader is lit as here: 1 a planet (IS_PLANET: PdxMeshPlanet,
-/// PdxMeshClouds), 2 a ship (PdxMeshShip and the ships' PdxMeshTerra), 0 else.
+/// PdxMeshClouds, PdxMeshGasGiant), 3 a planet whose emissive glows everywhere (NO_PLANET_EMISSIVE:
+/// PdxMeshPlanetEmissive, PdxMeshMoltenPlanet and their skinned forms), 2 a ship (PdxMeshShip and
+/// the ships' PdxMeshTerra), 0 else.
 fn part_kind(shader: &str) -> f32 {
     let s = shader.to_ascii_lowercase();
-    if s.contains("planet") || s.contains("clouds") {
+    if (s.contains("planetemissive") && !s.contains("withlights")) || s.contains("moltenplanet") {
+        3.0
+    } else if s.contains("planet") || s.contains("clouds") || s.contains("gasgiant") {
         1.0
     } else if s.contains("ship") || s.contains("terra") {
         2.0
@@ -327,8 +337,8 @@ pub fn draws(model: &Model, transform: M4, tint: [f32; 4], look: &Look, tex: &mu
             let mut d = MeshDraw::new(p.mesh.clone(), m, t, p.shading, tint);
             d.look = *look;
             d.look.kind = part_kind(&p.shader);
-            if d.look.kind == 1.0 {
-                d.params[3] = 0.04;
+            if d.look.kind == 1.0 || d.look.kind == 3.0 {
+                d.params[3] = 0.08;
             }
             d
         })

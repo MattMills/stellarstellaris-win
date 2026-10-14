@@ -196,8 +196,8 @@ pub struct Layout {
     pub width: u32,
     pub height: u32,
     /// map units -> clip space: ndc = p * xy + zw. The save's x is drawn growing to the left
-    /// (mirrored, the convention of save viewers such as Stellaris Dashboard; not yet checked
-    /// against the game's own map); y grows up.
+    /// and y downwards: the game's galaxy seen from above at yaw 0 (its camera, docs/render.md
+    /// section 10).
     pub world_to_ndc: [f32; 4],
     /// pixels per map unit
     pub scale: f32,
@@ -225,7 +225,7 @@ impl Layout {
         let (sx, sy) = (scale * 2.0 / w, scale * 2.0 / h);
         // the galaxy's centre at the middle of the area under the bar
         let ny = -(top / h);
-        Layout { width, height, world_to_ndc: [-sx, sy, cx * sx, -cy * sy + ny], scale, lane_width: (scale * 0.6).clamp(1.0, 2.5) }
+        Layout { width, height, world_to_ndc: [-sx, -sy, cx * sx, cy * sy + ny], scale, lane_width: (scale * 0.6).clamp(1.0, 2.5) }
     }
 
     /// A map position -> pixels from the top left.
@@ -388,6 +388,18 @@ impl Scene {
     }
 }
 
+/// A galaxy star's billboard half size in map units for a camera `distance` (map units) away: the
+/// game's CGalaxyGraphics::CalcCurrentStarScale, clamp(1 + (zoom - ZOOM_STEPS_GALAXY[0]) /
+/// (ZOOM_STEPS_GALAXY[last] - [0]) x GALAXY_SPACE_SCALE_MULT x GALAXY_STAR_ICON_MAX_SCALE, 1,
+/// GALAXY_SPACE_SCALE_MULT x GALAXY_STAR_ICON_MAX_SCALE), the zoom being the camera's distance in
+/// the game's world (map x 2); times 1.5 (galaxy_stars.shader), over 2 back to map units.
+pub fn star_half_size(distance: f32) -> f32 {
+    let zoom = distance * 2.0;
+    let max = 2.0 * 1.25;
+    let scale = (1.0 + (zoom - 100.0) / (3000.0 - 100.0) * max).clamp(1.0, max);
+    scale * 1.5 / 2.0
+}
+
 /// A small deterministic generator for the dust's placement.
 pub struct Rng(pub u32);
 impl Rng {
@@ -418,6 +430,7 @@ pub struct Inputs<'a> {
     pub borders_texture: usize,
     pub topbar: &'a Topbar,
     pub fonts: &'a HashMap<String, Font>,
+    pub gui: bool,
     pub game_dir: &'a str,
 }
 
@@ -499,10 +512,11 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
     for i in order {
         let s = &g.systems[i];
         let Some(t) = (if s.texture.is_empty() { None } else { tex.game(cache, inp.game_dir, &s.texture) }) else { continue };
-        // the sprite's size in map units: 6 x GALAXY_STAR_ICON_SCALE x icon_scale, at least 12 px
-        // (2D) or 5 px (3D, half sizes)
+        // the sprite's size in map units: 2D, 6 x GALAXY_STAR_ICON_SCALE x icon_scale, at least
+        // 12 px; 3D, the game's (galaxy_stars.shader: a billboard of half size Scale x 1.5 in its
+        // world, Scale = CGalaxyGraphics::CalcCurrentStarScale) **[V]**, x icon_scale **[I]**
         let size = 6.0 * g.star_icon_scale * s.icon_scale;
-        let (half, least) = if three_d { (size * 0.5, 5.0 * s.icon_scale) } else { ((size.max(12.0 / layout.scale)) * 0.5, 0.0) };
+        let (half, least) = if three_d { (star_half_size(camera.map_or(600.0, |c| c.distance)) * s.icon_scale, 2.0) } else { ((size.max(12.0 / layout.scale)) * 0.5, 0.0) };
         push(&mut batches, Layer::Stars, Blend::Add, t, Quad::billboard(s.x, s.y, 0.0, half, [1.0; 4], 0.0, least));
         if let Some((px, py, _)) = view.project(V3(s.x, 0.0, s.y)) {
             let hp = (half * view.pixels_per_unit(V3(s.x, 0.0, s.y))).max(least);
@@ -541,7 +555,9 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
 
     // ---- the top bar's sprites and texts
     let mut gui = Gui::default();
-    add_gui(&mut batches, &mut gui, &inp.topbar.items, inp.fonts, tex, cache, inp.game_dir, &HashMap::new());
+    if inp.gui {
+        add_gui(&mut batches, &mut gui, &inp.topbar.items, inp.fonts, tex, cache, inp.game_dir, &HashMap::new());
+    }
 
     Scene {
         layout,
