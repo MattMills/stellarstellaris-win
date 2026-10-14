@@ -313,4 +313,33 @@ A system's owner is its primary starbase's owner (the first `starbases` entry ->
 
 ## Results
 
-(filled in below)
+From sim-engine 5f77db5 to this branch (2026-10-14, 10.5.0.24):
+
+| gate | before | after |
+|---|---|---|
+| 180-day diff (`examples/diff autosave_2210.01.01.sav t1798.gamestate`) | 723,380 equal / 13,251 differ, 4,725,089 draws | 723,463 equal / 13,050 differ, 4,724,681 draws (the game: 4,755,436) |
+| standard A, 1 month | 733,836 / 5,318, 778,614 draws | 733,846 / 5,308, 778,614 draws |
+| standard A, 6 months | 723,330 / 13,306, 4,725,081 | 723,469 / 13,059, 4,724,678 |
+| standard A, 1 year | 708,696 / 22,129, 9,509,367 | 709,029 / 21,631, 9,507,098 (the game: 9,577,199) |
+| not implemented, hit in 180 days | 78 keywords, 141,232 hits | 21 keywords, 6,599 hits (diplomacy, effects, and the two misses above) |
+| reads the save does not answer | 25 kinds | 2 (`country.is_at_war`, `modifier`) |
+| `STELLAR_SCRIPT_CHECK=1`, 180 days | 0 mismatches | 4,650,824 compared, 0 mismatches |
+| `STELLAR_MODIFIER_CHECK=1`, 180 days | 0 differ | 7 rebuilds, 771,585 values, 0 differ |
+| `cargo test --release` | passes | passes |
+| vanilla trigger uses evaluated (`simscript.coverage`) | 174,015 of 203,154 (85.7%) | 189,880 of 204,232 (93.0%) |
+| documented triggers / scope links evaluated (`surface_probe.lua`) | 238 / 23 | 399 / 33 |
+
+What moved the 180-day diff (measured with `STELLAR_RUNTIME_OFF`):
+
+- `can_be_upgraded` with `used_starbase_capacity_percent` (each alone does nothing: the AI budgets'
+  starbase expenditure reads both): +66 equal, -154 differ; minerals 56.4% -> 67.8% of the game's
+  change explained, influence -5.0% -> 21.5%; country +52, fleet +35, ships +5 equal; the
+  construction items -9 equal (the AI's queue progress, now saving for upgrades) and colony -19
+  (pop growth figures). 409 fewer draws (fewer ships built).
+- The rest of the vanilla keywords: +6 equal, -36 differ.
+- `E.system_of` for fleets (fleet events reach their systems): +11 equal, -11 differ.
+- `ai_colonize_plans` from the save's stale COLONIZE list was tried and left out (above).
+
+The equal fields that went down (colony -19 to -23, construction items -9, situations, contacts:
+a few each) follow AI decisions that now read the game's triggers, with stockpiles closer to the
+game's; the draws moved by -408 against a gap of 30,000 to the game.
