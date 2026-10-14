@@ -32,6 +32,11 @@ commercial enterprise, 16777219: war games). The save's position gives 1 of 2. S
 generator is not restored by `-loadrandomseed` after all, or is restarted after the load **[I]**.
 The simulation restarts it at the id.
 
+The read does restore it. `CCountryAI::ReadMember` writes the two saved values under
+`g_bUseSavedRandom` (`0xb763dc`, `0xb7641b`) onto `CAICore::_Random`'s position and seed (`+0x32c`,
+`+0x330`) **[V]**. So something resets it to the country id after the read: an `InitPostRead`, an
+AI re-initialization after the load, or the load path itself. That is not traced yet.
+
 ## Command-line options
 
 | option | effect |
