@@ -215,6 +215,19 @@ function M.install(ev)
     events.ensure = M.load
 end
 
+M.scope_block = scope_block
+
+-- the save's scope block of a context (event chains, special projects): this, its random state
+-- (a copy), its from chain, root and saved targets
+function M.ctx_block(ctx)
+    local rng = eval.scope_rng and SR.copy(eval.scope_rng(ctx)) or nil
+    local from_rec = ctx.from_rec
+    if not from_rec and ctx.from and ctx.from.kind ~= "none" then
+        from_rec = { this = ctx.from, from_rec = ctx.fromfrom and ctx.fromfrom.kind ~= "none" and { this = ctx.fromfrom } or nil }
+    end
+    return scope_block(ctx.this, rng, from_rec, ctx.root, ctx.targets)
+end
+
 function M.report()
     local s = M.stats
     return string.format("event save: %d delayed events loaded, %d global event targets; %d written, %d removed",

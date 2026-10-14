@@ -846,6 +846,247 @@ function systems.effects.add_timeline_event(t)
 end
 
 -- ---------------------------------------------------------------------------------------------
+-- event chains and special projects (CCountryEventManager: the country's `events = { event_chain
+-- special_project next_special_project_id }`)
+
+local function events_block(country, create)
+    local c = world.object("country", country)
+    if not c then return nil end
+    local b = world.field(c, "events")
+    if type(b) ~= "table" then
+        if not create then return nil end
+        b = world.child(c, "events")
+    end
+    return b
+end
+
+local function chain_entry(evb, key)
+    for _, e in ipairs(evb or {}) do
+        if e.op and e.key and e.key.text == "event_chain" and type(e.value) == "table" and not e.value.text
+            and unq(world.field(e.value, "event_chain")) == key then
+            return e
+        end
+    end
+    return nil
+end
+
+-- begin_event_chain: t = { country, chain, scope (a scope block) } (CBeginEventChainEffect 0x17bb5c0
+-- -> CCountryEventManager::BeginEventChain 0x801f00): when the chain is not active, a
+-- CActiveEventChain with a copy of the effect's scope at the end of the list [V]
+function systems.effects.begin_event_chain(t)
+    if not defs.get("common/event_chains", t.chain) then
+        return skipped("begin_event_chain", "unknown chain")
+    end
+    local evb = events_block(t.country, true)
+    if not evb then
+        return skipped("begin_event_chain", "no country")
+    end
+    if chain_entry(evb, t.chain) then
+        return skipped("begin_event_chain", "active already")
+    end
+    local b = {}
+    world.append(b, "event_chain", t.chain, true)
+    world.append(b, "scope", t.scope)
+    -- after the last event_chain entry (the list), else at the start
+    local pos = 0
+    for i, e in ipairs(evb) do
+        if e.op and e.key and e.key.text == "event_chain" then pos = i end
+    end
+    world.insert(evb, pos + 1, "event_chain", b)
+    return applied("begin_event_chain")
+end
+
+-- end_event_chain: t = { country, chain } (CCountryEventManager::EndEventChain 0x8020d0): the chain
+-- taken out (the others keep their order); its special projects in progress removed
+-- (CTechnologyStatus::RemoveInprogressSpecialProject) [V]; the list of completed chains is not
+-- written in the saves seen [I]
+function systems.effects.end_event_chain(t)
+    local evb = events_block(t.country, false)
+    local e = evb and chain_entry(evb, t.chain)
+    if not e then
+        return skipped("end_event_chain", "not active")
+    end
+    world.remove_entry(evb, e)
+    -- the special projects of the chain
+    local removed = {}
+    for i = #evb, 1, -1 do
+        local x = evb[i]
+        if x.op and x.key and x.key.text == "special_project" and type(x.value) == "table" and not x.value.text then
+            local key = unq(world.field(x.value, "special_project"))
+            local d = key and creation.special_project_def(key)
+            if d and unq(defs.field(d.block, "event_chain")) == t.chain then
+                removed[#removed + 1] = tonumber(world.field(x.value, "id"))
+                world.remove_entry(evb, x)
+            end
+        end
+    end
+    if #removed > 0 then
+        creation.remove_project_research(t.country, removed)
+    end
+    return applied("end_event_chain")
+end
+
+-- add_event_chain_counter: t = { country, chain, counter, amount }: the chain's counter, kept in
+-- the chain's entry as `counter = { <key> = <value> }`, clamped to [0, max] [I]
+function systems.effects.add_event_chain_counter(t)
+    local evb = events_block(t.country, false)
+    local e = evb and chain_entry(evb, t.chain)
+    if not e then
+        return skipped("add_event_chain_counter", "not active")
+    end
+    local d = defs.get("common/event_chains", t.chain)
+    local cdef = d and defs.field(d.block, "counter")
+    local max = cdef and type(cdef) == "table" and defs.field(cdef, t.counter)
+    max = type(max) == "table" and tonumber(defs.field(max, "max")) or nil
+    local cb = world.child(e.value, "counter")
+    local v = (tonumber(world.field(cb, t.counter)) or 0) + t.amount
+    if v < 0 then v = 0 end
+    if max and v > max then v = max end
+    world.set(cb, t.counter, v)
+    return applied("add_event_chain_counter")
+end
+
+-- the special project types (common/special_projects: `special_project = { key = "X" ... }`)
+local projects
+function creation.special_project_def(key)
+    if projects == nil then
+        projects = {}
+        local db = require("simscript.db")
+        for _, file in ipairs(source.files(db.fs, "common/special_projects", "txt")) do
+            for _, e in ipairs(source.parse(db.fs, file) or {}) do
+                if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
+                    local k = unq(defs.field(e.value, "key"))
+                    if k then projects[k] = { block = e.value, file = file } end
+                end
+            end
+        end
+    end
+    return projects[key]
+end
+
+-- research queue items of special projects taken out (the tech_status queues' `special_project = id`)
+function creation.remove_project_research(country, ids)
+    local set = {}
+    for _, id in ipairs(ids) do set[id] = true end
+    local status = world.field(world.object("country", country), "tech_status")
+    if type(status) ~= "table" then return end
+    local function scrub(b, depth)
+        if depth > 4 or type(b) ~= "table" then return end
+        for i = #b, 1, -1 do
+            local x = b[i]
+            if type(x) == "table" and not x.text then
+                local v = x.op and x.value or x
+                if type(v) == "table" and not v.text and set[tonumber(world.field(v, "special_project"))] then
+                    table.remove(b, i)
+                    world.reindex(b)
+                else
+                    scrub(v, depth + 1)
+                end
+            end
+        end
+    end
+    scrub(status, 0)
+end
+
+-- enable_special_project: t = { country, project, scope (a scope block), location = { kind, id },
+-- wait (the AI's wait days) } (CEnableSpecialProjectEffect::EnableSpecialProject 0x16e37e0 ->
+-- CSpecialProjectInstance): id = the country's next_special_project_id (advanced); the scope
+-- copied; the location's coordinate (spatial object) and colony carrier; ai_research_date = today +
+-- 24 h x (AI_wait_days' weight + one draw % NAI AI_COMMUNICATIONS_RANDOM_VALUE) (GetAIWaitDays
+-- 0x4dcaf0) [V]
+function systems.effects.enable_special_project(t)
+    local d = creation.special_project_def(t.project)
+    if not d then
+        return skipped("enable_special_project", "unknown project")
+    end
+    local evb = events_block(t.country, true)
+    if not evb then
+        return skipped("enable_special_project", "no country")
+    end
+    local id = tonumber(world.field(evb, "next_special_project_id")) or 1
+    world.set(evb, "next_special_project_id", id + 1)
+    local b = {}
+    world.append(b, "id", id)
+    world.append(b, "special_project", t.project, true)
+    world.append(b, "scope", t.scope)
+    local loc = t.location
+    if loc then
+        local htype = loc.kind == "planet" and 2 or loc.kind == "ship" and 1 or loc.kind == "system" and 0 or nil
+        if htype then
+            local c = {}
+            world.append(c, "type", htype)
+            world.append(c, "id", loc.id)
+            world.append(b, "coordinate", c)
+        end
+        if loc.kind == "planet" or loc.kind == "ship" then
+            local carrier = {}
+            world.append(carrier, "type", loc.kind)
+            world.append(carrier, "reference", loc.id)
+            world.append(b, "carrier", carrier)
+        end
+    end
+    local r = draw()
+    local define = require("engine.defs").get("common/defines", "NAI")
+    local rv = define and tonumber(defs.field(define.block, "AI_COMMUNICATIONS_RANDOM_VALUE")) or 1
+    local days = trunc(t.wait or 0) + (rv > 0 and r % rv or 0)
+    world.append(b, "ai_research_date", date_text(require("simscript.eval").today() + days), true)
+    -- after the other special projects
+    local pos
+    for i, e in ipairs(evb) do
+        if e.op and e.key and (e.key.text == "special_project" or e.key.text == "event_chain") then pos = i end
+    end
+    world.insert(evb, (pos or 0) + 1, "special_project", b)
+    applied("enable_special_project")
+    return id
+end
+
+-- abort_special_project: t = { country, project }: the country's projects of that type taken out
+-- with their research (CAbortSpecialProjectEffect) [I]
+function systems.effects.abort_special_project(t)
+    local evb = events_block(t.country, false)
+    if not evb then return skipped("abort_special_project", "no country") end
+    local removed = {}
+    for i = #evb, 1, -1 do
+        local x = evb[i]
+        if x.op and x.key and x.key.text == "special_project" and type(x.value) == "table" and not x.value.text
+            and unq(world.field(x.value, "special_project")) == t.project then
+            removed[#removed + 1] = tonumber(world.field(x.value, "id"))
+            world.remove_entry(evb, x)
+        end
+    end
+    if #removed == 0 then return skipped("abort_special_project", "none") end
+    creation.remove_project_research(t.country, removed)
+    return applied("abort_special_project")
+end
+
+-- set_site_progress_locked: t = { kind, id, locked } (CSetSiteProgressLockedEffect 0x17b6370): an
+-- archaeological site's lock (+0x178; the save's `locked = yes` [I]); a first contact's status
+-- locked / in_progress unless it is finished or aborted (status 2 and 3) [V]
+function systems.effects.set_site_progress_locked(t)
+    if t.kind == "archaeological_site" then
+        local s = world.object("sites", t.id)
+        if not s then return skipped("set_site_progress_locked", "no site") end
+        if t.locked then
+            world.set(s, "locked", "yes")
+        else
+            for _, e in ipairs(s) do
+                if e.op and e.key and e.key.text == "locked" then world.remove_entry(s, e); break end
+            end
+        end
+        return applied("set_site_progress_locked")
+    elseif t.kind == "first_contact" then
+        local fc = world.object("first_contact", t.id)
+        if not fc then return skipped("set_site_progress_locked", "no first contact") end
+        local st = unq(world.field(fc, "status"))
+        if st ~= "finished" and st ~= "aborted" then
+            world.set(fc, "status", t.locked and "locked" or "in_progress")
+        end
+        return applied("set_site_progress_locked")
+    end
+    return skipped("set_site_progress_locked", "not a site")
+end
+
+-- ---------------------------------------------------------------------------------------------
 -- leaders
 
 -- add_experience: t = { kind = "leader", id, amount } (CLeader::AddExperience through engine.leaders)

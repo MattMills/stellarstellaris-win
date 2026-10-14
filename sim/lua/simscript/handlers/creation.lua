@@ -374,6 +374,98 @@ return function(eval)
     end
 
     -- -----------------------------------------------------------------------------------------
+    -- event chains, special projects
+
+    -- engine.script.event_save requires simscript.eval, which loads this module: required when used
+    local event_save = setmetatable({}, { __index = function(_, k) return require("engine.script.event_save")[k] end })
+
+    -- the country of a scope (CEventScope::GetTargetCountry)
+    local function country_of(sc, ctx)
+        if not sc or sc.kind == "none" then return nil end
+        if sc.kind == "country" then return sc.id end
+        local f, owner = eval.resolve("owner", I.push(ctx, sc), nil)
+        return f and owner and owner.kind == "country" and owner.id or nil
+    end
+
+    -- begin_event_chain = { event_chain = <key> target = <scope> } (the target's country; the scope
+    -- kept is the effect's own)
+    EFF["begin_event_chain"] = function(e, ctx)
+        local p = params(e)
+        local chain = text_of(p.event_chain)
+        if not chain then return end
+        local target = ctx.this
+        if p.target and p.target.value.text then
+            local f, sc = eval.resolve(p.target.value.text, ctx, p.target)
+            if f then target = sc end
+        end
+        local c = country_of(target, ctx)
+        if not c then return end
+        push({ type = "begin_event_chain", country = c, chain = chain, scope = event_save.ctx_block(ctx) })
+    end
+    -- end_event_chain = <key> (the scope's country)
+    EFF["end_event_chain"] = function(e, ctx)
+        local chain = e.value.text and creation.unq(e.value.text)
+        local c = country_of(ctx.this, ctx)
+        if not chain or not c then return end
+        push({ type = "end_event_chain", country = c, chain = chain })
+    end
+    -- add_event_chain_counter = { event_chain = <key> counter = <key> amount = <int> }
+    EFF["add_event_chain_counter"] = function(e, ctx)
+        local p = params(e)
+        local chain, counter = text_of(p.event_chain), text_of(p.counter)
+        local c = country_of(ctx.this, ctx)
+        if not chain or not counter or not c then return end
+        local amount = p.amount and trunc(eval.value(p.amount.value, ctx, p.amount)) or 1
+        push({ type = "add_event_chain_counter", country = c, chain = chain, counter = counter, amount = amount })
+    end
+
+    -- enable_special_project = { name = <key> owner = <scope> location = <scope> } (owner: root by
+    -- default; location: this). The AI's wait (AI_wait_days, country scope, from = this scope) and
+    -- one draw of the game's generator: applied at once
+    EFF["enable_special_project"] = function(e, ctx)
+        local p = params(e)
+        local key = text_of(p.name)
+        if not key then return end
+        local owner = ctx.root
+        if p.owner and p.owner.value.text then
+            local f, sc = eval.resolve(p.owner.value.text, ctx, p.owner)
+            if f then owner = sc end
+        end
+        local c = country_of(owner, ctx)
+        if not c then return end
+        local loc = ctx.this
+        if p.location and p.location.value.text then
+            local f, sc = eval.resolve(p.location.value.text, ctx, p.location)
+            if f and sc then loc = sc end
+        end
+        local d = creation.special_project_def(key)
+        local wait = 0
+        local wb = d and require("engine.defs").field(d.block, "AI_wait_days")
+        if type(wb) == "table" then
+            local wctx = eval.new_ctx(eval.S("country", c), ctx.this, nil, d.file)
+            local ok, v = pcall(eval.weight, wb, wctx, 0)
+            if ok then wait = v end
+        end
+        push({ type = "enable_special_project", country = c, project = key, scope = event_save.ctx_block(ctx),
+            location = loc and loc.kind ~= "none" and { kind = loc.kind, id = loc.id } or nil, wait = wait })
+        sync()
+    end
+    -- set_site_progress_locked = yes|no (an archaeological site's or a first contact's)
+    EFF["set_site_progress_locked"] = function(e, ctx)
+        if not e.value.text then return end
+        push({ type = "set_site_progress_locked", kind = ctx.this.kind, id = ctx.this.id, locked = e.value.text == "yes" })
+    end
+
+    -- abort_special_project = { type = <key> } (the scope's country)
+    EFF["abort_special_project"] = function(e, ctx)
+        local p = params(e)
+        local key = text_of(p.type) or (e.value.text and creation.unq(e.value.text))
+        local c = country_of(ctx.this, ctx)
+        if not key or not c then return end
+        push({ type = "abort_special_project", country = c, project = key })
+    end
+
+    -- -----------------------------------------------------------------------------------------
     -- resources
 
     -- add_monthly_resource_mult = { resource = <key> value = <v> min = <v> max = <v> mult = <v> }
