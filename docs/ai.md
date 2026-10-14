@@ -744,6 +744,127 @@ groups are committed when their power reaches `CalcWantedFleetPower` (`ENEMY_FLE
 
 `CMission` / `CMissionType` (`common/missions`, `CalcAIWeight`) are leader missions, not fleets.
 
+### Science ships: `CAIInteriorMinister::HandleCivilianFleets` (`0xbbab50`) **[V]**
+
+On the AI's week, in `CAIInteriorMinister::WeeklyUpdate` after the districts and buildings
+(Lua: `engine/ai/exploration.lua`). No draw from the AI's generators anywhere on this path.
+
+1. **Taken targets**: for each of the country's fleets, the current order and its `sub_order` chain
+   (not the queue): the deposit holder of a `survey_planet_order`, `research_anomaly_order`,
+   `colonize_planet_order`, `build_orbital_station_order`, `collect_data_fleet_order`,
+   `build_megastructure_fleet_order`, `assist_detection_order` (tokens 11957, 11504, 11500, 11494,
+   12290, 14252, 13056) goes into a set; a survey's system is marked in a per-system byte mask
+   (bit 1). Bit 2 marks the systems with the country's controlled starbases
+   (`CCountryBorderManager::_SystemsWithControlledStarbases`, `CCountry +0x2ed0`), bit 4 the
+   fleets' systems; only bit 1 is read by the survey.
+2. **The fleets**: the country's controlled fleets (`CCountryFleetsManager::_ControlledFleets`, the
+   save's `fleets_manager.owned_fleets` order), a stable partition putting starbases
+   (`EShipClass` 10) first. `count_if` lambda_2: the science ships (class 3) with a leader whose
+   current order is neither `excavate_archaeological_site_fleet_order` (15666) nor
+   `explore_astral_rift_fleet_order` (16950): archaeology and astral rifts are only used while
+   more than one is free.
+3. **Each fleet**: skipped in combat [I] (`+0x810`), and, for a civilian fleet (`EFleetFlags`
+   `Civilian` 2), when `MIA` (32), moving between systems (`NMovement::EState` 4,
+   `MOVING_IN_GALAXY`), not `IsMobile` (512) or `WillDoOrbitalBombardment`. A fleet design upgrade
+   (`CFleetUpgradeDesignCommand`) may come first when the type's AI has `construction` and the
+   personality is not `limited`. When the fleet has no actual order and its stance is not evasive
+   the code posts `CSwitchFleetStanceCommand(fleet, EVASIVE)`; the oracle shows no such change in
+   30 days for idle science ships (open: the upgrade branch probably skips it). Then by ship class:
+   constructor (1) -> `BuildStation` (below), colonizer (2) -> `ColonizePlanets`, science (3) ->
+   no leader (`CFleet::GetLeader`, a ship's `leader`): `ReturnToBase`; with one and the type's
+   AI `tech` (bit 11): `ResearchAndSurvey`; starbase (10) -> special projects.
+
+`ResearchAndSurvey` (`0xbc1760`): with the Paragon cloaking DLC bit and a cloaking level, activate
+cloaking first. A fleet doing an actual order (`CFleetOrder::IsActualOrder`, vtable `+0x120`:
+false only for `CAggressiveStanceFleetOrder` and `CEvadeHostilesFleetOrder`) is left alone, unless
+its chain holds an `evade_hostiles_order` (then only the next three). Else the first that acts:
+`ExploreAstralRift` and `ExcavateArchaeologicalSite` (more than one free science ship),
+`ResearchSpecialProject`, `LockWormhole`, `SearchForAnomalies`, `ExploreWormhole`,
+`SurveySystems`, `CaptureSpaceCritters`, `ReturnToBase`.
+
+- `SearchForAnomalies` (`0xbbf6c0`): the country's `CCountryEventManager::_PlanetsWithAnomalies`
+  (`+0x2560`, save `events.anomalies`) in order, the first planet whose deposit holder is not
+  taken, `CPlanet::HasAnomaly(country)` (an anomaly `+0x4b0` whose `_AnomalyOwner` `+0xbe0` is
+  the country) and `NAIUtil::IsPathClear(fleet, its system, real fleets)`:
+  `CFleetResearchAnomalyCommand(fleet, planet, 2)`; the planet is taken. No distance scoring.
+- `SurveySystems` (`0xbc0380`): the strategy list 2 (EXPLORE), each system valid, not
+  `HasFullySurveyedSystem` (auto-surveyed: a `needs_survey` type and the system ours; else every
+  planet and other deposit holder in the country's surveyed set), not in
+  `CAIInteriorMinister::_BlockedSystems` (`+0x60`, emptied on the AI's month at `0xbb419b`) and
+  not marked taken:
+  ```
+  score = trunc(value * (SURVEY_COLONIZABLE_SYSTEM_MULTIPLIER (2) if intel level == HIGH (3)
+          and CGalacticObject::HasColonizablePlanet) / (1 + 0.5 * jumps(fleet's system, system)))
+  ```
+  (`CGalacticMapCache::GetJumps`, 65535 without a path; the fleet's system is
+  `movement_manager.coordinate.origin`, the last jump's destination while moving in the galaxy).
+  Stable sort by the highest score; in that order: `CGalacticObject::CanSurvey(country, 3)`
+  (`HasAccess`; not a system of another owner the country has communications with); for a
+  `needs_survey` type, when the system is visited (`CCountry::SSafePrivate::_VisitedGalacticObjects`,
+  save `visited_objects`) or its intel level is HIGH, no enemy fleet in it (a fleet with ships
+  left, not event-locked or MIA, not hiding by cloak, its controller's alignment `Enemy`); and
+  `NAIUtil::IsPathClear(fleet, system, stored intel)`. The first that passes:
+  `CFleetSurveyDepositHolderCommand(fleet, the system as deposit holder type 3)`, the system marked
+  taken. A system that fails goes into `_BlockedSystems`.
+- `CFleetSurveyDepositHolderCommand::Execute` (`0xa59940`), not queued: the fleet's current order
+  cancelled (`CancelCurrentOrder(fleet, 0)`) and its queue cleared; the system's planets (its
+  `planet` list, then its other deposit holders) less those of an auto-surveyed system or already
+  surveyed by the country (`CCountry::_HasSurveyedDepositHolder`); then `QueueOrders`
+  (`0xa59340`) adds one `survey_planet_order` per holder as a **nearest-neighbour tour**: from a
+  start point, the nearest holder left (squared distance of the fixed-point delta, scaled x100
+  when both components are under 10; the first of equal ones), and the next measured from the one
+  just taken. The start point is the fleet's position when it is already in the system, else
+  `CGalacticObject::CalcFTLPointWith` (`0x86d0d0`): the point at 1.05 x the system's
+  `inner_radius` (`CGalacticObject +0xff0`; `+0xff8` is `outer_radius`) from its star toward the
+  galactic position of the fleet's current system. The orders are added in that order, each
+  `AddOrder` taking the next `order_id`.
+- `NAIUtil::IsPathClear` (`0xba20c0` -> `0xba1f80`): the same system, or a path
+  (`CPathCache::FindPath` with the fleet's data) whose systems, the destination included, are
+  `NAIUtil::IsSystemSafeFor` (`0xba2430`): no active hostile starbase; then, unless real fleets
+  are asked for (anomalies: yes; surveys: no), below HIGH intel the system is safe when the
+  country's stored intel (`CCountry +0x28 +0xc8`, save `intel = { { object hostile = {...} } }`)
+  lists no hostiles there; otherwise the hostile (`CCountry::IsHostileCached`), non-civilian,
+  living, not hiding fleets' `CalcMilitaryPowerIncludeHealth` summed must not exceed the fleet's
+  own.
+- `ReturnToBase` (`0xbc12e0`): nothing while busy, without a capital, or when the fleet orbits a
+  planet controlled by the country; a stance not passive is set passive; a
+  `CQueueFleetsOrderCommand` of a `CReturnFleetOrder` (`return_fleet_order`, token 12949), or
+  `CGoMIACommand` when that is not valid.
+
+**Against the game** (the headless oracle, `/opt/stellaris-headless/out/aifleets`: `d<n>` the
+state right after day n's AI commands, 1 + 10n ticks; `s<n>` the state the AI saw on day n, 10n
+ticks; tools in `tmp_ai/`: `oracle_days.sh`, `fleetdays.py`, `squeues.py`, and `exday.lua`, which
+runs the science-ship decisions of the countries due on day n on a loaded `s<n>` state):
+
+- `autosave_2210.01.01`, 30 days: 51 returns (every leaderless idle science ship, each week on
+  its country's week day `max(1, id % 7)` after the load) and 3 anomaly researches (16777217's
+  fleets 5 -> planet 761 and 497 -> 769 on 2210.01.03, skipping 2830 whose system 239 holds a
+  hostile amoeba in the stored intel; 49's fleet 536 -> 3893 on 2210.01.30, after its survey queue
+  ran out). The Lua run of 31 days (with `engine.fleets.orders` executing the commands) makes the
+  same 54 decisions, fleet for fleet, target for target and day for day. On the game's own states
+  of days 43-56 the Lua gives the game's 22 returns and its 2 anomalies (16777219's fleet 13 ->
+  2252 on day 46, 6's fleet 33554924 -> 143 on day 55). No survey assignment in the first 75 days.
+- `2200.01.11` (the user's game-start save), days 1-14: the game's 11 survey assignments (days
+  1-6) and nothing else; the Lua on the `s<n>` states makes the same 11, the same system for the
+  same fleet, and the planets of each queue in the game's order (95 of 95), with the game's
+  `order_id` counts; days 7-14 nothing on either side.
+- The weekly returns are real in the user's own continuous game too: from `autosave_2210.01.01` to
+  `autosave_2210.07.01` the `order_id` of the 11 leaderless science ships orbiting their home
+  starbase rose by 25 or 26 each (283 in all; one a week each): `ReturnToBase` only skips a fleet
+  orbiting a *planet* of its country, and a starbase orbit is not one, so a ship at home gets a
+  `return_fleet_order` every week, which starts (the orbit sub-order to its starbase) and is done
+  the next day.
+- **After a load the strategic data is rebuilt on the first day** (correcting section 9's "not at
+  load"): the `2200.01.11` save has empty `strategy` lists (no `colonize = yes`) and by day 1 every
+  AI country has its lists (557 entries for most) and `colonize = yes`; from `autosave_2210.01.01`,
+  10 AI countries make synced AI draws on day 1 (the `AddColonyData` draw) and none on days 2-3.
+  What posts it is not found yet: `CreateStrategicData` is only reached through the vtable, from
+  `CGameState::MonthlyUpdate`, `CAIUpdateStrategicData::Execute` (posted by `DailyUpdate` when
+  `InWar` disagrees with the war count `CCountry +0x2bb4`) and the effect; `CCountry::SetAI` also
+  touches `_bInitializedStrategy` (`+0x379`, which `CCountryAI::Update` requires). The Lua does not
+  rebuild at load yet, so from `2200.01.11` its science ships find no EXPLORE list until the first
+  month.
+
 ## 7. Moving the AI to Lua
 
 ### What the Lua AI needs
@@ -805,6 +926,7 @@ groups are committed when their power reaches `CalcWantedFleetPower` (`ENEMY_FLE
 | `acceptance.lua` | `GetAIAcceptance` and the per-action terms, peace acceptance | `Get*Acceptance`, `GetOfferPeaceAcceptance`, `CalcBestPeaceOffer` |
 | `budget.lua` | `ai_budget` split, affordability | `UpdateExpenditureBudget`, `UpdateUpkeepBudget`, `CanAfford*` |
 | `economy.lua` | economic plan, build plan, buildings and districts | `CAIEconomicStrategy::*`, `BuildAndUpgradeDistrictsAndBuildings` |
+| `exploration.lua` (ported, checked against the oracle: section 6, "Science ships") | the science ships on the AI's week: taken targets, anomalies, surveys and their queue order, return to base; commands through `engine.fleets.orders` | `CAIInteriorMinister::HandleCivilianFleets`, `ResearchAndSurvey`, `SearchForAnomalies`, `SurveySystems`, `ReturnToBase`, `NAIUtil::IsPathClear`, `CFleetSurveyDepositHolderCommand::QueueOrders` |
 | `interior.lua` | the rest of the interior minister (edicts, policies, traditions, leaders, colonization, starbases...) | `CAIInteriorMinister::*` |
 | `fleets.lua` | the military minister | `CAIMilitaryMinister::*`, `CAIFleetGroup`, `SAITarget` |
 
@@ -942,7 +1064,9 @@ systems per empire) 5,633; 3 (BUILD_ORBITAL_STATION) 114; 19 (EXPAND_BORDERS) 38
   `CreateStrategicData`.
 - **The effect** `run_ai_strategic_data` (`CRunAIStrategicDataEffect::ExecuteActual`,
   `0x174dd60`).
-- **Not at load**: the lists come from the save; `CCountryAI::Start` only refreshes the modules.
+- **At load**: the lists come from the save and `CCountryAI::Start` only refreshes the modules,
+  but the oracle shows a rebuild on the first day after a load for every AI country (section 6,
+  "Science ships", last paragraph; the trigger is not found yet).
 
 ### `CCountryAI::CreateStrategicData` (`0xb6e0a0`)
 
