@@ -518,6 +518,39 @@ function galaxy.extract(game_dir)
             end
         end
     end
+    if pc then
+        local function alert(key, banner)
+            local d = alert_defs[key] or {}
+            alerts[#alerts + 1] = { key = key, icon = d.icon or "", priority = banner or d.priority or "LOW" }
+        end
+        -- alert_unlock_tradition (CCountry::CanActivateAnyTradition) [I]: the unity for the next
+        -- tradition, (TRADITION_COST_AMOUNTS 300 + (TRADITION_COST_TRADITION 8 x adopted) ^
+        -- TRADITION_COST_TRADITION_EXP 1.8) x (1 + EMPIRE_SIZE_TRADITION_COST_PENALTY 0.002 x
+        -- empire size); the cost modifiers and the empire size's base not applied
+        local adopted = #world.list(world.field(pc, "traditions"))
+        local unity = tonumber(world.path(pc, "modules", "standard_economy_module", "resources", "unity")) or 0
+        local size = tonumber(world.field(pc, "empire_size")) or 0
+        if unity >= (300 + (8 * adopted) ^ 1.8) * (1 + 0.002 * size) then
+            alert("alert_unlock_tradition")
+        end
+        -- alert_first_contact_stage_done: a first contact of the player's (country first_contact
+        -- contacts) in progress with its stage's event pending (sorts MEDIUM, its banner LOW)
+        for _, cid in ipairs(world.list(world.path(pc, "first_contact", "contacts"))) do
+            local c = world.object("first_contact", tonumber(cid))
+            local ev = c and world.field(c, "event")
+            if c and tonumber(world.field(c, "owner")) == player and world.field(c, "status") == "in_progress"
+                and type(ev) == "table" and world.field(ev, "expired") ~= "yes" then
+                alert("alert_first_contact_stage_done", "LOW")
+                break
+            end
+        end
+        -- alert_council_agenda_ready_for_activation (CGovernment::IsAgendaFinished): the agenda's
+        -- progress at its cost (@base_agenda_cost 7000) [I: modifiers to the cost not applied]
+        local progress = tonumber(world.path(pc, "government", "council_agenda_progress"))
+        if progress and progress >= 7000 then
+            alert("alert_council_agenda_ready_for_activation")
+        end
+    end
     local communications = {}
     local rm = pc and world.field(pc, "relations_manager")
     for _, r in ipairs(rm and world.fields(rm, "relation") or {}) do

@@ -963,8 +963,11 @@ home system at the same place and scale, the top bar's clock, the outliner.
   paused, the system's name, its type (sys_homeworld for the owner's capital system, else
   colonised, outpost, unclaimed or alien **[I]**: common/system_types' weights not evaluated), the
   owner's flag, the galaxy button; `leave_galaxy_window` on the galaxy (the empire's name). The
-  map modes' window and the toolbar (home, find, chat, databank, menu) of the same file; the map
-  mode buttons' list is not filled.
+  map modes' window and the toolbar (home, find, chat, databank, menu) of the same file. The map
+  mode buttons **[V]**: common/map_modes in file order (default, unions, diplomatic, intel,
+  opinion, attitude, neighbours; the cosmic storm forecast left out **[I]**), a
+  `main_gui_map_mode_entry` each in the gridbox `map_modes` (LOWER_LEFT: from its bottom left,
+  four a row, 34 apart), icon GFX_map_mode_<key>, the active one (default, after a load) in frame 2.
 - **The left bar** (main.gui `maingui_left_bar_buttons`, collapsed at its hide_position): the
   views' icons (GFX_topbar_<view>_button x 0.6) down its gridbox, in the frame's order
   (situation, council, traditions, technology, leaders, species, empire, expansion planner, fleet
@@ -972,8 +975,18 @@ home system at the same place and scale, the top bar's clock, the outliner.
   in the game) is left out.
 - **Alerts** (alerts.gui `alerticon_window`; CAlertManager) **[V]**: from (200, 30), 55 x 72
   apart, five a row, the banner by priority (common/alerts.txt), the alert's icon (a sprite sheet's
-  frame: `sprite_sheet_sprite_type`, `default_frame`). Read so far: the research alerts (an area
-  with no `<area>_queue`, ShouldShowTechAlert).
+  frame: `sprite_sheet_sprite_type`, `default_frame`), in the order of common/alerts.txt's IDs
+  within a priority. Read so far (galaxy.lua `alerts`):
+  - the research alerts (ID 1 to 3): an area with no `<area>_queue` (ShouldShowTechAlert);
+  - `alert_unlock_tradition` (17): the country's unity at the next tradition's cost, (300 +
+    (8 x adopted) ^ 1.8) x (1 + 0.002 x empire_size) (00_defines TRADITION_COST_AMOUNTS,
+    TRADITION_COST_TRADITION, _EXP, EMPIRE_SIZE_TRADITION_COST_PENALTY) **[I]**: the cost
+    modifiers, the slider and the empire size's base are not applied;
+  - `alert_first_contact_stage_done` (38): a contact in the country's `first_contact contacts`
+    with status in_progress and an unexpired `event`; it sorts as MEDIUM, its banner is LOW (green);
+  - `alert_council_agenda_ready_for_activation` (44): government `council_agenda_progress` at
+    the agenda's cost (@base_agenda_cost 7000) **[I]**: EMPIRE_SIZE_COUNCIL_AGENDA_COST_PENALTY
+    would put the cost over the save's 7008, yet the game shows the alert.
 
 ### Not done yet
 
@@ -981,8 +994,8 @@ home system at the same place and scale, the top bar's clock, the outliner.
   plate, which names show, the fleets' presence icons, the empire's map name); the fleet type icon's frame rule (by eye now); the capital label's flag and health bar positions;
   the hyperlane exit arrows (CNavigationArrow,
   navigation_arrow_entity).
-- Alerts: unlock tradition, first contact stage, council agenda (and the other 60 conditions).
-- The map mode buttons (common/map_modes), the left bar's background strip (needs clipping).
+- Alerts: the other 60 conditions; the tradition and agenda costs' modifiers.
+- The left bar's background strip (needs clipping).
 - The outliner rows' icons (fleet status, leader level, planet portrait, starbase type, status
   lists), the military row's size line ("15/50 (15)"), the location's colour, the frontier
   sector, the tab buttons over Overview, the other tabs, collapsing groups.
