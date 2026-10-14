@@ -14,7 +14,19 @@ set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 include(ExternalProject)
 set(luajit_include_dir "${CMAKE_CURRENT_SOURCE_DIR}/lib/luajit/src")
 set(luajit_dir "${CMAKE_CURRENT_BINARY_DIR}/luajit")
-if (MSVC)
+if (MSVC AND CMAKE_CROSSCOMPILING AND CMAKE_HOST_UNIX)
+	# clang-cl on Linux (cmake/toolchain-clang-cl-xwin.cmake): msvcbuild.bat's steps, with the build
+	# tools compiled by the host's C compiler. The CRT and SDK paths come from the toolchain's flags.
+	set(luajit_library "${luajit_dir}/src/lua51.lib")
+	find_program(LUAJIT_HOST_CC NAMES cc gcc clang REQUIRED)
+	separate_arguments(luajit_target_flags UNIX_COMMAND "${CMAKE_C_FLAGS}")
+	list(JOIN luajit_target_flags "|" luajit_target_flags)
+	set(luajit_build_command ${CMAKE_COMMAND} "-DLUAJIT_SRC=${luajit_dir}/src" "-DHOST_CC=${LUAJIT_HOST_CC}"
+		"-DCLANG_CL=${CMAKE_C_COMPILER}" "-DLLVM_LIB=${CMAKE_AR}"
+		"-DTARGET_FLAGS=--target=${CMAKE_C_COMPILER_TARGET}|${luajit_target_flags}"
+		-P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/luajit-cross-msvc.cmake")
+	set(luajit_options LIST_SEPARATOR |)
+elseif (MSVC)
 	set(luajit_library "${luajit_dir}/src/lua51.lib")
 	# CL=/MD: the static build would otherwise use the static C runtime (stellar-injected uses the
 	# DLL one). msvcbuild.bat runs the tools it builds from the current directory, which cmd does
@@ -33,6 +45,7 @@ ExternalProject_Add(stellar_luajit
 	BUILD_IN_SOURCE TRUE
 	INSTALL_COMMAND ""
 	BUILD_BYPRODUCTS "${luajit_library}"
+	${luajit_options}
 )
 
 #
@@ -41,6 +54,18 @@ ExternalProject_Add(stellar_luajit
 #
 set(LUA_FNMATCH_LUA_INCLUDE_DIR "${luajit_include_dir}" CACHE PATH "" FORCE)
 set(LUA_FNMATCH_BUILD_MODULE OFF CACHE BOOL "" FORCE)
+if (MSVC AND CMAKE_CROSSCOMPILING AND CMAKE_HOST_UNIX)
+	# The engine (Rust) for Windows x64, MSVC ABI. cargo runs through a wrapper that has cc-rs build
+	# the C dependencies (zstd) with clang-cl and the toolchain's flags.
+	set(LUA_FNMATCH_RUST_TARGET x86_64-pc-windows-msvc CACHE STRING "")
+	find_program(STELLAR_CARGO NAMES cargo HINTS "$ENV{CARGO_HOME}/bin" "$ENV{HOME}/.cargo/bin" REQUIRED)
+	separate_arguments(cargo_cross_cflags UNIX_COMMAND "${CMAKE_C_FLAGS}")
+	list(JOIN cargo_cross_cflags " " cargo_cross_cflags)
+	configure_file(cmake/cargo-cross-msvc.sh.in "${CMAKE_CURRENT_BINARY_DIR}/cargo-cross-msvc.sh" @ONLY)
+	file(COPY "${CMAKE_CURRENT_BINARY_DIR}/cargo-cross-msvc.sh" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/cargo-cross"
+		FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+	set(LUA_FNMATCH_CARGO "${CMAKE_CURRENT_BINARY_DIR}/cargo-cross/cargo-cross-msvc.sh" CACHE FILEPATH "" FORCE)
+endif()
 add_subdirectory(lib/lua_fnmatch)
 set(LUA_SIGMATCH_LUA_INCLUDE_DIR "${luajit_include_dir}" CACHE PATH "" FORCE)
 set(LUA_SIGMATCH_BUILD_MODULE OFF CACHE BOOL "" FORCE)
@@ -48,7 +73,9 @@ add_subdirectory(lib/lua_sigmatch)
 
 
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
-include (InstallRequiredSystemLibraries)
+if (NOT (CMAKE_CROSSCOMPILING AND CMAKE_HOST_UNIX)) # it looks for Visual Studio on the host
+	include (InstallRequiredSystemLibraries)
+endif()
 include(cmake/CheckGit.cmake)
 CheckGitSetup()
 

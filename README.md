@@ -1,4 +1,4 @@
-[![Build stellarstellaris Windows](https://github.com/MattMills/stellarstellaris-win/actions/workflows/cmake.yml/badge.svg?branch=master)](https://github.com/MattMills/stellarstellaris-win/actions/workflows/cmake.yml)
+[![Build](https://github.com/MattMills/stellarstellaris-win/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/MattMills/stellarstellaris-win/actions/workflows/build.yml)
 
 
 # StellarStellars - Windows (+Linux?) edition

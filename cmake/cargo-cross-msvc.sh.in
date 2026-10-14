@@ -1,0 +1,10 @@
+#!/bin/sh
+# cargo for the Windows x64 cross build (x86_64-pc-windows-msvc): cc-rs compiles C dependencies
+# with clang-cl and the toolchain's flags (CRT and SDK paths). Written by CMakeLists.txt.
+export CC_x86_64_pc_windows_msvc='@CMAKE_C_COMPILER@'
+export CXX_x86_64_pc_windows_msvc='@CMAKE_CXX_COMPILER@'
+export AR_x86_64_pc_windows_msvc='@CMAKE_AR@'
+export CFLAGS_x86_64_pc_windows_msvc='--target=@CMAKE_C_COMPILER_TARGET@ @cargo_cross_cflags@'
+export CXXFLAGS_x86_64_pc_windows_msvc='--target=@CMAKE_C_COMPILER_TARGET@ @cargo_cross_cflags@'
+export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER='@CMAKE_LINKER@'
+exec '@STELLAR_CARGO@' "$@"
