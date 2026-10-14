@@ -272,7 +272,10 @@ function C.install(M)
             return function(ctx, e) return M.script_value(spec, ctx, e) end
         end
         if t:sub(1, 8) == "trigger:" then
+            local name = t:sub(9):lower()
             return function(ctx, e)
+                local f = M.TRIGGER_VALUES and M.TRIGGER_VALUES[name]
+                if f then return f(ctx, e) end
                 miss("value", t, ctx, e)
                 return 0
             end
