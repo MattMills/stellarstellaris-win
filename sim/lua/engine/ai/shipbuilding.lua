@@ -99,16 +99,42 @@ local function ai_block(country)
     return type(ai) == "table" and ai or nil
 end
 
+-- the strategy entries of an AI block by "type/id", in the block's order: built once per version
+-- of the lists (engine.ai.strategy bumps it when it rewrites them) and block length (an entry
+-- removed or added); scanning every entry per lookup was a quarter of the simulation's time
+local index_by_block = setmetatable({}, { __mode = "k" })
+local function strategy_index(ai)
+    local st = package.loaded["engine.ai.strategy"]
+    local version = st and st.version or 0
+    local c = index_by_block[ai]
+    if c and c.version == version and c.n == #ai then
+        return c.map
+    end
+    local map = {}
+    for _, e in ipairs(ai) do
+        if e.op and e.key and e.key.text == "strategy" and type(e.value) == "table" then
+            local k = tostring(world.field(e.value, "type")) .. "/" .. tostring(world.field(e.value, "id"))
+            local list = map[k]
+            if not list then
+                list = {}
+                map[k] = list
+            end
+            list[#list + 1] = e
+        end
+    end
+    index_by_block[ai] = { version = version, n = #ai, map = map }
+    return map
+end
+
 -- GetStrategyValue(type, id, target): the first entry's value
 function M.strategy_value(country, ty, id, target)
     local ai = ai_block(country)
-    for _, e in ipairs(ai or {}) do
-        if e.op and e.key and e.key.text == "strategy" and type(e.value) == "table" then
-            local s = e.value
-            if tonumber(world.field(s, "type")) == ty and tonumber(world.field(s, "id")) == id
-                and (target == nil or tonumber(world.field(s, "target")) == target) then
-                return tonumber(world.field(s, "value")) or 0, e
-            end
+    if not ai then
+        return 0
+    end
+    for _, e in ipairs(strategy_index(ai)[tostring(ty) .. "/" .. tostring(id)] or {}) do
+        if target == nil or tonumber(world.field(e.value, "target")) == target then
+            return tonumber(world.field(e.value, "value")) or 0, e
         end
     end
     return 0
