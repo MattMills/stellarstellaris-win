@@ -1426,8 +1426,16 @@ end
 -- the day (systems.lua `daily.countries_parallel`); STELLAR_EXPLORATION=off leaves the save's
 -- fields as they are (to measure what the module changes)
 local OFF = os.getenv("STELLAR_EXPLORATION") == "off"
+-- STELLAR_STORE=ffi: the pass over the shared store, on the worker pool (engine.store.bridge,
+-- docs/data_layer.md); the surveys it finds come back into STATE for country_serial
+local STORE = os.getenv("STELLAR_STORE") == "ffi"
 function X.countries_daily(host, date)
     if OFF then return end
+    if STORE then
+        require("engine.store.bridge").countries_daily(host, date)
+        X.stats.days = X.stats.days + 1
+        return
+    end
     X.load_pass()
     pass(true, true)
     X.stats.days = X.stats.days + 1

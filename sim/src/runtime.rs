@@ -99,6 +99,9 @@ pub struct Runtime {
     /// The day's pool of random draws (`DailyUpdate`'s 1,000, read by the parallel per-object
     /// updates: ethics, factions, ...): `RUST.daily_pool()`.
     pub daily_pool: Rc<RefCell<Vec<i32>>>,
+    /// The shared store and the worker pool, made when Lua asks for them (`RUST.store()`,
+    /// `RUST.pool_start(n)`: sim/src/store.rs, docs/data_layer.md).
+    pub shared: crate::store::Handle,
 }
 
 impl Runtime {
@@ -160,8 +163,9 @@ impl Runtime {
                 Ok(mlua::Value::Table(lua.create_sequence_from(pool.iter().copied())?))
             })?,
         )?;
+        let shared = crate::store::install(&lua)?;
         let engine: Table = lua.load("return require('engine')").set_name("engine").eval()?;
-        Ok(Runtime { lua, engine, date, rng, monthly_pool, daily_pool })
+        Ok(Runtime { lua, engine, date, rng, monthly_pool, daily_pool, shared })
     }
 
     /// Reads the vanilla file set from `game_dir` (the Stellaris install, in place) and the world
