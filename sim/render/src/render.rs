@@ -264,7 +264,8 @@ pub async fn open_device(
         let desc = wgpu::DeviceDescriptor {
             label: Some("stellar-render"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+            // all the adapter has (no downlevel cap)
+            required_limits: adapter.limits(),
             ..Default::default()
         };
         match adapter.request_device(&desc).await {

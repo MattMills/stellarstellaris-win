@@ -22,7 +22,8 @@ symbols name every function: CGameCamera, CCamera::UpdateMatrices, CPlanet::Calc
 CCelestialCoordinate::GetDisplayCoordinate; the field offsets from that code, the Linux layout),
 and checked against the game's own frames and values; **[V]** there also marks those.
 
-Machines: `10.5.0.24` (Linux, GT 730 with NVK, Mesa 26.0.8; game data in `/opt/stellaris`, saves in
+Machines: `10.5.0.24` (Linux, GeForce GTX 1080 Ti (GP102, Pascal, 11 GB) with nouveau and NVK, Mesa
+26.0.8, since 2026-10-15; game data in `/opt/stellaris`, saves in
 `/opt/stellaris-saves`), the Windows laptop (Radeon RX Vega M and Intel HD 630; the Steam install).
 
 ## In short
@@ -56,7 +57,7 @@ Machines: `10.5.0.24` (Linux, GT 730 with NVK, Mesa 26.0.8; game data in `/opt/s
   `interface/fonts.gfx`, with TrueType overrides only for some languages **[V]**.
 - **Every DDS in `gfx/` and `interface/` decodes on the CPU** with `image_dds`: 21,340 files in
   seven formats, no BC7 or DX10 headers **[V]**.
-- **Backends:** Vulkan on Linux (NVK on the GT 730 renders correctly); DX12 on Windows by default,
+- **Backends:** Vulkan on Linux (NVK on the GTX 1080 Ti renders correctly); DX12 on Windows by default,
   because the laptop's 2018 AMD Vulkan driver (`amdvlk64.dll` 9.2.10.20) crashes when presenting
   and draws no hyperlanes, and its Intel Vulkan driver dies at start **[V]** (measured).
 - **Meshes** (`gfx/models/**/*.mesh`) are a binary tree of objects and typed properties (`@@b@`,
@@ -276,8 +277,10 @@ Paths in the files are written for Windows: looked up ignoring case **[I]**.
 
 ## 5. GPU backends
 
-- **wgpu 30.0.1** with winit 0.30.13. On 10.5.0.24: Vulkan; NVK (Mesa 26.0.8) on the GT 730
-  (GK208B, Kepler) renders correctly offscreen; under Xvfb it cannot present (no DRI3), so a window
+- **wgpu 30.0.1** with winit 0.30.13. On 10.5.0.24: Vulkan; NVK (Mesa 26.0.8) on the GTX 1080 Ti
+  (GP102, Pascal, 11 GB; before 2026-10-15 a GT 730, GK208B Kepler, which rendered the same: the
+  default system view's mean colour is 9.3, 14.8, 30.4 on both)
+  renders correctly offscreen; under Xvfb it cannot present (no DRI3), so a window
   there runs on llvmpipe (lavapipe) **[V]**. The two Vulkan devices agree to 2/255 per channel on
   the plain map and 7/255 on the art map (filtering) **[V]**.
 - **The laptop**: Radeon RX Vega M GL (driver 24.20.11001.8003) and Intel HD 630. Vulkan:
@@ -297,8 +300,8 @@ Paths in the files are written for Windows: looked up ignoring case **[I]**.
   format when there is one, so the window matches the checked PNGs (through an sRGB surface the
   20% cyan lanes came out much brighter) **[V]** measured. With an sRGB target the shader converts
   sRGB to linear.
-- **Limits**: `Limits::downlevel_defaults().using_resolution(adapter.limits())` (2048 textures at
-  least; the 2048² colour maps and border texture fit). `write_texture` needs no row alignment;
+- **Limits**: the adapter's own (`adapter.limits()`, no downlevel cap any more; the renderer
+  needs 2048, for the colour maps and border texture). `write_texture` needs no row alignment;
   `copy_texture_to_buffer` needs rows of 256 bytes.
 - **Windows**: a window that does not fit the screen runs below it; without `--size` the window is
   fitted to 85% x 80% of the monitor.
@@ -641,7 +644,8 @@ The time of `frame` (scene, upload, the GPU's frame and the read-back; not the P
 
 | machine | galaxy 1600x900 | system 1600x900 | planet 1024² | ship 1024² |
 |---|---|---|---|---|
-| 10.5.0.24, GT 730 (NVK, Vulkan) | 295 ms first, 48 to 113 ms | 2.5 s first, 40 to 50 ms | 0.65 s first, 37 ms (star) | 24 to 70 ms |
+| 10.5.0.24, GTX 1080 Ti (NVK, Vulkan; nouveau has no reclocking on Pascal: boot clocks) | 1.0 s first, 30 ms | 2.8 s first, 15 ms | 0.7 s first, 11 ms | 11 to 24 ms |
+| 10.5.0.24, GT 730 (NVK, Vulkan; before 2026-10-15) | 295 ms first, 48 to 113 ms | 2.5 s first, 40 to 50 ms | 0.65 s first, 37 ms (star) | 24 to 70 ms |
 | laptop, Radeon RX Vega M GL (DX12) | 500 ms first, 10 to 15 ms | 4.8 to 6.5 s first, 7 to 8 ms | 1.3 s first | 24 to 140 ms |
 | the game under Xvfb (llvmpipe) | 10 to 20 ms a frame; a `frame` takes 2 to 2.3 s (the settling wait) | same | | |
 
