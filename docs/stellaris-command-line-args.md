@@ -66,7 +66,7 @@ who reads it: **C** `ParseClausewitzCommandLineOption`, **G** `RunGame`, **P** `
 | `-incrementalsaves`, `-incrementalsaves=<n>` | G | Saves non-ironman games on 1 January every n years (without n: the define `NGameplay.INCREMENTAL_SAVE_FREQUENCY`), as `<game name>_<yyyy.mm.dd>` in the game's save folder (`CGameState::HandleTurnTick`). |
 | `-random=<n>` | G | n ≥ 0: the seed of the random generator when the main menu opens (`CFrontEndIdler::SetAsCurrentIdler`), instead of the clock, and the seed the game setup sends (`CGameSetup::StartSyncPlayers`). It fixes the seed, not the position, so it gives the same galaxy only when everything else is the same too: see [Random numbers](#random-numbers). Default -1. |
 | `-rng_seed=<n>`, `-rng_pos=<n>` | G | Only when a game state is loaded (`CGameState::InitPostRead`): the random generator's seed and position (its place in the sequence of numbers, not a place on the map). Either option sets both; the one not given is 0. No effect on a new game. See [Random numbers](#random-numbers). |
-| `-loadrandomseed` | G | `g_bUseSavedRandom` (also the console variable `UseSavedRandom`): loading a save restores the random generator from the save's `random_seed` and `random_count`, and each AI's own generators. Otherwise a load keeps the current generator (the main menu's, or the running game's) and restarts the AI's. |
+| `-loadrandomseed` | G | `g_bUseSavedRandom` (also the console variable `UseSavedRandom`): loading a save restores the random generator from the save's `random_seed` and `random_count`. Otherwise a load keeps the current generator (the main menu's, or the running game's). `CCountryAI::ReadMember` also reads each AI's own generator from the save with this option, but in a headless run the AI behaved as if its generator restarted at the country id anyway, as on a normal load (see [random.md](random.md); not confirmed). |
 | `-combat_debug` | G | Combat test mode (`g_bCombatOnlyMode`): `CGameApplication::InitGame` loads `combat_test_scenarios.txt` and starts a `CCombatDebugIdler` instead of the main menu. Monthly updates, most of the daily update and the AI interior minister are off, and `CFleet::CanAddShip` skips its checks. |
 
 ## Joining a multiplayer game
@@ -285,6 +285,15 @@ the same choices, and the random outcomes repeat. The headless game did this fro
 `-rng_seed=64429129 -rng_pos=0` and reproduced the player's next autosave, except for his event
 choices ([random.md](random.md)). `-loadrandomseed` does the same from the numbers stored in the
 save, so you do not need to know them.
+
+The position is set when the game state is read, and the rest of the load draws from the generator
+too. In the headless game (Linux 4.5.2) a load drew 112 values, so after `-rng_pos=0` the first tick
+started at position 112. With `-loadrandomseed`, it started 112 after the save's `random_count`.
+
+Replays are not exact forever. The AI's own generators are not set by these options. In the
+headless game, two runs of the same game matched byte for byte for about five years and then
+drifted, even with task threads off and address-space randomization off (headless/README.md,
+"Correctness standard").
 
 `-rng_pos=<n>` is a position in the sequence of random numbers (how many have been drawn since the
 seed was set), not a place in the galaxy. No option puts an empire at a chosen spot (say, "2
