@@ -60,6 +60,16 @@ function R.system_of(kind, id)
     elseif kind == "ship" then
         local s = obj("ship", id)
         return s and R.system_of("fleet", tonumber(world.field(s, "fleet")))
+    elseif kind == "fleet" then
+        -- a fleet keeps its position in movement_manager.coordinate (the fleet movement's state
+        -- when it runs); nil in FTL
+        local ok, movement = pcall(require, "engine.fleets.movement")
+        if ok and movement.system_of then
+            return movement.system_of(id)
+        end
+        local f = obj("fleet", id)
+        local c = f and world.path(f, "movement_manager", "coordinate")
+        return type(c) == "table" and ref(world.field(c, "origin")) or nil
     elseif kind == "colony" then
         return R.system_of("planet", world.colony_planet[id])
     elseif kind == "pop_group" then
@@ -72,17 +82,36 @@ function R.system_of(kind, id)
     return type(coord) == "table" and ref(world.field(coord, "origin")) or nil
 end
 
--- R.colony_of(kind, id) -> colony id of a scope (NScriptUtil::GetColonyFromScope: a planet's, a pop
--- group's, a colony itself), or nil
+-- R.colony_of(kind, id) -> colony id of a scope (NScriptUtil::GetColonyFromScope 0x9f4ad0: a
+-- planet's `colony`, a ship's `colony` (its carrier's), a colony itself; nil for any other scope)
 function R.colony_of(kind, id)
+    local col
     if kind == "colony" then
-        return obj("colony", id) and id or nil
+        col = id
     elseif kind == "planet" then
-        return world.planet_colony[id]
-    elseif kind == "pop_group" then
-        local g = obj("pop_group", id)
-        local col = g and tonumber(world.field(g, "planet"))
-        return col and obj("colony", col) and col or nil
+        col = world.planet_colony[id]
+    elseif kind == "ship" then
+        local s = obj("ship", id)
+        col = s and ref(world.field(s, "colony"))
+    end
+    return (col and obj("colony", col)) and col or nil
+end
+
+-- R.carrier_of(kind, id) -> kind, id of the scope's colony carrier (NScriptUtil::GetCarrierFromScope
+-- 0x9f48a0): a planet itself, a ship itself, a colony's `carrier = { type reference }`; nil else
+function R.carrier_of(kind, id)
+    if kind == "planet" then
+        return obj("planet", id) and "planet" or nil, id
+    elseif kind == "ship" then
+        return obj("ship", id) and "ship" or nil, id
+    elseif kind == "colony" then
+        local c = obj("colony", id)
+        local carrier = c and world.field(c, "carrier")
+        if type(carrier) ~= "table" then return nil end
+        local t, r = world.field(carrier, "type"), ref(world.field(carrier, "reference"))
+        if t == "planet" or t == "ship" then
+            return obj(t, r) and t or nil, r
+        end
     end
     return nil
 end
@@ -306,6 +335,18 @@ function R.council_position_of_leader(lid)
     return nil
 end
 
+-- R.is_councilor(leader) (CIsCouncilorTrigger 0x19beb90): the ruler of its country, or its
+-- `council_location = { type = council_position id = <position> }` names a position
+function R.is_councilor(lid)
+    local l = obj("leader", lid)
+    if not l then return false end
+    local c = obj("country", ref(world.field(l, "country")))
+    if c and tonumber(world.field(c, "ruler")) == lid then return true end
+    local loc = world.field(l, "council_location")
+    return type(loc) == "table" and world.field(loc, "type") == "council_position"
+        and ref(world.field(loc, "id")) ~= nil
+end
+
 -- R.is_sector_capital(colony) (CIsSectorCapitalTrigger 0x1957bf0): the sector of the colony's
 -- system (`sector = <id>`, CGalacticObject +0x584) has the colony as its `local_capital`
 -- (CSector +0x16c)
@@ -315,6 +356,643 @@ function R.is_sector_capital(col)
     local sector = s and ref(world.field(s, "sector"))
     local so = sector and obj("sector", sector)
     return so ~= nil and tonumber(world.field(so, "local_capital")) == col
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- fleets and ships, more
+
+-- R.fleet_owner(fleet) -> the country whose fleets_manager.owned_fleets lists it (CFleet +0x44c)
+function R.fleet_owner(fid)
+    return fid and world.fleet_owner and world.fleet_owner[fid] or nil
+end
+
+function R.ship_fleet(sid)
+    local s = obj("ship", sid)
+    return s and ref(world.field(s, "fleet")) or nil
+end
+
+-- R.ship_size_field(size, key) -> a field of the ship size definition (class, ship_category, ...)
+function R.ship_size_field(size, key)
+    local d = size and defs().get("common/ship_sizes", size)
+    return d and defs().field(d.block, key) or nil
+end
+
+-- R.ship_alive(ship) (CShip::IsAlive): hit points above 0
+function R.ship_alive(sid)
+    local s = obj("ship", sid)
+    return s ~= nil and (tonumber(world.field(s, "hitpoints")) or 0) > 0
+end
+
+-- R.fleet_order_names(fleet) -> the names of its current order and that order's sub orders, and of
+-- its queued orders (CHasFleetOrderTrigger 0x1992000: `current_order = { <name> = { ... sub_order =
+-- { <name> = { } } } }`, `order = { <name> = { } ... }`)
+function R.fleet_order_names(fid)
+    local f = obj("fleet", fid)
+    local out = {}
+    if not f then return out end
+    local cur = world.field(f, "current_order")
+    local n = 0
+    while type(cur) == "table" and n < 32 do
+        local nxt
+        for _, e in ipairs(cur) do
+            if e.op and e.key and e.value.text == nil then
+                out[#out + 1] = e.key.text
+                nxt = world.field(e.value, "sub_order")
+                break
+            end
+        end
+        cur, n = nxt, n + 1
+    end
+    for _, q in ipairs(world.fields(f, "order")) do
+        if type(q) == "table" then
+            for _, e in ipairs(q) do
+                if e.op and e.key and e.value.text == nil then out[#out + 1] = e.key.text end
+            end
+        end
+    end
+    return out
+end
+
+-- R.fleet_property(fleet, name): `properties = { <name> = yes }` (TFleetFlags::WriteMembers 0xc56210)
+function R.fleet_property(fid, name)
+    local f = obj("fleet", fid)
+    local p = f and world.field(f, "properties")
+    return type(p) == "table" and world.field(p, name) == "yes"
+end
+
+-- R.owned_fleet_entries(country) -> the blocks of its fleets_manager.owned_fleets, in order
+function R.owned_fleet_entries(country)
+    local c = obj("country", country)
+    return world.blocks(c and world.path(c, "fleets_manager", "owned_fleets"))
+end
+
+-- R.owned_fleets(country) -> fleet ids (COwnedFleetListBuilder 0x1813f40: every entry)
+function R.owned_fleets(country)
+    local out = {}
+    for _, e in ipairs(R.owned_fleet_entries(country)) do
+        local f = ref(world.field(e, "fleet"))
+        if f and obj("fleet", f) then out[#out + 1] = f end
+    end
+    return out
+end
+
+-- R.controlled_fleets(country) -> fleet ids: _ControlledFleets as PostGameStateReadInit (0x917f20)
+-- rebuilds it from every country's owned entries: a normal entry is its owner's, a leased or lost one
+-- (`ownership_status`) its `debtor`'s
+function R.controlled_fleets(country)
+    local out = {}
+    for _, cid in ipairs(world.all("country")) do
+        for _, e in ipairs(R.owned_fleet_entries(cid)) do
+            local f = ref(world.field(e, "fleet"))
+            if f and obj("fleet", f) then
+                local status = world.field(e, "ownership_status")
+                local ctrl = cid
+                if status ~= nil and status ~= "normal" and status ~= 0 then
+                    ctrl = ref(world.field(e, "debtor"))
+                end
+                if ctrl == country then out[#out + 1] = f end
+            end
+        end
+    end
+    return out
+end
+
+-- R.alive_ships(fleets) -> the alive ships of the fleets, in order (COwnedShipListBuilder 0x1815c00)
+function R.alive_ships(fleets)
+    local out = {}
+    for _, fid in ipairs(fleets) do
+        for _, sid in ipairs(R.fleet_ships(fid)) do
+            if R.ship_alive(sid) then out[#out + 1] = sid end
+        end
+    end
+    return out
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- systems
+
+-- R.primary_starbase(system) -> the first of its `starbases` when it exists (CGalacticObject
+-- +0x568; 4294967295 in an unowned system), or nil
+function R.primary_starbase(sid)
+    local s = obj("system", sid)
+    local first = s and world.list(world.field(s, "starbases"))[1]
+    local sb = ref(first)
+    return (sb and obj("starbase", sb)) and sb or nil
+end
+
+-- R.starbase_owner(starbase) -> its station ship's fleet's owner
+function R.starbase_owner(sb)
+    local o = obj("starbase", sb)
+    local station = o and ref(world.field(o, "station"))
+    return station and R.fleet_owner(R.ship_fleet(station)) or nil
+end
+
+-- R.system_owner(system) -> the owner of its primary starbase (CGalacticObject's ownership cache)
+function R.system_owner(sid)
+    local sb = R.primary_starbase(sid)
+    return sb and R.starbase_owner(sb) or nil
+end
+
+-- R.hyperlanes(system) -> the systems its hyperlanes go to, in order (`hyperlane = { { to length } }`)
+function R.hyperlanes(sid)
+    local s = obj("system", sid)
+    local out = {}
+    for _, h in ipairs(world.blocks(s and world.field(s, "hyperlane"))) do
+        local to = ref(world.field(h, "to"))
+        if to then out[#out + 1] = to end
+    end
+    return out
+end
+
+-- R.system_list(system, key) -> the ids of a list field of the system (`natural_wormholes`,
+-- `fleet_presence`, `megastructures`, ...)
+function R.system_list(sid, key)
+    local s = obj("system", sid)
+    local out = {}
+    for _, v in ipairs(world.list(s and world.field(s, key))) do
+        local id = ref(v)
+        if id then out[#out + 1] = id end
+    end
+    return out
+end
+
+-- R.capital_system(country) -> the system of the country's capital colony's carrier
+function R.capital_system(country)
+    local c = obj("country", country)
+    local col = c and ref(world.field(c, "capital"))
+    local kind, id = col and R.carrier_of("colony", col)
+    if not kind then return nil end
+    return R.system_of(kind, id)
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- starbases, more
+
+-- R.starbase_items(starbase, key) -> the values of its `buildings` / `modules` (`<slot> = <key>`)
+function R.starbase_items(sb, key)
+    local o = obj("starbase", sb)
+    local b = o and world.field(o, key)
+    local out = {}
+    for _, e in ipairs(type(b) == "table" and b or {}) do
+        if e.op and e.value and e.value.text then out[#out + 1] = e.value.text end
+    end
+    return out
+end
+
+-- R.starbase_of_station(ship) -> the starbase whose `station` is the ship (CStarbaseManager
+-- ::GetStarbaseThruLookup), or nil
+function R.starbase_of_station(sid)
+    for _, sb in ipairs(world.all("starbase")) do
+        if tonumber(world.field(obj("starbase", sb), "station")) == sid then return sb end
+    end
+    return nil
+end
+
+-- the construction items (`construction = { item_mgr = { items = { <id> = { ... } } } }`)
+local function construction_items()
+    return world.stores["construction.item_mgr.items"] or {}
+end
+R.construction_items = construction_items
+
+-- R.has_queued_upgrade(starbase) (CStarbase::HasQueuedUpgradeConstruction): an item
+-- `buildable_starbase_upgrade = { starbase_upgrade starbase = <id> }`
+function R.has_queued_upgrade(sb)
+    for _, it in pairs(construction_items()) do
+        local u = world.field(it, "buildable_starbase_upgrade")
+        if type(u) == "table" and tonumber(world.field(u, "starbase")) == sb then return true end
+    end
+    return false
+end
+
+-- R.country_starbases(country) -> the starbases of the systems whose starbases the country owns
+-- (the systems' `starbases`, each one whose owner is the country)
+function R.country_starbases(country)
+    local out = {}
+    for _, sid in ipairs(world.all("system")) do
+        for _, v in ipairs(world.list(world.field(obj("system", sid), "starbases"))) do
+            local sb = ref(v)
+            if sb and obj("starbase", sb) and R.starbase_owner(sb) == country then out[#out + 1] = sb end
+        end
+    end
+    return out
+end
+
+-- R.upgrading_outposts(country) (CCountry::CalcNumUpgradingOutpostStarbases 0x749db0): the systems of
+-- the country whose primary starbase is not upgraded (its level has no lower level: the outpost)
+-- and has an upgrade queued
+function R.upgrading_outposts(country)
+    local n = 0
+    for _, sid in ipairs(world.all("system")) do
+        local sb = R.primary_starbase(sid)
+        if sb and R.starbase_owner(sb) == country then
+            local level = R.starbase_level(sb)
+            if level and R.level_of_size("starbase_outpost") == level and R.has_queued_upgrade(sb) then
+                n = n + 1
+            end
+        end
+    end
+    return n
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- planets, colonies, deposits
+
+-- R.planet_class_flag(planet, key): the planet's class (common/planet_classes) has `key = yes`
+function R.planet_class_flag(pid, key)
+    local p = obj("planet", pid)
+    local class = p and world.field(p, "planet_class")
+    local d = class and defs().get("common/planet_classes", class)
+    return d ~= nil and defs().field(d.block, key) == "yes"
+end
+
+-- R.carrier_deposits(kind, id) -> the deposit ids of a carrier (a planet's, a ship's `deposits`)
+function R.carrier_deposits(kind, id)
+    local o = obj(kind, id)
+    local out = {}
+    for _, v in ipairs(world.list(o and world.field(o, "deposits"))) do
+        local d = ref(v)
+        if d and obj("deposit", d) then out[#out + 1] = d end
+    end
+    return out
+end
+
+function R.deposit_type(did)
+    local d = obj("deposit", did)
+    return d and world.field(d, "type") or nil
+end
+
+-- R.deposit_type_field(type, key) -> a field of the deposit type (common/deposits)
+function R.deposit_type_field(dtype, key)
+    local d = dtype and defs().get("common/deposits", dtype)
+    return d and defs().field(d.block, key) or nil
+end
+
+-- R.deposit_is_blocker(type): the deposit type's category (common/deposit_categories) has
+-- `blocker = yes` (CDepositCategory +0x49)
+function R.deposit_is_blocker(dtype)
+    local cat = R.deposit_type_field(dtype, "category")
+    local d = cat and defs().get("common/deposit_categories", cat)
+    return d ~= nil and defs().field(d.block, "blocker") == "yes"
+end
+
+-- R.deposit_has_resources(type) (CDeposit::HasResources: its economic unit's resource table is not
+-- empty): the type's `resources = { produces = { ... } }` names a resource [I: produce entries with
+-- triggers are not evaluated]
+function R.deposit_has_resources(dtype)
+    local res = R.deposit_type_field(dtype, "resources")
+    if type(res) ~= "table" then return false end
+    for _, e in ipairs(res) do
+        if e.op and e.key and e.key.text == "produces" and e.value.text == nil then
+            for _, x in ipairs(e.value) do
+                if x.op and x.key and (x.value.text == nil or (tonumber(x.value.text) or 1) ~= 0) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- R.colony_field(colony, key)
+function R.colony_field(col, key)
+    local c = obj("colony", col)
+    return c and world.field(c, key)
+end
+
+-- R.colony_job(colony, type) -> the first pop job of the colony (`pop_jobs = { ids }`) of the type
+-- (CColony::AccessPopJob 0xdb0b10), or nil
+function R.colony_job(col, jtype)
+    local c = obj("colony", col)
+    for _, v in ipairs(world.list(c and world.field(c, "pop_jobs"))) do
+        local j = obj("pop_job", tonumber(v))
+        if j and world.field(j, "type") == jtype then return j end
+    end
+    return nil
+end
+
+-- R.colony_buildings(colony) -> building ids of its `buildings_cache` (the buildings of its owner)
+function R.colony_buildings(col)
+    local out = {}
+    for _, v in ipairs(world.list(R.colony_field(col, "buildings_cache"))) do
+        local b = tonumber(v)
+        if b and obj("buildings", b) then out[#out + 1] = b end
+    end
+    return out
+end
+
+-- R.colony_zone_buildings(colony) -> building ids in its districts' zones (`districts` ->
+-- `zones` -> `buildings`)
+function R.colony_zone_buildings(col)
+    local out = {}
+    for _, d in ipairs(world.list(R.colony_field(col, "districts"))) do
+        for _, z in ipairs(world.list(world.field(obj("districts", tonumber(d)), "zones"))) do
+            local zo = obj("zones", ref(z))
+            for _, b in ipairs(world.list(zo and world.field(zo, "buildings"))) do
+                local bid = ref(b)
+                if bid then out[#out + 1] = bid end
+            end
+        end
+    end
+    return out
+end
+
+function R.building_field(bid, key)
+    local b = obj("buildings", bid)
+    return b and world.field(b, key)
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- countries, more
+
+local RESEARCH_INDEX = { physics_research = 1, society_research = 2, engineering_research = 3 }
+-- R.stockpile(country, resource) (CStandardEconomyCountryModule::BuildResourceTable 0x7fe7e0): the
+-- economy module's resources, research read from tech_status.stored_techpoints (physics, society,
+-- engineering)
+function R.stockpile(country, res)
+    local c = obj("country", country)
+    if not c then return 0 end
+    local ri = RESEARCH_INDEX[res]
+    if ri then
+        local v = world.list(world.path(c, "tech_status", "stored_techpoints"))[ri]
+        return tonumber(v) or 0
+    end
+    return tonumber(world.path(c, "modules", "standard_economy_module", "resources", res)) or 0
+end
+
+-- R.country_list(country, key) -> the values of a list field of the country (`ascension_perks`,
+-- `traditions`, ...)
+function R.country_list(country, key)
+    local c = obj("country", country)
+    return world.list(c and world.field(c, key))
+end
+
+-- R.has_edict(country, edict) (CHasEdictTrigger 0x197e730): `edicts = { { edict = x ... } }`, no date
+-- check
+function R.has_edict(country, edict)
+    local c = obj("country", country)
+    for _, b in ipairs(world.blocks(c and world.field(c, "edicts"))) do
+        if world.field(b, "edict") == edict then return true end
+    end
+    return false
+end
+
+-- R.country_events_field(country, key) -> the blocks of `events = { <key> = { } ... }`
+function R.country_events(country, key)
+    local c = obj("country", country)
+    local ev = c and world.field(c, "events")
+    local out = {}
+    for _, v in ipairs(type(ev) == "table" and world.fields(ev, key) or {}) do
+        if type(v) == "table" then out[#out + 1] = v end
+    end
+    return out
+end
+
+-- R.country_type_field(country, key) -> a field of the country's type (common/country_types)
+function R.country_type_field(country, key)
+    local c = obj("country", country)
+    local t = c and world.field(c, "type")
+    local d = t and defs().get("common/country_types", t)
+    return d and defs().field(d.block, key) or nil
+end
+
+-- R.num_rare_techs(country) (CNumRareTechsTrigger 0x198fe60): its technologies whose definition has
+-- `is_rare = yes`
+function R.num_rare_techs(country)
+    local c = obj("country", country)
+    local n = 0
+    for _, t in ipairs(world.fields(c and world.field(c, "tech_status"), "technology")) do
+        local d = type(t) == "string" and defs().get("common/technology", t)
+        if d and defs().field(d.block, "is_rare") == "yes" then n = n + 1 end
+    end
+    return n
+end
+
+-- the galactic community (`galactic_community = { members leader empire passed ... }` in the
+-- save's top level; absent fields: no community)
+function R.galactic_community()
+    local gc = world.meta and world.meta.galactic_community
+    return type(gc) == "table" and gc or nil
+end
+
+-- R.gc_member(country): in `galactic_community.members`
+function R.gc_member(country)
+    local gc = R.galactic_community()
+    for _, v in ipairs(world.list(gc and world.field(gc, "members"))) do
+        if tonumber(v) == country then return true end
+    end
+    return false
+end
+
+-- R.gc_leader() -> the community's `leader` and whether it is an empire (`empire = yes`)
+function R.gc_leader()
+    local gc = R.galactic_community()
+    if not gc then return nil, false end
+    return ref(world.field(gc, "leader")), world.field(gc, "empire") == "yes"
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- plain field readers
+
+R.all = function(kind) return world.all(kind) end
+local function field_of(kind)
+    return function(id, key)
+        local o = obj(kind, id)
+        return o and world.field(o, key)
+    end
+end
+R.country_field = field_of("country")
+R.planet_field = field_of("planet")
+R.system_field = field_of("system")
+R.starbase_field = field_of("starbase")
+R.fleet_field = field_of("fleet")
+R.ship_field = field_of("ship")
+R.situation_field = field_of("situation")
+R.leader_field = field_of("leader")
+
+-- R.planet_owner(planet) -> its `owner`, or nil
+function R.planet_owner(pid)
+    return ref(R.planet_field(pid, "owner"))
+end
+
+-- R.level_field(level, key) -> a field of a starbase level (common/starbase_levels)
+function R.level_field(level, key)
+    local d = level and defs().get("common/starbase_levels", level)
+    return d and defs().field(d.block, key) or nil
+end
+
+-- R.ship_size_prerequisites(size) -> the technologies of its `prerequisites = { ... }`
+function R.ship_size_prerequisites(size)
+    local p = R.ship_size_field(size, "prerequisites")
+    local out = {}
+    for _, e in ipairs(type(p) == "table" and p or {}) do
+        if e.text then out[#out + 1] = e.text end
+    end
+    return out
+end
+
+-- R.country_type_flag(country, ...) -> a field of the country's type, along a path of blocks
+-- (`faction`, `primitive`: the primitive setting, SCountryInstanceProperties IsPrimitive [I])
+function R.country_type_flag(country, ...)
+    local c = obj("country", country)
+    local t = c and world.field(c, "type")
+    local d = t and defs().get("common/country_types", t)
+    local v = d and d.block
+    for _, k in ipairs({ ... }) do
+        if type(v) ~= "table" then return nil end
+        v = defs().field(v, k)
+    end
+    return v
+end
+
+-- R.tradition_of(key) -> the tradition and the swap (nil) a key names: a tradition (common/traditions
+-- key), or a tradition swap's `name` (its tradition, and the swap name)
+local swaps_by_name
+function R.tradition_of(key)
+    if defs().get("common/traditions", key) then return key, nil end
+    if swaps_by_name == nil then
+        swaps_by_name = {}
+        for tname, d in pairs(defs().folder("common/traditions")) do
+            for _, e in ipairs(d.block) do
+                if e.op and e.key and e.key.text == "tradition_swap" and e.value.text == nil then
+                    local n = defs().field(e.value, "name")
+                    if n then swaps_by_name[n] = tname end
+                end
+            end
+        end
+    end
+    local t = swaps_by_name[key]
+    return t, t and key or nil
+end
+
+-- R.tradition_swaps(tradition) -> { { name, trigger, inherit_effects } } in definition order
+function R.tradition_swaps(trad)
+    local d = defs().get("common/traditions", trad)
+    local out = {}
+    for _, e in ipairs(d and d.block or {}) do
+        if e.op and e.key and e.key.text == "tradition_swap" and e.value.text == nil then
+            local trig = defs().field(e.value, "trigger")
+            out[#out + 1] = { name = defs().field(e.value, "name"), trigger = type(trig) == "table" and trig or nil,
+                inherit_effects = defs().field(e.value, "inherit_effects") == "yes" }
+        end
+    end
+    return out
+end
+
+-- R.federation_field(federation, key) -> a field of its `federation_progression`
+function R.federation_field(fid, key)
+    local f = obj("federation", fid)
+    local p = f and world.field(f, "federation_progression")
+    return type(p) == "table" and world.field(p, key) or nil
+end
+
+-- R.has_ethic(kind, id, ethic): a pop group's `ethos = { ethics = { ... } }` has it
+-- (CPopGroup::HasEthic 0x51a480: presence in the list); a leader's background `ethic` is it
+function R.has_ethic(kind, id, ethic)
+    local o = obj(kind, id)
+    if not o then return false end
+    if kind == "leader" then return world.field(o, "ethic") == ethic end
+    local ethos = world.field(o, "ethos")
+    for _, v in ipairs(world.list(type(ethos) == "table" and world.field(ethos, "ethics") or nil)) do
+        if v == ethic then return true end
+    end
+    for _, b in ipairs(type(ethos) == "table" and world.fields(ethos, "ethic") or {}) do
+        if b == ethic or (type(b) == "table" and world.field(b, "ethic") == ethic) then return true end
+    end
+    return false
+end
+
+-- R.spy_network_owner(network) -> its `owner`
+function R.spy_network_owner(nid)
+    local n = obj("spy_network", nid)
+    return n and ref(world.field(n, "owner")) or nil
+end
+
+-- R.country_spy_networks(country) -> its `espionage_manager = { spy_networks = { ... } }`
+function R.country_spy_networks(country)
+    local c = obj("country", country)
+    local out = {}
+    for _, v in ipairs(world.list(c and world.path(c, "espionage_manager", "spy_networks"))) do
+        local n = ref(v)
+        if n and obj("spy_network", n) then out[#out + 1] = n end
+    end
+    return out
+end
+
+-- R.last_jump_origin(fleet) -> the system its last FTL jump left (`movement_manager = {
+-- last_ftl_jump = { from = { origin } } }`), or nil
+function R.last_jump_origin(fid)
+    local f = obj("fleet", fid)
+    local from = f and world.path(f, "movement_manager", "last_ftl_jump", "from")
+    return type(from) == "table" and ref(world.field(from, "origin")) or nil
+end
+
+-- R.site_system(site) -> the system of the archaeological site's location
+function R.site_system(sid)
+    local s = obj("archaeological_site", sid)
+    local loc = s and world.field(s, "location")
+    if type(loc) ~= "table" then return nil end
+    local kinds = { [0] = "ship", [2] = "planet", [3] = "fleet", [4] = "system", [6] = "megastructure" }
+    local kind = kinds[tonumber(world.field(loc, "type"))]
+    return kind and R.system_of(kind, tonumber(world.field(loc, "id"))) or nil
+end
+
+-- R.is_active_resolution(type, can_be_active) (CGalacticCommunity::IsResolutionActive 0x62bc10): the
+-- community's `passed` resolutions from the newest: the type -> its can_be_active trigger (with the
+-- proposer and target, can_be_active(block, proposer, target)), none -> true; a newer one of the
+-- same category that does not allow several active ones -> false. The resolutions are read from the
+-- `resolutions` store [I: the saves have no community to show it]
+function R.is_active_resolution(rtype, can_be_active)
+    local gc = R.galactic_community()
+    local passed = gc and world.list(world.field(gc, "passed")) or {}
+    local def = defs().get("common/resolutions", rtype)
+    local cat = def and defs().field(def.block, "category")
+    for i = #passed, 1, -1 do
+        local res = obj("resolutions", tonumber(passed[i]))
+        local t = res and world.field(res, "type")
+        if t == rtype then
+            local cba = def and defs().field(def.block, "can_be_active")
+            if type(cba) ~= "table" then return true end
+            return can_be_active(cba, ref(world.field(res, "country")), ref(world.field(res, "target")))
+        end
+        local d2 = t and defs().get("common/resolutions", t)
+        if cat and d2 and defs().field(d2.block, "category") == cat then
+            local cd = defs().get("common/resolution_categories", cat)
+            if not (cd and defs().field(cd.block, "multiple_active_resolutions") == "yes") then
+                return false
+            end
+        end
+    end
+    return false
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- spatial objects and sites
+
+-- the ESpatialObjectType of a scope kind (a site's `location = { type id }`)
+local SPATIAL = { ship = 0, ambient_object = 1, planet = 2, fleet = 3, megastructure = 6 }
+-- R.site_at(kind, id) -> the archaeological site at the scope's spatial object
+-- (CArchaeologicalSiteManager::GetSiteFromLocation 0x964de0; a system's: its star, the first of
+-- its planets [I]; a starbase's: its station ship), or nil
+function R.site_at(kind, id)
+    if kind == "archaeological_site" then return obj("archaeological_site", id) and id or nil end
+    if kind == "system" then
+        local s = obj("system", id)
+        kind, id = "planet", s and tonumber(world.fields(s, "planet")[1])
+    elseif kind == "starbase" then
+        local sb = obj("starbase", id)
+        kind, id = "ship", sb and ref(world.field(sb, "station"))
+    elseif kind == "colony" then
+        kind, id = R.carrier_of("colony", id)
+    end
+    local t = kind and SPATIAL[kind]
+    if t == nil or id == nil then return nil end
+    for _, sid in ipairs(world.all("archaeological_site")) do
+        local loc = world.field(obj("archaeological_site", sid), "location")
+        if type(loc) == "table" and tonumber(world.field(loc, "type")) == t and tonumber(world.field(loc, "id")) == id then
+            return sid
+        end
+    end
+    return nil
 end
 
 return R

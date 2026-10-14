@@ -7,9 +7,10 @@
 --   planet's), `species` of a pop group or leader, `colony` of a planet (the planet);
 -- - triggers on pop groups: has_trait (the species' traits), is_enslaved, is_being_purged,
 --   is_sapient, is_robot_pop_group, is_pop_category, is_unemployed, has_living_standard,
---   has_citizenship_type (the owner's species rights); leaders: is_heir, has_envoy_task;
---   starbases: has_starbase_building; ships: has_component (is_scope_valid and is_space_fauna
---   are the script layer's now: simscript/handlers/runtime.lua).
+--   has_citizenship_type (the owner's species rights); leaders: is_heir, has_envoy_task; ships:
+--   has_component (is_scope_valid, is_space_fauna, is_councilor, has_starbase_building and
+--   has_active_tradition are the script layer's now: simscript/handlers/runtime.lua; has_ethic of
+--   a pop group or leader goes to it).
 
 local defs = require("engine.defs")
 local world = require("engine.world")
@@ -266,29 +267,11 @@ trig.is_heir = function(e, ctx)
     end
     return r == yes(e)
 end
-trig.is_councilor = function(e, ctx)
-    if ctx.this.kind ~= "leader" then return false == yes(e) end
-    local cp = world.stores["council_positions"] or {}
-    local r = false
-    for _, p in pairs(cp) do
-        if tonumber(world.field(p, "leader")) == ctx.this.id then r = true break end
-    end
-    return r == yes(e)
-end
 trig.has_envoy_task = function(e, ctx)
     if ctx.this.kind ~= "leader" then return false end
     local task = world.path(world.object("leader", ctx.this.id), "location", "assignment")
     local want = param(e, "task")
     return want ~= nil and task == want
-end
--- starbases
-trig.has_starbase_building = function(e, ctx)
-    if ctx.this.kind ~= "starbase" then return false end
-    local b = world.field(world.object("starbase", ctx.this.id), "buildings")
-    for _, x in ipairs(type(b) == "table" and b or {}) do
-        if x.op and x.value.text == e.value.text then return true end
-    end
-    return false
 end
 
 -- planets
@@ -432,21 +415,13 @@ local function country_has_ethic(cid, ethic)
     return false
 end
 trig.has_ethic = function(e, ctx, lk)
-    if ctx.this.kind ~= "country" then return eval.property(lk)(e, ctx, lk) end
+    -- (a pop group's or leader's: the script layer's, simscript/handlers/runtime.lua)
+    if ctx.this.kind ~= "country" then return (orig_trig.has_ethic or eval.property(lk))(e, ctx, lk) end
     return country_has_ethic(ctx.this.id, e.value.text)
 end
 trig.is_gestalt = function(e, ctx, lk)
     if ctx.this.kind ~= "country" then return eval.property(lk)(e, ctx, lk) end
     return country_has_ethic(ctx.this.id, "ethic_gestalt_consciousness") == yes(e)
-end
-
--- a country's traditions (adopted, the save's `traditions` list)
-trig.has_active_tradition = function(e, ctx)
-    if ctx.this.kind ~= "country" then return false end
-    for _, v in ipairs(world.list(world.field(world.object("country", ctx.this.id), "traditions"))) do
-        if v == e.value.text then return true end
-    end
-    return false
 end
 
 -- (eval reads has_policy_flag as a script flag, has_<x>_flag)
