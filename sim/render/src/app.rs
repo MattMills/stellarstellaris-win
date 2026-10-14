@@ -3,26 +3,32 @@
 //! presses and releases over the GUI's buttons (whose sprites show their hover and pressed
 //! frames); a click does the button's action:
 //! - Exit closes; Load Game opens the load window; its Cancel closes it; a save in it loads that
-//!   save and shows its galaxy map with the top bar;
+//!   save and shows its home system with the top bar and the outliner, as the game does;
 //! - Continue (the key C on the menu: 4.5.2's front end has no Continue button; the launcher
 //!   has it) loads the newest save;
 //! - New Game, Multiplayer, Cooperative, Additional Content, Settings and Credits do nothing yet
 //!   (their windows are not laid out);
-//! - Escape on the map goes back to the menu, and closes the load window.
+//! - on the map: the top bar's time controls run the clock (clock.rs), a click selects (the
+//!   outliner's rows too) and opens the selection's window, a double click enters a system or
+//!   follows a planet or fleet; the camera moves as the game's (docs/render.md section 12);
+//! - Escape clears the selection, leaves a system, goes back to the menu, closes the load window.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::time::Instant;
 
 use stellar_sim::{save, Runtime};
 
-use crate::camera::OrbitCamera;
+use crate::camera::{self, OrbitCamera};
+use crate::clock;
 use crate::dds::Cache;
 use crate::font::Font;
+use crate::math::V3;
 use crate::models;
 use crate::system;
 use crate::gui::{self, GuiItem};
-use crate::scene::{self, ButtonState, Scene, Textures};
+use crate::scene::{self, ButtonState, Pickable, Scene, Textures};
 use crate::Map;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -102,6 +108,7 @@ fn game_version(game_dir: &str) -> String {
         .unwrap_or_default()
 }
 
+
 pub struct App {
     pub game_dir: String,
     pub runtime: Runtime,
@@ -118,19 +125,62 @@ pub struct App {
     pub log: Vec<String>,
     /// notes of the last layout (background, saves listed, sprites missing)
     pub notes: Vec<String>,
-    /// the map: in 3D from `camera` (else the 2D map), the galaxy or a system
+    /// the map: in 3D from `camera` (else the 2D map), the galaxy or a system; the cameras as
+    /// drawn, and where the player's input sends them (the goal they move to smoothly)
     pub mode3d: bool,
     pub camera: Option<OrbitCamera>,
     pub view: MapView,
     pub system_camera: Option<OrbitCamera>,
+    camera_goal: Option<OrbitCamera>,
+    system_camera_goal: Option<OrbitCamera>,
+    /// the cameras move to their goals over time (the window), else at once (commands)
+    pub smooth: bool,
     /// the model view: the model shown (an entity or a pdxmesh), and the models read for it
     pub model: Option<String>,
     pub models: models::Library,
+    /// what is selected on the map
+    pub selected: Option<Pickable>,
+    /// the windows over the map for the selection (the outliner, an info window)
+    pub overlay_items: Vec<GuiItem>,
+    /// what the windows were laid out for: the size, view, selection, snapshot, GUI shown
+    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool)>,
+    /// the player holds the camera (a drag, a turn); the plane's point a drag holds; what the
+    /// camera follows; the systems' cameras as they were left; the last system shown
+    holding: bool,
+    drag_anchor: Option<V3>,
+    follow: Option<Pickable>,
+    saved_system_cameras: HashMap<u32, OrbitCamera>,
+    last_system: Option<usize>,
+    /// what the cursor is over, since when (the tooltips' hook: [`Tooltips`])
+    pub hovered: Option<(HoverTarget, Instant)>,
+    /// the tooltips' text (a later phase: cached through the modifier graph); none yet
+    pub tooltips: Option<Box<dyn Tooltips>>,
     hover: Option<String>,
     pressed: Option<String>,
     items: Option<((u32, u32, Screen), Vec<GuiItem>)>,
     scene: Option<Scene>,
     generation: u64,
+    /// keys held (the camera's keys move it while held), the cursor (edge scrolling), the time of
+    /// the last update
+    held: HashSet<String>,
+    cursor: Option<(f32, f32)>,
+    last_update: Option<Instant>,
+}
+
+/// What the cursor is over: a GUI element (its path, e.g. "/maingui/topbar_static/
+/// tb_energy_group/amount") or something on the map.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HoverTarget {
+    Element(String),
+    Map(Pickable),
+}
+
+/// The tooltips' hook (docs/render.md section 12): the text for what the cursor is over, at the
+/// world's date. The next phase implements it over the modifier graph, its texts cached with
+/// bounded staleness (about a second or 60 frames); the window shows the text once the cursor
+/// has rested on the target (`App::hovered` keeps since when).
+pub trait Tooltips {
+    fn text(&mut self, target: &HoverTarget, date: &str) -> Option<String>;
 }
 
 /// What the map screen shows.
@@ -168,76 +218,445 @@ impl App {
             camera: None,
             view: MapView::Galaxy,
             system_camera: None,
+            camera_goal: None,
+            system_camera_goal: None,
+            smooth: false,
             model: None,
             models: models::Library::default(),
+            selected: None,
+            overlay_items: Vec::new(),
+            overlay_key: None,
+            holding: false,
+            drag_anchor: None,
+            follow: None,
+            saved_system_cameras: HashMap::new(),
+            last_system: None,
+            hovered: None,
+            tooltips: None,
             hover: None,
             pressed: None,
             items: None,
             scene: None,
             generation: 0,
+            held: HashSet::new(),
+            cursor: None,
+            last_update: None,
         })
     }
 
-    /// The camera of what the map shows (the galaxy's or the system's).
-    pub fn current_camera(&mut self) -> Option<&mut OrbitCamera> {
+    /// The camera of what the map shows (the galaxy's or the system's): its goal, where input
+    /// moves it.
+    fn goal_mut(&mut self) -> Option<&mut OrbitCamera> {
         match self.view {
-            MapView::Galaxy => self.camera.as_mut(),
-            MapView::System(_) | MapView::Model => self.system_camera.as_mut(),
+            MapView::Galaxy => {
+                if self.camera_goal.is_none() {
+                    self.camera_goal = self.camera;
+                }
+                self.camera_goal.as_mut()
+            }
+            MapView::System(_) | MapView::Model => {
+                if self.system_camera_goal.is_none() {
+                    self.system_camera_goal = self.system_camera;
+                }
+                self.system_camera_goal.as_mut()
+            }
+        }
+    }
+
+    /// After the goal moved: without smoothing, the camera is there at once.
+    fn goal_moved(&mut self) {
+        if !self.smooth {
+            match self.view {
+                MapView::Galaxy => self.camera = self.camera_goal,
+                MapView::System(_) | MapView::Model => self.system_camera = self.system_camera_goal,
+            }
+            self.scene = None;
         }
     }
 
     /// Moves the camera (degrees), zooms it (a factor), pans it (fractions of its distance).
     pub fn orbit(&mut self, dyaw: f32, dpitch: f32) {
-        if let Some(c) = self.current_camera() {
+        if let Some(c) = self.goal_mut() {
             c.orbit(dyaw.to_radians(), dpitch.to_radians());
         }
-        self.scene = None;
+        self.goal_moved();
     }
     pub fn zoom(&mut self, factor: f32) {
-        if let Some(c) = self.current_camera() {
+        if let Some(c) = self.goal_mut() {
             c.zoom(factor);
         }
-        self.scene = None;
+        self.goal_moved();
+    }
+    /// The camera drawn now (the galaxy's or the system's).
+    fn current(&self) -> Option<OrbitCamera> {
+        match self.view {
+            MapView::Galaxy => self.camera,
+            MapView::System(_) | MapView::Model => self.system_camera,
+        }
+    }
+
+    /// The plane's point under the cursor (the screen's centre without one), by the camera drawn.
+    fn ground_under_cursor(&self) -> Option<V3> {
+        let c = self.current()?;
+        let (w, h) = self.size;
+        let (x, y) = self.cursor.unwrap_or((w as f32 / 2.0, h as f32 / 2.0));
+        Some(c.ground_at(x, y, w, h))
+    }
+
+    /// The wheel: `notches` (> 0 in), one zoom step about the point under the cursor.
+    pub fn wheel(&mut self, notches: f32) {
+        let ground = if self.holding { None } else { self.ground_under_cursor() };
+        if let Some(c) = self.goal_mut() {
+            c.wheel(notches, ground);
+        }
+        self.goal_moved();
     }
     pub fn pan(&mut self, dx: f32, dy: f32) {
-        if let Some(c) = self.current_camera() {
+        self.follow = None;
+        if let Some(c) = self.goal_mut() {
             c.pan(dx, dy);
         }
-        self.scene = None;
+        self.goal_moved();
     }
+
+    /// The right button dragged `dx`, `dy` pixels (UpdateRotation): the pitch by dy, the yaw by
+    /// -dx, ROTATION_RADIANS_PER_MOUSE_UNIT a pixel.
+    pub fn rotate(&mut self, dx: f32, dy: f32) {
+        let k = camera::ROTATION_RADIANS_PER_MOUSE_UNIT;
+        if let Some(c) = self.goal_mut() {
+            c.orbit(-dx * k, dy * k);
+        }
+        self.goal_moved();
+    }
+
+    /// A drag of the middle button (or both) holds the plane's point grabbed at (x, y) under
+    /// the cursor (UpdateDragMovement); `None` ends it.
+    pub fn drag(&mut self, at: Option<(f32, f32)>) {
+        let (w, h) = self.size;
+        let Some((x, y)) = at else {
+            self.drag_anchor = None;
+            return;
+        };
+        let Some(cur) = self.current() else { return };
+        let p = cur.ground_at(x, y, w, h);
+        match self.drag_anchor {
+            None => self.drag_anchor = Some(p),
+            Some(a) => {
+                self.follow = None;
+                if let Some(g) = self.goal_mut() {
+                    g.target = V3(cur.target.0 + a.0 - p.0, 0.0, cur.target.2 + a.2 - p.2);
+                    g.restrict();
+                }
+                self.goal_moved();
+            }
+        }
+    }
+
+    /// The player holds the camera (a drag or a turn): it moves on the plane at once.
+    pub fn set_holding(&mut self, holding: bool) {
+        self.holding = holding;
+    }
+
+    /// Sets the camera of what the map shows, at once (and its goal).
     pub fn set_camera(&mut self, c: OrbitCamera) {
         match self.view {
-            MapView::Galaxy => self.camera = Some(c),
-            MapView::System(_) | MapView::Model => self.system_camera = Some(c),
+            MapView::Galaxy => {
+                self.camera = Some(c);
+                self.camera_goal = Some(c);
+            }
+            MapView::System(_) | MapView::Model => {
+                self.system_camera = Some(c);
+                self.system_camera_goal = Some(c);
+            }
         }
         self.scene = None;
     }
 
-    /// Shows the galaxy, or a system (by the save's id), on the map screen.
+    /// Where a followed thing is now (a body or a fleet of the system shown).
+    fn followed_position(&mut self) -> Option<V3> {
+        let (what, MapView::System(i)) = (self.follow?, self.view) else { return None };
+        let map = self.map.as_mut()?;
+        let id = map.galaxy.systems[i].id;
+        let data = map.system_data(id).ok()?;
+        match what {
+            Pickable::Body(b) => data.bodies.iter().find(|x| x.id == b).map(|x| V3(x.x, system::PLANE_Y, x.y)),
+            Pickable::Fleet(f) => data.ships.iter().find(|s| s.fleet == f).map(|s| V3(s.x, 0.0, s.y)),
+            _ => None,
+        }
+    }
+
+    /// Moves the cameras toward their goals, the held keys and the edge scrolling, takes the
+    /// simulation's newest snapshot. Whether the picture changed (a frame is due).
+    pub fn update(&mut self) -> bool {
+        let now = Instant::now();
+        // the frame's time, at most 0.1 s (CGameIdler::Idle)
+        let dt = self.last_update.map_or(0.0, |t| (now - t).as_secs_f32()).min(0.1);
+        self.last_update = Some(now);
+        let mut changed = false;
+        if self.screen != Screen::Map {
+            return false;
+        }
+        if let Some(m) = self.map.as_mut() {
+            if m.sync() {
+                changed = true;
+                // the topbar's date, the galaxy, the system's ships
+                self.scene = None;
+            }
+        }
+        // a followed planet or fleet: the target on it (RefreshFollowPosition)
+        if let Some(p) = self.followed_position() {
+            if let Some(g) = self.goal_mut() {
+                if g.target != p {
+                    g.target = p;
+                    changed = true;
+                }
+            }
+            self.goal_moved();
+        }
+        // the camera's keys held (W A S D, the arrows; diagonals not normalised), the cursor at
+        // the screen's edge (toward it from the centre), Page Up and Page Down
+        let (mut dx, mut dy, mut zoom) = (0.0f32, 0.0f32, 0.0f32);
+        for k in &self.held {
+            match k.as_str() {
+                "w" | "up" => dy += 1.0,
+                "s" | "down" => dy -= 1.0,
+                "a" | "left" => dx -= 1.0,
+                "d" | "right" => dx += 1.0,
+                "pageup" => zoom += 1.0,
+                "pagedown" => zoom -= 1.0,
+                _ => {}
+            }
+        }
+        if let (Some((x, y)), false) = (self.cursor, self.holding) {
+            let (cx, cy) = (self.size.0 as f32 / 2.0, self.size.1 as f32 / 2.0);
+            let edge = camera::EDGE_SCROLLING_PIXELS;
+            if cx - (x - cx).abs() < edge || cy - (y - cy).abs() < edge {
+                let l = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt().max(1e-3);
+                dx += (x - cx) / l;
+                dy -= (y - cy) / l;
+            }
+        }
+        if dt > 0.0 && (dx != 0.0 || dy != 0.0) {
+            self.follow = None;
+            if let Some(c) = self.goal_mut() {
+                c.scroll(dx, dy, dt);
+            }
+            self.goal_moved();
+            changed = true;
+        }
+        if dt > 0.0 && zoom != 0.0 {
+            let d = self.current().map_or(1.0, |c| c.distance);
+            if let Some(c) = self.goal_mut() {
+                c.zoom_keys(zoom, dt, d);
+            }
+            self.goal_moved();
+            changed = true;
+        }
+        // the galaxy's yaw back to 0 a frame once the right button is up
+        if self.view == MapView::Galaxy && !self.holding && self.smooth {
+            if let Some(g) = self.camera_goal.as_mut() {
+                if g.spring_yaw() {
+                    changed = true;
+                }
+            }
+        }
+        if self.smooth && dt > 0.0 {
+            let holding = self.holding;
+            let (cur, goal) = match self.view {
+                MapView::Galaxy => (&mut self.camera, &self.camera_goal),
+                MapView::System(_) | MapView::Model => (&mut self.system_camera, &self.system_camera_goal),
+            };
+            if let (Some(c), Some(g)) = (cur.as_mut(), goal) {
+                if c.approach(g, dt, holding) {
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.scene = None;
+        }
+        changed
+    }
+
+    /// Whether frames are due without input: the simulation runs or loads, the camera moves.
+    pub fn animating(&self) -> bool {
+        if self.screen != Screen::Map {
+            return false;
+        }
+        let running = self.map.as_ref().is_some_and(|m| m.clock.is_some() && (!m.paused || m.clock.as_ref().is_some_and(|c| !c.status().ready)));
+        let moving = match self.view {
+            MapView::Galaxy => matches!((&self.camera, &self.camera_goal), (Some(c), Some(g)) if !c.at(g) || g.yaw != 0.0),
+            _ => matches!((&self.system_camera, &self.system_camera_goal), (Some(c), Some(g)) if !c.at(g)),
+        };
+        let keys = self.held.iter().any(|k| matches!(k.as_str(), "w" | "a" | "s" | "d" | "up" | "down" | "left" | "right" | "pageup" | "pagedown"));
+        let edge = self.cursor.is_some_and(|(x, y)| {
+            let (cx, cy) = (self.size.0 as f32 / 2.0, self.size.1 as f32 / 2.0);
+            cx - (x - cx).abs() < camera::EDGE_SCROLLING_PIXELS || cy - (y - cy).abs() < camera::EDGE_SCROLLING_PIXELS
+        });
+        running || moving || keys || edge || self.follow.is_some()
+    }
+
+    /// Shows the galaxy (CGameCamera::OnLeaveSystem from a system: the camera at its star,
+    /// ZOOM_STEPS_GALAXY[LEAVE_SYSTEM_ZOOM_STEP] away; the system's camera kept for coming back).
     pub fn show_galaxy(&mut self) {
+        if let (MapView::System(i), Some(map)) = (self.view, self.map.as_ref()) {
+            let s = &map.galaxy.systems[i];
+            if let Some(g) = self.system_camera_goal {
+                self.saved_system_cameras.insert(s.id, g);
+            }
+            let at = V3(s.x, s.height * 0.5, s.y);
+            let mut c = self.camera.unwrap_or_else(OrbitCamera::galaxy_default);
+            c.target = at;
+            c.yaw = 0.0;
+            c.pitch = 57.5f32.to_radians();
+            let mut goal = c;
+            c.distance = 0.001;
+            goal.distance = camera::GALAXY_ZOOM_STEPS[1];
+            goal.zoom_index = 1;
+            self.camera = Some(if self.smooth { c } else { goal });
+            self.camera_goal = Some(goal);
+        }
+        self.follow = None;
         self.view = MapView::Galaxy;
         self.screen = Screen::Map;
         self.scene = None;
+        let smooth = self.smooth;
+        if let Some(m) = self.map.as_mut() {
+            m.watch(None, !smooth);
+        }
     }
+
+    /// Shows a system (CGameCamera::OnEnterSystem): the camera flies in from twice the last zoom
+    /// step to ENTER_SYSTEM_ZOOM_STEP (FOCUS_START_ZOOM_STEP with something to follow), pitch
+    /// 50; a system entered before comes back as it was left.
     pub fn show_system(&mut self, index: usize) -> Result<(), String> {
+        self.enter_system(index, None)
+    }
+
+    fn enter_system(&mut self, index: usize, focus: Option<Pickable>) -> Result<(), String> {
         let map = self.map.as_mut().ok_or("no map loaded")?;
         if index >= map.galaxy.systems.len() {
             return Err(format!("no system {index}"));
         }
-        self.system_camera = Some(system::camera_for(map, index));
+        let id = map.galaxy.systems[index].id;
+        map.watch(Some(id), !self.smooth);
+        let fresh = system::camera_for(map, index);
+        let (start, goal) = match (self.saved_system_cameras.get(&id), focus) {
+            (Some(saved), None) => (*saved, *saved),
+            _ => {
+                let mut goal = fresh;
+                if let Some(s) = fresh.zoom_steps {
+                    let k = if focus.is_some() { 4 } else { 6 };
+                    goal.distance = s[k];
+                    goal.zoom_index = k;
+                }
+                let mut start = goal;
+                start.distance = fresh.zoom_steps.map_or(goal.distance * 2.0, |s| 2.0 * s[6]);
+                (start, goal)
+            }
+        };
+        self.system_camera = Some(if self.smooth { start } else { goal });
+        self.system_camera_goal = Some(goal);
+        self.follow = focus;
+        self.last_system = Some(index);
         self.view = MapView::System(index);
         self.screen = Screen::Map;
         self.scene = None;
         self.log.push(format!("system view: {} (id {})", map.galaxy.systems[index].star_class, map.galaxy.systems[index].id));
+        if focus.is_some() {
+            // the target on the followed thing at once
+            if let Some(p) = self.followed_position() {
+                for c in [self.system_camera.as_mut(), self.system_camera_goal.as_mut()].into_iter().flatten() {
+                    c.target = p;
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// A double click on something (CSelectable::FocusOn): a system from the galaxy is entered;
+    /// a planet or a fleet in the system shown is followed.
+    pub fn focus(&mut self, what: Pickable) -> Result<(), String> {
+        match (what, self.view) {
+            (Pickable::System(i), _) => self.enter_system(i, None),
+            (Pickable::Body(_), MapView::System(_)) | (Pickable::Fleet(_), MapView::System(_)) => {
+                self.follow = Some(what);
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The camera's shortcuts (CGameCamera::HandleShortcutsInput): R turns it back (a system:
+    /// its centre, pitch 50, yaw 0; the galaxy: pitch 57.5, yaw 0, at the last system,
+    /// ZOOM_STEPS_GALAXY[1]); E and M enter the system under the cursor or go between the system
+    /// and the galaxy; Home and Backspace go to the capital.
+    fn camera_key(&mut self, key: &str) -> Result<bool, String> {
+        match key {
+            "r" => {
+                let last = self.last_system;
+                let map_ok = self.map.is_some();
+                match self.view {
+                    MapView::System(_) => {
+                        if let Some(g) = self.goal_mut() {
+                            g.target = V3(0.0, 0.0, 0.0);
+                            g.pitch = 50f32.to_radians();
+                            g.yaw = 0.0;
+                        }
+                    }
+                    MapView::Galaxy if map_ok => {
+                        let at = last.and_then(|i| self.map.as_ref().map(|m| (m.galaxy.systems[i].x, m.galaxy.systems[i].y)));
+                        if let Some(g) = self.goal_mut() {
+                            g.pitch = 57.5f32.to_radians();
+                            g.yaw = 0.0;
+                            if let Some((x, y)) = at {
+                                g.target = V3(x, 0.0, y);
+                                g.distance = camera::GALAXY_ZOOM_STEPS[1];
+                                g.zoom_index = 1;
+                            }
+                        }
+                    }
+                    _ => return Ok(false),
+                }
+                self.follow = None;
+                self.goal_moved();
+                Ok(true)
+            }
+            "e" | "m" => {
+                let (x, y) = self.cursor.unwrap_or((self.size.0 as f32 / 2.0, self.size.1 as f32 / 2.0));
+                match self.view {
+                    MapView::Galaxy => {
+                        let under = match self.scene()?.pick_at(x, y, 6.0) {
+                            Some(Pickable::System(i)) => Some(i),
+                            _ => self.last_system,
+                        };
+                        match under {
+                            Some(i) => self.show_system(i)?,
+                            None => return Ok(false),
+                        }
+                    }
+                    MapView::System(_) => self.show_galaxy(),
+                    MapView::Model => return Ok(false),
+                }
+                Ok(true)
+            }
+            "home" | "backspace" => {
+                let Some((planet, system)) = self.map.as_ref().and_then(|m| m.galaxy.capital) else { return Ok(false) };
+                let Some(i) = self.map.as_ref().and_then(|m| m.galaxy.systems.iter().position(|s| s.id == system)) else { return Ok(false) };
+                let _ = planet;
+                self.enter_system(i, None)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     /// Shows a model alone (an entity or a pdxmesh of gfx/models), with a camera fitted to it.
     pub fn show_model(&mut self, name: &str) -> Result<(), String> {
         let cam = system::model_camera(&mut self.models, &self.runtime, &self.game_dir, name)?;
-        self.system_camera = Some(cam);
         self.model = Some(name.to_string());
         self.view = MapView::Model;
+        self.set_camera(cam);
         self.screen = Screen::Map;
         self.scene = None;
         self.log.push(format!("model view: {name}"));
@@ -250,6 +669,150 @@ impl App {
         let r = map.step(days)?;
         self.scene = None;
         Ok(r)
+    }
+
+    /// Pauses or runs the game's clock.
+    pub fn set_paused(&mut self, paused: bool) -> Result<(), String> {
+        let map = self.map.as_mut().ok_or("no map loaded")?;
+        map.set_paused(paused);
+        self.log.push(format!("clock: {}", if paused { "paused".to_string() } else { format!("running at speed {}", map.speed) }));
+        self.scene = None;
+        Ok(())
+    }
+
+    /// The game's speed, 1..5.
+    pub fn set_speed(&mut self, speed: u8) -> Result<(), String> {
+        let map = self.map.as_mut().ok_or("no map loaded")?;
+        map.set_speed(speed);
+        self.log.push(format!("clock: speed {}", map.speed));
+        self.scene = None;
+        Ok(())
+    }
+
+    /// Selects something on the map (or nothing).
+    pub fn select(&mut self, what: Option<Pickable>) {
+        if self.selected != what {
+            self.selected = what;
+            self.log.push(format!("selected: {what:?}"));
+            self.scene = None;
+        }
+    }
+
+    /// The outliner and the window the selection opens (render.windows), with the names from
+    /// the world localised; nothing without a map or with the GUI hidden.
+    fn selection_windows(&mut self) -> Vec<GuiItem> {
+        match self.window_items() {
+            Ok(items) => items,
+            Err(e) => {
+                self.log.push(format!("windows: {e}"));
+                Vec::new()
+            }
+        }
+    }
+
+    fn window_items(&mut self) -> Result<Vec<GuiItem>, String> {
+        let (w, h) = self.size;
+        let Some(map) = self.map.as_mut() else { return Ok(Vec::new()) };
+        if !map.gui || self.view == MapView::Model {
+            return Ok(Vec::new());
+        }
+        // a selected planet's name: from the system's bodies
+        let body = match (self.selected, self.view) {
+            (Some(Pickable::Body(id)), MapView::System(i)) => {
+                let sid = map.galaxy.systems[i].id;
+                map.system_data(sid).ok().and_then(|d| d.bodies.iter().find(|b| b.id == id).map(|b| (b.id, b.name.clone(), b.class.clone())))
+            }
+            // one of the player's planets (from the outliner)
+            (Some(Pickable::Body(id)), _) => map.galaxy.planets.iter().find(|p| p.id == id).map(|p| (p.id, p.name.clone(), p.class.clone())),
+            _ => None,
+        };
+        let g = map.galaxy.clone();
+        let player = g.countries.iter().position(|c| c.id == g.player);
+        let system_name = |id: i64| g.systems.iter().find(|s| s.id as i64 == id).map(|s| &s.name);
+        // the names to localise, in one call: (group, row) -> name and location
+        let none = crate::galaxy::Name::default();
+        let mut names: Vec<&crate::galaxy::Name> = Vec::new();
+        let mut groups: Vec<(String, String, Vec<(u32, String)>)> = Vec::new();
+        // the Overview tab's groups in the order the game's frame shows them for this save (Utility
+        // Ships, Military Fleets, Shipyards: the starbases; then the colonies), empty ones left out;
+        // mining and research stations are not listed
+        let (mut military, mut civilian, mut stations) = (Vec::new(), Vec::new(), Vec::new());
+        for f in g.fleets.iter().filter(|f| player.is_some() && f.owner == player) {
+            let row = (f.id, String::new());
+            if f.station {
+                if f.name.key == "shipclass_starbase_name" {
+                    stations.push((f, row));
+                }
+            } else if f.military {
+                military.push((f, row));
+            } else {
+                civilian.push((f, row));
+            }
+        }
+        for list in [&civilian, &military, &stations] {
+            for (f, _) in list {
+                names.push(&f.name);
+                names.push(f.system.map(|s| s as i64).and_then(system_name).unwrap_or(&none));
+            }
+        }
+        groups.push(("OUTLINER_CIVILIAN_FLEETS".into(), "civilian".into(), civilian.iter().map(|(_, r)| r.clone()).collect()));
+        groups.push(("OUTLINER_FLEETS".into(), "fleet".into(), military.iter().map(|(_, r)| r.clone()).collect()));
+        groups.push(("OUTLINER_SHIPYARDS".into(), "starbase".into(), stations.iter().map(|(_, r)| r.clone()).collect()));
+        let mut planets = Vec::new();
+        for p in &g.planets {
+            names.push(&p.name);
+            names.push(system_name(p.system).unwrap_or(&none));
+            planets.push((p.id, String::new()));
+        }
+        groups.push(("OUTLINER_PLANETS".into(), "planet".into(), planets));
+        // the selection's window: a fleet (a station: the starbase's), a planet
+        let mut selected: Option<(String, u32)> = None;
+        match self.selected {
+            Some(Pickable::Fleet(id)) => {
+                if let Some(f) = g.fleets.iter().find(|f| f.id == id) {
+                    names.push(&f.name);
+                    selected = Some((if f.station { "starbase" } else { "fleet" }.into(), id));
+                }
+            }
+            Some(Pickable::Body(_)) => {
+                if let Some((id, name, _)) = &body {
+                    names.push(name);
+                    selected = Some(("planet".into(), *id));
+                }
+            }
+            _ => {}
+        }
+        let texts = gui::format_names(&self.runtime, &names)?;
+        let mut k = 0;
+        let mut next = || {
+            k += 1;
+            texts.get(k - 1).cloned().unwrap_or_default()
+        };
+        let mut outliner = Vec::new();
+        for (title, kind, rows) in groups {
+            if rows.is_empty() {
+                continue;
+            }
+            let mut out = Vec::new();
+            for (id, _) in rows {
+                let (name, location) = (next(), next());
+                let selected = match self.selected {
+                    Some(Pickable::Fleet(f)) => kind != "planet" && f == id,
+                    Some(Pickable::Body(b)) => kind == "planet" && b == id,
+                    _ => false,
+                };
+                out.push(gui::OutlinerRow { id, name, sub: String::new(), location, selected });
+            }
+            outliner.push(gui::OutlinerGroup { title, kind, rows: out });
+        }
+        let selected = selected.map(|(kind, id)| gui::SelectedWindow { kind, id, name: next(), sub: String::new() });
+        let layout = gui::windows(&self.runtime, w, h, &outliner, selected.as_ref())?;
+        if std::env::var("RENDER_WINDOWS_DEBUG").is_ok() {
+            eprintln!("windows: {} groups ({} rows), {} items: {:?}", outliner.len(), outliner.iter().map(|g| g.rows.len()).sum::<usize>(), layout.items.len(), layout.items.iter().map(|i| match i { GuiItem::Sprite { path, x, y, w, h, .. } | GuiItem::Text { path, x, y, w, h, .. } => format!("{path} {x:.0},{y:.0} {w:.0}x{h:.0}") }).take(24).collect::<Vec<_>>());
+        }
+        let map = self.map.as_mut().unwrap();
+        gui::fonts(&self.runtime, &self.game_dir, &layout.items, map.fonts.get_or_insert_with(HashMap::new))?;
+        Ok(layout.items)
     }
 
     /// The scene must be built again (the world or the view changed).
@@ -319,10 +882,31 @@ impl App {
         self.scene.as_ref().map(|s| (s, self.textures()))
     }
 
+    /// The button states of the screen's GUI (hover, pressed).
+    fn states(&self) -> HashMap<String, ButtonState> {
+        let mut states = HashMap::new();
+        if let Some(p) = &self.hover {
+            states.insert(p.clone(), ButtonState::Hover);
+        }
+        if let Some(p) = &self.pressed {
+            states.insert(p.clone(), ButtonState::Pressed);
+        }
+        states
+    }
+
     /// The scene of the current screen (rebuilt when something changed).
     pub fn scene(&mut self) -> Result<&Scene, String> {
         if self.scene.is_none() {
             let (w, h) = self.size;
+            let states = self.states();
+            if self.screen == Screen::Map {
+                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui));
+                if key != self.overlay_key {
+                    self.overlay_items = self.selection_windows();
+                    self.overlay_key = key;
+                }
+            }
+            let overlay = scene::Overlay { selected: self.selected, items: self.overlay_items.clone() };
             let scene = match self.screen {
                 Screen::Map if self.view == MapView::Model => {
                     let cam = self.system_camera.ok_or("no camera")?;
@@ -332,23 +916,17 @@ impl App {
                 }
                 Screen::Map => {
                     let map = self.map.as_mut().ok_or("no map")?;
+                    map.button_states = states;
                     match (self.view, &self.system_camera) {
-                        (MapView::System(i), Some(cam)) => system::build(map, i, cam, w, h)?,
+                        (MapView::System(i), Some(cam)) => system::build(map, i, cam, w, h, &overlay)?,
                         _ => {
                             let cam = if self.mode3d { self.camera.as_ref() } else { None };
-                            map.frame(w, h, cam)?.scene
+                            map.frame(w, h, cam, &overlay)?.scene
                         }
                     }
                 }
                 _ => {
                     let items = self.items()?;
-                    let mut states = HashMap::new();
-                    if let Some(p) = &self.hover {
-                        states.insert(p.clone(), ButtonState::Hover);
-                    }
-                    if let Some(p) = &self.pressed {
-                        states.insert(p.clone(), ButtonState::Pressed);
-                    }
                     scene::gui_scene(w, h, &items, &self.fonts, &mut self.textures, &mut self.cache.borrow_mut(), &self.game_dir, &states)
                 }
             };
@@ -368,15 +946,39 @@ impl App {
     }
 
     fn button_at(&mut self, x: f32, y: f32) -> Result<Option<(String, Option<String>)>, String> {
-        if self.screen == Screen::Map {
-            return Ok(None);
-        }
         Ok(self.scene()?.button_at(x, y).map(|b| (b.path.clone(), b.action.clone())))
+    }
+
+    /// The tooltip for what the cursor has rested on for `rest` (the hook: none until a
+    /// [`Tooltips`] is set).
+    #[allow(dead_code)]
+    pub fn tooltip(&mut self, rest: std::time::Duration) -> Option<String> {
+        let (target, since) = self.hovered.clone()?;
+        if since.elapsed() < rest {
+            return None;
+        }
+        let date = self.map.as_ref().map(|m| m.date()).unwrap_or_default();
+        self.tooltips.as_mut()?.text(&target, &date)
+    }
+
+    /// The cursor left the window (no edge scrolling).
+    pub fn mouse_left(&mut self) {
+        self.cursor = None;
     }
 
     /// The mouse moved: the button under it shows its hover frame. Whether the frame changed.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> Result<bool, String> {
+        self.cursor = Some((x, y));
         let hover = self.button_at(x, y)?.map(|b| b.0);
+        // the tooltips' hook: the element or the thing on the map under the cursor
+        let target = match &hover {
+            Some(path) => Some(HoverTarget::Element(path.clone())),
+            None if self.screen == Screen::Map => self.scene()?.pick_at(x, y, 6.0).map(HoverTarget::Map),
+            None => None,
+        };
+        if self.hovered.as_ref().map(|h| &h.0) != target.as_ref() {
+            self.hovered = target.map(|t| (t, Instant::now()));
+        }
         if hover != self.hover {
             self.hover = hover;
             self.scene = None;
@@ -395,28 +997,41 @@ impl App {
         Ok(false)
     }
 
-    /// The button released over the one pressed is a click: its action is done. On the galaxy
-    /// map, a click on a star opens its system.
+    /// The button released over the one pressed is a click: its action is done. On the map
+    /// elsewhere, a click selects what is under it (a system, a fleet, a planet, a ship), or
+    /// nothing.
     pub fn mouse_up(&mut self, x: f32, y: f32) -> Result<bool, String> {
-        if self.screen == Screen::Map {
-            if self.view == MapView::Galaxy {
-                let hit = self.scene()?.star_at(x, y, 14.0);
-                if let Some(i) = hit {
-                    self.show_system(i)?;
-                    return Ok(true);
-                }
-            }
-            return Ok(false);
-        }
         let under = self.button_at(x, y)?;
         let pressed = self.pressed.take();
-        self.scene = None;
-        match (under, pressed) {
-            (Some((path, action)), Some(p)) if path == p => {
-                self.act(&path, action.as_deref())?;
+        if pressed.is_some() {
+            self.scene = None;
+            if let (Some((path, action)), Some(p)) = (under, pressed) {
+                if path == p {
+                    self.act(&path, action.as_deref())?;
+                }
+            }
+            return Ok(true);
+        }
+        if self.screen == Screen::Map && under.is_none() {
+            let hit = self.scene()?.pick_at(x, y, 6.0);
+            self.select(hit);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// A double click: on the galaxy, a system opens (the game's camera goes into it).
+    pub fn double_click(&mut self, x: f32, y: f32) -> Result<bool, String> {
+        if self.screen != Screen::Map || self.button_at(x, y)?.is_some() {
+            return Ok(false);
+        }
+        match self.scene()?.pick_at(x, y, 6.0) {
+            Some(p) => {
+                self.select(Some(p));
+                self.focus(p)?;
                 Ok(true)
             }
-            _ => Ok(true),
+            None => Ok(false),
         }
     }
 
@@ -424,7 +1039,7 @@ impl App {
     pub fn click(&mut self, x: f32, y: f32) -> Result<(), String> {
         self.mouse_move(x, y)?;
         self.mouse_down(x, y)?;
-        if self.pressed.is_none() {
+        if self.pressed.is_none() && self.screen != Screen::Map {
             self.log.push(format!("click at {x},{y}: no button there ({:?})", self.screen));
         }
         self.mouse_up(x, y)?;
@@ -441,6 +1056,23 @@ impl App {
                 let i: usize = a[5..].parse().map_err(|_| format!("bad action {a}"))?;
                 let path = self.saves().get(i - 1).map(|s| s.path.clone()).ok_or(format!("no save {i}"))?;
                 self.load(&path)?;
+            }
+            Some("pause") => {
+                let p = self.map.as_ref().is_some_and(|m| m.paused);
+                self.set_paused(!p)?;
+            }
+            Some("speed_up") | Some("speed_down") => {
+                // CInGameIdler::ModifyGameSpeed: one step, within 1..5
+                let s = self.map.as_ref().map_or(clock::DEFAULT_SPEED, |m| m.speed);
+                let s = if action == Some("speed_up") { (s + 1).min(clock::SPEEDS) } else { s.saturating_sub(1).max(1) };
+                self.set_speed(s)?;
+            }
+            // the selection's window closed; an outliner row selects its planet or fleet
+            Some("close") => self.select(None),
+            Some(a) if a.starts_with("select:") => {
+                let mut it = a.split(':').skip(1);
+                let (kind, id) = (it.next().unwrap_or(""), it.next().and_then(|v| v.parse::<u32>().ok()).ok_or(format!("bad action {a}"))?);
+                self.select(Some(if kind == "planet" { Pickable::Body(id) } else { Pickable::Fleet(id) }));
             }
             Some(other) => self.log.push(format!("  {other}: not done yet (its window is not laid out)")),
             None => {}
@@ -462,10 +1094,26 @@ impl App {
 
     pub fn load_as(&mut self, path: &str, sim: bool) -> Result<(), String> {
         let t0 = std::time::Instant::now();
-        let map = if sim { Map::load_sim(&self.game_dir, path)? } else { Map::load(&self.game_dir, path)? };
-        let radius = map.galaxy.systems.iter().map(|s| (s.x * s.x + s.y * s.y).sqrt()).fold(1.0f32, f32::max) * 1.05;
-        self.camera = Some(OrbitCamera::galaxy(radius));
+        let mut map = if sim { Map::load_sim(&self.game_dir, path)? } else { Map::load(&self.game_dir, path)? };
+        // the speeds' names (time_description), from the front end's localisation
+        map.speed_names = self
+            .runtime
+            .lua
+            .load("local t = {} for i = 0, 5 do t[#t + 1] = RENDER_LOC.get('GAME_SPEED_' .. i) end return t")
+            .eval::<Vec<String>>()
+            .ok()
+            .and_then(|v| v.try_into().ok());
+        // the galaxy's camera as the game makes it; the systems' cameras and what is followed
+        // start anew
         self.view = MapView::Galaxy;
+        self.set_camera(OrbitCamera::galaxy_default());
+        self.saved_system_cameras.clear();
+        self.follow = None;
+        self.last_system = None;
+        let capital = map.galaxy.capital.and_then(|(planet, system)| map.galaxy.systems.iter().position(|s| s.id == system).map(|i| (planet, i)));
+        self.selected = None;
+        self.overlay_items.clear();
+        self.overlay_key = None;
         self.log.push(format!(
             "loaded {path} in {:.1} s: {} systems, {} hyperlanes, {} owners",
             t0.elapsed().as_secs_f64(),
@@ -475,6 +1123,12 @@ impl App {
         ));
         self.map = Some(map);
         self.show(Screen::Map);
+        // as the game after a load (CInGameIdler::RestoreDeviceObjects: FocusOnCoordinate on the
+        // home system; the game's `state` after a load: view system 401, its centre,
+        // ENTER_SYSTEM_ZOOM_STEP, pitch 50): the capital's system entered
+        if let Some((_, i)) = capital {
+            self.enter_system(i, None)?;
+        }
         Ok(())
     }
 
@@ -485,27 +1139,54 @@ impl App {
         self.load(&path)
     }
 
+    /// A key released (the camera's keys stop moving it).
+    pub fn key_up(&mut self, key: &str) {
+        self.held.remove(key);
+    }
+
     /// A key: Escape (back from a system to the galaxy, from the map or the load window to the
-    /// menu), C (continue on the menu); on the map: W A S D pan, Q E turn, R F tilt, + - zoom,
-    /// V the 2D map or 3D. Whether something changed.
+    /// menu), C (continue on the menu); on the map: Space pauses or runs the clock, the keypad's +
+    /// and - change the speed, W A S D and the arrows pan and Q E turn while held (one step when
+    /// not smooth), R F tilt, + - zoom a step, V the 2D map or 3D. Whether something changed.
     pub fn key(&mut self, key: &str) -> Result<bool, String> {
         if self.screen == Screen::Map {
-            let step = 0.06;
+            // the camera's keys move it while held (UpdateScrollingMovement, UpdateZoom); without
+            // smoothing (commands) a key is a tenth of a second of it
+            let moving = matches!(key, "w" | "a" | "s" | "d" | "up" | "down" | "left" | "right" | "pageup" | "pagedown");
+            if moving && self.smooth {
+                self.held.insert(key.to_string());
+                return Ok(true);
+            }
+            if self.camera_key(key)? {
+                return Ok(true);
+            }
+            let step = camera::SCROLL_SPEED * 0.1;
             match key {
                 "w" | "up" => self.pan(0.0, step),
                 "s" | "down" => self.pan(0.0, -step),
                 "a" | "left" => self.pan(-step, 0.0),
                 "d" | "right" => self.pan(step, 0.0),
-                "q" => self.orbit(-10.0, 0.0),
-                "e" => self.orbit(10.0, 0.0),
-                "r" => self.orbit(0.0, 5.0),
-                "f" => self.orbit(0.0, -5.0),
-                "+" | "=" | "pageup" => self.zoom(0.8),
-                "-" | "pagedown" => self.zoom(1.25),
+                "pageup" => self.zoom(1.0 - camera::KEYBOARD_ZOOM * 0.1),
+                "pagedown" => self.zoom(1.0 + camera::KEYBOARD_ZOOM * 0.1),
+                // the clock's keys (CInGameIdler::HandleInputEvent): Space pauses or runs; the
+                // keypad's + and -, + = and -, Shift+Up and Shift+Down the speed; `.` one day
+                "space" => {
+                    let p = self.map.as_ref().is_some_and(|m| m.paused);
+                    self.set_paused(!p)?;
+                }
+                "kp_plus" | "+" | "=" | "shift+up" => self.act("/key/speed_up", Some("speed_up"))?,
+                "kp_minus" | "-" | "shift+down" => self.act("/key/speed_down", Some("speed_down"))?,
+                "." => {
+                    if let Some(m) = self.map.as_mut() {
+                        m.next_day();
+                        self.log.push("clock: the next day".into());
+                    }
+                }
                 "v" => {
                     self.mode3d = !self.mode3d;
                     self.scene = None;
                 }
+                "escape" if self.selected.is_some() => self.select(None),
                 "escape" if self.view != MapView::Galaxy && self.map.is_some() => {
                     self.log.push(format!("escape: {:?} -> Galaxy", self.view));
                     self.show_galaxy();

@@ -201,6 +201,7 @@ function galaxy.extract(game_dir)
                 star_class = sc, class = info.class, texture = info.texture, icon_scale = info.icon_scale,
                 -- the star's height over the galaxy's plane (the game's world: y = visual_height)
                 height = tonumber(world.path(obj, "coordinate", "visual_height")) or 0,
+                name = galaxy.name_block(world.field(obj, "name")),
             }
             index[id] = #systems
         end
@@ -282,6 +283,8 @@ function galaxy.extract(game_dir)
                 station = world.path(f, "properties", "station") == "yes",
                 ships = #world.list(world.field(f, "ships")),
                 military = (tonumber(world.field(f, "military_power")) or 0) > 0,
+                name = galaxy.name_block(world.field(f, "name")),
+                system = origin ~= NONE and origin or nil,
             }
             if state == "move_galaxy" or state == "move_jump_anim" or state == "move_wind_up" or state == "move_wind_down" then
                 for _, n in ipairs(world.fields(world.field(mm, "path") or {}, "node")) do
@@ -331,6 +334,36 @@ function galaxy.extract(game_dir)
     -- the countries the player has communications with (relations_manager.relation =
     -- { country communications = yes }): only their systems get borders and coloured pins
     -- (CBorderShapeCalculator::CalculateOwnerIds: CCountry::ListCommunications plus the player)
+    -- the player's capital: its planet (`capital` is a colony id) and system
+    local capital
+    do
+        local cap = pc and tonumber(world.field(pc, "capital"))
+        if cap and not world.colony_planet and world.index then
+            world.index()
+        end
+        local pid = cap and (world.colony_planet and world.colony_planet[cap] or cap)
+        local p = pid and world.object("planet", pid)
+        local sid = p and tonumber(world.path(p, "coordinate", "origin"))
+        if sid then
+            capital = { planet = pid, system = sid }
+        end
+    end
+    -- the player's planets (the outliner's colonies): `owned_planets` are colony ids
+    local planets = {}
+    if not world.colony_planet and world.index then
+        world.index()
+    end
+    for _, c in ipairs(pc and world.list(world.field(pc, "owned_planets")) or {}) do
+        local pid = world.colony_planet and world.colony_planet[tonumber(c)] or tonumber(c)
+        local p = pid and world.object("planet", pid)
+        if p then
+            planets[#planets + 1] = {
+                id = pid, name = galaxy.name_block(world.field(p, "name")),
+                class = tostring(world.field(p, "planet_class") or ""):gsub('"', ""),
+                system = tonumber(world.path(p, "coordinate", "origin")) or -1,
+            }
+        end
+    end
     local communications = {}
     local rm = pc and world.field(pc, "relations_manager")
     for _, r in ipairs(rm and world.fields(rm, "relation") or {}) do
@@ -375,6 +408,8 @@ function galaxy.extract(game_dir)
         dust_size_extra = tonumber(ng.GALAXY_DUST_SIZE_EXTRA) or 35,
         terra_incognita = ti, core_radius = core_radius or 0, player = player,
         communications = pc and communications or nil,
+        planets = planets,
+        capital = capital,
     }
     out.notes = string.format(
         "%d fleets, %d nebulae; " ..
@@ -384,6 +419,27 @@ function galaxy.extract(game_dir)
         #fleets, #nebulae, #systems, #lanes, #countries, classes_used, table.concat(missing_textures, " "),
         table.concat(out.hyperlane_colour, " "), out.star_icon_scale, out.border_system_radius,
         out.border_hyperlane_thickness, RUST.clock() - t0)
+    return out
+end
+
+-- a name block as plain tables, for render.names to localise: { key, literal, vars = { { key,
+-- value = <name> } } } (nil without a block)
+function galaxy.name_block(block, depth)
+    depth = depth or 0
+    if type(block) ~= "table" or depth > 8 then
+        return nil
+    end
+    local out = {
+        key = tostring(world.field(block, "key") or ""):gsub('"', ""),
+        literal = world.field(block, "literal") == "yes",
+        vars = {},
+    }
+    for _, v in ipairs(world.blocks(world.field(block, "variables"))) do
+        local value = galaxy.name_block(world.field(v, "value"), depth + 1)
+        if value then
+            out.vars[#out.vars + 1] = { key = tostring(world.field(v, "key") or ""):gsub('"', ""), value = value }
+        end
+    end
     return out
 end
 

@@ -21,6 +21,8 @@ pub struct System {
     pub icon_scale: f32,
     /// the star's height over the plane (the save's visual_height: the game's world, map x 2)
     pub height: f32,
+    /// its name (a save's name block, localised by render.names)
+    pub name: Name,
 }
 
 /// A country that owns at least one system, with its two map colours.
@@ -70,6 +72,10 @@ pub struct Galaxy {
     pub player: u32,
     /// the countries the player has communications with (None: no player country, all shown)
     pub communications: Option<Vec<u32>>,
+    /// the player's planets (the outliner's colonies)
+    pub planets: Vec<PlanetInfo>,
+    /// the player's capital: its planet and system (save ids)
+    pub capital: Option<(u32, u32)>,
 }
 
 impl Galaxy {
@@ -107,6 +113,9 @@ pub struct Fleet {
     pub military: bool,
     pub from: Option<(f32, f32)>,
     pub to: Option<(f32, f32)>,
+    pub name: Name,
+    /// the system it is in (None: between systems)
+    pub system: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +127,54 @@ pub struct Nebula {
     pub name: String,
     /// the ids of the systems in it
     pub systems: Vec<u32>,
+}
+
+/// A save's name block: a localisation key (or the name itself when `literal`), and the
+/// variables its text takes (render.names puts them together).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Name {
+    pub key: String,
+    pub literal: bool,
+    pub vars: Vec<(String, Name)>,
+}
+
+impl Name {
+    pub fn read(t: Option<Table>) -> mlua::Result<Name> {
+        let Some(t) = t else { return Ok(Name::default()) };
+        let mut vars = Vec::new();
+        if let Some(v) = t.get::<Option<Table>>("vars")? {
+            for p in v.sequence_values::<Table>() {
+                let p = p?;
+                vars.push((p.get("key")?, Name::read(p.get("value")?)?));
+            }
+        }
+        Ok(Name { key: t.get::<Option<String>>("key")?.unwrap_or_default(), literal: t.get::<Option<bool>>("literal")?.unwrap_or(false), vars })
+    }
+
+    /// As a Lua table for render.names.
+    pub fn to_lua(&self, lua: &mlua::Lua) -> mlua::Result<Table> {
+        let t = lua.create_table()?;
+        t.set("key", self.key.as_str())?;
+        t.set("literal", self.literal)?;
+        let vars = lua.create_table()?;
+        for (k, v) in &self.vars {
+            let e = lua.create_table()?;
+            e.set("key", k.as_str())?;
+            e.set("value", v.to_lua(lua)?)?;
+            vars.push(e)?;
+        }
+        t.set("vars", vars)?;
+        Ok(t)
+    }
+}
+
+/// A planet of the player's: its id, name, class and system.
+#[derive(Clone, Debug)]
+pub struct PlanetInfo {
+    pub id: u32,
+    pub name: Name,
+    pub class: String,
+    pub system: i64,
 }
 
 /// The renderer's Lua directory (`sim/render/lua` under `runtime::repo_dir`), for `package.path`.
@@ -203,6 +260,7 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                 texture: s.get("texture")?,
                 icon_scale: s.get("icon_scale")?,
                 height: s.get::<Option<f32>>("height")?.unwrap_or(0.0),
+                name: Name::read(s.get("name")?)?,
             });
         }
         let mut lanes = Vec::new();
@@ -232,6 +290,8 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                 military: f.get("military")?,
                 from: pair("from_x", "from_y")?,
                 to: pair("to_x", "to_y")?,
+                name: Name::read(f.get("name")?)?,
+                system: f.get("system")?,
             });
         }
         let mut nebulae = Vec::new();
@@ -279,6 +339,20 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
             core_radius: g.get::<Option<f32>>("core_radius")?.unwrap_or(0.0),
             player: g.get::<Option<u32>>("player")?.unwrap_or(0),
             communications: g.get::<Option<Table>>("communications")?.map(|t| t.sequence_values::<u32>().collect::<mlua::Result<Vec<_>>>()).transpose()?,
+            capital: match g.get::<Option<Table>>("capital")? {
+                Some(t) => Some((t.get("planet")?, t.get("system")?)),
+                None => None,
+            },
+            planets: match g.get::<Option<Table>>("planets")? {
+                Some(t) => t
+                    .sequence_values::<Table>()
+                    .map(|p| -> mlua::Result<PlanetInfo> {
+                        let p = p?;
+                        Ok(PlanetInfo { id: p.get("id")?, name: Name::read(p.get("name")?)?, class: p.get("class")?, system: p.get("system")? })
+                    })
+                    .collect::<mlua::Result<_>>()?,
+                None => Vec::new(),
+            },
         })
     };
     read().map_err(|e| format!("render.galaxy: {e}"))

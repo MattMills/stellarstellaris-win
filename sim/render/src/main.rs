@@ -27,6 +27,7 @@
 mod app;
 mod border;
 mod camera;
+mod clock;
 mod dds;
 mod effects;
 mod engine;
@@ -45,40 +46,39 @@ mod verify;
 mod window;
 mod worldgfx;
 
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use stellar_sim::{save, Runtime, Simulation};
+use stellar_sim::{save, Runtime};
 
 use crate::border::Borders;
+use crate::clock::{Clock, MapImages, Snapshot};
 use crate::dds::{Cache, Image};
 use crate::font::Font;
 use crate::galaxy::Galaxy;
 use crate::gui::Topbar;
-use crate::scene::{Scene, Textures, ALL, LAYERS};
+use crate::scene::{ButtonState, Scene, Textures, ALL, LAYERS};
+use crate::system::SystemData;
 
-/// Where a map's world lives: a runtime with only the save's world, or a running simulation
-/// (the engine's definitions, script and systems loaded: it can step days).
-pub enum Source {
-    World(Runtime),
-    Sim(Box<Simulation>),
-}
-
-/// The map of a save: the world (or the simulation) in its runtime, the galaxy read from it, the
-/// borders, and the game's textures, fonts and models as they are loaded.
+/// The map of a save: the save's world in a runtime of the render thread (for the game's files:
+/// models, GUI, worlds; and what is drawn until the simulation has run), the simulation on its
+/// own thread once it is started (clock.rs), the galaxy and borders read from the newest of
+/// them, and the game's textures, fonts and models as they are loaded.
 pub struct Map {
-    pub source: Source,
+    pub runtime: Runtime,
+    pub clock: Option<Clock>,
     pub save_path: String,
     pub game_dir: String,
-    pub galaxy: Galaxy,
-    pub borders: Borders,
+    pub galaxy: Arc<Galaxy>,
+    pub borders: Arc<Borders>,
     pub cache: Rc<RefCell<Cache>>,
     pub textures: Textures,
     pub borders_texture: usize,
     /// the galaxy view's map textures (galaxymap.rs): terra incognita, the borders' distance, edge
-    /// and fill colours; made on the first 3D frame
+    /// and fill colours; made on the first 3D frame, or taken from the simulation's snapshot
     pub maps: Option<[usize; 4]>,
     pub fonts: Option<HashMap<String, Font>>,
     pub models: models::Library,
@@ -86,6 +86,25 @@ pub struct Map {
     /// the GUI drawn (the top bar; a system's orbit lines): `gui off` hides it, as the game's
     /// g_bNoGUI
     pub gui: bool,
+    /// the game's clock as the player set it: paused (a save is loaded paused), the speed 1..5
+    pub paused: bool,
+    pub speed: u8,
+    /// GAME_SPEED_0 ("Paused") .. GAME_SPEED_5 localised (the front end's localisation; none:
+    /// the speed's name is not shown)
+    pub speed_names: Option<[String; 6]>,
+    /// the GUI's buttons under the mouse (their hover and pressed frames)
+    pub button_states: HashMap<String, ButtonState>,
+    /// the newest snapshot of the simulation taken, and its map textures
+    pub snapshot: Option<Arc<Snapshot>>,
+    images: Option<Arc<MapImages>>,
+    /// the system whose bodies the simulation sends (the one shown)
+    watched: Option<u32>,
+    /// the top bar laid out (for its size, the clock's state and the snapshot)
+    topbar_cache: Option<((u32, u32, bool, u8, u64), Topbar)>,
+    /// a system's bodies read from the render thread's world (before the simulation runs)
+    system_cache: Option<(u32, Arc<SystemData>)>,
+    /// the system (and its data) last described in the output
+    pub logged_system: Option<(u32, usize)>,
 }
 
 /// One frame's content for a target size.
@@ -95,12 +114,11 @@ pub struct Frame {
 }
 
 impl Map {
-    fn with(source: Source, game_dir: &str, save_path: &str) -> Result<Map, String> {
-        let rt = match &source {
-            Source::World(r) => r,
-            Source::Sim(s) => &s.runtime,
-        };
-        let galaxy = galaxy::extract(rt, game_dir)?;
+    /// The save's world (fast: no definitions, no script); the simulation starts when the game
+    /// is unpaused or stepped.
+    pub fn load(game_dir: &str, save_path: &str) -> Result<Map, String> {
+        let runtime = galaxy::runtime(save_path)?;
+        let galaxy = galaxy::extract(&runtime, game_dir)?;
         let t0 = std::time::Instant::now();
         let borders = border::compute(&galaxy);
         eprintln!("borders: {}x{} texels of {:.2} map units in {:.2} s", borders.width, borders.height, borders.texel, t0.elapsed().as_secs_f64());
@@ -108,11 +126,12 @@ impl Map {
         let img = Image { width: borders.width, height: borders.height, rgba: borders.rgba.clone(), format: "generated".into() };
         let borders_texture = textures.add("@borders", Arc::new(img));
         Ok(Map {
-            source,
+            runtime,
+            clock: None,
             save_path: save_path.to_string(),
             game_dir: game_dir.to_string(),
-            galaxy,
-            borders,
+            galaxy: Arc::new(galaxy),
+            borders: Arc::new(borders),
             cache: Rc::new(RefCell::new(Cache::default())),
             textures,
             borders_texture,
@@ -121,67 +140,174 @@ impl Map {
             models: models::Library::default(),
             particles: particles::Library::default(),
             gui: true,
+            paused: true,
+            speed: clock::DEFAULT_SPEED,
+            speed_names: None,
+            button_states: HashMap::new(),
+            snapshot: None,
+            images: None,
+            watched: None,
+            topbar_cache: None,
+            system_cache: None,
+            logged_system: None,
         })
     }
 
-    /// The save's world only (fast: no definitions, no script).
-    pub fn load(game_dir: &str, save_path: &str) -> Result<Map, String> {
-        let runtime = galaxy::runtime(save_path)?;
-        Map::with(Source::World(runtime), game_dir, save_path)
-    }
-
-    /// The save in a running simulation (the definitions and the script layer loaded too).
+    /// The save as a running simulation: loaded on its thread, waited for.
     pub fn load_sim(game_dir: &str, save_path: &str) -> Result<Map, String> {
-        let runtime = galaxy::sim_runtime(game_dir, save_path)?;
-        Map::with(Source::Sim(Box::new(Simulation::new(runtime))), game_dir, save_path)
+        let mut map = Map::load(game_dir, save_path)?;
+        map.ready()?;
+        Ok(map)
     }
 
     pub fn rt(&self) -> &Runtime {
-        match &self.source {
-            Source::World(r) => r,
-            Source::Sim(s) => &s.runtime,
-        }
+        &self.runtime
     }
 
-    /// The world's date.
+    /// The world's date (the simulation's once it has published).
     pub fn date(&self) -> String {
-        match &self.source {
-            Source::Sim(s) => format!("{:?}", s.date()),
-            Source::World(_) => self.galaxy.date.clone(),
+        match &self.snapshot {
+            Some(s) => s.date.clone(),
+            None => self.galaxy.date.clone(),
         }
     }
 
-    /// Steps the simulation `days` days (a map of the world alone is loaded again as a
-    /// simulation first), then reads the galaxy again. Returns what happened.
-    pub fn step(&mut self, days: u64) -> Result<String, String> {
-        let mut note = String::new();
-        if let Source::World(_) = self.source {
-            let t0 = std::time::Instant::now();
-            let runtime = galaxy::sim_runtime(&self.game_dir, &self.save_path)?;
-            self.source = Source::Sim(Box::new(Simulation::new(runtime)));
-            note = format!("the save loaded as a simulation in {:.1} s; ", t0.elapsed().as_secs_f64());
+    /// Starts the simulation's thread if it is not running (it loads in the background).
+    pub fn start_clock(&mut self) {
+        if self.clock.is_none() {
+            eprintln!("simulation: loading {} on its thread", self.save_path);
+            self.clock = Some(Clock::start(&self.game_dir, &self.save_path, self.paused, self.speed, self.watched));
         }
-        let Source::Sim(sim) = &mut self.source else { unreachable!() };
-        let t0 = std::time::Instant::now();
-        sim.run_days(days);
-        let ran = t0.elapsed().as_secs_f64();
-        let errors = sim.errors.len();
-        let date = format!("{:?}", sim.date());
-        self.refresh()?;
-        Ok(format!("{note}{days} days in {ran:.1} s to {date}; {errors} errors so far"))
     }
 
-    /// Reads the galaxy again from the world (after the simulation stepped) and redraws the
-    /// borders.
-    pub fn refresh(&mut self) -> Result<(), String> {
-        // the owners the world keeps indexed: built again from the objects' fields
-        let _ = self.rt().eval::<()>("local w = require('engine.world') if w.index then w.index() end");
-        self.galaxy = galaxy::extract(self.rt(), &self.game_dir)?;
-        self.borders = border::compute(&self.galaxy);
-        let img = Image { width: self.borders.width, height: self.borders.height, rgba: self.borders.rgba.clone(), format: "generated".into() };
-        self.borders_texture = self.textures.add("@borders", Arc::new(img));
-        self.maps = None;
+    /// The simulation started and loaded (waits for it), its first snapshot taken.
+    pub fn ready(&mut self) -> Result<(), String> {
+        self.start_clock();
+        self.clock.as_ref().unwrap().wait_ready()?;
+        self.sync();
         Ok(())
+    }
+
+    /// Steps the simulation `days` days (started and loaded first) and takes its snapshot.
+    /// Returns what happened.
+    pub fn step(&mut self, days: u64) -> Result<String, String> {
+        let note = if self.clock.is_none() {
+            let t0 = std::time::Instant::now();
+            self.ready()?;
+            format!("the save loaded as a simulation in {:.1} s; ", t0.elapsed().as_secs_f64())
+        } else {
+            String::new()
+        };
+        let r = self.clock.as_ref().unwrap().run_days(days)?;
+        self.sync();
+        Ok(format!("{note}{r}"))
+    }
+
+    /// Pauses or runs the game's clock (running starts the simulation if needed).
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+        match &self.clock {
+            Some(c) => c.set_paused(paused),
+            None if !paused => self.start_clock(),
+            None => {}
+        }
+    }
+
+    /// The key `.`: one day at once while paused (the simulation started if needed).
+    pub fn next_day(&mut self) {
+        if self.paused {
+            self.start_clock();
+            self.clock.as_ref().unwrap().next_day();
+        }
+    }
+
+    /// The game's speed, 1..5.
+    pub fn set_speed(&mut self, speed: u8) {
+        self.speed = speed.clamp(1, clock::SPEEDS);
+        if let Some(c) = &self.clock {
+            c.set_speed(self.speed);
+        }
+    }
+
+    /// The system shown (its bodies and ships come with each snapshot), or none.
+    /// With `wait`, until the simulation has sent it (commands: exact frames); the window does not
+    /// wait (its first frames may show the system as the save has it).
+    pub fn watch(&mut self, system: Option<u32>, wait: bool) {
+        if self.watched != system {
+            self.watched = system;
+            if let Some(c) = &self.clock {
+                c.watch(system, wait);
+                self.sync();
+            }
+        }
+    }
+
+    /// Takes the simulation's newest snapshot if there is a new one: the galaxy, the borders and
+    /// the map textures, the top bar's texts. Whether something changed.
+    pub fn sync(&mut self) -> bool {
+        let Some(snap) = self.clock.as_ref().and_then(|c| c.latest()) else { return false };
+        if self.snapshot.as_ref().is_some_and(|s| s.generation == snap.generation) {
+            return false;
+        }
+        self.galaxy = snap.galaxy.clone();
+        if !self.images.as_ref().is_some_and(|i| Arc::ptr_eq(i, &snap.images)) {
+            let i = snap.images.clone();
+            self.borders = i.borders.clone();
+            self.borders_texture = self.textures.add("@borders", i.borders_image.clone());
+            self.maps = Some([
+                self.textures.add("@terra_incognita", i.ti.clone()),
+                self.textures.add("@border_sdf", i.sdf.clone()),
+                self.textures.add("@border_edge", i.edge.clone()),
+                self.textures.add("@border_fill", i.fill.clone()),
+            ]);
+            self.images = Some(i);
+        }
+        self.snapshot = Some(snap);
+        true
+    }
+
+    /// A system's bodies and ships: the simulation's (when it sends that system), else read from
+    /// the render thread's world (once).
+    pub fn system_data(&mut self, id: u32) -> Result<Arc<SystemData>, String> {
+        if let Some((sid, d)) = self.snapshot.as_ref().and_then(|s| s.system.clone()) {
+            if sid == id {
+                return Ok(d);
+            }
+        }
+        if let Some((sid, d)) = &self.system_cache {
+            if *sid == id {
+                return Ok(d.clone());
+            }
+        }
+        self.models.ensure(&self.runtime, &self.game_dir)?;
+        let d = Arc::new(system::extract(&self.runtime, &self.game_dir, id)?);
+        self.system_cache = Some((id, d.clone()));
+        Ok(d)
+    }
+
+    /// The top bar for a screen of `width` x `height`: laid out again when the size, the clock or
+    /// the snapshot changed; its fonts loaded.
+    pub fn topbar(&mut self, width: u32, height: u32) -> Result<Topbar, String> {
+        let generation = self.snapshot.as_ref().map_or(0, |s| s.generation);
+        let key = (width, height, self.paused, self.speed, generation);
+        if let Some((k, t)) = &self.topbar_cache {
+            if *k == key {
+                return Ok(t.clone());
+            }
+        }
+        let date = self.date();
+        let speed_name = self.speed_names.as_ref().map(|n| n[if self.paused { 0 } else { self.speed as usize }].as_str());
+        let state = gui::TopbarState {
+            texts: self.snapshot.as_ref().map(|s| &*s.topbar),
+            date: Some(&date),
+            paused: self.paused,
+            speed: self.speed,
+            speed_name,
+        };
+        let topbar = gui::topbar(&self.runtime, &self.game_dir, &self.cache, width, height, &state)?;
+        gui::fonts(&self.runtime, &self.game_dir, &topbar.items, self.fonts.get_or_insert_with(HashMap::new))?;
+        self.topbar_cache = Some((key, topbar.clone()));
+        Ok(topbar)
     }
 
     /// The galaxy view's map textures (made once per galaxy read).
@@ -205,13 +331,8 @@ impl Map {
 
     /// The scene for a target of `width` x `height` (the top bar is laid out for that screen):
     /// the 2D map, or the galaxy in 3D from `camera`.
-    pub fn frame(&mut self, width: u32, height: u32, camera: Option<&camera::OrbitCamera>) -> Result<Frame, String> {
-        let topbar = gui::topbar(self.rt(), &self.game_dir, &self.cache, width, height)?;
-        if self.fonts.is_none() {
-            let mut fonts = HashMap::new();
-            gui::fonts(self.rt(), &self.game_dir, &topbar.items, &mut fonts)?;
-            self.fonts = Some(fonts);
-        }
+    pub fn frame(&mut self, width: u32, height: u32, camera: Option<&camera::OrbitCamera>, overlay: &scene::Overlay) -> Result<Frame, String> {
+        let topbar = self.topbar(width, height)?;
         let maps = if camera.is_some() { Some(self.galaxy_maps()) } else { None };
         let inputs = scene::Inputs {
             galaxy: &self.galaxy,
@@ -222,15 +343,13 @@ impl Map {
             fonts: self.fonts.as_ref().unwrap(),
             gui: self.gui,
             game_dir: &self.game_dir,
+            states: &self.button_states,
+            overlay,
         };
         let mut scene = scene::build(&inputs, &mut self.textures, &mut self.cache.borrow_mut(), width, height, camera);
         if camera.is_some() {
             // the galaxy in 3D: the post effects of the `default` world (gfx/worldgfx/default.txt)
-            let rt: &Runtime = match &self.source {
-                Source::World(r) => r,
-                Source::Sim(s) => &s.runtime,
-            };
-            let world = worldgfx::read(rt, &self.game_dir, "default")?;
+            let world = worldgfx::read(&self.runtime, &self.game_dir, "default")?;
             let mut cache = self.cache.borrow_mut();
             scene.post = Some(world.post(&mut self.textures, &mut cache, &self.game_dir));
             scene.sky = world.sky(&mut self.textures, &mut cache, &self.game_dir, 0.0);
@@ -667,7 +786,7 @@ fn map_png(map: &mut Map, w: u32, h: u32, args: &Args, png: &str) -> Result<(), 
     println!("galaxy {}: {} systems, {} hyperlanes, {} owners of {} systems", g.date, g.systems.len(), g.lanes.len(), g.countries.len(), owned);
     println!("lua: {}", g.notes);
     let t0 = std::time::Instant::now();
-    let frame = map.frame(w, h, None)?;
+    let frame = map.frame(w, h, None, &scene::Overlay::default())?;
     println!("scene built in {:.2} s", t0.elapsed().as_secs_f64());
     println!("gfx: {}", frame.topbar.gfx_summary);
     let mut off = render::Offscreen::new(args.backend, args.adapter.as_deref())?;

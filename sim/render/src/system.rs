@@ -16,17 +16,17 @@
 //!   faces -z), at their model's size in the game's world **[I]**.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use stellar_sim::mlua::{self, Table};
 use stellar_sim::Runtime;
 
 use crate::camera::{OrbitCamera, ViewParams};
 use crate::dds::Cache;
-use crate::gui;
 use crate::math::{M4, V3};
 use crate::models::{self, Library};
-use crate::scene::{self, Blend, Gui, Layer, Layout, Line, Look, Quad, Scene, Shading, Textures};
-use crate::{particles, worldgfx, Map, Source};
+use crate::scene::{self, Blend, Gui, Layer, Layout, Line, Look, Overlay, Pick, Pickable, Quad, Scene, Shading, Textures};
+use crate::{particles, worldgfx, Map};
 
 /// The system's plane: the game draws a system's bodies at y = -150 of its world (x 10: -15 map
 /// units) **[V]** (their entities' world transforms, `state planet ID` of headless/view.sh).
@@ -59,12 +59,15 @@ pub struct Body {
     pub look: Look,
     /// it has a ring (binary_flags bit 8): PLANET_RING_ENTITY drawn with it
     pub ring: bool,
+    pub name: crate::galaxy::Name,
 }
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct ShipInfo {
     pub id: u32,
+    /// its fleet (a click on the ship selects it: CGameState::GetSelectableAt)
+    pub fleet: u32,
     pub station: bool,
     pub x: f32,
     pub y: f32,
@@ -166,6 +169,7 @@ pub fn extract(rt: &Runtime, game_dir: &str, id: u32) -> Result<SystemData, Stri
                 class_scale: b.get::<Option<f32>>("entity_scale")?.unwrap_or(1.0),
                 look: read_look(&b.get::<Table>("look")?)?,
                 ring: b.get::<Option<bool>>("ring")?.unwrap_or(false),
+                name: crate::galaxy::Name::read(b.get("name")?)?,
             });
         }
         let mut ships = Vec::new();
@@ -185,6 +189,7 @@ pub fn extract(rt: &Runtime, game_dir: &str, id: u32) -> Result<SystemData, Stri
             }
             ships.push(ShipInfo {
                 id: s.get("id")?,
+                fleet: s.get("fleet")?,
                 station: s.get("station")?,
                 x: s.get("x")?,
                 y: s.get("y")?,
@@ -251,21 +256,12 @@ pub fn look_of(rt: &Runtime, game_dir: &str, entity: &str) -> Look {
     })
 }
 
-fn source_rt(source: &Source) -> &Runtime {
-    match source {
-        Source::World(r) => r,
-        Source::Sim(s) => &s.runtime,
-    }
-}
-
 /// A camera over a system (its own space, centred on 0, 0): as the game enters a system, at
 /// ENTER_SYSTEM_ZOOM_STEP 6 of ZOOM_STEPS_SYSTEM_PERCENTAGES { 0.025 0.1 0.25 0.5 1.0 1.5 3.0 }
 /// of the system's size (outer_radius), pitch 50.
 pub fn camera_for(map: &mut Map, index: usize) -> OrbitCamera {
     let id = map.galaxy.systems[index].id;
-    let Map { source, models, game_dir, .. } = map;
-    let rt = source_rt(source);
-    let data = models.ensure(rt, game_dir).ok().and_then(|_| extract(rt, game_dir, id).ok());
+    let data = map.system_data(id).ok();
     let size = data.as_ref().map_or(0.0, |d| d.outer_radius);
     if size <= 0.0 {
         return OrbitCamera::system(data.map_or(250.0, |d| d.radius()));
@@ -274,34 +270,38 @@ pub fn camera_for(map: &mut Map, index: usize) -> OrbitCamera {
     c.distance = 3.0 * size;
     c.max_distance = 3.0 * size;
     c.min_distance = 0.025 * size;
+    c.zoom_steps = Some(SYSTEM_ZOOM_STEPS.map(|p| p * size));
     c
 }
 
-/// The system's scene.
-pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, height: u32) -> Result<Scene, String> {
+/// NCamera.ZOOM_STEPS_SYSTEM_PERCENTAGES: a system's zoom steps, shares of its outer_radius.
+pub const SYSTEM_ZOOM_STEPS: [f32; 7] = [0.025, 0.1, 0.25, 0.5, 1.0, 1.5, 3.0];
+
+/// The system's scene (`overlay`: the selection and the windows over it).
+pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, height: u32, overlay: &Overlay) -> Result<Scene, String> {
     let id = map.galaxy.systems[index].id;
     let gd = map.game_dir.clone();
-    // the top bar, as on the map
     // the system's distance from the core, a share of the galaxy's radius (the sky's choice)
     let core_pct = {
         let s = &map.galaxy.systems[index];
         let r = map.galaxy.systems.iter().map(|o| (o.x * o.x + o.y * o.y).sqrt()).fold(1.0f32, f32::max);
         (s.x * s.x + s.y * s.y).sqrt() / r
     };
-    let topbar = gui::topbar(map.rt(), &gd, &map.cache, width, height)?;
-    if map.fonts.is_none() {
-        let mut fonts = HashMap::new();
-        gui::fonts(map.rt(), &gd, &topbar.items, &mut fonts)?;
-        map.fonts = Some(fonts);
-    }
-    let Map { source, models: lib, textures: tex, cache, fonts, gui, particles: plib, .. } = map;
-    let rt = source_rt(source);
+    // the top bar, as on the map
+    let topbar = map.topbar(width, height)?;
+    let data = map.system_data(id)?;
+    // what was drawn is told once per system and world
+    let key = (id, Arc::as_ptr(&data) as usize);
+    let verbose = map.logged_system != Some(key);
+    map.logged_system = Some(key);
+    let Map { runtime, models: lib, textures: tex, cache, fonts, gui, particles: plib, button_states, .. } = map;
+    let rt: &Runtime = runtime;
     lib.ensure(rt, &gd)?;
-    let data = extract(rt, &gd, id)?;
     let view = camera.view_params(width, height);
     let mut batches = Vec::new();
     let mut lines = Vec::new();
     let mut meshes = Vec::new();
+    let mut picks = Vec::new();
     let mut cache = cache.borrow_mut();
 
     let mut light = [0.0, 30.0, 0.0, 1.0];
@@ -318,6 +318,10 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
         }
         match (!b.entity.is_empty()).then(|| lib.model(rt, &gd, &b.entity)) {
             Some(Ok(model)) => {
+                if let Some((px, py, _)) = view.project(at) {
+                    let r = model.radius() * scale * view.pixels_per_unit(at);
+                    picks.push(Pick { what: Pickable::Body(b.id), centre: (px, py), radius: r.max(6.0) });
+                }
                 // its world transform: the position, the orientation, the scale (the entity's own
                 // scale is applied by models::draws), as the game's (`state planet ID`)
                 let m = M4::translation(at).mul(&body_rotation(b.id, b.x, b.y, b.star)).mul(&M4::scaling(scale));
@@ -397,7 +401,7 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
             asteroids += 1;
         }
     }
-    if asteroids > 0 {
+    if verbose && asteroids > 0 {
         eprintln!("system {id}: {asteroids} asteroids in {} belts", data.belts.len());
     }
 
@@ -472,6 +476,10 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
                 meshes.extend(ship_draws(&tm, base.mul(&at_locator).mul(&M4::scaling(m.scale)).mul(&lt), tex, &mut cache));
             }
         }
+        if let Some((px, py, _)) = view.project(at) {
+            let r = frame.as_ref().map_or(1.0, |f| f.radius()) * SHIP_SCALE * view.pixels_per_unit(at);
+            picks.push(Pick { what: Pickable::Fleet(s.fleet), centre: (px, py), radius: r.max(5.0) });
+        }
         if drawn == 0 {
             // no model: a marker
             batches_push(&mut batches, Layer::Stars, Blend::Alpha, disc, Quad::billboard(s.x, s.y, 0.5, 0.8, [0.8, 0.9, 1.0, 1.0], 0.0, 3.0));
@@ -479,15 +487,19 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
             ships_drawn += 1;
         }
     }
-    if !missing.is_empty() {
+    if verbose && !missing.is_empty() {
         eprintln!("system {id}: models not drawn: {}", missing.join("; "));
     }
-    eprintln!("system {id}: {} bodies, {} of {} ships with a model, {} mesh draws", data.bodies.len(), ships_drawn, data.ships.len(), meshes.len());
-    let mut entities: Vec<String> = data.ships.iter().flat_map(|s| std::iter::once(s.frame.clone()).chain(s.sections.iter().map(|(e, l)| format!("{e}@{l}")))).collect();
-    entities.sort();
-    entities.dedup();
-    eprintln!("system {id}: ship models: {}", entities.join(" "));
-    if !tex.missing.is_empty() {
+    if verbose {
+        eprintln!("system {id}: {} bodies, {} of {} ships with a model, {} mesh draws", data.bodies.len(), ships_drawn, data.ships.len(), meshes.len());
+    }
+    if verbose {
+        let mut entities: Vec<String> = data.ships.iter().flat_map(|s| std::iter::once(s.frame.clone()).chain(s.sections.iter().map(|(e, l)| format!("{e}@{l}")))).collect();
+        entities.sort();
+        entities.dedup();
+        eprintln!("system {id}: ship models: {}", entities.join(" "));
+    }
+    if verbose && !tex.missing.is_empty() {
         eprintln!("system {id}: textures not loaded: {}", tex.missing.join("; "));
     }
 
@@ -507,10 +519,16 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
     let back_light = [bl[0], bl[1], bl[2], 1.0];
     // the ships' camera lights, rim light and ambient: light settings too (^4.84)
     let cam_lights = world_gfx.ship_lights.map(|c| [c[0].max(0.0).powf(4.84), c[1].max(0.0).powf(4.84), c[2].max(0.0).powf(4.84), 1.0]);
-    eprintln!("system {id}: world {world} ({}), light {} {:?}, back light {:?}", world_gfx.world, world_gfx.system_light, lc, world_gfx.back_light);
+    if verbose {
+        eprintln!("system {id}: world {world} ({}), light {} {:?}, back light {:?}", world_gfx.world, world_gfx.system_light, lc, world_gfx.back_light);
+    }
+    if let Some(sel) = overlay.selected {
+        scene::selection_marker(&mut batches, &mut lines, tex, &mut cache, &gd, &view, &picks, sel, true);
+    }
     let mut g = Gui::default();
     if *gui {
-        scene::add_gui(&mut batches, &mut g, &topbar.items, fonts.as_ref().unwrap(), tex, &mut cache, &gd, &HashMap::new());
+        scene::add_gui(&mut batches, &mut g, &topbar.items, fonts.as_ref().unwrap(), tex, &mut cache, &gd, button_states);
+        scene::add_gui(&mut batches, &mut g, &overlay.items, fonts.as_ref().unwrap(), tex, &mut cache, &gd, button_states);
     }
     Ok(Scene {
         layout: Layout { width, height, world_to_ndc: [1.0, 1.0, 0.0, 0.0], scale: 1.0, lane_width: 1.0 },
@@ -524,6 +542,7 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
         meshes,
         clear: [0.005, 0.006, 0.016],
         stars: Vec::new(),
+        picks,
         sprites: g.sprites,
         texts: g.texts,
         buttons: g.buttons,
@@ -762,6 +781,7 @@ pub fn model_scene(
         meshes,
         clear: [0.02, 0.025, 0.04],
         stars: Vec::new(),
+        picks: Vec::new(),
         sprites: Vec::new(),
         texts: Vec::new(),
         buttons: Vec::new(),

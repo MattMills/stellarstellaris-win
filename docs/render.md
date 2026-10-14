@@ -76,7 +76,7 @@ Machines: `10.5.0.24` (Linux, GT 730 with NVK, Mesa 26.0.8; game data in `/opt/s
   nebulae, borders, lanes and FTL trails, a system view with the game's meshes, and single models
   (section 10). The post effects, sky, stars, planets, galaxy view and ships follow the game's
   shaders and look close to its frames (section 11's table); not yet: animation, the lens flare,
-  the map's names. The next phase, the window's own controls: section 12.
+  the map's names. The window's controls (the clock, the camera, the selection): section 12.
 - **Headless, driven by commands** over TCP or from a script, one reply per command after it
   completes (section 9); the real game speaks the same protocol (`headless/view.sh`), so one
   script takes the same shots of both.
@@ -528,18 +528,25 @@ takes the same shots of both.
 
 | command | reply / effect |
 |---|---|
-| `load PATH`, `load-sim PATH` | the save's world (fast), or the save as a running simulation |
-| `step DAYS` | runs the simulation (a world-only map is loaded again as a simulation first) |
-| `view galaxy` / `3d` / `2d` / `system ID` / `model NAME` / `menu` | what the map screen shows |
+| `load PATH`, `load-sim PATH` | the save's world (fast), or with the simulation loaded on its thread too (waited for); either way the home system is shown, as the game does after a load (section 12) |
+| `step DAYS` | runs the simulation DAYS days and waits for them (its thread is started and loaded first if needed) |
+| `pause`, `pause off` | the game's clock stopped (as the game's headless `pause`), or running in real time at its speed (section 12) |
+| `speed 1..5` | the clock's speed (Slowest .. Fastest) |
+| `wait SECONDS` | real time passes (the clock runs meanwhile); replies with the date |
+| `select system\|fleet\|planet\|ship ID`, `select none` | the selection, as a click makes it: its marker, the outliner's row, its window |
+| `view galaxy` / `3d` / `2d` / `system ID` / `model NAME` / `menu` | what the map screen shows (from a system, `view galaxy` leaves it as the game does: at its star, ZOOM_STEPS_GALAXY[1]) |
 | `focus system ID`, `focus fleet ID` | the galaxy camera over it |
 | `camera X Y Z YAW PITCH DISTANCE` | the game's camera (section 10): its target (map x = X, map y = Z), angles in degrees, the distance in map units |
 | `orbit DYAW DPITCH`, `zoom FACTOR`, `pan DX DY` | relative moves (pan in fractions of the distance) |
-| `resize W H`, `key NAME down\|up`, `mouse X Y [left\|right down\|up]`, `scroll DY` | input |
-| `gui off\|on`, `pause` | the GUI (the top bar, a system's orbit lines) hidden or shown; ok |
+| `resize W H`, `key NAME down\|up`, `mouse X Y [left\|right down\|up]`, `scroll DY` | input (`scroll`: the wheel, a zoom step a notch about the point under the mouse) |
+| `gui off\|on` | the GUI (the top bar, the outliner, a system's orbit lines) hidden or shown |
 | `frame PATH.png` | `ok frame PATH W H MS` (MS: scene, upload, GPU and read-back) |
 | `frame -` | `ok frame - W H MS BYTES`, then the PNG's bytes |
-| `state` | JSON: screen, view, camera, date, systems, fleets by movement state, FTL trails, size |
+| `state` | JSON: screen, view, camera, date, the clock (paused, speed, loading, days run, a day's and a snapshot's ms), the selection, systems, fleets by movement state, FTL trails, size |
 | `quit` | ends the server |
+
+The game's headless serves `pause` and `step` the same way; `speed`, `wait` and `select` are the
+renderer's only (headless/ is not changed).
 
 The client `sim/render/tools/ctl.py` (standard library only) sends commands, files of commands, or
 `--get OUT.png`; `ctl.py example SAVE OUT_DIR [SYSTEM]` loads the save, takes three galaxy shots
@@ -591,9 +598,7 @@ The game's (CGameCamera, read from the code; its `state` and its frames agree):
   ZOOM_STEPS_SYSTEM_PERCENTAGES x the system's size: 92.5 .. 11,100 for system 401); near 1 and
   far 5000 on the galaxy.
 - **The renderer** (`sim/render/src/camera.rs`) now uses that camera; the 2D map follows the same
-  orientation (x to the left, y downwards). Window: right-drag orbits, left-drag pans, the wheel
-  zooms; W A S D / arrows pan, Q E turn, R F tilt, + - zoom, V switches the 2D map and 3D, a click
-  on a star opens its system, Escape goes back; Space steps a day, P runs a day per frame.
+  orientation (x to the left, y downwards). The window's controls are the game's (section 12).
 
 ### The system view
 
@@ -786,56 +791,126 @@ galaxy has no star class; the frames agree):
   star (the save's `visual_height` / 2), the shown owner's colour at alpha 0.2, else grey 0.5 at
   alpha 0.1.
 
-## 12. Next: the window's own controls driving the simulation (handover)
+## 12. The window's controls: the clock, the camera, the selection
 
-The goal: the date, speed, pause, camera and selection controllable from the window as in the
-game. What is there today:
+The game's behaviour, read from the 4.5.2 Linux build's code **[V]** (inferences marked **[I]**),
+and how the renderer does it. Checked against the game's frame after a load (`headless/view.sh`,
+the same commands: `H:\code_working\tmp_sym\render3d\parity\7_controls.png`, the game left): the
+home system at the same place and scale, the top bar's clock, the outliner.
 
-- **The command layer** (`src/engine.rs`, section 9): `load`, `load-sim`, `step DAYS`, `view`,
-  `focus`, `camera`, `orbit`/`zoom`/`pan`, `key`, `mouse`, `scroll`, `resize`, `gui`, `frame`,
-  `state` (JSON with the date). `pause` only replies ok. `step` runs synchronously. A save loaded
-  with `load` is a world only; the first `step` loads it again as a simulation (7.7 s).
-- **The app** (`src/app.rs`): the screens (menu, load, map) and views (galaxy 2D/3D, system,
-  model), the camera moves, `step(days)` (Map::step in main.rs: Simulation::run_days, then the
-  galaxy, borders and map textures read again), keys (W A S D pan, Q E turn, R F tilt, + - zoom, V
-  2D/3D, Escape back). A left click on a galaxy star opens its system. `act()` handles only the
-  front end's buttons (`exit`, `open_load`, `close_load`, `load:N`). `button_at` returns nothing on
-  the map screen, so the top bar's buttons take no clicks.
-- **The window** (`src/window.rs`, winit): Space steps a day and P runs a day per frame, both on
-  the UI thread (0.35 to 0.6 s a day, so the window stalls while it runs).
-- **The GUI** (`src/gui.rs`, `lua/render/gui.lua`, section 2): .gui windows laid out with
-  sprites, frames, hover and pressed states, and texts. `lua/render/topbar.lua` binds the top bar
-  (`interface/main.gui` `maingui`): the resource amounts and the date (`time_window/time`) from the
-  world. The speed controls are drawn in the paused state (`pause_bg`, `pause_glow` hidden).
+### The clock (`sim/render/src/clock.rs`)
 
-What is missing:
+- **The simulation runs on its own thread**, which owns its Lua runtime (the save with the game's
+  definitions and the script layer); nothing of it is shared. It starts when the clock is first
+  unpaused or stepped (the save loads in about 4 s on 10.5.0.24, 8 s on the laptop) and after
+  every day publishes a snapshot: the galaxy read from the world, the galaxy view's map textures
+  (made again only when the owners or terra incognita changed: their hash), the shown system's
+  bodies and ships, the top bar's amounts and the date. The render thread takes the newest
+  snapshot when it draws; it keeps its own runtime (the save's world alone) for the game's files
+  (models, GUI, worlds) and for what is drawn before the first snapshot. The window never waits for
+  a day: Space and the speed are messages to the thread; entering a system asks for its bodies
+  and draws the save's until they come.
+- **Speeds** (CInGameIdler +0x590, 0..4; Normal and paused after a load): CheckTick posts two
+  tick commands every gGameSpeedTurnTimes[speed] = { 0.3 0.15 0.075 0.04 0 } s and a day is ten
+  ticks (CGameState::HandleTurnTick), so a day lasts 1.5, 0.75, 0.375, 0.2 s, and at Fastest one
+  every five frames. The thread runs a day when it is due; behind, it makes up at most 0.4 of a day
+  (the accumulator is clamped to two of a day's five rounds) and otherwise runs as fast as it can.
+  The first unpause after a load waits a second more (the accumulator starts at -1). On
+  10.5.0.24 a day takes 0.23 to 0.55 s and a snapshot 25 to 70 ms, so Fast and Fastest run at the
+  simulation's pace.
+- **Pausing keeps the speed**; the speed changes while paused. Keys (CInGameIdler::
+  HandleInputEvent): Space pauses or runs; the keypad's + and -, `+` `=` and `-`, Shift+Up and
+  Shift+Down change the speed (ModifyGameSpeed: one step, within 1..5); `.` runs one day and
+  pauses again (CJumpToNextDayCommand).
+- **The top bar** (CMainGui::UpdateTimeWindow; `lua/render/topbar.lua`): paused, `pause_bg_stop`
+  (GFX_topbar_paused) and `pause_glow`; running, `pause_bg` (GFX_topbar_running);
+  `start_stop_icons` frame 1 (the pause bars) or the speed + 1; `time_description` GAME_SPEED_0
+  ("Paused") or the speed's name, localised by the front end; `time` the date as
+  CGameDate::GetGameString writes it (`2210.01.01`, not localised). Clicks (CMainGui::Setup):
+  `start_stop_icons` and the `hitbox` window pause or run, `increase_speed` and `decrease_speed`
+  change the speed; `pause_bg` and `pause_bg_stop` take none. The map screen's clicks reach the
+  GUI's buttons first (their hover and pressed frames too); a window's background takes the
+  clicks of a window an action names (gui.lua `opts.actions`). Not drawn: the bars' animated
+  textures (their `animation` masks).
 
-1. **A clock and speeds.** The simulation runs off the UI thread (a worker that owns the Lua
-   runtime, which is not Send, and hands back the extracted galaxy and system data after each day),
-   paced by speed: 1 to 5 days per real time, with the length of a day at each speed to be read from
-   the engine (it is not in the defines). Pausing stops the worker between days.
-2. **The top bar's time controls.** `maingui/time_window`: `decrease_speed` and `increase_speed`
-   (shortcuts KP_MINUS, KP_PLUS), `start_stop_icons` and the `hitbox` (pause), `pause_bg` /
-   `pause_bg_stop` (`GFX_topbar_running` / `GFX_topbar_paused`), `pause_glow`, the speed strip
-   `strip_gamespeed` (`GFX_speed_indicator`, 6 frames), `time_description`. The work: clicks on the
-   map screen go to the GUI's buttons first (`button_at` on Screen::Map), `act()` maps these buttons
-   to pause, speed down and speed up, and the top bar shows the state (sprite frames, the strip's
-   frame = the speed, `time_description` text). The date already follows the world once the top
-   bar is built again after each day.
-3. **Keys as in the game.** Space pauses (now: a step); the keypad's + and - change the speed (now:
-   + and - zoom; the game zooms with the wheel and its zoom keys).
-4. **The camera.** The moves exist. Missing: the game's smoothing toward a target orientation
-   (CGameCamera +0x230), the zoom steps (ZOOM_STEPS_GALAXY, ZOOM_STEPS_SYSTEM_PERCENTAGES), edge
-   scrolling (SCROLL_SPEED), focus on a double click or an outliner entry, and leaving a system by
-   zooming out.
-5. **Selection.** Nothing is selected today. Needed: a selection in App (system, planet, fleet,
-   starbase); picking in the system view (bodies and ships projected and hit-tested, as `star_at`
-   does for the galaxy); the selection marker; the outliner and the planet and fleet windows laid
-   out by gui.lua with bound data (as topbar.lua does); right-click orders (move a fleet) passed to
-   the simulation's order functions.
-6. **Commands to test it.** `pause on|off`, `speed N` and `select KIND ID` in engine.rs (clicks
-   are `mouse X Y left down` and `up`), and the speed, pause and selection in `state`, so one
-   command file drives both the renderer and the game (`headless/view.sh` already serves `pause`).
+### The camera (`sim/render/src/camera.rs`, `app.rs`; CGameCamera)
+
+- **Input moves a target orientation; the camera follows it** (UpdateOrientation,
+  SCameraOffset::SmoothChangeTowards): each frame by min(dt x 6.67, 1) of the way (dt the frame's
+  time, at most 0.1 s), position, distance, pitch and yaw alike, the yaw the short way round; while
+  the player drags or turns, the position on the plane and the angles at once. Commands (the
+  headless renderer) set the camera at once.
+- **Zoom steps**: the zoom is the camera's distance. The galaxy's ZOOM_STEPS_GALAXY { 100 200 400
+  600 900 1500 3000 } (the game's world; map units / 2), a system's ZOOM_STEPS_SYSTEM_PERCENTAGES
+  x 10 x its outer radius. A wheel notch moves one step a frame and scales the target about the
+  plane's point under the cursor, which stays under it (SetTargetZoom). Page Up and Page Down held
+  zoom by KEYBOARD_ZOOM_RATE x FOCUSED_ZOOM_RATE = 1.5 x the distance a second. Zooming neither
+  enters nor leaves a system.
+- **Scrolling**: W A S D and the arrows held, and the cursor within EDGE_SCROLLING_PIXELS (3) of
+  the screen's edge (toward it from the centre), move the target at scroll_speed (50) x
+  SCROLL_SPEED (0.035) x tan(FOV / 2) x the distance a second (0.55 x the distance; diagonals not
+  normalised). The middle button drags the plane: the grabbed point stays under the cursor. The
+  right button turns (ROTATION_RADIANS_PER_MOUSE_UNIT 0.004 a pixel, from 4 pixels on); on the
+  galaxy the yaw springs back to 0 once the button is up (x 0.9 a frame while a radian or more,
+  else 0.1 a frame). A left drag is the game's box selection (not done). The target is kept in the
+  galaxy's box (+-500 map units) or the system's sphere (outer radius + SYSTEM_CAMERA_RESTRICT_
+  EXTRA_SPACE). Shortcuts: R turns the camera back, E and M enter the system under the cursor or
+  go between system and galaxy, Home and Backspace go to the capital's system.
+- **Entering and leaving** (OnEnterSystem, OnLeaveSystem): a system is entered at its centre,
+  pitch 50, flying in from twice its last zoom step to ENTER_SYSTEM_ZOOM_STEP 6 (FOCUS_START_ZOOM_
+  STEP 4 when something is followed); one entered before comes back as it was left. Leaving puts
+  the galaxy's camera at the system's star, flying out to ZOOM_STEPS_GALAXY[LEAVE_SYSTEM_ZOOM_STEP
+  1]. **After a load the home system is shown** at its centre, step 6, pitch 50 (the game's
+  `state` after a load: view system 401, distance 11,100, pitch 50; RestoreDeviceObjects'
+  FocusOnCoordinate).
+- **A double click** focuses (CSelectable::FocusOn): a system from the galaxy is entered; a planet
+  or a fleet in a system is followed (the target on it every frame) until the player scrolls or
+  drags.
+
+### The selection (`app.rs`, `scene.rs`, `lua/render/windows.lua`, `lua/render/names.lua`)
+
+- **Picking** (CGameState::DoSelection): on the galaxy the first system, in the galaxy's order,
+  whose star is within NCamera.SYSTEM_HOVER_RANGE (0.005) of the camera's distance off the mouse's
+  ray (FindGalacticObjectUnderMouse: about 7 pixels at 900 lines); fleets are GUI icons in the
+  game and take the click first (here the fleet markers drawn with the GUI). In a system
+  (GetSelectableAt) the nearest of the ships and bodies along the ray; a ship selects its fleet.
+  Clicking empty space clears the selection, Escape too.
+- **What opens**: a planet (CPlanet::OnSelect, JumpToColony) `planet_view` (planet_view.gui, at
+  100, 100, 1162 x 680); a fleet (CFleetUiHandler::ShowUi) `fleet_view` (fleet_view.gui, lower
+  left, one `fleet_view_entry` row: the window grows with it); a starbase `starbase_view`; a
+  system nothing (CGalacticObject::OnSelect is empty). Drawn: their frames, the name, the close
+  button (which clears the selection); not their lists, tabs and the parts the game fills.
+- **The marker**: the game draws none in 3D; the selected thing's GUI map icon is tinted
+  RELATION_COLOR_SELECTED_RGB { 1.5 1.1 0 } (mapicons.gui; the renderer draws no map icons yet:
+  a ring in that colour stands in) **[I]**.
+- **The outliner** (outliner.gui: `outliner_controller_window`, `tabs_outliner_window`,
+  `outliner_tab_window` "Overview"): a group header (`outliner_title_entry_window`) and the
+  group's rows (`outliner_member_*_entry_window`) down to the screen's bottom margin; a row's
+  background selects its planet or fleet. Groups as the game's frame of this save shows them:
+  Utility Ships, Military Fleets, Shipyards (the starbases), then the colonies; empty groups left
+  out; mining and research stations not listed. Names from the save are localised by
+  render.names: the name block's key (or literal), its `$VAR$` variables, the engine's
+  `%ADJECTIVE%` (adjective and noun) and `%ACRONYM%` (initials made up to three letters from the
+  last word: "Uthabulan Order" UOR); a text wider than its box is cut with " ...".
+- **Tooltips: the hook** (`app.rs`): `App::hovered` keeps what the cursor is over (a GUI element's
+  path or a pickable thing on the map) and since when; `App::tooltip(rest)` asks a `Tooltips`
+  implementation (`text(target, date)`) once the cursor has rested. The next phase implements it
+  over the modifier graph, its texts cached with bounded staleness (about a second or 60 frames),
+  and draws `core.gui`'s `ToolTipWindow` (GFX_tooltip_bg, `cg_16b`, at most 500 wide). The game's
+  builders, for reference: CInGameIdler::BuildToolTip (the map), CFleet / CPlanet /
+  CGalacticObject::GetToolTip, the map icons' and COutlinerMember::GetToolTip.
+
+### Not done yet
+
+- The outliner's sectors (the game groups the colonies by sector: Sectors, then each sector's
+  planets), the rows' second lines (ship class, fleet size, "Empire Capital") and icons, their
+  order within a group, the other tabs, collapsing groups.
+- The map icons (system names, fleet and planet icons; mapicons.gui), and with them the true
+  selection marker and the fleets' clicks on the galaxy; box selection; right-click orders.
+- The planet, fleet and starbase windows' contents (their lists and tabs).
+- The camera's slide between systems (Update: along the hyperlane's exit), the system camera's
+  near and far planes, the game's zoom on a focused object (CalcMinZoom).
+- The headless game has no `speed`, `wait` or `select` (headless/ is not changed here).
 
 ## Open questions
 

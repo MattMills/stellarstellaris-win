@@ -103,34 +103,74 @@ function topbar.values(cid)
     return out, res
 end
 
--- topbar.build(game_dir, db, screen, texture_size) -> { items, report, values, country, date }
-function topbar.build(game_dir, db, screen, texture_size)
+-- The time controls (main.gui time_window) by the clock's state (CMainGui::UpdateTimeWindow,
+-- 4.5.2): paused, pause_bg_stop (GFX_topbar_paused) and pause_glow; running, pause_bg
+-- (GFX_topbar_running); start_stop_icons' frame 1 the pause bars, 2..6 the speeds 1..5;
+-- time_description GAME_SPEED_0 ("Paused") or the speed's name. Clicks (CMainGui::Setup):
+-- start_stop_icons and the hitbox window pause or run the clock, increase_speed and
+-- decrease_speed change the speed; pause_bg and pause_bg_stop take none.
+local TW = "/maingui/time_window/"
+topbar.TIME_ACTIONS = {
+    [TW .. "hitbox"] = "pause", [TW .. "start_stop_icons"] = "pause",
+    [TW .. "increase_speed"] = "speed_up", [TW .. "decrease_speed"] = "speed_down",
+}
+
+-- topbar.build(game_dir, db, screen, texture_size, state) -> { items, report, values, country, date }
+--   state: { text = { [path] = text } (the amounts, from the simulation; else read from the
+--            world), date, paused, speed }
+function topbar.build(game_dir, db, screen, texture_size, state)
+    state = state or {}
     local cid = topbar.player()
-    local values = topbar.values(cid)
+    local paused = state.paused ~= false
+    local speed = math.max(1, math.min(5, tonumber(state.speed) or 3))
     local text, hide = {}, {
-        -- the speed controls show the paused state (a save is loaded paused)
-        pause_bg = true, pause_glow = true, time_description = true,
         -- the government button carries the empire's flag, composed at run time
         button_topbar_government = true,
     }
+    if paused then
+        hide.pause_bg = true
+    else
+        hide.pause_bg_stop = true
+        hide.pause_glow = true
+    end
+    -- the speed's name (localised by the caller: GAME_SPEED_0 .. 5); without it, not shown
+    if state.speed_name then
+        text[TW .. "time_description"] = state.speed_name
+    else
+        hide.time_description = true
+    end
+    local frames = { [TW .. "start_stop_icons"] = paused and 1 or speed + 1 }
     local bound = {}
-    for group in pairs(topbar.STOCKPILES) do
-        if not values[group] then
-            hide["/maingui/topbar_static/" .. group] = true
+    if state.text then
+        for group in pairs(topbar.STOCKPILES) do
+            if not state.text["/maingui/topbar_static/" .. group .. "/amount"] then
+                hide["/maingui/topbar_static/" .. group] = true
+            end
+        end
+        for path, t in pairs(state.text) do
+            text[path] = t
+            bound[path] = { text = t, source = "simulation" }
+        end
+    else
+        local values = topbar.values(cid)
+        for group in pairs(topbar.STOCKPILES) do
+            if not values[group] then
+                hide["/maingui/topbar_static/" .. group] = true
+            end
+        end
+        for group, v in pairs(values) do
+            local path = "/maingui/topbar_static/" .. group .. "/amount"
+            text[path] = v.text
+            bound[path] = v
         end
     end
-    for group, v in pairs(values) do
-        local path = "/maingui/topbar_static/" .. group .. "/amount"
-        text[path] = v.text
-        bound[path] = v
-    end
-    local date = tostring(world.meta.date or ""):gsub('"', "")
-    text["/maingui/time_window/time"] = date
-    bound["/maingui/time_window/time"] = { text = date, source = "date" }
+    local date = state.date or tostring(world.meta.date or ""):gsub('"', "")
+    text[TW .. "time"] = date
+    bound[TW .. "time"] = { text = date, source = "date" }
 
     local opts = {
         only = { topbar = true, topbar_extended = true, topbar_static = true, time_window = true },
-        hide = hide, text = text, texture_size = texture_size,
+        hide = hide, text = text, texture_size = texture_size, frames = frames, actions = topbar.TIME_ACTIONS,
     }
     local items, report = gui.layout(game_dir, db, "interface/main.gui", "maingui", screen, opts)
     local flag_items, flag_report = gui.layout(game_dir, db, "interface/main.gui", "maingui_flag", screen,

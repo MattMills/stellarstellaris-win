@@ -383,6 +383,35 @@ pub struct PlacedStar {
     pub rect: [f32; 4],
 }
 
+/// Something on the map a click can select.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pickable {
+    /// a system (its index in the galaxy's systems)
+    System(usize),
+    /// a fleet (its save id)
+    Fleet(u32),
+    /// a planet, moon or star of a system (its save id)
+    Body(u32),
+    /// a ship in a system (its save id)
+    Ship(u32),
+}
+
+/// Where a pickable thing is on the screen: its centre and radius in pixels.
+#[derive(Clone, Copy, Debug)]
+pub struct Pick {
+    pub what: Pickable,
+    pub centre: (f32, f32),
+    pub radius: f32,
+}
+
+/// What the window adds over a view: the selection (marked), and GUI windows over the view
+/// (the outliner, an info window) with their own buttons.
+#[derive(Clone, Debug, Default)]
+pub struct Overlay {
+    pub selected: Option<Pickable>,
+    pub items: Vec<GuiItem>,
+}
+
 /// A GUI sprite drawn: its element, sprite, rectangle on screen, and whether its frame has any
 /// visible texel.
 pub struct PlacedSprite {
@@ -444,6 +473,8 @@ pub struct Scene {
     pub meshes: Vec<MeshDraw>,
     pub clear: [f32; 3],
     pub stars: Vec<PlacedStar>,
+    /// what a click can select, where it is drawn (the topmost last)
+    pub picks: Vec<Pick>,
     pub sprites: Vec<PlacedSprite>,
     pub texts: Vec<PlacedText>,
     pub buttons: Vec<PlacedButton>,
@@ -477,6 +508,27 @@ impl Scene {
             .filter(|(_, d)| *d <= radius)
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(s, _)| s)
+    }
+
+    /// The pickable thing under a point, as the game picks (CGameState::DoSelection): fleets
+    /// (on the galaxy, GUI icons that take the click first) and, in a system, ships and bodies,
+    /// the nearest whose radius (at least `least` pixels) takes it (GetSelectableAt: the nearest
+    /// along the ray); else the first system, in the galaxy's order, within its cone
+    /// (FindGalacticObjectUnderMouse).
+    pub fn pick_at(&self, x: f32, y: f32, least: f32) -> Option<Pickable> {
+        let dist = |p: &Pick| ((p.centre.0 - x).powi(2) + (p.centre.1 - y).powi(2)).sqrt();
+        let near = self
+            .picks
+            .iter()
+            .filter(|p| !matches!(p.what, Pickable::System(_)))
+            .filter_map(|p| {
+                let r = p.radius.max(least);
+                let d = dist(p);
+                (d <= r).then_some((p.what, d / r))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(w, _)| w);
+        near.or_else(|| self.picks.iter().find(|p| matches!(p.what, Pickable::System(_)) && dist(p) <= p.radius).map(|p| p.what))
     }
 }
 
@@ -527,6 +579,10 @@ pub struct Inputs<'a> {
     pub fonts: &'a HashMap<String, Font>,
     pub gui: bool,
     pub game_dir: &'a str,
+    /// the GUI's buttons under the mouse
+    pub states: &'a HashMap<String, ButtonState>,
+    /// the selection and the windows over the view
+    pub overlay: &'a Overlay,
 }
 
 /// The galaxy view in 3D as the game draws it (CGalaxyGraphics and gfx/FX galaxy_*.shader,
@@ -792,6 +848,18 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
     // shows none without its GUI)
     let disc = tex.generated("@disc");
     let mut per_system: HashMap<(i32, i32), u32> = HashMap::new();
+    // the systems, in the galaxy's order: in 3D within the cone of NCamera.SYSTEM_HOVER_RANGE
+    // (0.005 of the camera's distance to the star off the mouse's ray), on the 2D map the sprite
+    let mut by_system: Vec<&PlacedStar> = stars.iter().collect();
+    by_system.sort_by_key(|s| s.system);
+    let mut picks: Vec<Pick> = by_system
+        .iter()
+        .map(|s| Pick {
+            what: Pickable::System(s.system),
+            centre: (0.5 * (s.rect[0] + s.rect[2]), 0.5 * (s.rect[1] + s.rect[3])),
+            radius: if three_d { 0.005 * view.focal_px } else { (0.5 * (s.rect[2] - s.rect[0])).max(6.0) },
+        })
+        .collect();
     for f in g.fleets.iter().filter(|_| !(game3d && !inp.gui)) {
         if f.station {
             continue;
@@ -812,16 +880,26 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
         let (x, y) = (f.x + 4.0 + r * a.cos(), f.y + 4.0 + r * a.sin());
         let half = if f.military { 1.6 } else { 1.1 };
         push(&mut batches, Layer::Stars, Blend::Alpha, disc, Quad::billboard(x, y, 0.5, half, colour, 0.0, if three_d { 3.0 } else { 0.0 }));
+        let p3 = V3(x, 0.5, y);
+        if let Some((px, py, _)) = view.project(p3) {
+            picks.push(Pick { what: Pickable::Fleet(f.id), centre: (px, py), radius: (half * view.pixels_per_unit(p3)).max(3.0) });
+        }
         if let (Some((fx, fy)), Some((tx, ty))) = (f.from, f.to) {
             // the trail: from where the jump started to where it goes
             lines.push(Line { a: V3(fx, 0.3, fy), b: V3(tx, 0.3, ty), colour: [colour[0], colour[1], colour[2], 0.85], width: 2.0, mode: 0.0 });
         }
     }
 
-    // ---- the top bar's sprites and texts
+    // ---- the selection's marker
+    if let Some(sel) = inp.overlay.selected {
+        selection_marker(&mut batches, &mut lines, tex, cache, inp.game_dir, &view, &picks, sel, three_d);
+    }
+
+    // ---- the top bar's sprites and texts, then the windows over the view
     let mut gui = Gui::default();
     if inp.gui {
-        add_gui(&mut batches, &mut gui, &inp.topbar.items, inp.fonts, tex, cache, inp.game_dir, &HashMap::new());
+        add_gui(&mut batches, &mut gui, &inp.topbar.items, inp.fonts, tex, cache, inp.game_dir, inp.states);
+        add_gui(&mut batches, &mut gui, &inp.overlay.items, inp.fonts, tex, cache, inp.game_dir, inp.states);
     }
 
     Scene {
@@ -836,6 +914,7 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
         meshes: Vec::new(),
         clear: [0.0, 0.0, 0.0],
         stars,
+        picks,
         sprites: gui.sprites,
         texts: gui.texts,
         buttons: gui.buttons,
@@ -844,6 +923,27 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
         env: None,
         maps: scene_maps,
     }
+}
+
+/// The selection's marker over a picked thing: a ring around it on the screen, in
+/// NGraphics.RELATION_COLOR_SELECTED_RGB.
+#[allow(clippy::too_many_arguments)]
+pub fn selection_marker(
+    batches: &mut Vec<Batch>,
+    _lines: &mut Vec<Line>,
+    tex: &mut Textures,
+    _cache: &mut Cache,
+    _game_dir: &str,
+    _view: &ViewParams,
+    picks: &[Pick],
+    selected: Pickable,
+    _three_d: bool,
+) {
+    let Some(p) = picks.iter().find(|p| p.what == selected) else { return };
+    let ring = tex.generated("@ring");
+    let r = (p.radius * 1.6).max(10.0);
+    let (x, y) = p.centre;
+    push(batches, Layer::Gui, Blend::Alpha, ring, screen_quad([x - r, y - r, x + r, y + r], [0.0, 0.0, 1.0, 1.0], [1.0, 0.73, 0.0, 1.0]));
 }
 
 /// A button's state under the mouse: its sprite shows the matching frame (frame 1 normal, 2
@@ -896,7 +996,7 @@ pub fn add_gui(
                 let (tw, th) = (img.width as f32, img.height as f32);
                 let n = (*frames).max(1);
                 let mut frame = (*frame).max(1);
-                if *button && n > 1 {
+                if *button && (2..=4).contains(&n) {
                     frame = match states.get(path) {
                         Some(ButtonState::Hover) => 2,
                         Some(ButtonState::Pressed) => 3.min(n),
@@ -938,6 +1038,37 @@ pub fn add_gui(
             GuiItem::Text { path, font, text, spans, x, y, w, h, format, valign } => {
                 let Some(f) = fonts.get(font) else { continue };
                 let Some(t) = tex.game(cache, game_dir, &f.texture) else { continue };
+                // a text wider than its box is cut, " ..." at its end (as the game's outliner
+                // shows a long name)
+                let cut;
+                let (text, spans) = if *w > 8.0 && f.width(text) > w + 0.5 {
+                    let mut keep: Vec<(String, [f32; 3])> = Vec::new();
+                    let mut used = f.width(" ...");
+                    'outer: for (s, c) in spans {
+                        let mut part = String::new();
+                        for ch in s.chars() {
+                            let cw = f.width(&ch.to_string());
+                            if used + cw > *w {
+                                keep.push((part, *c));
+                                break 'outer;
+                            }
+                            used += cw;
+                            part.push(ch);
+                        }
+                        keep.push((part, *c));
+                    }
+                    let last = keep.last().map_or([1.0; 3], |k| k.1);
+                    if let Some(k) = keep.last_mut() {
+                        let trimmed = k.0.trim_end().to_string();
+                        k.0 = trimmed;
+                    }
+                    keep.push((" ...".to_string(), last));
+                    let plain: String = keep.iter().map(|k| k.0.as_str()).collect();
+                    cut = (plain, keep);
+                    (&cut.0, &cut.1)
+                } else {
+                    (text, spans)
+                };
                 let tw = f.width(text);
                 let pen_x = match format.as_str() {
                     "center" | "centre" => x + (w - tw) / 2.0,
@@ -994,6 +1125,7 @@ pub fn gui_scene(
         meshes: Vec::new(),
         clear: [0.0, 0.0, 0.0],
         stars: Vec::new(),
+        picks: Vec::new(),
         sprites: gui.sprites,
         texts: gui.texts,
         buttons: gui.buttons,

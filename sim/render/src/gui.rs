@@ -55,6 +55,7 @@ pub struct Bound {
     pub source: String,
 }
 
+#[derive(Clone)]
 pub struct Topbar {
     pub items: Vec<GuiItem>,
     pub bound: Vec<Bound>,
@@ -183,14 +184,42 @@ fn missing(report: &Table) -> mlua::Result<Vec<String>> {
     report.get::<Table>("missing_sprites")?.sequence_values::<String>().collect()
 }
 
+/// What the top bar shows that the game decides at run time: the amounts and the date (from the
+/// simulation's snapshot; None: read from the runtime's world), the clock's state.
+pub struct TopbarState<'a> {
+    pub texts: Option<&'a HashMap<String, String>>,
+    pub date: Option<&'a str>,
+    pub paused: bool,
+    pub speed: u8,
+    /// the speed's name as time_description shows it (GAME_SPEED_0 when paused), localised
+    pub speed_name: Option<&'a str>,
+}
+
 /// Lays the top bar out for a screen of `width` x `height` (in the map's runtime).
-pub fn topbar(runtime: &Runtime, game_dir: &str, cache: &Rc<RefCell<Cache>>, width: u32, height: u32) -> Result<Topbar, String> {
+pub fn topbar(runtime: &Runtime, game_dir: &str, cache: &Rc<RefCell<Cache>>, width: u32, height: u32, state: &TopbarState) -> Result<Topbar, String> {
     let read = || -> mlua::Result<Topbar> {
         install(runtime, game_dir, cache)?;
         let lua = &runtime.lua;
+        let s = lua.create_table()?;
+        if let Some(texts) = state.texts {
+            let t = lua.create_table()?;
+            for (k, v) in texts {
+                t.set(k.as_str(), v.as_str())?;
+            }
+            s.set("text", t)?;
+        }
+        if let Some(d) = state.date {
+            s.set("date", d)?;
+        }
+        s.set("paused", state.paused)?;
+        s.set("speed", state.speed)?;
+        if let Some(n) = state.speed_name {
+            s.set("speed_name", n)?;
+        }
+        lua.globals().set("RENDER_TOPBAR_STATE", s)?;
         let t: Table = lua
             .load(format!(
-                "return require('render.topbar').build(RENDER_GAME_DIR, RENDER_GFX, {{ width = {width}, height = {height} }}, RENDER_TEXTURE_SIZE)"
+                "return require('render.topbar').build(RENDER_GAME_DIR, RENDER_GFX, {{ width = {width}, height = {height} }}, RENDER_TEXTURE_SIZE, RENDER_TOPBAR_STATE)"
             ))
             .eval()?;
         let items = read_items(t.get("items")?)?;
@@ -285,6 +314,94 @@ pub fn load_window(runtime: &Runtime, width: u32, height: u32, saves: &[SaveRow]
         })
     };
     read().map_err(|e| format!("render.frontend.load_window: {e}"))
+}
+
+/// A row of the outliner: what it selects (its id), its name and the texts beside it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutlinerRow {
+    pub id: u32,
+    pub name: String,
+    pub sub: String,
+    pub location: String,
+    pub selected: bool,
+}
+
+/// A group of the outliner's Overview tab: its title (a localisation key), its kind (planet,
+/// fleet, civilian, starbase) and rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutlinerGroup {
+    pub title: String,
+    pub kind: String,
+    pub rows: Vec<OutlinerRow>,
+}
+
+/// The window the selection opens: its kind (fleet, starbase, planet), id and texts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectedWindow {
+    pub kind: String,
+    pub id: u32,
+    pub name: String,
+    pub sub: String,
+}
+
+/// The outliner and the selection's window for a screen of `width` x `height` (render.windows,
+/// in the front end's runtime: its localisation and .gfx database).
+pub fn windows(runtime: &Runtime, width: u32, height: u32, outliner: &[OutlinerGroup], selected: Option<&SelectedWindow>) -> Result<Layout, String> {
+    let read = || -> mlua::Result<Layout> {
+        let lua = &runtime.lua;
+        let data = lua.create_table()?;
+        let groups = lua.create_table()?;
+        for g in outliner {
+            let t = lua.create_table()?;
+            t.set("title", g.title.as_str())?;
+            t.set("kind", g.kind.as_str())?;
+            let rows = lua.create_table()?;
+            for r in &g.rows {
+                let row = lua.create_table()?;
+                row.set("id", r.id)?;
+                row.set("name", r.name.as_str())?;
+                row.set("sub", r.sub.as_str())?;
+                row.set("location", r.location.as_str())?;
+                row.set("selected", r.selected)?;
+                rows.push(row)?;
+            }
+            t.set("rows", rows)?;
+            groups.push(t)?;
+        }
+        data.set("outliner", groups)?;
+        if let Some(s) = selected {
+            let t = lua.create_table()?;
+            t.set("kind", s.kind.as_str())?;
+            t.set("id", s.id)?;
+            t.set("name", s.name.as_str())?;
+            t.set("sub", s.sub.as_str())?;
+            data.set("selected", t)?;
+        }
+        lua.globals().set("RENDER_WINDOWS", data)?;
+        let t: Table = lua
+            .load(format!(
+                "local items, report = require('render.windows').build(RENDER_GAME_DIR, RENDER_GFX, {{ width = {width}, height = {height} }}, RENDER_TEXTURE_SIZE, RENDER_LOC, RENDER_WINDOWS) return {{ items = items, report = report }}"
+            ))
+            .eval()?;
+        let report: Table = t.get("report")?;
+        Ok(Layout { items: read_items(t.get("items")?)?, missing: missing(&report)?, note: String::new() })
+    };
+    read().map_err(|e| format!("render.windows: {e}"))
+}
+
+/// Names from the save, localised (render.names, in the front end's runtime: its localisation).
+pub fn format_names(runtime: &Runtime, names: &[&crate::galaxy::Name]) -> Result<Vec<String>, String> {
+    let read = || -> mlua::Result<Vec<String>> {
+        let lua = &runtime.lua;
+        let list = lua.create_table()?;
+        for n in names {
+            list.push(n.to_lua(lua)?)?;
+        }
+        lua.globals().set("RENDER_NAMES", list)?;
+        lua.load("local f = require('render.names').format local out = {} for i, n in ipairs(RENDER_NAMES) do out[i] = f(RENDER_LOC, n) end return out")
+            .eval()
+    };
+    read().map_err(|e| format!("render.names: {e}"))
 }
 
 /// The fonts a list of items uses, from the .gfx `bitmapfonts`, added to `out`.

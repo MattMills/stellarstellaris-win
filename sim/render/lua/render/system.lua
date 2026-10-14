@@ -418,6 +418,7 @@ function system.extract(game_dir, id)
                 -- binary_flags bit 8: the planet has a ring (CPlanet +0xcb5, CHasRingTrigger)
                 ring = math.floor((tonumber(world.field(p, "binary_flags")) or 0) / 256) % 2 == 1,
                 look = look(f, class),
+                name = require("render.galaxy").name_block(world.field(p, "name")),
             }
         end
     end

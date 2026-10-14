@@ -115,7 +115,10 @@ end
 --   opts.only: names of the window's children to lay out (all if nil)
 --   opts.hide: element paths or names not drawn
 --   opts.text: element path -> text (else the element's text, localised)
---   opts.actions: element path -> action (what a click on that button does)
+--   opts.actions: element path -> action (what a click on that button does; on a window, its
+--                 background takes the clicks)
+--   opts.frames: element path -> the sprite's frame (the game's run-time state)
+--   opts.sizes: element path -> { w, h } (a window the game sizes at run time)
 --   opts.parent: the rectangle the window is laid out in (else the screen)
 --   opts.prefix: a path prefix for the window's elements (else "")
 --   opts.texture_size(path) -> w, h (the renderer's: the texture's pixels)
@@ -234,15 +237,20 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             return get(b, k)
         end
 
-        local pos = field("position")
+        -- a window the game slides in and out is laid out where it shows (show_position)
+        local pos = field("show_position") or field("position")
         local px = number(type(pos) == "table" and get(pos, "x") or nil, vars) or 0
         local py = number(type(pos) == "table" and get(pos, "y") or nil, vars) or 0
         local size = field("size")
+        local over_size = opts.sizes and opts.sizes[path]
         local w = number(type(size) == "table" and (get(size, "width") or get(size, "x")) or nil, vars, parent.w)
         local h = number(type(size) == "table" and (get(size, "height") or get(size, "y")) or nil, vars, parent.h)
+        if over_size then
+            w, h = over_size[1], over_size[2]
+        end
         local scale = number(field("scale"), vars) or 1
         local sprite = field("spriteType") or field("quadTextureSprite")
-        local frame = number(field("frame"), vars)
+        local frame = opts.frames and opts.frames[path] or number(field("frame"), vars)
 
         if ICONS[kind] and sprite and (w == nil or h == nil) then
             local fw, fh = frame_size(sprite)
@@ -285,7 +293,15 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                             if fill then
                                 bw, bh = w, h
                             end
-                            sprite_item(path .. "/background", bs, number(get(e.value, "frame"), vars), x, y, bw, bh)
+                            -- a window the game takes clicks on (opts.actions names it): its
+                            -- background is its button, over the whole window
+                            local action = opts.actions and opts.actions[path]
+                            local button
+                            if action then
+                                bw, bh = w, h
+                                button = { name = name, action = action }
+                            end
+                            sprite_item(path .. "/background", bs, number(get(e.value, "frame"), vars), x, y, bw, bh, button)
                         end
                     elseif CONTAINERS[k] or ICONS[k] or TEXTS[k] or LISTS[k] then
                         -- a drop-down's expanded window is closed until it is clicked
