@@ -287,6 +287,12 @@ local VALUE_OPS = {
     modulo = true, base = true, value = true, weight = true, min = true, max = true,
 }
 
+-- `trigger:<name>` in a value: TVAL[name](ctx, e) -> the number the trigger compares, or nil when
+-- it has none for the scope (filled by the handler modules, simscript/handlers/)
+M.TVAL = {}
+-- `pow = n` in a value block: the accumulated value to the power n (M.pow, the handlers' to replace)
+M.pow = function(a, b) return a ^ b end
+
 local function var_raw(name, ctx)
     local fv = db.filevars(ctx.file)
     local v = fv and fv[name]
@@ -434,6 +440,9 @@ function value_text(t, ctx, e)
         return M.script_value(t:sub(7), ctx, e)
     end
     if t:sub(1, 8) == "trigger:" then
+        local tv = M.TVAL[t:sub(9)]
+        local v = tv and tv(ctx, e)
+        if v ~= nil then return v end
         miss("value", t, ctx, e)
         return 0
     end
@@ -494,6 +503,7 @@ local function apply_ops_tree(b, ctx, acc, only_ops)
             elseif k == "min" then acc = math.max(acc, M.value(e.value, ctx, e))
             elseif k == "max" then acc = math.min(acc, M.value(e.value, ctx, e))
             elseif k == "abs" then acc = math.abs(acc)
+            elseif k == "pow" then acc = M.pow(acc, M.value(e.value, ctx, e))
             elseif k == "round" then acc = floor(acc + 0.5)
             elseif k == "floor" then acc = floor(acc)
             elseif k == "ceiling" then acc = math.ceil(acc)

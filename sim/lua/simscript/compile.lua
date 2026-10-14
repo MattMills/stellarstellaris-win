@@ -272,7 +272,11 @@ function C.install(M)
             return function(ctx, e) return M.script_value(spec, ctx, e) end
         end
         if t:sub(1, 8) == "trigger:" then
+            local name = t:sub(9)
             return function(ctx, e)
+                local tv = M.TVAL[name]
+                local v = tv and tv(ctx, e)
+                if v ~= nil then return v end
                 miss("value", t, ctx, e)
                 return 0
             end
@@ -1182,6 +1186,8 @@ function C.install(M)
                     op = function(ctx, acc) return min(acc, M.value(v, ctx, e)) end
                 elseif k == "abs" then
                     op = function(_, acc) return abs(acc) end
+                elseif k == "pow" then
+                    op = function(ctx, acc) return M.pow(acc, M.value(v, ctx, e)) end
                 elseif k == "round" then
                     op = function(_, acc) return floor(acc + 0.5) end
                 elseif k == "floor" then
