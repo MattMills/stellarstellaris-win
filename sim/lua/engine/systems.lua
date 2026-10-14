@@ -233,8 +233,9 @@ P["daily.colonies_serial"] = function(host, date)
     end
     call_optional("engine.colonies", "daily_serial", host, date)
 end
--- CModifierNodeManager::Update in the monthly update: the world's modifier graph built again (when
--- the modifiers come from the world: engine.economy.world_source)
+-- CModifierNodeManager::Update in the monthly update: the world's modifier graph brought up to date
+-- (when the modifiers come from the world: engine.economy.world_source; only what changed,
+-- engine.modifiers.incremental, docs/modifier_incremental.md)
 P["monthly.modifiers"] = function()
     local engine = package.loaded["engine"]
     local source = engine and engine.modifier_source

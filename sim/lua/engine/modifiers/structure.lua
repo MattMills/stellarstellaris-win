@@ -61,6 +61,14 @@ M.MASKED = {
 -- a planet reads its country with one mask when it is colonized, another when not
 M.PLANET_COUNTRY = { colonized = 1074300930, uncolonized = 557056 }
 
+-- M.MASKED by child category, then parent category (st:parents reads it for every link)
+local MASKED_BY = {}
+for k, v in pairs(M.MASKED) do
+    local child, parent = k:match("^(.-)<(.*)$")
+    MASKED_BY[child] = MASKED_BY[child] or {}
+    MASKED_BY[child][parent] = v
+end
+
 local function unq(s)
     if type(s) ~= "string" then
         return s
@@ -306,10 +314,11 @@ end
 function S:parents(category, owner)
     local w = self.world
     local out = {}
+    local masked = MASKED_BY[category]
     local function link(pcat, powner, filter)
         if powner ~= nil then
             out[#out + 1] = { category = pcat, owner = powner, mult = 100000,
-                filter = filter or M.MASKED[category .. "<" .. pcat] or M.FILTER[category] }
+                filter = filter or (masked and masked[pcat]) or M.FILTER[category] }
         end
     end
     -- the system nodes a planet or fleet reads
