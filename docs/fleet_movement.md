@@ -306,11 +306,12 @@ ticks (the systems left and entered and the events they fire); the game's fleet 
 
 - Bypasses (gateways, wormholes, L-gates, the jump animation, their on_action), jump drives,
   emergency FTL, MIA, FTL inhibitors and magnets.
-- Closed borders and access (`CFleet::HasAccess`, `HasAccessLevelCached`, restricted systems:
-  every system open), known hostiles and cosmic storms in the costs, the overlord and
-  FTL-inhibitor rules of `CanUseHyperlanesFromSystem`. Hooks for the parts that will know them:
-  `path.hooks.has_access(data, system)`, `.restricted`, `.hostiles`, `.storm(storm_id)` for the
-  pathfinder, `movement.hooks.has_access(fleet, system)` for the movement's own checks.
+- Known hostiles and cosmic storms in the costs, the overlord and FTL-inhibitor rules of
+  `CanUseHyperlanesFromSystem`. Hooks for the parts that will know them: `path.hooks.hostiles`,
+  `.storm(storm_id)`. Closed borders and access (`CFleet::HasAccess`, `HasAccessLevelCached`,
+  restricted systems) are ported in `engine/diplomacy.lua`, which fills `path.hooks.has_access`,
+  `.restricted` and `movement.hooks.has_access` (docs/script_diplomacy.md, "Access and closed
+  borders"; `STELLAR_ACCESS=off` opens every system again).
 - Combat movement (a fleet in combat is left where it is); orbits (the orders keep `orbit`).
 - The ETA's speed factors (`CalcEstimatedDays`' ship and star speed reduction terms).
 - `OnFleetEntered`'s terra incognita, contact and ship entry (`movement.hooks.on_entered` for the
