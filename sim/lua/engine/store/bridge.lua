@@ -698,6 +698,7 @@ local function tset_list(obj, key, values)
         world.append(obj, key, block)
     end
     for i, v in ipairs(values) do block[i] = { text = tostring(v) } end
+    world.wrote(block)
 end
 
 local function store_list(b, key)
@@ -985,6 +986,14 @@ function Bm.check(days, nworkers, mirror)
             return table.concat(o, ", ")
         end)())
     return table.concat(lines, "\n")
+end
+
+-- for engine.store.full (the whole world's copy): the store and its pool started as above, and a
+-- store block synced in place to a Lua block (or built again: the block id returned)
+Bm.start = start
+function Bm.sync_block(bid, t)
+    start()
+    return sync_block(bid, t)
 end
 
 return Bm

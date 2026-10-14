@@ -644,6 +644,56 @@ rest being the serial phases (the AI's commands, events) and the script layer's 
 - the schema layer's typed records (6.4) and the cache on disk (6.5);
 - a quiet machine for the scaling numbers.
 
+## 12. The engine on the workers
+
+The mirror above holds what exploration reads. To run the engine's own modules on the workers
+(AI, pops, colonies, ...), each worker gets **the engine itself over a copy of the whole world**:
+
+**The copy** (`store/full.lua`). `S.build(world.tree)` puts the whole table world in the store
+(1.08 M entries, 0.6 s), every table block mapped to its store block. The table world stays the
+source of truth, and the copy is brought up to date at each sync from marks the writers leave:
+
+- `engine.world`'s writers (`set`, `child`, `append`, `insert`, `append_value`, `remove_value`,
+  `remove_entry`, `reindex`, `create`, `remove`, and the new `push` and `adopt`) report the block
+  they changed. After `world.track_owners()` every block knows its object and the block it is in.
+- Modules that change a block themselves (an entry's text set directly, `table.insert`) call
+  `world.wrote(block)`: the countdowns in `systems.lua`, research, exploration's lists, the AI's
+  plans and the economy orders, construction's zones, traditions, ship names and fleet templates.
+  `world.push(block, value)` replaces direct appends of new blocks, so they get an owner.
+- A marked block is written again **in place**. It keeps its block id, and so does every block in it
+  whose table is still there; only tables new to the copy are built. Handles and caches keyed by
+  block id in the workers stay valid across syncs. `S.rebuild_index` reuses the block's index.
+- `STELLAR_STORE_CHECK=1` compares every object with the table world each day and reports stale
+  keys by path. Over 180 days from `autosave_2210.01.01` it reports **0 stale keys**, from 43 kinds
+  when only exploration's writers marked.
+- Cost: about 9 ms a simulated day over 180 days (blocks 5.6, objects 3.6). The copy builds about
+  620 new blocks a day for tables the table world makes anew, and never frees the old ones yet.
+
+**A worker's engine** (`store/worker.lua`, job `engine`). `engine.store.world` is attached to the
+copy and bound as `engine.world`, then `require("engine")`, `host.init` and `defs.load` as the main
+state does (3.9 s, 437 MB of Lua heap per worker). A worker never writes the copy: the world's
+writers raise an error there, as do `RUST.rand`, `RUST.skip` and `RUST.effect` (a parallel phase may
+not draw or send engine effects). The engine's modules test world values with `type(v) == "table"`;
+in a worker the global `type` says "table" for a block handle, so the existing code takes the same
+branch, and code that then walks a handle as a Lua table (`ipairs`, `#`, `.text`) fails loudly and
+is moved to the API. Two functions are new in both worlds for that: `world.count(block)` and
+`world.key(block)` (a cache key: the table, or the block id).
+
+**Parity.** A probe compares a worker's answers with the main state's: the attitude weights of all
+178 AI relations of the 2210 save, opinion term by term. They are equal on day 1 and on day 30.
+
+**A phase on the workers** (`store/parallel.lua`). `STELLAR_PARALLEL=<phases>` (or `all`) names the
+phases that run there; none by default. `parallel.run(job, arg)` syncs the copy, gives the workers
+the date and runs the job; the workers only read, and return their decisions as text, which this
+state applies in the game's order. The first is the daily attitude update
+(`CCountryAI::UpdateAttitudesThreaded`, parallel in the game): each worker takes every Nth due
+country (`attitudes.part_text`), and the changes are merged back in country order. The 180-day gate
+is identical with it on and off (723,380 / 13,251, the same 4,725,089 draws, the same 432 updates
+and 1,260 relations). It is not faster: the phase is about 5 ms a day, less than the copy's sync
+and the workers' slower reads (handles allocated per read, blocks scanned where they have no
+index). The large parallel phases are next: the AI's decisions (`UpdateAIParallel`), pops and
+colonies, the monthly strategy.
+
 ## Files and switches
 
 | | |

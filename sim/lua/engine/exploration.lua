@@ -417,6 +417,7 @@ local function set_list(obj, key, values)
         world.append(obj, key, block)
     end
     for i, v in ipairs(values) do block[i] = { text = tostring(v) } end
+    world.wrote(block)
 end
 local function copy(t)
     local out = {}

@@ -113,6 +113,7 @@ local function store_item(id, entry, block)
         local ids = world.ids[ITEMS]
         ids[#ids + 1] = id
         table.sort(ids, function(a, b) return a % GEN < b % GEN end)
+        world.adopt(ITEMS, id, block)
     else
         world.create(ITEMS, id, block)
     end

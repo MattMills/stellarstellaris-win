@@ -97,6 +97,7 @@ local function count_down_flags(obj)
                     world.remove_entry(flags, e)
                 else
                     days_e.value.text = tostring(days - 1)
+                    world.wrote(flags)
                 end
             end
         end
@@ -121,6 +122,7 @@ local function count_down_modifiers(obj)
                             world.remove_entry(items, item)
                         else
                             f.value.text = tostring(days - 1)
+                            world.wrote(items)
                         end
                     end
                 end

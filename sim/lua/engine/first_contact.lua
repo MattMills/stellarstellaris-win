@@ -311,7 +311,7 @@ local function set_stage(id, fc, key)
         local b = {}
         world.append(b, "date", engine and engine.date_text and engine.date_text() or tostring(world.meta.date), true)
         world.append(b, "stage", old, true)
-        completed[#completed + 1] = b
+        world.push(completed, b)
         world.set(fc, "stage", key)
     else
         world.append(fc, "stage", key, true)

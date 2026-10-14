@@ -560,6 +560,7 @@ local function finish(item, kind, b, date)
         world.append(z, "buildings", {})
         world.create("zones", id, z)
         values[slot + 1].text = tostring(id)
+        world.wrote(zones)
         planet_done("on_zone_complete", planet)
         return true
     elseif kind == "planet_building" then

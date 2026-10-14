@@ -245,6 +245,7 @@ function create.place(store, id, e, block)
         local ids = world.ids[store]
         ids[#ids + 1] = id
         table.sort(ids, function(x, y) return x % GEN < y % GEN end)
+        world.adopt(store, id, block)
         return block
     end
     return world.create(store, id, block)
@@ -491,10 +492,12 @@ local function add_ship_name(country, key)
     for _, e in ipairs(sn) do
         if e.op and e.key and unq(e.key.text) == key then
             e.value.text = tostring((tonumber(e.value.text) or 0) + 1)
+            world.wrote(sn)
             return
         end
     end
     sn[#sn + 1] = { key = { text = key, quoted = true }, op = "=", value = { text = "1" } }
+    world.wrote(sn)
 end
 
 -- the country's name list's ship names for a size: its own list and the generic one
@@ -972,7 +975,7 @@ local function template_add(country, fid, f, info, did)
     world.append(sdi, "upgrade", NO_ID)
     world.append(sdi, "growth_stage", 0)
     world.append(e, "ship_design_implementation", sdi)
-    list[#list + 1] = e
+    world.push(list, e)
     world.set(t, "fleet_size", size + info.size_multiplier)
 end
 
@@ -1157,6 +1160,7 @@ function create.enter_orbit(fid, kind, id, opts)
         return nil
     end
     live.touch("fleet", fid)
+    world.wrote(slots)
     -- the first free slot: no entry, or one that holds no fleet (4294967295, a fleet gone)
     local used, entry_of = {}, {}
     for _, e in ipairs(slots) do

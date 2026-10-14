@@ -180,7 +180,7 @@ function airesearch.queue(country, name, today)
     local item = {}
     world.append(item, "technology", name, true)
     world.append(item, "date", today, true)
-    q[#q + 1] = item
+    world.push(q, item)
     return true
 end
 

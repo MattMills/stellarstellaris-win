@@ -345,6 +345,7 @@ function stations.place(store, id, e, block)
         local ids = world.ids[store]
         ids[#ids + 1] = id
         table.sort(ids, function(x, y) return x % GEN < y % GEN end)
+        world.adopt(store, id, block)
         return block
     end
     return world.create(store, id, block)

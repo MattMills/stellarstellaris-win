@@ -20,6 +20,9 @@
 local ffi = require("ffi")
 local S = require("engine.store.core")
 local pdxscript = require("pdxscript")
+-- the builtin: a worker makes the global type say "table" for a block handle, for the engine's
+-- modules (engine.store.worker); here a handle must stay a cdata
+local type = type
 
 local W = {
     stores = {}, ids = {}, entries = {}, store_blocks = {}, meta = {}, bids = {}, seconds = 0,
@@ -49,6 +52,15 @@ end
 W.handle, W.bid = handle, bid_of
 function W.is_block(v)
     return type(v) == "cdata" and ffi.istype(block_ptr, v)
+end
+
+-- W.count(h) -> the number of the block's entries; W.key(h) -> the block's id, a key for caches
+-- (engine.world.count / key)
+function W.count(h)
+    return h.count
+end
+function W.key(h)
+    return tonumber(h - B)
 end
 
 local TEXT, NUMBER, BLOCK = S.TEXT, S.NUMBER, S.BLOCK

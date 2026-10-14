@@ -285,6 +285,36 @@ local function build_index(bid)
 end
 S.build_index = build_index
 
+-- S.rebuild_index(bid, ix): block bid's key index built again in ix, an index it had (cleared and
+-- refilled when its keys still fit at build_index's load), else a new one (engine.store.full, after
+-- a block's entries were written again)
+function S.rebuild_index(bid, ix)
+    if ix and ix ~= 0 and ix ~= EMPTY_IX then
+        local b = B[bid]
+        local size = IX[ix] + 1
+        local keys = 0
+        for p = 0, b.count - 1 do
+            if E[b.first + p].op ~= 0 then keys = keys + 1 end
+        end
+        if keys > 0 and 4 * keys <= size then
+            for s = ix + 1, ix + 2 * size do IX[s] = 0 end
+            local ok = true
+            for p = 0, b.count - 1 do
+                local e = E[b.first + p]
+                if e.op ~= 0 and e.key ~= 0 and not index_add(ix, e.key, p) then
+                    ok = false
+                    break
+                end
+            end
+            if ok then
+                b.index = ix
+                return ix
+            end
+        end
+    end
+    return build_index(bid)
+end
+
 local scan
 -- the first entry of key k (an id) in block bid, or nil
 local function find(bid, k)

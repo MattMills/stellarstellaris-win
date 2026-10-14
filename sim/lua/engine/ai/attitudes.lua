@@ -531,7 +531,7 @@ local function apply(out, today)
                 world.append(e, "weight", weight_text(n.weight))
                 world.append(e, "priority", 0)
                 world.append(e, "date", NULL_DATE, true)
-                block[#block + 1] = e
+                world.push(block, e)
                 attitudes.stats.appended = attitudes.stats.appended + 1
                 attitudes.changes[#attitudes.changes + 1] = { date = today, country = a.country, other = n.other, to = n.attitude, new = true }
             end
@@ -553,6 +553,67 @@ local function due(day)
 end
 attitudes.due = due
 
+-- attitudes.part_text(ids, today, year) -> the update of the countries ids (on a worker: engine.store
+-- .worker's `attitudes` job), as text: per country "U <id> <relations> <error or ->", then its
+-- changed entries "C <other> <attitude> <weight> <from>" and new ones "A <other> <attitude> <weight>"
+function attitudes.part_text(ids, today, year)
+    local lines = {}
+    for _, us in ipairs(ids) do
+        local out = { changes = {}, appended = {} }
+        local r0 = attitudes.stats.relations
+        local ok, err = pcall(update_country, us, today, year, out)
+        lines[#lines + 1] = string.format("U %d %d %s", us, attitudes.stats.relations - r0,
+            ok and "-" or tostring(err):gsub("\n", " "))
+        for _, c in ipairs(out.changes) do
+            lines[#lines + 1] = string.format("C %d %s %.17g %s", c.other, c.attitude, c.weight, c.from or "-")
+        end
+        for _, a in ipairs(out.appended) do
+            for _, n in ipairs(a.entries) do
+                lines[#lines + 1] = string.format("A %d %s %.17g", n.other, n.attitude, n.weight)
+            end
+        end
+    end
+    return table.concat(lines, "\n")
+end
+
+-- the workers' texts read back into out, in the order of list (the game's: the changes are applied
+-- after the parallel part, in country order)
+local function merge(texts, list, out)
+    local by, cur = {}, nil
+    for _, text in ipairs(texts) do
+        for line in tostring(text):gmatch("[^\n]+") do
+            local tag = line:sub(1, 1)
+            if tag == "U" then
+                local id, n, err = line:match("^U (%d+) (%d+) (.*)$")
+                cur = { changes = {}, entries = {} }
+                by[tonumber(id)] = cur
+                attitudes.stats.relations = attitudes.stats.relations + tonumber(n)
+                if err ~= "-" then
+                    attitudes.stats.errors = attitudes.stats.errors + 1
+                    attitudes.last_error = err
+                end
+            elseif tag == "C" then
+                local other, a, w, from = line:match("^C (%d+) (%S+) (%S+) (%S+)$")
+                cur.changes[#cur.changes + 1] = { other = tonumber(other), attitude = a, weight = tonumber(w),
+                    from = from ~= "-" and from or nil }
+            elseif tag == "A" then
+                local other, a, w = line:match("^A (%d+) (%S+) (%S+)$")
+                cur.entries[#cur.entries + 1] = { other = tonumber(other), attitude = a, weight = tonumber(w) }
+            end
+        end
+    end
+    for _, us in ipairs(list) do
+        local r = by[us]
+        if r then
+            for _, c in ipairs(r.changes) do
+                c.country, c.entry = us, entry_for(us, c.other)
+                out.changes[#out.changes + 1] = c
+            end
+            out.appended[#out.appended + 1] = { country = us, entries = r.entries }
+        end
+    end
+end
+
 -- attitudes.daily(host, date): the day's attitude update (CCountryAI::UpdateAttitudesThreaded)
 function attitudes.daily(host, date)
     if not (date and date.year) then
@@ -564,12 +625,22 @@ function attitudes.daily(host, date)
     local t0 = RUST and RUST.clock and RUST.clock()
     -- the parallel part reads only (each AI its own entries); the changes are written after
     local out = { changes = {}, appended = {} }
-    for _, us in ipairs(due(day)) do
-        attitudes.stats.updates = attitudes.stats.updates + 1
-        local ok, err = pcall(update_country, us, today, date.year, out)
-        if not ok then
-            attitudes.stats.errors = attitudes.stats.errors + 1
-            attitudes.last_error = tostring(err)
+    local list = due(day)
+    local parallel = require("engine.store.parallel")
+    if #list > 0 and parallel.enabled("attitudes") then
+        -- on the workers (STELLAR_PARALLEL=attitudes): each takes every Nth country of the list
+        attitudes.stats.updates = attitudes.stats.updates + #list
+        local ids = {}
+        for i, us in ipairs(list) do ids[i] = tostring(us) end
+        merge(parallel.run("attitudes", today .. " " .. date.year .. " " .. table.concat(ids, ",")), list, out)
+    else
+        for _, us in ipairs(list) do
+            attitudes.stats.updates = attitudes.stats.updates + 1
+            local ok, err = pcall(update_country, us, today, date.year, out)
+            if not ok then
+                attitudes.stats.errors = attitudes.stats.errors + 1
+                attitudes.last_error = tostring(err)
+            end
         end
     end
     apply(out, today)

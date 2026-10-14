@@ -180,9 +180,10 @@ local function relations_of(id)
     if type(rm) ~= "table" then
         return nil, {}
     end
-    local idx = rel_index[rm]
-    if idx == nil or idx.n ~= #rm then
-        idx = { n = #rm, list = {}, by = {} }
+    local key, n = world.key(rm), world.count(rm)
+    local idx = rel_index[key]
+    if idx == nil or idx.n ~= n then
+        idx = { n = n, list = {}, by = {} }
         for _, r in ipairs(world.fields(rm, "relation")) do
             if type(r) == "table" then
                 local c = tonumber(world.field(r, "country"))
@@ -192,7 +193,7 @@ local function relations_of(id)
                 end
             end
         end
-        rel_index[rm] = idx
+        rel_index[key] = idx
     end
     return idx.by, idx.list
 end
