@@ -117,6 +117,7 @@ function host.report()
         stats.fired_total, nfired, stats.trigger_failed, stats.options, stats.mtth_rolls, stats.delayed_queued)
     p("     %d script effects, %d engine effects queued, %d flushes inside effects, %d trigger evaluations, %d effect statements, %d Lua errors",
         stats.script, stats.engine, stats.flushes, stats.trigger_evals, stats.effect_runs, stats.errors)
+    if eval.compiler then p("%s", eval.compiler.report()) end
     local oas = sorted_by_count(stats.on_actions)
     local l = {}
     for _, o in ipairs(oas) do l[#l + 1] = o.key .. " " .. o.count end
