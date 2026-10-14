@@ -895,6 +895,14 @@ home system at the same place and scale, the top bar's clock, the outliner.
   iterates the tabs 4..0), every Overview group sorts at -1 and the merge sort reverses their
   creation (enum) order: Utility Ships, Military Fleets, Shipyards, Sectors as the frame shows.
   Colonies (PLANETS) are disabled by default (GetDefaultDisabled); empty groups are left out.
+  The members (galaxy.lua `outliner`): utility ships by ship class (construction before science
+  **[I]**), then the owned-fleet order, their second line the ship size's name; military fleets
+  with their strength; starbases with a shipyard module in Shipyards, other upgraded ones in
+  Starbases, their second line the save's starbase `type` (sshipyard "Shipyard") and their
+  strength; Sectors: a header with the number of sectors, then each sector's header
+  (`outliner_sector_title_entry_window`: its name, the number of its colonies) and its colonies
+  (the player's planets in its systems), their second line the colony's `final_designation`
+  (col_capital "Empire Capital").
   Names from the save are localised by render.names: the name block's key (or literal), its
   `$VAR$` variables, the engine's `%ADJECTIVE%` and `%ACRONYM%` (initials made up to three letters
   from the last word: "Uthabulan Order" UOR); a text wider than its box is cut with " ...".
@@ -966,9 +974,9 @@ home system at the same place and scale, the top bar's clock, the outliner.
   navigation_arrow_entity).
 - Alerts: unlock tradition, first contact stage, council agenda (and the other 60 conditions).
 - The map mode buttons (common/map_modes), the left bar's background strip (needs clipping).
-- The outliner's sectors (Sectors, then each sector's planets: `sectors` in the save), the rows'
-  second lines (ship class, fleet size, "Empire Capital") and icons, their order within a group,
-  the other tabs, collapsing groups.
+- The outliner rows' icons (fleet status, leader level, planet portrait, starbase type, status
+  lists), the military row's size line ("15/50 (15)"), the location's colour, the frontier
+  sector, the tab buttons over Overview, the other tabs, collapsing groups.
 - The planet, fleet and starbase windows' contents (their lists and tabs).
 - Box selection, right-click orders; the camera's slide between systems, the system camera's
   near and far planes, the zoom on a focused object (CalcMinZoom).

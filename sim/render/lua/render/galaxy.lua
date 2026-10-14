@@ -415,6 +415,108 @@ function galaxy.extract(game_dir)
             end
         end
     end
+    -- the outliner's members (COutlinerGroup*: docs/render.md section 12): the player's fleets by
+    -- kind (utility: by ship class, then the owned-fleet order; military; the starbases: with a
+    -- shipyard module for Shipyards, other upgraded ones for Starbases), its sectors and their
+    -- colonies (a sector's systems; the colony's final_designation)
+    local outliner, sectors = {}, {}
+    if pc then
+        local function ship_size(sid)
+            local ship = world.object("ship", tonumber(sid))
+            local did = ship and tonumber(world.path(ship, "ship_design_implementation", "design"))
+            local design = did and world.object("ship_design", did)
+            local stage = design and world.blocks(world.field(design, "growth_stages"))[1]
+            return stage and tostring(world.field(stage, "ship_size") or ""):gsub('"', "") or ""
+        end
+        -- the starbases by their station ship
+        local starbase_of = {}
+        for _, sb in ipairs(world.all("starbase")) do
+            local s = world.object("starbase", sb)
+            local st = s and tonumber(world.field(s, "station"))
+            if st then
+                starbase_of[st] = s
+            end
+        end
+        -- EShipClass order of the utility ships (construction before science, the frame's) [I]
+        local CLASS = { constructor = 1, science = 2, colonizer = 3 }
+        local civilian, military, yards, bases = {}, {}, {}, {}
+        local owned = world.blocks(world.path(pc, "fleets_manager", "owned_fleets"))
+        for k, o in ipairs(owned) do
+            local fid = tonumber(world.field(o, "fleet"))
+            local f = fid and world.object("fleet", fid)
+            local ships = f and world.list(world.field(f, "ships")) or {}
+            if f and #ships > 0 then
+                local mm = world.field(f, "movement_manager")
+                local origin = tonumber(world.path(mm, "coordinate", "origin")) or -1
+                local e = {
+                    id = fid, name = galaxy.name_block(world.field(f, "name")), system = origin,
+                    power = tonumber(world.field(f, "military_power")) or 0, order = k,
+                }
+                if world.path(f, "properties", "station") == "yes" then
+                    local sb = starbase_of[tonumber(ships[1])]
+                    if sb then
+                        local level = tostring(world.field(sb, "level") or ""):gsub('"', "")
+                        local has_yard = false
+                        local mods = world.field(sb, "modules")
+                        if type(mods) == "table" then
+                            for _, m in ipairs(mods) do
+                                if m.value and m.value.text == "shipyard" then
+                                    has_yard = true
+                                end
+                            end
+                        end
+                        e.sub = tostring(world.field(sb, "type") or ""):gsub('"', "")
+                        if has_yard then
+                            e.kind = "shipyard"
+                            yards[#yards + 1] = e
+                        elseif level ~= "starbase_level_outpost" then
+                            e.kind = "starbase"
+                            bases[#bases + 1] = e
+                        end
+                    end
+                elseif world.field(f, "ship_class") == "shipclass_military" or e.power > 0 then
+                    e.kind = "military"
+                    military[#military + 1] = e
+                else
+                    e.kind = "civilian"
+                    e.sub = ship_size(ships[1])
+                    e.class = CLASS[e.sub] or 9
+                    civilian[#civilian + 1] = e
+                end
+            end
+        end
+        table.sort(civilian, function(a, b)
+            if a.class ~= b.class then
+                return a.class < b.class
+            end
+            return a.order < b.order
+        end)
+        for _, list in ipairs({ civilian, military, yards, bases }) do
+            for _, e in ipairs(list) do
+                outliner[#outliner + 1] = e
+            end
+        end
+        for _, sid in ipairs(world.all("sector")) do
+            local s = world.object("sector", sid)
+            if s and tonumber(world.field(s, "owner")) == player then
+                local systems = {}
+                for _, v in ipairs(world.list(world.field(s, "systems"))) do
+                    systems[tonumber(v)] = true
+                end
+                sectors[#sectors + 1] = { id = sid, name = galaxy.name_block(world.field(s, "name")) }
+                for _, p in ipairs(planets) do
+                    if systems[p.system] then
+                        local col = world.planet_colony and world.planet_colony[p.id]
+                        local c = col and world.object("colony", col)
+                        outliner[#outliner + 1] = {
+                            kind = "planet", id = p.id, name = p.name, system = p.system, sector = sid, power = 0,
+                            sub = c and tostring(world.field(c, "final_designation") or ""):gsub('"', "") or "",
+                        }
+                    end
+                end
+            end
+        end
+    end
     local communications = {}
     local rm = pc and world.field(pc, "relations_manager")
     for _, r in ipairs(rm and world.fields(rm, "relation") or {}) do
@@ -461,6 +563,7 @@ function galaxy.extract(game_dir)
         communications = pc and communications or nil,
         planets = planets,
         alerts = alerts,
+        outliner = outliner, sectors = sectors,
         capital = capital,
     }
     out.notes = string.format(

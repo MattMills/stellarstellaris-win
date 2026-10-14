@@ -348,6 +348,8 @@ pub struct OutlinerRow {
     pub name: String,
     pub sub: String,
     pub location: String,
+    /// the strength (military power) shown, if any
+    pub power: String,
     pub selected: bool,
 }
 
@@ -358,6 +360,10 @@ pub struct OutlinerGroup {
     pub title: String,
     pub kind: String,
     pub rows: Vec<OutlinerRow>,
+    /// its header window (None: outliner_title_entry_window) and the count it shows (None: its
+    /// rows')
+    pub header: Option<String>,
+    pub amount: Option<String>,
 }
 
 /// The window the selection opens: its kind (fleet, starbase, planet), id and texts.
@@ -380,6 +386,12 @@ pub fn windows(runtime: &Runtime, width: u32, height: u32, outliner: &[OutlinerG
             let t = lua.create_table()?;
             t.set("title", g.title.as_str())?;
             t.set("kind", g.kind.as_str())?;
+            if let Some(h) = &g.header {
+                t.set("header", h.as_str())?;
+            }
+            if let Some(a) = &g.amount {
+                t.set("amount", a.as_str())?;
+            }
             let rows = lua.create_table()?;
             for r in &g.rows {
                 let row = lua.create_table()?;
@@ -387,6 +399,7 @@ pub fn windows(runtime: &Runtime, width: u32, height: u32, outliner: &[OutlinerG
                 row.set("name", r.name.as_str())?;
                 row.set("sub", r.sub.as_str())?;
                 row.set("location", r.location.as_str())?;
+                row.set("power", r.power.as_str())?;
                 row.set("selected", r.selected)?;
                 rows.push(row)?;
             }

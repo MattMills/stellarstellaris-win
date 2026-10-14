@@ -27,10 +27,11 @@ local windows = {}
 local OUTLINER = "interface/outliner.gui"
 
 local ROW = {
-    planet = { window = "outliner_member_planet_entry_window", only = { background = true, name = true, star = true } },
-    fleet = { window = "outliner_member_fleet_entry_window", only = { background = true, name = true, location = true } },
+    -- (the rows' icons, fleet sizes, status lists are not drawn yet)
+    planet = { window = "outliner_member_planet_entry_window", only = { background = true, name = true, star = true, colony_type = true } },
+    fleet = { window = "outliner_member_fleet_entry_window", only = { background = true, name = true, location = true, offensive_power = true } },
     civilian = { window = "outliner_member_fleet_civilian_entry_window", only = { background = true, name = true, type = true, location = true } },
-    starbase = { window = "outliner_member_starbase_entry_window", only = { background = true, name = true, starbase_type = true, system = true } },
+    starbase = { window = "outliner_member_starbase_entry_window", only = { background = true, name = true, starbase_type = true, system = true, military_power = true } },
 }
 
 local function merge(items, report, more, more_report)
@@ -60,20 +61,21 @@ local function outliner(ctx, data, items, report)
     merge(items, report, tab_items, tab_report)
     local list = tab_report.rects["/outliner_tab_window/list"] or { x = ctx.screen.width - 258, y = top + 40, w = 240, h = 0 }
     local y, bottom = list.y, top + h - 8
-    for _, g in ipairs(data.outliner or {}) do
+    for gi, g in ipairs(data.outliner or {}) do
         if y + 36 > bottom then
             break
         end
-        local prefix = "/outliner/" .. g.kind
-        local hi, hr = gui.layout(ctx.game_dir, ctx.db, OUTLINER, "outliner_title_entry_window", ctx.screen, {
+        local prefix = "/outliner/" .. gi
+        local header = g.header or "outliner_title_entry_window"
+        local hi, hr = gui.layout(ctx.game_dir, ctx.db, OUTLINER, header, ctx.screen, {
             texture_size = ctx.texture_size, loc = ctx.loc, prefix = prefix,
             -- a list places its entries at its own coordinates (their orientation in a slot of
             -- their size)
             parent = { x = list.x, y = y, w = 0, h = 36 },
             hide = { selected_overlay = true },
             text = {
-                [prefix .. "/outliner_title_entry_window/title"] = g.title,
-                [prefix .. "/outliner_title_entry_window/amount"] = tostring(#g.rows),
+                [prefix .. "/" .. header .. "/title"] = g.title,
+                [prefix .. "/" .. header .. "/amount"] = g.amount or tostring(#g.rows),
             },
         })
         merge(items, report, hi, hr)
@@ -92,6 +94,9 @@ local function outliner(ctx, data, items, report)
                 [path .. "/system"] = row.location or "",
                 [path .. "/type"] = row.sub or "",
                 [path .. "/starbase_type"] = row.sub or "",
+                [path .. "/colony_type"] = row.sub or "",
+                [path .. "/offensive_power"] = row.power or "",
+                [path .. "/military_power"] = row.power or "",
             }
             local only = {}
             for n in pairs(spec.only) do

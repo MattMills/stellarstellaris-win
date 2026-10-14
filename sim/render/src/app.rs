@@ -1030,44 +1030,18 @@ impl App {
             _ => None,
         };
         let g = map.galaxy.clone();
-        let player = g.countries.iter().position(|c| c.id == g.player);
+
         let system_name = |id: i64| g.systems.iter().find(|s| s.id as i64 == id).map(|s| &s.name);
-        // the names to localise, in one call: (group, row) -> name and location
+        // the names to localise, in one call: each member's name and location, the sectors' names
         let none = crate::galaxy::Name::default();
         let mut names: Vec<&crate::galaxy::Name> = Vec::new();
-        let mut groups: Vec<(String, String, Vec<(u32, String)>)> = Vec::new();
-        // the Overview tab's groups in the order the game's frame shows them for this save (Utility
-        // Ships, Military Fleets, Shipyards: the starbases; then the colonies), empty ones left out;
-        // mining and research stations are not listed
-        let (mut military, mut civilian, mut stations) = (Vec::new(), Vec::new(), Vec::new());
-        for f in g.fleets.iter().filter(|f| player.is_some() && f.owner == player) {
-            let row = (f.id, String::new());
-            if f.station {
-                if f.name.key == "shipclass_starbase_name" {
-                    stations.push((f, row));
-                }
-            } else if f.military {
-                military.push((f, row));
-            } else {
-                civilian.push((f, row));
-            }
+        for e in &g.outliner {
+            names.push(&e.name);
+            names.push(system_name(e.system).unwrap_or(&none));
         }
-        for list in [&civilian, &military, &stations] {
-            for (f, _) in list {
-                names.push(&f.name);
-                names.push(f.system.map(|s| s as i64).and_then(system_name).unwrap_or(&none));
-            }
+        for (_, n) in &g.sectors {
+            names.push(n);
         }
-        groups.push(("OUTLINER_CIVILIAN_FLEETS".into(), "civilian".into(), civilian.iter().map(|(_, r)| r.clone()).collect()));
-        groups.push(("OUTLINER_FLEETS".into(), "fleet".into(), military.iter().map(|(_, r)| r.clone()).collect()));
-        groups.push(("OUTLINER_SHIPYARDS".into(), "starbase".into(), stations.iter().map(|(_, r)| r.clone()).collect()));
-        let mut planets = Vec::new();
-        for p in &g.planets {
-            names.push(&p.name);
-            names.push(system_name(p.system).unwrap_or(&none));
-            planets.push((p.id, String::new()));
-        }
-        groups.push(("OUTLINER_PLANETS".into(), "planet".into(), planets));
         // the selection's window: a fleet (a station: the starbase's), a planet
         let mut selected: Option<(String, u32)> = None;
         match self.selected {
@@ -1086,27 +1060,55 @@ impl App {
             _ => {}
         }
         let texts = gui::format_names(&self.runtime, &names)?;
-        let mut k = 0;
-        let mut next = || {
-            k += 1;
-            texts.get(k - 1).cloned().unwrap_or_default()
+        let (member_texts, rest) = texts.split_at((2 * g.outliner.len()).min(texts.len()));
+        let (sector_names, rest) = rest.split_at(g.sectors.len().min(rest.len()));
+        let mut rest = rest.iter();
+        let mut next = || rest.next().cloned().unwrap_or_default();
+        let row_of = |i: usize, e: &crate::galaxy::OutlinerEntry| -> gui::OutlinerRow {
+            let selected = match self.selected {
+                Some(Pickable::Fleet(f)) => e.kind != "planet" && f == e.id,
+                Some(Pickable::Body(b)) => e.kind == "planet" && b == e.id,
+                _ => false,
+            };
+            gui::OutlinerRow {
+                id: e.id,
+                name: member_texts.get(2 * i).cloned().unwrap_or_default(),
+                // the second line: a ship size, a starbase type, a colony designation (keys the
+                // layout localises)
+                sub: e.sub.clone(),
+                location: member_texts.get(2 * i + 1).cloned().unwrap_or_default(),
+                power: if e.power > 0.0 { si_number(e.power.round()) } else { String::new() },
+                selected,
+            }
         };
+        // the Overview tab's groups (CCountryTabbedOutliner, COutlinerSettings::GetSort on Linux:
+        // the visible groups in reverse enum order): Utility Ships, Military Fleets, Starbases,
+        // Shipyards, then Sectors (a header with the count of sectors, each sector's own header and
+        // its colonies); Colonies (PLANETS) is disabled by default; empty groups are left out
         let mut outliner = Vec::new();
-        for (title, kind, rows) in groups {
-            if rows.is_empty() {
-                continue;
+        for (title, kind, member) in [
+            ("OUTLINER_CIVILIAN_FLEETS", "civilian", "civilian"),
+            ("OUTLINER_FLEETS", "fleet", "military"),
+            ("OUTLINER_STARBASES", "starbase", "starbase"),
+            ("OUTLINER_SHIPYARDS", "starbase", "shipyard"),
+        ] {
+            let rows: Vec<gui::OutlinerRow> = g.outliner.iter().enumerate().filter(|(_, e)| e.kind == member).map(|(i, e)| row_of(i, e)).collect();
+            if !rows.is_empty() {
+                outliner.push(gui::OutlinerGroup { title: title.into(), kind: kind.into(), rows, header: None, amount: None });
             }
-            let mut out = Vec::new();
-            for (id, _) in rows {
-                let (name, location) = (next(), next());
-                let selected = match self.selected {
-                    Some(Pickable::Fleet(f)) => kind != "planet" && f == id,
-                    Some(Pickable::Body(b)) => kind == "planet" && b == id,
-                    _ => false,
-                };
-                out.push(gui::OutlinerRow { id, name, sub: String::new(), location, selected });
+        }
+        if !g.sectors.is_empty() {
+            outliner.push(gui::OutlinerGroup { title: "OUTLINER_SECTORS".into(), kind: "sectors".into(), rows: Vec::new(), header: None, amount: Some(g.sectors.len().to_string()) });
+            for (k, (sid, _)) in g.sectors.iter().enumerate() {
+                let rows: Vec<gui::OutlinerRow> = g.outliner.iter().enumerate().filter(|(_, e)| e.kind == "planet" && e.sector == *sid as i64).map(|(i, e)| row_of(i, e)).collect();
+                outliner.push(gui::OutlinerGroup {
+                    title: sector_names.get(k).cloned().unwrap_or_default(),
+                    kind: "planet".into(),
+                    rows,
+                    header: Some("outliner_sector_title_entry_window".into()),
+                    amount: None,
+                });
             }
-            outliner.push(gui::OutlinerGroup { title, kind, rows: out });
         }
         let selected = selected.map(|(kind, id)| gui::SelectedWindow { kind, id, name: next(), sub: String::new() });
         let layout = gui::windows(&self.runtime, w, h, &outliner, selected.as_ref())?;

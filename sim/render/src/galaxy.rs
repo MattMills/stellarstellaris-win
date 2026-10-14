@@ -89,6 +89,10 @@ pub struct Galaxy {
     pub capital: Option<(u32, u32)>,
     /// the player's alerts: (key, icon sprite, priority HIGH/MEDIUM/LOW), in their order
     pub alerts: Vec<(String, String, String)>,
+    /// the outliner's members (utility ships by class, military fleets, shipyards, starbases,
+    /// colonies by sector) and the player's sectors
+    pub outliner: Vec<OutlinerEntry>,
+    pub sectors: Vec<(u32, Name)>,
 }
 
 impl Galaxy {
@@ -181,6 +185,20 @@ impl Name {
         t.set("vars", vars)?;
         Ok(t)
     }
+}
+
+/// An outliner member: its kind (civilian, military, shipyard, starbase, planet), id, name, its
+/// second line's key (a ship size, a starbase type, a colony designation), military power,
+/// system and sector.
+#[derive(Clone, Debug)]
+pub struct OutlinerEntry {
+    pub kind: String,
+    pub id: u32,
+    pub name: Name,
+    pub sub: String,
+    pub power: f32,
+    pub system: i64,
+    pub sector: i64,
 }
 
 /// A planet of the player's: its id, name, class and system.
@@ -374,6 +392,28 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
             core_radius: g.get::<Option<f32>>("core_radius")?.unwrap_or(0.0),
             player: g.get::<Option<u32>>("player")?.unwrap_or(0),
             communications: g.get::<Option<Table>>("communications")?.map(|t| t.sequence_values::<u32>().collect::<mlua::Result<Vec<_>>>()).transpose()?,
+            outliner: match g.get::<Option<Table>>("outliner")? {
+                Some(t) => t
+                    .sequence_values::<Table>()
+                    .map(|e| -> mlua::Result<OutlinerEntry> {
+                        let e = e?;
+                        Ok(OutlinerEntry {
+                            kind: e.get("kind")?,
+                            id: e.get("id")?,
+                            name: Name::read(e.get("name")?)?,
+                            sub: e.get::<Option<String>>("sub")?.unwrap_or_default(),
+                            power: e.get::<Option<f32>>("power")?.unwrap_or(0.0),
+                            system: e.get::<Option<i64>>("system")?.unwrap_or(-1),
+                            sector: e.get::<Option<i64>>("sector")?.unwrap_or(-1),
+                        })
+                    })
+                    .collect::<mlua::Result<_>>()?,
+                None => Vec::new(),
+            },
+            sectors: match g.get::<Option<Table>>("sectors")? {
+                Some(t) => t.sequence_values::<Table>().map(|s| -> mlua::Result<(u32, Name)> { let s = s?; Ok((s.get("id")?, Name::read(s.get("name")?)?)) }).collect::<mlua::Result<_>>()?,
+                None => Vec::new(),
+            },
             alerts: match g.get::<Option<Table>>("alerts")? {
                 Some(t) => t
                     .sequence_values::<Table>()
