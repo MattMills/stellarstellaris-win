@@ -1549,6 +1549,37 @@ function M.property(lk)
     return nil
 end
 
+-- fleets: orders
+-- is_surveyed = { who = <country> status = yes/no } (CIsSurveyedTrigger): the country surveyed the
+-- planet (CCountry::HasSurveyedDepositHolder: auto-surveyed or in its surveyed_deposit_holders),
+-- or every planet of the system (E.is_surveyed, engine.fleets.survey)
+TRIG["is_surveyed"] = function(e, ctx)
+    local sc = ctx.this
+    if sc == NONE or e.value.text ~= nil or not E.is_surveyed then return false end
+    local who, status = nil, true
+    for _, x in ipairs(e.value) do
+        if x.op and x.key then
+            local k = x.key.text:lower()
+            if k == "who" and x.value.text then
+                local f, s = M.resolve(x.value.text, ctx, x)
+                if f then who = s end
+            elseif k == "status" then
+                status = x.value.text ~= "no"
+            end
+        end
+    end
+    if not who or who == NONE or who.kind ~= "country" then return false end
+    sync()
+    return (E.is_surveyed(sc.kind, sc.id, who.id) == true) == status
+end
+-- has_anomaly = yes/no (CHasAnomalyTrigger): the planet has an anomaly (E.has_anomaly)
+TRIG["has_anomaly"] = function(e, ctx)
+    local sc = ctx.this
+    if sc == NONE or not E.has_anomaly then return false end
+    sync()
+    return (E.has_anomaly(sc.kind, sc.id) == true) == yes(e)
+end
+
 -- ---------------------------------------------------------------------------------------------
 -- effects
 

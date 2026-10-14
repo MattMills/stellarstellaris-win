@@ -1120,6 +1120,27 @@ E.has_modifier = function(kind, id, source)
     return false
 end
 
+-- fleets: orders
+-- E.is_surveyed(kind, id, country): a planet the country surveyed (CCountry::HasSurveyedDepositHolder),
+-- a system all of whose planets it surveyed; E.has_anomaly(kind, id): a planet with an anomaly
+-- (engine.fleets.survey)
+E.is_surveyed = function(kind, id, country)
+    local survey = require("engine.fleets.survey")
+    if kind == "planet" then
+        return survey.has_surveyed(country, 0, id)
+    elseif kind == "system" then
+        for _, v in ipairs(world.fields(obj("system", id), "planet")) do
+            local p = tonumber(v)
+            if p and not survey.has_surveyed(country, 0, p) then return false end
+        end
+        return obj("system", id) ~= nil
+    end
+    return false
+end
+E.has_anomaly = function(kind, id)
+    return kind == "planet" and require("engine.fleets.survey").has_anomaly(id) or false
+end
+
 -- ---------------------------------------------------------------------------------------------
 -- engine effects: queued, applied at the barrier by the systems that model them
 

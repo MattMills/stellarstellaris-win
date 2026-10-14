@@ -293,6 +293,12 @@ P["daily.pop_groups"] = function(host, date)
         systems.not_modelled["daily.pop_groups"] = (systems.not_modelled["daily.pop_groups"] or 0) + 1
     end
 end
+-- the fleets' part of the ships, fleets and armies phase: CFleet::DailyUpdateSerial ->
+-- CFleet::HandleOrders, fleet by fleet (engine.fleets.orders: the current orders ticked and
+-- finished, the next ones started; docs/fleet_orders.md)
+P["daily.ships_fleets_armies"] = function(host, date)
+    call_optional("engine.fleets.orders", "daily", host, date)
+end
 -- CGameState::MicroUpdate, every tick: movement and combat are not modelled, but the ship pool is
 -- drawn as the game draws it (UpdateShipParallel: CRandom::GetIntegersForMacro of one value per
 -- live ship, every entry of the ships store, after the fleet phase), so the stream's position
