@@ -1,0 +1,176 @@
+# Every job runs on the self-hosted runners on hippo (runner-hive), never on GitHub's: the Windows
+# binaries are cross-compiled on Linux with the toolchains of the runner image (/opt/llvm-mingw,
+# /opt/xwin, ninja, the Windows Rust targets). Each job uploads an artifact laid out as it goes into
+# a release; `bundle` makes the release archives. See docs/ci.md.
+#
+# This repository is public: every job's `if` keeps pull requests from forks off the self-hosted
+# runners.
+name: Build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# a new push to a pull request replaces its build in progress (pushes to master all build)
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('build-pr-{0}', github.event.pull_request.number) || format('build-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+  CARGO_TERM_COLOR: never
+
+jobs:
+  hook:
+    name: hook (Windows x64, cross)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, hippo]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Toolchains
+        run: bash tools/ci/check-toolchains.sh msvc
+      - name: Configure
+        run: cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-clang-cl-xwin.cmake
+      - name: Build
+        run: cmake --build build --target stellar-injected stellar-loader
+      - name: Lay out
+        run: |
+          mkdir -p dist/hook
+          cd build
+          cp -R stellar-injected.dll stellar-injected.pdb stellar-loader.exe stellar-loader.pdb lua \
+            install.ps1 install.bat uninstall.bat ../dist/hook/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stellarstellaris-hook-windows-x64
+          path: dist/hook/
+          if-no-files-found: error
+
+  proxy:
+    name: proxy (Windows x64, cross)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, hippo]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Toolchains
+        run: bash tools/ci/check-toolchains.sh msvc
+      - name: Configure
+        run: cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-clang-cl-xwin.cmake
+      - name: Build
+        run: cmake --build build --target stellar-proxy
+      - name: Lay out
+        run: |
+          mkdir -p dist/proxy/proxy
+          cp build/proxy/version.dll build/proxy/version.pdb dist/proxy/proxy/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stellarstellaris-proxy-windows-x64
+          path: dist/proxy/
+          if-no-files-found: error
+
+  renderer-linux:
+    name: renderer (Linux x64)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, hippo]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build
+        working-directory: sim/render
+        run: |
+          # kept in the runner slot's home between runs: only what changed is compiled again
+          export CARGO_TARGET_DIR="$HOME/.cache/stellarstellaris-ci/render"
+          cargo build --release --locked
+          cp "$CARGO_TARGET_DIR/release/stellar-render" "$GITHUB_WORKSPACE/"
+      - name: Lay out
+        run: bash tools/ci/package.sh render stellar-render dist/stellar-render
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stellar-render-linux-x64
+          path: dist/stellar-render/
+          if-no-files-found: error
+
+  renderer-windows:
+    name: renderer (Windows x64, cross)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, hippo]
+    timeout-minutes: 30
+    env:
+      # x86_64-pc-windows-gnullvm with llvm-mingw: mlua's vendored LuaJIT builds with make there
+      # (for -msvc targets it runs msvcbuild.bat). The C runtime is the system's UCRT; crt-static
+      # links libunwind in, so the exe needs no DLL of its own.
+      CC_x86_64_pc_windows_gnullvm: /opt/llvm-mingw/bin/x86_64-w64-mingw32-clang
+      CXX_x86_64_pc_windows_gnullvm: /opt/llvm-mingw/bin/x86_64-w64-mingw32-clang++
+      AR_x86_64_pc_windows_gnullvm: /opt/llvm-mingw/bin/x86_64-w64-mingw32-ar
+      CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER: /opt/llvm-mingw/bin/x86_64-w64-mingw32-clang
+      CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Toolchains
+        run: bash tools/ci/check-toolchains.sh gnullvm
+      - name: Build
+        working-directory: sim/render
+        run: |
+          export CARGO_TARGET_DIR="$HOME/.cache/stellarstellaris-ci/render"
+          cargo build --release --locked --target x86_64-pc-windows-gnullvm
+          cp "$CARGO_TARGET_DIR/x86_64-pc-windows-gnullvm/release/stellar-render.exe" "$GITHUB_WORKSPACE/"
+      - name: Lay out
+        run: bash tools/ci/package.sh render stellar-render.exe dist/stellar-render
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stellar-render-windows-x64
+          path: dist/stellar-render/
+          if-no-files-found: error
+
+  bundle:
+    name: release archives
+    needs: [hook, proxy, renderer-linux, renderer-windows]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, hippo]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the tags, for git describe
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stellarstellaris-*-windows-x64
+          merge-multiple: true
+          path: dist/mod
+      - uses: actions/download-artifact@v4
+        with:
+          name: stellar-render-linux-x64
+          path: dist/render-linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: stellar-render-windows-x64
+          path: dist/render-windows
+      - name: Archives
+        run: |
+          version="$(git describe --tags --always)"
+          echo "version $version"
+          bash tools/ci/package.sh archive dist/release "$version" dist/mod dist/render-linux dist/render-windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: dist/release/
+          if-no-files-found: error

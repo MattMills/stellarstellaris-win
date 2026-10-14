@@ -19,8 +19,19 @@ use mlua::{Function, Lua, LuaOptions, StdLib, Table};
 use crate::date::Date;
 use crate::rng::NoiseRandom;
 
-/// The repository (the crate's parent directory).
+/// The directory the Lua tree is read from (`sim/lua`, `lua/`, `lib/stellar-lua-pdxscript`,
+/// `sim/render/lua`), found at run time: `STELLAR_HOME` if set; else the executable's directory if
+/// it holds the tree (`sim/lua/engine`: a release package); else the repository the crate was built
+/// from (its parent directory).
 pub fn repo_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("STELLAR_HOME").filter(|home| !home.is_empty()) {
+        return PathBuf::from(home);
+    }
+    if let Some(dir) = std::env::current_exe().ok().as_deref().and_then(Path::parent) {
+        if dir.join("sim/lua/engine").is_dir() {
+            return dir.to_path_buf();
+        }
+    }
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
 }
 

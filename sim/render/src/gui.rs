@@ -80,7 +80,7 @@ pub fn install(runtime: &Runtime, game_dir: &str, cache: &Rc<RefCell<Cache>>) ->
     let lua = &runtime.lua;
     let package: Table = lua.globals().get("package")?;
     let path: String = package.get("path")?;
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/lua").replace('\\', "/");
+    let dir = stellar_sim::runtime::repo_dir().join("sim/render/lua").to_string_lossy().replace('\\', "/");
     if !path.contains(&dir) {
         package.set("path", format!("{dir}/?.lua;{path}"))?;
     }

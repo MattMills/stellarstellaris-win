@@ -120,9 +120,9 @@ pub struct Nebula {
     pub systems: Vec<u32>,
 }
 
-/// The renderer's Lua directory (`sim/render/lua`), for `package.path`.
+/// The renderer's Lua directory (`sim/render/lua` under `runtime::repo_dir`), for `package.path`.
 fn lua_dir() -> String {
-    concat!(env!("CARGO_MANIFEST_DIR"), "/lua").replace('\\', "/")
+    stellar_sim::runtime::repo_dir().join("sim/render/lua").to_string_lossy().replace('\\', "/")
 }
 
 /// A runtime with the save's world loaded (only the world: no definitions, no script layer) and
