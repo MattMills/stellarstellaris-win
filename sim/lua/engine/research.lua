@@ -219,11 +219,45 @@ local function is_fallen_empire(c)
     return d and defs.field(d.block, "fallen_empire") == "yes" or false
 end
 
+-- a country's technologies and their levels (tech_status: `technology = name` then its `level`),
+-- indexed once: the level research.level's scan would find for each name (the first `level` after
+-- the first `technology` entry of that name). Kept until research.add_technology changes the
+-- country's technologies (the only writer of those entries), or until tech_status is another block.
+-- (A scan per lookup walked the ~700 entries of tech_status for every technology of an area and its
+-- prerequisites: 3.4 s of 180 days with the table world, 10 s and 56 MB of garbage a day with the
+-- world in the store, where each entry walked is a view built for the walk.)
+local levels_cache = {}
+-- (a worker state reads a copy the main state's add_technology changes: it scans, as before)
+local cache_levels = not (RUST and RUST.worker_index ~= nil)
+local function levels_of(country, status)
+    local key = world.key(status)
+    local c = levels_cache[country]
+    if c and c.key == key then
+        return c.map
+    end
+    local map, cur = {}, nil
+    for _, e in ipairs(status) do
+        if e.op and e.key then
+            local k = e.key.text
+            if k == "technology" then
+                cur = e.value.text
+            elseif k == "level" and cur ~= nil and map[cur] == nil then
+                map[cur] = tonumber(e.value.text) or 1
+            end
+        end
+    end
+    levels_cache[country] = { key = key, map = map }
+    return map
+end
+
 -- research.level(country, tech) -> the level the country has of a technology, or nil
 function research.level(country, name)
     local status = world.field(world.object("country", country), "tech_status")
     if type(status) ~= "table" then
         return nil
+    end
+    if name ~= nil and cache_levels then
+        return levels_of(country, status)[name]
     end
     local found
     for _, e in ipairs(status) do
@@ -626,6 +660,7 @@ end
 -- research.add_technology(country, tech): the technology added at level 1, or its level raised
 -- (CTechnologyStatus::IncreaseTechnologyLevel), after the other technologies of tech_status
 function research.add_technology(country, name)
+    levels_cache[country] = nil
     local c = world.object("country", country)
     if not c then
         return false
