@@ -2,10 +2,11 @@
 
 The Linux 4.5.2 build runs on a Linux box under Xvfb (Mesa software GL), loads a save through its
 own load path, runs an exact number of ticks through its own tick path with nothing rendered, writes
-the gamestate with its own writer, and exits. Runs are deterministic, and a run reproduces the
-game's own play session: from `autosave_2210.01.01` the 180-day and 360-day results equal the
-game's `autosave_2210.07.01` and `autosave_2211.01.01` except for the one event the human player
-answered.
+the gamestate with its own writer, and exits. Runs are deterministic: byte-identical for a year
+with `run.sh`'s defaults, and for 5 to 6 years with the settings of the correctness standard
+(below). A run reproduces the game's own play session: from `autosave_2210.01.01` the 180-day and
+360-day results equal the game's `autosave_2210.07.01` and `autosave_2211.01.01`, except for the
+one event the human player answered.
 
 ```
 headless/run.sh <save.sav> <ticks> <out.gamestate>
@@ -22,6 +23,9 @@ on the 24-core box were fine).
 |---|---|
 | `headless.c` | the `LD_PRELOAD` driver (C, no dependencies) |
 | `run.sh` | one run: save, ticks, output |
+| `make_standard.sh` | a correctness standard: a long run with the game's own monthly autosaves |
+| `standard.sh` | our simulation against a standard at chosen horizons, or two standards compared |
+| `dev/standard_events.py` | what happens in a standard: counts per save, countries and wars appearing |
 | `setup.sh` | builds the runtime directory `/opt/stellaris-headless/game` |
 | `dev/gsdiff.sh` | diff two gamestates with the one known noise line masked |
 | `dev/callsites.py` | the call-site table for the profiler (by caller, or by callee over a full disassembly) |
@@ -29,6 +33,7 @@ on the 24-core box were fine).
 | `dev/bg.sh`, `dev/xwd2png.py` | development: a game in the background, screenshots, gdb |
 | `results/profile_*.tsv` | random draws per call site (below) |
 | `results/ship_pool_*`, `pool_*`, `draw_order_*`, `synced_generator_callers.tsv` | the pools traced (below) |
+| `results/standard/` | the standards' manifests, timelines, events, determinism and divergence tables, runner summaries |
 
 ## Results
 
@@ -145,6 +150,194 @@ The 360-day run (`profile_2210.01.01_3598.tsv`) has the same shape: 25,410 a day
 The ~25,200 values a day the Lua simulation does not draw are the per-tick ship pool in
 `MicroUpdate`; the rest (~1,220 a day) is the daily pool, the serial country / planet / fleet
 updates and the monthly pool.
+
+## Correctness standard
+
+Two 10-year runs of the real game from `autosave_2210.01.01` (2210.01.01 tick 4 to 2220.01.01
+tick 4: 36,000 ticks), with every save the game wrote on the way. They live on 10.5.0.24:
+
+| standard | game command line | generator at the first tick | final `random_count` |
+|---|---|---|---|
+| `/opt/stellaris-headless/standard/2210.01.01/` | `-loadrandomseed -threads=1` | the save's seed -386941723, position 14,059,660 (the save's 14,059,548 + 112 the load draws) | 119,315,458 |
+| `/opt/stellaris-headless/standard/2210.01.01-seed20261013/` | `-rng_seed=20261013 -rng_pos=0 -threads=1` | seed 20261013, position **112** (the load draws 112 after `-rng_pos` set 0) | 104,539,977 |
+
+Each directory holds 189 MB:
+
+| file | |
+|---|---|
+| `autosave_<date>.sav` | the game's own monthly autosaves, exactly as it wrote them: 120 of them, from 2210.02.01 to 2220.01.01, each at tick 2 (like the user's own autosaves); zips with fixed dates, ~1.4 MB each |
+| `final_2220.01.01.sav` | the state after the last tick (tick 4): the game's gamestate writer, with the meta of that day's autosave |
+| `loaded_2210.01.01.sav` | the input as the game holds it right after the load, 0 ticks |
+| `start.gamestate` | the input with `random_seed` / `random_count` set to the generator at the first tick: the `from` file for our simulation |
+| `manifest.tsv` | for each file: date, tick, `random_seed`, `random_count`, size, sha256; the first line gives the generator at the first tick |
+| `run.log`, `run_loaded.log` | the driver's logs (every autosave, times) |
+| `timeline.tsv`, `events.txt` | from `dev/standard_events.py` (below) |
+
+`results/standard/` has copies of the manifests, timelines and events, and every table below.
+
+### How they are made
+
+```
+bash headless/make_standard.sh /opt/stellaris-saves/autosave_2210.01.01.sav 36000 <dir>
+HEADLESS_ARGS="-rng_seed=N -rng_pos=0 -threads=1" bash headless/make_standard.sh ... <dir>
+```
+
+**Autosaves.** `run.sh` writes `autosave=2` (monthly) into the run's `settings.txt`.
+`HandleTurnTick` posts a `CAutosave` command when the date passes a month, and its `Execute` only
+raises the in-game idler's request flag. The main loop serves that flag after each frame:
+
+1. `CInGameIdler::PostRenderUpdate` calls `AutoSave()`, which names the file
+   `autosave_<date>` and starts the save task;
+2. `CSaveGameTaskManager::Update(true)` runs at the next frame and writes the save.
+
+The driver makes the same two calls after each session update. Task threads are off for the call,
+so the save is written on this thread and is complete when the call returns. It then moves the
+file to the standard's directory, because the save task stops writing once a folder holds 100
+saves (`CountSaveGames`). `DeleteSaveGameFile` is a no-op, so the autosave rotation deletes
+nothing.
+
+Saving changes nothing in the run: 900 ticks with and without autosaves end byte-identical. One
+autosave takes 0.35 s.
+
+**Time.** About 6 minutes per standard, and both were built at once:
+
+| step | time |
+|---|---:|
+| boot and load | 28 s |
+| 36,000 ticks | 270 s (75 ms a day, task threads off) |
+| 120 autosaves | 42 s |
+| the 0-tick run and packaging | about 30 s |
+
+Peak memory is 5.45 GB per game.
+
+**The idle human.** The player's country (0) has a human player and no one at the controls, as in
+our simulation. The game answers that player's events itself with their default option: in
+`open_player_event_selection_history` they are marked `human=-1`, while clicked answers are
+`human=1`.
+
+- In standard A, 117 events were resolved this way in 10 years (selections went from 74 to 191).
+- At most 3 events were open at any month.
+- Nothing piles up, and the game never stops or pauses.
+
+There were no crashes in any of the runs.
+
+### Determinism
+
+Run-to-run determinism decides how far a standard can be trusted. I built each standard twice in
+full (`standard_checks/repeat_a`, `repeat_b`) and compared the files month by month. The first two
+rows of the table were earlier builds with fewer settings off.
+
+| settings | the two runs |
+|---|---|
+| `-threads=1` (as `run.sh`) | byte-identical to 2210.11. Then only the AIs' unsynchronized `random_count` lines differ (masked by `gsdiff.sh`). In 2211.08 one AI picks a different research option, and from 2212.02 the state parts (931 lines, then 131,637 at 2220) |
+| + task threads off (`HEADLESS_NO_TASK_THREADS=1`) | byte-identical for 3 years. Part at 2214.07 in one pair (pop groups' ethics attraction first) and at 2216.08 in the other (focus cards and an AI trade-deal offer) |
+| + address-space randomization off (`HEADLESS_NO_ASLR=1`): **the standards** | byte-identical for **72 months (A, to 2216.01)** and **64 months (B, to 2215.05)**, the AIs' own counters included. Then they part: an AI's unsynchronized `random_count` and an extra AI trade-deal offer in A; a pop group's growth in B |
+
+So both standards are exact for their first 5 years. After that the game itself varies from run to
+run, and the repeats measure by how much (the "run-to-run" columns below).
+
+The remaining cause after year 5 is not found. Task threads and address randomization are both
+off, so it comes from the AI's own generator, which something time- or memory-dependent still
+moves. `make_standard.sh` turns task threads and address randomization off by default.
+
+### The runner: `standard.sh`
+
+```
+bash headless/standard.sh <standard dir> [1m 6m 1y 2y 5y 10y]
+bash headless/standard.sh <standard dir> --against <other standard dir> [horizons]
+```
+
+For each horizon it runs the sim's `examples/diff` from `start.gamestate` to the game's autosave
+at that date, with all horizons in parallel. It writes `summary.tsv` and the full reports to
+`/opt/stellaris-headless/standard_results/<name>-<time>/` (or `STANDARD_OUT`). Each row gives:
+
+- fields equal and differing, and % equal;
+- the five stores with the most differing fields;
+- the sim's random draws against the game's (`random_count` at the horizon minus the first tick's
+  position);
+- the sim's run time.
+
+`--against` loads one standard's autosave into the sim and compares it with the other standard's
+autosave of the same date, with 0 ticks. It uses the same loader and diff, so the numbers are in the
+same fields as the sim's.
+
+**The generator start.** `examples/diff` takes the `from` file's `random_seed` and
+`random_count`. `start.gamestate` carries the game's real start: the save's seed at the save's
+position + 112, or the given seed at 112. `STELLAR_RANDOM=target` (the second file's seed from
+position 0) would start 112 draws behind the game, so the runner does not use it. The platform
+needs no change. The 112 draws belong to this save's load; each standard's manifest records the
+position for its own save.
+
+Sim cost: about 2.4 GB per process. With the 12 horizons of both standards running at once on the
+24-core box, the times were:
+
+| horizon | sim time |
+|---|---:|
+| 1m | 22 s |
+| 6m | 150 s |
+| 1y | 310 s |
+| 2y | 610 s |
+| 5y | 1,400 s |
+| 10y | 2,400 to 2,600 s |
+
+### Results (2026-10-14, sim at `2948960`)
+
+Our simulation against standard A (`-loadrandomseed`):
+
+| horizon | fields equal | differ | % equal | five worst stores (differ / fields) | draws: sim / game |
+|---|---:|---:|---:|---|---:|
+| 1m | 733,833 | 5,321 | 99.3 | ships 2,315/110,974, country 1,182/232,859, fleet 1,003/59,431, colony 271/6,487, pop_groups 228/5,498 | 778,614 / 782,863 |
+| 6m | 723,316 | 13,320 | 98.2 | country 4,436, fleet 3,361, ships 3,257, colony 581, pop_groups 559 | 4,725,081 / 4,755,744 |
+| 1y | 708,693 | 22,132 | 97.0 | country 9,925, ships 4,581, fleet 4,425, pop_groups 762, colony 735 | 9,509,367 / 9,577,199 |
+| 2y | 706,086 | 30,520 | 95.9 | country 11,961, ships 6,327, fleet 5,830, pop_groups 1,644, colony 1,264 | 19,217,609 / 19,312,536 |
+| 5y | 700,526 | 52,567 | 93.0 | country 23,089, ships 11,104, fleet 7,890, ship_design 1,776, planet 1,751 | 49,323,697 / 49,774,577 |
+| 10y | 692,970 | 76,177 | 90.1 | country 39,206, ships 14,064, fleet 9,171, planet 3,278, ship_design 1,940 | 101,355,257 / 105,249,600 |
+
+Against standard B (seed 20261013) the numbers are nearly the same: 99.3, 98.2, 97.0, 95.9, 92.8
+and 90.0 % equal.
+
+**In context**, as fields that differ at each horizon (`summary_*.tsv`, `divergence_lines.tsv`):
+
+| horizon | sim vs A | game A vs game B (another seed) | game A vs its repeat | game B vs its repeat |
+|---|---:|---:|---:|---:|
+| 1m | 5,321 | 418 | 0 | 0 |
+| 6m | 13,320 | 4,012 | 0 | 0 |
+| 1y | 22,132 | 5,668 | 0 | 0 |
+| 2y | 30,520 | 14,630 | 0 | 0 |
+| 5y | 52,567 | 37,168 | 0 | 0 |
+| 10y | 76,177 | 73,040 | 41,419 | 47,478 |
+
+The sim loads a standard's save and compares it with the same save at 100 %, a check of the loader.
+In gamestate lines (`gsdiff.sh`), A and B differ by:
+
+| horizon | lines (of 1.46 M to 1.63 M) |
+|---|---:|
+| 1m | 996 |
+| 6m | 10,458 |
+| 1y | 14,088 |
+| 2y | 27,555 |
+| 5y | 78,457 |
+| 10y | 246,061 |
+
+So in the first years our simulation is far outside the spread another seed causes: 5,321 fields
+against 418 at a month. At 10 years it reaches the spread of the game with another seed (73,040)
+and is within twice the game's own run-to-run variation (41,000 to 47,000).
+
+### What happens in the standards (`dev/standard_events.py`)
+
+A quiet decade for both seeds. Over 10 years:
+
+- the 12 empires, 2 fallen empires and 10 primitives stay; no wars, no ground combat, no crisis
+  (2210 to 2220 is still early); the one federation stays;
+- colonies grow from 49 to 54 (2215) and 59 (2220, standard A);
+- ships go from 2,508 to 3,099 (A) or 3,062 (B), and fleets from 808 to 1,304 or 1,263;
+- the monster factions `drone_faction` and `crystal_faction` disappear in 2210.07 and 2210.08 and
+  come back with new ids at 2220.01;
+- one short combat with 6 ships in the first 16 days (the profiled 180-day run, same start as
+  standard A).
+
+What the standards cover is the peaceful economy: production, pops, construction, ship building,
+fleet movement and AI economics. They do not cover wars, crises or empire births and deaths.
 
 ## The random pools, traced: most of the 26,000 draws a day are never used
 
@@ -408,6 +601,9 @@ after a successful run), `cache/` (Mesa shaders, the profiler's site table).
 | `HEADLESS_TICKLOG`, `HEADLESS_WATCH` | a line per tick: the draws in it and how many times each watched site (`hex,...`) was called |
 | `HEADLESS_TRACE`, `HEADLESS_TRACE_OUT` | `<from>-<to>` total ticks: every instrumented call that draws, in order, with the generator's position |
 | `HEADLESS_POOLTRACK` | a file: reads of the daily and monthly pools, by consumer, instruction and index (`HEADLESS_POOL_DAILY` / `_MONTHLY` give the pool sites, default `1b1c948` / `1b2d746`); turns task threads off and takes ~150 ms a day; the outputs are unchanged |
+| `HEADLESS_AUTOSAVE`, `HEADLESS_SAVES_OUT` | the game's own autosaves at that level (2 monthly, 3 quarterly, 4 half-yearly, 5 yearly), all kept, moved to that directory as they are written |
+| `HEADLESS_NO_TASK_THREADS=1` | the game's parallel-fors run inline (deterministic AI; ~75 ms a day instead of ~40) |
+| `HEADLESS_NO_ASLR=1` | the game runs with address-space randomization off (`setarch -R`) |
 | `HEADLESS_DLCS` | owned DLCs, `;`-separated names; default the save's `required_dlcs` |
 | `HEADLESS_KEEP=1` | keep the work dir (the game's logs) |
 | `HEADLESS_TIMEOUT` | seconds (default 1800) |
