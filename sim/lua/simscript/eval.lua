@@ -292,6 +292,8 @@ local VALUE_OPS = {
 M.TVAL = {}
 -- `pow = n` in a value block: the accumulated value to the power n (M.pow, the handlers' to replace)
 M.pow = function(a, b) return a ^ b end
+-- other value operations of the handler modules: VALUE_OP[key](acc, operand) -> acc
+M.VALUE_OP = {}
 
 local function var_raw(name, ctx)
     local fv = db.filevars(ctx.file)
@@ -525,6 +527,8 @@ local function apply_ops_tree(b, ctx, acc, only_ops)
                 end
             elseif k == "limit" or k == "weight" or k == "desc" or k == "display_name" then
                 -- handled by the caller or not a value operation
+            elseif M.VALUE_OP[k] then
+                acc = M.VALUE_OP[k](acc, M.value(e.value, ctx, e))
             else
                 -- `count_owned_pop_amount = { limit = { ... } }`: the iterator's count
                 local n = e.value.text == nil and M.count_value and M.count_value(k, e.value, ctx)

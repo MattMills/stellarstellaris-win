@@ -1222,6 +1222,11 @@ function C.install(M)
                     chain[#ops + 1] = k == "if" and 1 or 2
                 elseif k == "limit" or k == "weight" or k == "desc" or k == "display_name" then
                     -- handled by the caller or not a value operation
+                elseif M.VALUE_OP[k] then
+                    op = function(ctx, acc)
+                        local f = M.VALUE_OP[k]
+                        return f(acc, M.value(v, ctx, e))
+                    end
                 else
                     -- `count_owned_pop_amount = { limit = { ... } }`: the iterator's count; a scope
                     local block = v.text == nil
