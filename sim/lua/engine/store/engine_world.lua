@@ -17,7 +17,7 @@
 local M = {}
 
 -- the functions whose first argument is a block
-local READERS = { "field", "fields", "list", "blocks", "statements", "count", "key", "path", "token_entry" }
+local READERS = { "field", "fields", "list", "blocks", "statements", "count", "key", "path", "token_entry", "entry" }
 local WRITERS = { "set", "append", "insert", "append_value", "remove_value", "push", "reindex", "set_text",
     "set_key", "insert_value", "remove_at", "replace", "append_entry" }
 

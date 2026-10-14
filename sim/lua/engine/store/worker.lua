@@ -134,7 +134,7 @@ function W.engine(arg)
     -- decides) are read and written by a table world of the worker's own (a second instance of
     -- engine.world's module): each block function goes to it for a table, to the store's for a handle
     TW = dofile(package.searchpath("engine.world", package.path))
-    for _, name in ipairs({ "field", "fields", "list", "blocks", "statements", "count", "key", "token_entry",
+    for _, name in ipairs({ "field", "fields", "list", "blocks", "statements", "count", "key", "token_entry", "entry",
         "set", "child", "append", "insert", "append_value", "remove_value", "remove_entry", "push", "reindex",
         "set_text", "set_key", "insert_value", "remove_at", "replace", "set_entry", "append_entry" }) do
         local s, t = SW[name], TW[name]

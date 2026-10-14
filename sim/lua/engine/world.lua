@@ -713,6 +713,19 @@ function world.key(block)
     return block
 end
 
+-- world.entry(obj, key) -> the first `key = value` statement of obj (the entry the writers take:
+-- set_entry, remove_entry) and its position, or nil. A walk here, as the modules' own helpers did;
+-- engine.store.world finds it by the block's key index instead of building a view of every entry.
+function world.entry(obj, key)
+    if obj == nil then return nil end
+    for i, e in ipairs(obj) do
+        if e.op and e.key and e.key.text == key then
+            return e, i
+        end
+    end
+    return nil
+end
+
 function world.blocks(block)
     local out = {}
     if type(block) == "table" then

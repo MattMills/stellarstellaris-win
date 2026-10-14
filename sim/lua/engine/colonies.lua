@@ -130,12 +130,10 @@ local function int(v)
     return tonumber(v) or 0
 end
 
+-- the first `key = value` statement of obj and its position (engine.world.entry: by the key index
+-- with the world in the store)
 local function entry(obj, key)
-    for i, e in ipairs(obj) do
-        if e.op and e.key and e.key.text == key then
-            return e, i
-        end
-    end
+    return world.entry(obj, key)
 end
 
 -- obj's `key = value` in the save's order: value nil removes it; a new one goes after the closest
