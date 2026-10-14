@@ -157,6 +157,12 @@ local function fields(obj)
     return f
 end
 
+-- world.reindex(obj): the index of obj dropped, for code that changed obj's entries directly
+-- (world.set / child / append keep it current themselves)
+function world.reindex(obj)
+    fields_of[obj] = nil
+end
+
 -- world.field(obj, key) -> the first value of key: a number when it is one, else the text or the
 -- block; world.fields(obj, key) -> all of them (texts or blocks)
 function world.field(obj, key)
@@ -215,17 +221,33 @@ local function number_text(v)
 end
 world.number_text = number_text
 
--- world.set(obj, key, value): the first `key = <token>` of obj changed, or added
+-- an entry appended at the end of obj: its index (when built) gets the value at the end of the
+-- key's list, as a rebuild would put it
+local function appended(obj, key, value)
+    local f = fields_of[obj]
+    if f then
+        local list = f[key]
+        if not list then
+            list = {}
+            f[key] = list
+        end
+        list[#list + 1] = value
+    end
+end
+
+-- world.set(obj, key, value): the first `key = <token>` of obj changed, or added. The index holds
+-- the value tokens themselves, so a change in place keeps it valid.
 function world.set(obj, key, value)
     local text = type(value) == "number" and number_text(value) or tostring(value)
-    fields_of[obj] = nil
-    for _, e in ipairs(obj) do
-        if e.op and e.key and e.key.text == key and e.value.text ~= nil then
-            e.value.text = text
+    for _, v in ipairs(fields(obj)[key] or {}) do
+        if v.text ~= nil then
+            v.text = text
             return
         end
     end
-    obj[#obj + 1] = { key = { text = key }, op = "=", value = { text = text } }
+    local v = { text = text }
+    obj[#obj + 1] = { key = { text = key }, op = "=", value = v }
+    appended(obj, key, v)
 end
 
 -- world.child(obj, key) -> the block of `key = { }` in obj, made if it is not there
@@ -236,7 +258,7 @@ function world.child(obj, key)
     end
     local block = {}
     obj[#obj + 1] = { key = { text = key }, op = "=", value = block }
-    fields_of[obj] = nil
+    appended(obj, key, block)
     return block
 end
 
@@ -245,7 +267,7 @@ function world.append(obj, key, value, quoted)
     local v = type(value) == "table" and value
         or { text = type(value) == "number" and number_text(value) or tostring(value), quoted = quoted or nil }
     obj[#obj + 1] = { key = { text = key }, op = "=", value = v }
-    fields_of[obj] = nil
+    appended(obj, key, v)
 end
 
 -- world.insert(obj, pos, key, value[, quoted]): `key = value` at position pos of obj (the save's

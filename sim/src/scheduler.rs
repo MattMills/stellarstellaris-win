@@ -85,6 +85,8 @@ pub struct Simulation {
     pub ticks: u64,
     /// Lua errors raised by phases (the phase is cut short, the tick goes on).
     pub errors: Vec<String>,
+    /// Time spent per phase (`kind.name`): calls and seconds, for profiling.
+    pub phase_times: std::collections::BTreeMap<String, (u64, f64)>,
     tick_count: i32,
     cached_month: i32,
     cached_year: i32,
@@ -102,6 +104,7 @@ impl Simulation {
             trace: Vec::new(),
             ticks: 0,
             errors: Vec::new(),
+            phase_times: std::collections::BTreeMap::new(),
             tick_count: 0,
             cached_month: d.month_index(),
             cached_year: d.year(),
@@ -138,12 +141,32 @@ impl Simulation {
 
     fn phase(&mut self, kind: &str, name: &str, parallel: bool) {
         let old = self.runtime.rng.borrow_mut().set_forbidden(parallel);
+        let t = std::time::Instant::now();
         if let Err(e) = self.runtime.phase(kind, name) {
             if self.errors.len() < 20 {
                 self.errors.push(format!("{kind}.{name}: {e}"));
             }
         }
+        let e = self.phase_times.entry(format!("{kind}.{name}")).or_insert((0, 0.0));
+        e.0 += 1;
+        e.1 += t.elapsed().as_secs_f64();
         self.runtime.rng.borrow_mut().set_forbidden(old);
+    }
+
+    /// The phases by time spent, slowest first: `phase  calls  seconds  ms per call`.
+    pub fn phase_report(&self) -> String {
+        let mut v: Vec<_> = self.phase_times.iter().collect();
+        v.sort_by(|a, b| b.1 .1.partial_cmp(&a.1 .1).unwrap_or(std::cmp::Ordering::Equal));
+        let total: f64 = v.iter().map(|(_, (_, s))| s).sum();
+        let mut out = format!("phases: {total:.1} s in all\n");
+        for (name, (calls, secs)) in v {
+            out += &format!(
+                "  {name:<34} {calls:>7} calls {secs:>8.2} s {:>5.1}%  {:>8.3} ms a call\n",
+                100.0 * secs / total.max(1e-9),
+                secs * 1000.0 / (*calls).max(1) as f64
+            );
+        }
+        out
     }
 
     /// One `CSession::ProcessSynchronousCommands` pass: the commands, then `HandleTurnTick`.

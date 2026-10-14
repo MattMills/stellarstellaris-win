@@ -52,6 +52,14 @@ pub fn new_lua() -> mlua::Result<Lua> {
     // SAFETY: the full LuaJIT library (ffi included), as the game's runtime has it; the Lua code is
     // this repository's.
     let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::new()) };
+    // the JIT's limits raised: with LuaJIT's defaults (1000 traces, 512 KB of machine code) the
+    // engine's code fills the trace cache and LuaJIT flushes and recompiles it all, about 3 times a
+    // simulated day (181 flushes and 257,000 traces in 60 days, against none and 28,000 with these)
+    lua.load(
+        r#"jit.opt.start("maxtrace=40000", "maxrecord=40000", "maxirconst=4000", "maxside=400",
+            "maxsnap=2000", "sizemcode=1024", "maxmcode=524288", "hotloop=56", "hotexit=10")"#,
+    )
+    .exec()?;
     let repo = repo_dir().to_string_lossy().replace('\\', "/");
     let package: Table = lua.globals().get("package")?;
     package.set(

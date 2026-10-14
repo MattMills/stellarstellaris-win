@@ -28,6 +28,14 @@ fn main() {
     println!("{loaded}");
     println!("loaded in {:.1} s; running {days} days from {date:?}", t0.elapsed().as_secs_f64());
 
+    // with STELLAR_LUA_BEFORE=<file>, that Lua file runs after the load, before the first tick
+    // (e.g. starting a profiler that the STELLAR_LUA file reads out)
+    if let Ok(path) = std::env::var("STELLAR_LUA_BEFORE") {
+        let code = std::fs::read_to_string(&path).expect("read STELLAR_LUA_BEFORE");
+        if let Err(e) = runtime.lua.load(&code).set_name(path.as_str()).exec() {
+            println!("STELLAR_LUA_BEFORE failed: {e}");
+        }
+    }
     let mut sim = Simulation::new(runtime);
     sim.set_tick_count(tick);
     let t1 = std::time::Instant::now();
@@ -55,6 +63,7 @@ fn main() {
         }
     }
     println!("{} ticks to {:?} in {:.1} s", sim.ticks, sim.date(), t1.elapsed().as_secs_f64());
+    print!("{}", sim.phase_report());
     for e in &sim.errors {
         println!("error: {e}");
     }
