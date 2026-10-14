@@ -58,6 +58,25 @@ pub fn list_files(root: &str, sub: &str, ext: Option<&str>) -> Vec<String> {
     out
 }
 
+static CLOCK_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// The platform's clock: seconds since the process first read it. The deadlines of a phase run in
+/// pieces (`Simulation::step_until`) are on it, and Lua reads it through `RUST.now_fn`.
+pub fn clock() -> f64 {
+    CLOCK_START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
+}
+
+/// An instant on the platform's clock (0 for one before its start).
+pub fn clock_at(t: std::time::Instant) -> f64 {
+    t.saturating_duration_since(*CLOCK_START.get_or_init(std::time::Instant::now)).as_secs_f64()
+}
+
+/// [`clock`] for LuaJIT's FFI: engine.slice casts `RUST.now_fn` to `double (*)(void)`, a call that
+/// compiles into the traces.
+extern "C" fn clock_ffi() -> f64 {
+    clock()
+}
+
 /// A LuaJIT state with the require paths and the `RUST.list_files` / `RUST.clock` helpers.
 pub fn new_lua() -> mlua::Result<Lua> {
     // SAFETY: the full LuaJIT library (ffi included), as the game's runtime has it; the Lua code is
@@ -95,6 +114,8 @@ pub fn new_lua() -> mlua::Result<Lua> {
     )?;
     let start = std::time::Instant::now();
     rust.set("clock", lua.create_function(move |_, ()| Ok(start.elapsed().as_secs_f64()))?)?;
+    // the platform's clock as a C function's address, for engine.slice (an FFI call compiles)
+    rust.set("now_fn", clock_ffi as extern "C" fn() -> f64 as usize as f64)?;
     // the game's noise function, for generators kept in Lua (the AI's own, one per country)
     rust.set(
         "noise",
@@ -109,6 +130,11 @@ pub fn new_lua() -> mlua::Result<Lua> {
 pub struct Runtime {
     pub lua: Lua,
     engine: Table,
+    /// engine.slice.set_deadline: the deadline of the phase's next piece
+    set_deadline: Function,
+    /// the end of the frame the pieces run in ([`Runtime::set_frame_end`]), for engine.slice's
+    /// record of the stretches that cross it
+    frame_end: Cell<f64>,
     pub date: Rc<Cell<Date>>,
     pub rng: Rc<RefCell<NoiseRandom>>,
     /// The month's pool of random draws (`CGameState::MonthlyUpdate` draws 1,000 at its start, read
@@ -183,7 +209,9 @@ impl Runtime {
         )?;
         let shared = crate::store::install(&lua)?;
         let engine: Table = lua.load("return require('engine')").set_name("engine").eval()?;
-        Ok(Runtime { lua, engine, date, rng, monthly_pool, daily_pool, shared })
+        let slice: Table = engine.get("slice")?;
+        let set_deadline: Function = slice.get("set_deadline")?;
+        Ok(Runtime { lua, engine, set_deadline, frame_end: Cell::new(f64::INFINITY), date, rng, monthly_pool, daily_pool, shared })
     }
 
     /// Reads the vanilla file set from `game_dir` (the Stellaris install, in place) and the world
@@ -210,6 +238,42 @@ impl Runtime {
         let d = self.date.get();
         let f: Function = self.engine.get("phase")?;
         f.call((kind, name, d.year(), d.month(), d.day_of_month()))
+    }
+
+    /// The end of the frame the next pieces run in, on the platform's [`clock`] (the deadline a
+    /// piece is given is earlier, by a margin): engine.slice records the stretches between its
+    /// checks that cross it (`slice.report`).
+    pub fn set_frame_end(&self, t: f64) {
+        self.frame_end.set(t);
+    }
+
+    /// A phase of the tick as a coroutine, to run in pieces with [`Runtime::resume_phase`].
+    pub fn phase_thread(&self) -> mlua::Result<mlua::Thread> {
+        let f: Function = self.engine.get("phase")?;
+        self.lua.create_thread(f)
+    }
+
+    /// Runs a phase's coroutine (the first time with the phase's arguments: its kind and name)
+    /// until it finishes, or, past `deadline` on the platform's [`clock`], until it yields at one
+    /// of engine.slice's checks; whether it finished (an error finishes it).
+    pub fn resume_phase(&self, thread: &mlua::Thread, first: Option<(&str, &str)>, deadline: f64) -> mlua::Result<bool> {
+        self.set_deadline.call::<()>((deadline, self.frame_end.get()))?;
+        let r = match first {
+            Some((kind, name)) => {
+                let d = self.date.get();
+                thread.resume::<mlua::MultiValue>((kind, name, d.year(), d.month(), d.day_of_month()))
+            }
+            None => thread.resume::<mlua::MultiValue>(()),
+        };
+        // outside the pieces nothing yields: commands, saves and tools run whole
+        self.set_deadline.call::<()>(f64::INFINITY)?;
+        r?;
+        Ok(!matches!(thread.status(), mlua::ThreadStatus::Resumable))
+    }
+
+    /// What engine.slice saw: the yields, and the longest gaps between its checks by site.
+    pub fn slice_report(&self) -> String {
+        self.eval::<String>("return require('engine.slice').report(30)").unwrap_or_else(|e| format!("slice report failed: {e}"))
     }
 
     /// A command between ticks: a scripted effect (or event) run on a scope.

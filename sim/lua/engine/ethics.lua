@@ -37,6 +37,7 @@ local ffi = require("ffi")
 local world = require("engine.world")
 local defs = require("engine.defs")
 local eval = require("simscript.eval")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local ethics = {
     stats = {
@@ -394,12 +395,14 @@ local function councilors_with_ethic(country, ethic)
     local ruler = c and tonumber(world.field(c, "ruler"))
     local councilor = {}
     for _, p in pairs(world.stores["council_positions"] or {}) do
+        slice.tick("ethics councilors")
         local l = tonumber(world.field(p, "leader"))
         if l then councilor[l] = true end
     end
     local n = 0
     for _, t in ipairs(world.list(c and world.field(c, "owned_leaders"))) do
         local id = tonumber(t)
+        slice.tick("ethics leaders")
         local l = id and world.object("leader", id)
         if l and (id == ruler or councilor[id]) and world.field(l, "ethic") == ethic then n = n + 1 end
     end
@@ -754,6 +757,7 @@ local function owner_has_factions(owner)
     if factions_of == nil then
         factions_of = {}
         for _, id in ipairs(world.all("pop_factions")) do
+            slice.tick("ethics.lua:757")
             local o = tonumber(world.field(world.object("pop_factions", id), "country"))
             if o then factions_of[o] = true end
         end
@@ -1018,10 +1022,12 @@ local function pop_groups_daily(date)
     local day = day_count(date)
     local pool = daily_pool()
     for _, gid in ipairs(world.all("pop_groups")) do
+        slice.tick("ethics.lua:1021")
         local g = world.object("pop_groups", gid)
         if g and world.field(g, "killed") ~= "yes" then
             local cid = tonumber(world.field(g, "planet"))
             if cid and world.object("colony", cid) and world.colony_planet[cid] then
+                slice.tick("ethics pop group")
                 s.groups = s.groups + 1
                 local size = int(world.field(g, "size"))
                 local sid = group_key(g)
@@ -1047,6 +1053,7 @@ local function countries_daily(date)
     require("engine.ethics.script").new_day()
     local day = day_count(date)
     for _, cid in ipairs(world.all("country")) do
+        slice.check("ethics country")
         if u32(cid + day) % 30 == 0 then
             local c = world.object("country", cid)
             local b = c and world.field(c, "ethics_attraction")
@@ -1101,6 +1108,7 @@ function ethics.check(verbose)
     local function run()
         local n, ok_total, ok_all, ok_entries, n_entries, miss = 0, 0, 0, 0, 0, {}
         for _, gid in ipairs(world.all("pop_groups")) do
+            slice.tick("ethics.lua:1106")
             local g = world.object("pop_groups", gid)
             local want = g and world.field(g, "ethics_attraction")
             local cid = g and tonumber(world.field(g, "planet"))
@@ -1131,6 +1139,7 @@ function ethics.check(verbose)
         for _, m in ipairs(miss) do out[#out + 1] = m end
         local cn, cok, cmiss = 0, 0, {}
         for _, id in ipairs(world.all("country")) do
+            slice.tick("ethics.lua:1136")
             local c = world.object("country", id)
             local want = c and world.field(c, "ethics_attraction")
             if type(want) == "table" then

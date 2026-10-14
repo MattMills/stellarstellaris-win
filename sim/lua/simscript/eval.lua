@@ -17,6 +17,13 @@ local E = _G.E
 
 local floor = math.floor
 
+-- engine.slice's tick: a phase run in pieces may stop between two blocks (docs/frame_timing.md);
+-- nothing without the engine
+local tick = (function()
+    local ok, slice = pcall(require, "engine.slice")
+    return ok and slice.tick or function() end
+end)()
+
 -- ---------------------------------------------------------------------------------------------
 -- scopes
 
@@ -944,6 +951,7 @@ end
 -- a block: AND of its statements (keys in skip are parameters, not triggers)
 local LIMIT_ONLY = { limit = true }
 local function trigger_tree(b, ctx, skip)
+    tick("trigger")
     local taken = false
     for _, e in ipairs(b) do
         if e.op and e.key then
@@ -1790,6 +1798,7 @@ local function effect1(e, ctx)
 end
 
 effect = function(b, ctx, skip)
+    tick("effect")
     local taken = false
     for _, e in ipairs(b) do
         if e.op and e.key then

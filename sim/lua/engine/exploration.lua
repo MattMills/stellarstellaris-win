@@ -29,6 +29,7 @@
 -- a system (CGalacticObject::OnFleetEntered).
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local defs = require("engine.defs")
 local bit = require("bit")
 local ok_ffi, ffi = pcall(require, "ffi")
@@ -229,6 +230,7 @@ local function galaxy()
     if G then return G end
     G = { ids = {}, hyper = {}, coord = {}, valid = {} }
     for _, sid in ipairs(world.all("system")) do
+        slice.tick("exploration.lua:231")
         G.ids[#G.ids + 1] = sid
     end
     table.sort(G.ids)
@@ -435,6 +437,7 @@ local function relations()
     if REL then return REL end
     REL = {}
     for _, cid in ipairs(world.all("country")) do
+        slice.tick("exploration.lua:437")
         local c = world.object("country", cid)
         local t = {}
         for _, r in ipairs(world.fields(world.field(c, "relations_manager"), "relation")) do
@@ -1249,6 +1252,7 @@ local function visible_fleets()
     if DAY.fleets then return DAY.fleets end
     local list = {}
     for _, fid in ipairs(world.all("fleet")) do
+        slice.tick("exploration.lua:1251")
         local f = world.object("fleet", fid)
         local nships = f and #numbers(world.field(f, "ships")) or 0
         local removed = f and tonumber(world.field(f, "cached_combined_removed_ships")) or 0
@@ -1487,6 +1491,7 @@ function X.check()
         local same, diff, values, values_diff = 0, 0, 0, 0
         local bad = {}
         for _, cid in ipairs(world.all("country")) do
+            slice.tick("exploration.lua:1489")
             local c = world.object("country", cid)
             local want = numbers(world.field(c, f))
             local got = computed[cid][key_of[f]]

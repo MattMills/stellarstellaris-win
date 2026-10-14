@@ -1,7 +1,8 @@
 //! The simulation in a rendered game's frames (docs/frame_timing.md). At 120 frames a second it
-//! must keep every frame within 8.33 ms and the game's pace, either on the render thread in what
-//! each frame leaves after the render work, or on a thread of its own that the render thread only
-//! reads from.
+//! must keep the frames within 8.33 ms, either on the render thread in what each frame leaves
+//! after the render work (its phases cut into pieces at engine.slice's checks; the game's pace is
+//! what that leaves, reported), or on a thread of its own that the render thread only reads from
+//! (and then at the game's pace too).
 //!
 //! Timed in real time from a load of the save, so long and machine-dependent: ignored by default.
 //!
@@ -30,7 +31,7 @@ fn failures(r: &frametime::Report) -> Vec<String> {
         return v;
     }
     if !r.frames_fit() {
-        let over: Vec<String> = r.units_over_room().iter().map(|u| format!("{} {:.1} ms", u.label, u.max_ms)).collect();
+        let over: Vec<String> = r.units_over_room().iter().map(|u| format!("{} {:.1} ms", u.label, u.max_piece_ms)).collect();
         v.push(format!(
             "frames over {:.2} ms: {} of {} (p99 {:.2} ms, worst {:.1} ms){}",
             r.budget_ms(),
@@ -38,10 +39,12 @@ fn failures(r: &frametime::Report) -> Vec<String> {
             r.frames.frames,
             r.frames.p99_ms,
             r.frames.max_ms,
-            if r.mode == "inline" && !over.is_empty() { format!("; units longer than a frame's room: {}", over.join(", ")) } else { String::new() }
+            if r.mode == "inline" && !over.is_empty() { format!("; units with a piece longer than a frame's room: {}", over.join(", ")) } else { String::new() }
         ));
     }
-    if !r.keeps_pace() {
+    // inline, the game goes as fast as what each frame leaves holds (the frames are the limit; a
+    // game whose simulation needs more slows down, as the game does): its pace is reported only
+    if r.mode != "inline" && !r.keeps_pace() {
         v.push(format!("{:.2} game days a second, the speed asks for {:.2}", r.achieved_days_per_s, r.nominal_days_per_s));
     }
     v

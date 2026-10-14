@@ -41,6 +41,25 @@ local structure = require("engine.modifiers.structure")
 
 local band = require("bit").band
 local clock = RUST and RUST.clock or os.clock
+-- an update run in pieces stops between two holders (engine.slice, docs/frame_timing.md)
+local tick = require("engine.slice").tick
+
+-- a graph's changes propagated (g:mark) and its nodes computed (g:run), as g:flush() does, in
+-- pieces of PIECE units of work with a tick between: the same nodes in the same order (the
+-- levels' buckets keep their place), so the same values
+local PIECE = 2048
+local function mark_in_pieces(g, site)
+    while g:frontier_size() > 0 do
+        g:mark(PIECE)
+        tick(site)
+    end
+end
+local function flush_in_pieces(g, site)
+    mark_in_pieces(g, site)
+    while g:run(core.READ, PIECE) >= PIECE do
+        tick(site)
+    end
+end
 
 local M = {}
 
@@ -174,6 +193,7 @@ function I:types_of(h)
     end
     t = {}
     memo[h] = t
+    tick("modifier types")
     local cats = self.defs.cats
     for ty, v in pairs(h.values) do
         if v ~= 0 then
@@ -244,6 +264,7 @@ function I:update()
     t = clock()
     local order, gone = {}, {}
     for _, n in ipairs(st:nodes()) do
+        tick("modifier records")
         local cat, owner = n.category, n.owner
         local bc = by_cat[cat]
         if bc == nil then
@@ -285,6 +306,7 @@ function I:update()
         return bc and bc[owner]
     end
     for _, rec in ipairs(order) do
+        tick("modifier links")
         local cur, n, same = rec.links, 0, true
         local parents = st:parents(rec.cat, rec.owner)
         for _, l in ipairs(parents) do
@@ -328,6 +350,7 @@ function I:update()
         t = clock()
         src.resolve_ref = nil
         for _, rec in ipairs(order) do
+            tick("modifier pass 1")
             src.ref_used = false
             local parts = parts_of(rec.cat, rec.owner) or EMPTY
             rec.reading = src.ref_used
@@ -352,6 +375,7 @@ function I:update()
             end
         end
         for _, rec in ipairs(self.g1recs) do
+            tick("modifier G1")
             self:sync1(rec)
         end
         -- 3. pass 2
@@ -365,6 +389,7 @@ function I:update()
             return tree1:get(self:h1_of(rec), ref.type)
         end
         for _, rec in ipairs(order) do
+            tick("modifier pass 2")
             if rec.reading then
                 s.reading = s.reading + 1
                 local parts = parts_of(rec.cat, rec.owner) or EMPTY
@@ -382,7 +407,7 @@ function I:update()
                 rec.want2 = rec.total1
             end
         end
-        self.g1:flush()
+        flush_in_pieces(self.g1, "modifier G1 flush")
         s.t_pass2 = clock() - t
     end)
     src.resolve_ref, src.ref_used, src.trigger_memo = nil, false, nil
@@ -409,6 +434,7 @@ function I:update()
         end
     end
     for _, rec in ipairs(order) do
+        tick("modifier G2")
         local h2 = rec.h2
         if rec.links2 ~= rec.links then
             for _, l in ipairs(rec.links2) do
@@ -444,6 +470,7 @@ function I:update()
         stack[ns] = nil
         ns = ns - 1
         if not seen[h] then
+            tick("modifier types below")
             seen[h] = true
             memo[h] = nil
             local rec = by_holder[h]
@@ -459,13 +486,16 @@ function I:update()
     end
     local g2, owner = self.g2, tree2.owner
     local nodes, olds, k = {}, {}, 0
+    mark_in_pieces(g2, "modifier G2 mark")
     g2:each_pending(core.READ, function(n)
+        tick("modifier G2 pending")
         k = k + 1
         nodes[k], olds[k] = n, g2:peek(n)
     end)
-    g2:flush()
+    flush_in_pieces(g2, "modifier G2 flush")
     s.dirty = k
     for i = 1, k do
+        tick("modifier G2 changed")
         local n = nodes[i]
         if g2:alive(n) and g2:peek(n) ~= olds[i] then
             local rec = by_holder[owner[n]]

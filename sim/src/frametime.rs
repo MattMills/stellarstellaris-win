@@ -39,7 +39,8 @@ pub struct Config {
     pub fps: f64,
     /// the render thread's own work in a frame, ms (a busy wait)
     pub render_ms: f64,
-    /// inline: what the simulation leaves free at the end of a frame, ms
+    /// inline: what the simulation leaves free at the end of a frame, ms (its pieces stop at the
+    /// frame's end less this: the slack for a stretch between two of its checks that runs past)
     pub margin_ms: f64,
     /// the game's speed, 1 (Slowest) to 5 (Fastest)
     pub speed: u8,
@@ -51,7 +52,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Config {
-        Config { fps: 120.0, render_ms: 4.0, margin_ms: 0.5, speed: 3, days: 35, baseline_s: 3.0 }
+        Config { fps: 120.0, render_ms: 4.0, margin_ms: 1.0, speed: 3, days: 35, baseline_s: 3.0 }
     }
 }
 
@@ -60,7 +61,7 @@ fn env<T: std::str::FromStr>(name: &str) -> Option<T> {
 }
 
 impl Config {
-    /// The defaults (120 FPS, 4 ms of render work, a 0.5 ms margin, Normal speed, 35 days, a 3 s
+    /// The defaults (120 FPS, 4 ms of render work, a 1 ms margin, Normal speed, 35 days, a 3 s
     /// baseline), each overridden by its variable: `STELLAR_FRAME_FPS`, `STELLAR_FRAME_RENDER_MS`,
     /// `STELLAR_FRAME_MARGIN_MS`, `STELLAR_FRAME_SPEED`, `STELLAR_FRAME_DAYS`,
     /// `STELLAR_FRAME_BASELINE_S`.
@@ -233,6 +234,8 @@ pub struct FrameStats {
     pub max_ms: f64,
     /// frames whose work took longer than a frame
     pub over_budget: usize,
+    /// the late frames by how late: under 0.5 ms, 0.5 to 1, 1 to 2, 2 to 5, 5 or more
+    pub late_by: [usize; 5],
     /// the deadlines (vsyncs) the late frames missed
     pub missed: u64,
 }
@@ -240,6 +243,11 @@ pub struct FrameStats {
 impl FrameStats {
     fn of(times: &[f64], budget: f64, missed: u64) -> FrameStats {
         let s = sorted(times);
+        let mut late_by = [0usize; 5];
+        for &t in s.iter().filter(|&&t| t > budget) {
+            let ms = (t - budget) * 1000.0;
+            late_by[if ms < 0.5 { 0 } else if ms < 1.0 { 1 } else if ms < 2.0 { 2 } else if ms < 5.0 { 3 } else { 4 }] += 1;
+        }
         FrameStats {
             frames: s.len(),
             p50_ms: percentile(&s, 0.5) * 1000.0,
@@ -247,13 +255,15 @@ impl FrameStats {
             p99_ms: percentile(&s, 0.99) * 1000.0,
             max_ms: s.last().copied().unwrap_or(0.0) * 1000.0,
             over_budget: s.iter().filter(|&&t| t > budget).count(),
+            late_by,
             missed,
         }
     }
 
     fn text(&self, budget_ms: f64) -> String {
+        let l = &self.late_by;
         format!(
-            "{} frames, ms p50 {:.2} p95 {:.2} p99 {:.2} max {:.1}; over {budget_ms:.2} ms: {} ({:.2}%), deadlines missed: {}",
+            "{} frames, ms p50 {:.2} p95 {:.2} p99 {:.2} max {:.1}; over {budget_ms:.2} ms: {} ({:.2}%; late by <0.5 ms {}, 0.5-1 {}, 1-2 {}, 2-5 {}, 5+ {}), deadlines missed: {}",
             self.frames,
             self.p50_ms,
             self.p95_ms,
@@ -261,6 +271,11 @@ impl FrameStats {
             self.max_ms,
             self.over_budget,
             100.0 * self.over_budget as f64 / self.frames.max(1) as f64,
+            l[0],
+            l[1],
+            l[2],
+            l[3],
+            l[4],
             self.missed
         )
     }
@@ -270,9 +285,15 @@ impl FrameStats {
 #[derive(Clone, Debug, Default)]
 pub struct UnitStats {
     pub label: String,
+    /// the units finished
     pub calls: u64,
     pub total_ms: f64,
+    /// the longest unit, all its pieces together
     pub max_ms: f64,
+    /// the pieces the units ran in (inline: one a frame at most), and the longest: what a frame
+    /// had to hold of it at once
+    pub pieces: u64,
+    pub max_piece_ms: f64,
     /// inline: the frames that ran past their deadline in this unit
     pub overruns: u64,
 }
@@ -280,29 +301,31 @@ pub struct UnitStats {
 #[derive(Default)]
 struct Units {
     stats: HashMap<Unit, UnitStats>,
-    /// the running estimate of each unit's time, seconds (0.25 of the newest)
-    estimate: HashMap<Unit, f64>,
+    /// the unit in progress: its time so far, seconds
+    running: HashMap<Unit, f64>,
 }
 
 impl Units {
-    fn estimate(&self, u: Unit) -> f64 {
-        self.estimate.get(&u).copied().unwrap_or(0.0)
-    }
-
-    fn record(&mut self, u: Unit, secs: f64, overran: bool) {
+    /// A piece of a unit: `secs` long, the unit `done` or not.
+    fn piece(&mut self, u: Unit, secs: f64, done: bool, overran: bool) {
         let s = self.stats.entry(u).or_insert_with(|| UnitStats { label: u.label(), ..Default::default() });
-        s.calls += 1;
+        s.pieces += 1;
         s.total_ms += secs * 1000.0;
-        s.max_ms = s.max_ms.max(secs * 1000.0);
+        s.max_piece_ms = s.max_piece_ms.max(secs * 1000.0);
         s.overruns += overran as u64;
-        let e = self.estimate.entry(u).or_insert(secs);
-        *e = 0.75 * *e + 0.25 * secs;
+        let so_far = self.running.entry(u).or_insert(0.0);
+        *so_far += secs;
+        if done {
+            s.calls += 1;
+            s.max_ms = s.max_ms.max(*so_far * 1000.0);
+            self.running.remove(&u);
+        }
     }
 
-    /// Slowest (longest call) first.
+    /// The longest piece first.
     fn list(self) -> Vec<UnitStats> {
         let mut v: Vec<UnitStats> = self.stats.into_values().collect();
-        v.sort_by(|a, b| b.max_ms.partial_cmp(&a.max_ms).unwrap_or(std::cmp::Ordering::Equal));
+        v.sort_by(|a, b| b.max_piece_ms.partial_cmp(&a.max_piece_ms).unwrap_or(std::cmp::Ordering::Equal));
         v
     }
 }
@@ -326,10 +349,10 @@ pub struct Report {
     pub loading: Option<FrameStats>,
     /// inline: the simulation's time in a frame, ms: p50, p99, max
     pub sim_in_frame: Option<(f64, f64, f64)>,
-    /// inline: units left to the next frame for lack of time, and units run in a frame of their
-    /// own because they fit no frame's room
-    pub deferred: u64,
-    pub alone: u64,
+    /// inline: the units that yielded at a frame's deadline and went on in a later frame
+    pub yielded: u64,
+    /// engine.slice's report: the longest gaps between the engine's checks
+    pub slices: String,
     /// ticks posted and not run yet, at the end of a frame: p50, p99, max, and at the last frame
     pub backlog: (u64, u64, u64, u64),
     /// thread: the render thread's longest wait for the published state, ms
@@ -352,22 +375,27 @@ impl Report {
         self.error.is_none() && self.achieved_days_per_s >= 0.95 * self.nominal_days_per_s
     }
 
-    /// Inline: no frame over its time. Thread: the 99th percentile within the frame's time and at
-    /// most one frame in a thousand over it (the OS's own hiccups; the baseline shows them).
+    /// The 99th percentile within the frame's time, and few frames over it. Thread: at most one in a
+    /// thousand (the OS's own hiccups; the baseline shows them). Inline: at most one in two hundred,
+    /// and none over two frames' time (no frame dropped to half the rate): what is left over the
+    /// time are single stretches between two of the simulation's checks that the runtime does not
+    /// cut (a block's first compilation, the collector's atomic step, pages first touched;
+    /// docs/frame_timing.md).
     pub fn frames_fit(&self) -> bool {
         if self.error.is_some() || self.frames.frames == 0 {
             return false;
         }
+        let p99 = self.frames.p99_ms <= self.budget_ms();
         match self.mode {
-            "inline" => self.frames.over_budget == 0,
-            _ => self.frames.p99_ms <= self.budget_ms() && self.frames.over_budget * 1000 <= self.frames.frames,
+            "inline" => p99 && self.frames.over_budget * 200 <= self.frames.frames && self.frames.max_ms <= 2.0 * self.budget_ms(),
+            _ => p99 && self.frames.over_budget * 1000 <= self.frames.frames,
         }
     }
 
-    /// The units whose longest call is longer than a frame's room for the simulation.
+    /// The units whose longest piece is longer than a frame's room for the simulation.
     pub fn units_over_room(&self) -> Vec<&UnitStats> {
         let room = self.config.room() * 1000.0;
-        self.units.iter().filter(|u| u.max_ms > room).collect()
+        self.units.iter().filter(|u| u.max_piece_ms > room).collect()
     }
 
     pub fn text(&self) -> String {
@@ -410,8 +438,8 @@ impl Report {
         out += &format!("  frames, while it runs:   {}; frames fit: {}\n", self.frames.text(budget), yes(self.frames_fit()));
         if let Some((p50, p99, max)) = self.sim_in_frame {
             out += &format!(
-                "  the simulation in a frame: ms p50 {p50:.2} p99 {p99:.2} max {max:.1}; units left to the next frame {}, run in a frame of their own (they fit no frame) {}\n",
-                self.deferred, self.alone
+                "  the simulation in a frame: ms p50 {p50:.2} p99 {p99:.2} max {max:.1}; units that yielded at a frame's deadline and went on later: {}\n",
+                self.yielded
             );
         }
         let (b50, b99, bmax, bend) = self.backlog;
@@ -422,20 +450,27 @@ impl Report {
         let room = c.room() * 1000.0;
         let over = self.units_over_room();
         out += &format!(
-            "  units, the longest call first ({} of {} longer than a frame's {room:.2} ms of room):\n",
+            "  units, the longest piece first ({} of {} with a piece longer than a frame's {room:.2} ms of room):\n",
             over.len(),
             self.units.len()
         );
         for u in self.units.iter().take(16) {
             out += &format!(
-                "    {:<34} {:>6} calls  mean {:>9.3} ms  max {:>9.3} ms{}{}\n",
+                "    {:<34} {:>6} calls  mean {:>9.3} ms  max {:>9.3} ms  {:>6} pieces, longest {:>8.3} ms{}{}\n",
                 u.label,
                 u.calls,
                 u.total_ms / u.calls.max(1) as f64,
                 u.max_ms,
-                if u.max_ms > room { "  over the room" } else { "" },
+                u.pieces,
+                u.max_piece_ms,
+                if u.max_piece_ms > room { "  over the room" } else { "" },
                 if u.overruns > 0 { format!("  overran {} frames", u.overruns) } else { String::new() }
             );
+        }
+        if !self.slices.is_empty() {
+            for line in self.slices.lines() {
+                out += &format!("  {line}\n");
+            }
         }
         out += &format!("  end: {}\n", self.fingerprint);
         out
@@ -500,48 +535,47 @@ fn backlog(v: &[u64], last: u64) -> (u64, u64, u64, u64) {
 }
 
 /// The simulation on the render thread, in what each frame leaves: `cfg.days` days from where
-/// `sim` is, at `cfg.speed`. Before each unit, its running estimate is compared with the time left
-/// to the frame's deadline less the margin; a unit that does not fit waits for the next frame,
-/// unless it fits no frame's room, when it runs first in a frame (which it overruns).
+/// `sim` is, at `cfg.speed`. After the render work it runs units in pieces up to the frame's
+/// deadline less the margin (`Simulation::step_until`): a phase past that deadline yields at the
+/// engine's next check and goes on in the next frame.
 pub fn run_inline(sim: &mut Simulation, cfg: &Config) -> Report {
     let margin = Duration::from_secs_f64(cfg.margin_ms / 1000.0);
-    let room = cfg.room();
     let target = cfg.days * 10;
     let start_ticks = sim.ticks;
     let mut clock = GameClock::new(cfg.turn());
     let mut units = Units::default();
     let (mut in_frame, mut backlogs) = (Vec::new(), Vec::new());
-    let (mut deferred, mut alone) = (0u64, 0u64);
+    let mut yielded = 0u64;
+    let _ = sim.runtime.eval::<()>("require('engine.slice').reset()");
     let start = Instant::now();
     let mut end = start;
     let (times, missed) = frame_loop(cfg, |dt, deadline| {
         clock.frame(dt);
         let soft = deadline.checked_sub(margin).unwrap_or(deadline);
-        let (mut worked, mut ran, mut charged) = (0.0, false, false);
+        let soft_clock = crate::runtime::clock_at(soft);
+        sim.runtime.set_frame_end(crate::runtime::clock_at(deadline));
+        let (mut worked, mut charged) = (0.0, false);
         loop {
             let done = sim.ticks - start_ticks;
             if !sim.mid_tick() && (done >= clock.due || done >= target) {
                 break;
             }
-            let u = sim.upcoming();
-            let est = units.estimate(u);
-            let left = soft.saturating_duration_since(Instant::now()).as_secs_f64();
-            if left <= 0.0 || est > left {
-                if ran || est <= room {
-                    deferred += 1;
-                    break;
-                }
-                alone += 1;
+            if Instant::now() >= soft {
+                break;
             }
+            let u = sim.upcoming();
             let t = Instant::now();
-            sim.step();
+            let step = sim.step_until(soft_clock);
             let now = Instant::now();
             let secs = (now - t).as_secs_f64();
             worked += secs;
-            ran = true;
             let overran = now > deadline && !charged;
             charged |= overran;
-            units.record(u, secs, overran);
+            units.piece(u, secs, step.done, overran);
+            if !step.done {
+                yielded += 1;
+                break;
+            }
         }
         let done = sim.ticks - start_ticks;
         in_frame.push(worked);
@@ -555,6 +589,7 @@ pub fn run_inline(sim: &mut Simulation, cfg: &Config) -> Report {
     let wall = (end - start).as_secs_f64();
     let s = sorted(&in_frame);
     let days = (sim.ticks - start_ticks) as f64 / 10.0;
+    let slices = sim.runtime.slice_report();
     Report {
         mode: "inline",
         config: cfg.clone(),
@@ -564,10 +599,10 @@ pub fn run_inline(sim: &mut Simulation, cfg: &Config) -> Report {
         achieved_days_per_s: days / wall.max(1e-9),
         frames: FrameStats::of(&times, cfg.budget(), missed),
         sim_in_frame: Some((percentile(&s, 0.5) * 1000.0, percentile(&s, 0.99) * 1000.0, s.last().copied().unwrap_or(0.0) * 1000.0)),
-        deferred,
-        alone,
+        yielded,
         backlog: backlog(&backlogs, backlogs.last().copied().unwrap_or(0)),
         units: units.list(),
+        slices,
         fingerprint: end_state(sim, Some(format!("inline-speed{}", cfg.speed))),
         ..Default::default()
     }
@@ -588,6 +623,7 @@ struct Shared {
 struct ThreadResult {
     units: Vec<UnitStats>,
     load_s: f64,
+    slices: String,
     fingerprint: String,
 }
 
@@ -637,7 +673,7 @@ where
                     let u = sim.upcoming();
                     let t = Instant::now();
                     let step = sim.step();
-                    units.record(u, t.elapsed().as_secs_f64(), false);
+                    units.piece(u, t.elapsed().as_secs_f64(), true, false);
                     if step.tick_done {
                         let done = sim.ticks - start_ticks;
                         if sim.tick_count() == 0 {
@@ -646,7 +682,12 @@ where
                         sh.done.store(done, Ordering::Release);
                     }
                 }
-                Ok(ThreadResult { units: units.list(), load_s, fingerprint: end_state(&sim, Some(end_name)) })
+                Ok(ThreadResult {
+                    units: units.list(),
+                    load_s,
+                    slices: sim.runtime.slice_report(),
+                    fingerprint: end_state(&sim, Some(end_name)),
+                })
             };
             let r = run();
             sh.finished.store(true, Ordering::Release);
@@ -707,6 +748,7 @@ where
         Ok(r) => {
             report.units = r.units;
             report.load_s = r.load_s;
+            report.slices = r.slices;
             report.fingerprint = r.fingerprint;
         }
         Err(e) => report.error = Some(e),

@@ -201,7 +201,11 @@ impl Store {
         let str_off = zeroed(cap.strings as usize * 4, &mut layouts)? as *mut u32;
         let str_len = zeroed(cap.strings as usize * 4, &mut layouts)? as *mut u32;
         let bytes = zeroed(cap.bytes as usize, &mut layouts)?;
-        let interner = Box::into_raw(Box::new(Interner { map: Mutex::new(HashMap::new()) })) as *mut c_void;
+        // the interner's map made as large as the strings can be: it never grows, so no intern
+        // stops to move every string into a larger table (a frame cannot hold that once the
+        // strings are many; docs/frame_timing.md). Its buckets are touched only as they fill.
+        let map = HashMap::with_capacity(cap.strings as usize);
+        let interner = Box::into_raw(Box::new(Interner { map: Mutex::new(map) })) as *mut c_void;
         let header = Box::into_raw(Box::new(Header {
             entries,
             // record 0 of every region is "none"
@@ -350,6 +354,37 @@ pub fn install(lua: &mlua::Lua) -> mlua::Result<Handle> {
                 }
             }
             Ok(t)
+        })?,
+    )?;
+    // RUST.pool_post(fn, arg) starts a job on every worker and returns at once; RUST.pool_poll(wait)
+    // gives its results (as pool_run's) once all are in, waiting at most `wait` seconds, else nil:
+    // a phase run in pieces waits for the workers across frames (engine.slice, docs/frame_timing.md)
+    let s = shared.clone();
+    rust.set(
+        "pool_post",
+        lua.create_function(move |_, (func, arg): (String, Option<String>)| {
+            let sh = s.borrow();
+            let pool = sh.pool.as_ref().ok_or_else(|| mlua::Error::RuntimeError("pool_post: no pool".into()))?;
+            pool.post(&func, arg.as_deref().unwrap_or(""));
+            Ok(())
+        })?,
+    )?;
+    let s = shared.clone();
+    rust.set(
+        "pool_poll",
+        lua.create_function(move |lua, wait: Option<f64>| {
+            let sh = s.borrow();
+            let pool = sh.pool.as_ref().ok_or_else(|| mlua::Error::RuntimeError("pool_poll: no pool".into()))?;
+            let wait = std::time::Duration::from_secs_f64(wait.unwrap_or(3600.0).clamp(0.0, 3600.0));
+            let Some(results) = pool.poll(wait) else { return Ok(mlua::Value::Nil) };
+            let t = lua.create_table()?;
+            for (i, r) in results.into_iter().enumerate() {
+                match r {
+                    Ok(s) => t.set(i + 1, s)?,
+                    Err(e) => return Err(mlua::Error::RuntimeError(format!("worker {i}: {e}"))),
+                }
+            }
+            Ok(mlua::Value::Table(t))
         })?,
     )?;
     let s = shared.clone();

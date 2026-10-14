@@ -9,6 +9,7 @@
 --   defs.get("common/technology", "tech_lasers_1")
 
 local source = require("stellar.script.source")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local defs = {
     folders = {},   -- "common/x" -> { [name] = def }
@@ -34,8 +35,13 @@ function defs.load(fs, game_dir)
     end
     table.sort(defs.order)
     for _, folder in ipairs(defs.order) do
-        local d, errors = source.definitions(fs, folder)
+        local d, errors, vars = source.definitions(fs, folder)
         defs.folders[folder] = d
+        -- the files' own variables, read in the same parse (simscript.db reads them on demand)
+        local db = package.loaded["simscript.db"]
+        if db and db.set_filevars and vars then
+            for file, v in pairs(vars) do db.set_filevars(file, v) end
+        end
         local n = 0
         for _ in pairs(d) do
             n = n + 1
@@ -70,7 +76,10 @@ function defs.folder(folder)
     if f == nil then return {} end
     if not expanded_folders[folder] then
         expanded_folders[folder] = true
-        for _, d in pairs(f) do expand(folder, d) end
+        for _, d in pairs(f) do
+            slice.tick("definitions")
+            expand(folder, d)
+        end
     end
     return f
 end

@@ -15,6 +15,7 @@
 --   8. stable sort by weight, highest first
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local plans = require("engine.ai.economy.plans")
 local B = require("engine.ai.economy.buildables")
 
@@ -24,6 +25,7 @@ local plan = { stats = { months = 0, no_plan = 0 } }
 function plan.colonies(country)
     local out = {}
     for _, pid in ipairs(world.planets_of[country] or {}) do
+        slice.tick("ai/economy/plan.lua:26")
         local col = world.planet_colony[pid]
         if col and world.object("colony", col) then
             out[#out + 1] = { colony = col, planet = pid, owner = country }
@@ -36,6 +38,7 @@ local function queued_kinds(queue)
     local q = world.object("construction.queue_mgr.queues", queue)
     local kinds = {}
     for _, iid in ipairs(world.list(q and world.field(q, "items"))) do
+        slice.tick("ai/economy/plan.lua:38")
         local item = world.object("construction.item_mgr.items", tonumber(iid))
         local kind = item and B.item_kind(item)
         if kind then kinds[kind] = true end
@@ -70,6 +73,7 @@ function plan.create(country, today)
     plans.update_records(country, tables.target, today)
     local listA, listC = {}, {}
     for _, c in ipairs(plan.colonies(country)) do
+        slice.tick("ai/economy/plan.lua:72")
         local queue = B.queue({ planet = c.planet })
         local kinds = queue and queued_kinds(queue) or {}
         if not kinds.zone and not kinds.district then
@@ -87,11 +91,13 @@ function plan.create(country, today)
     -- an essential building keeps only the essential buildings
     local essential = false
     for _, b in ipairs(items) do
+        slice.tick("ai/economy/plan.lua:89")
         if b.essential then essential = true end
     end
     if essential then
         local kept = {}
         for _, b in ipairs(items) do
+            slice.tick("ai/economy/plan.lua:94")
             if b.essential then kept[#kept + 1] = b end
         end
         items = kept

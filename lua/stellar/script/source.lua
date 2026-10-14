@@ -497,16 +497,30 @@ local function blank_markers(text)
     return table.concat(out)
 end
 
--- source.definitions(fs, subdir) -> definitions, errors: the top-level `name = { ... }`
+-- source.definitions(fs, subdir) -> definitions, errors, vars: the top-level `name = { ... }`
 -- statements of the subdir's .txt files.
 -- A definition also has `last`, the line before the next top-level entry of its file (or the last
--- line of the file), and `path`, its file: what source.instantiate reads.
+-- line of the file), and `path`, its file: what source.instantiate reads. vars: each file's
+-- top-level `@name = value` statements ({ [name without @] = text }), false for a file that
+-- source.parse does not read, from the parse made here (a reader of a file's variables need not
+-- parse it again).
 function source.definitions(fs, subdir)
     fs = filesystem_of(fs)
-    local defs, errors = {}, {}
+    local defs, errors, vars = {}, {}, {}
     for _, short in ipairs(fs:files(subdir, "txt")) do
         local path = fs:path(short)
         local tree, message = source.parse(fs, short)
+        if tree then
+            local v = {}
+            for _, e in ipairs(tree) do
+                if e.op and e.key and e.key.text:sub(1, 1) == "@" and e.value and e.value.text then
+                    v[e.key.text:sub(2)] = e.value.text
+                end
+            end
+            vars[short] = v
+        else
+            vars[short] = false
+        end
         if tree == nil and path then
             -- parameter blocks interleaved with braces: find the definitions with them blanked
             local text = read_file(path)
@@ -532,7 +546,7 @@ function source.definitions(fs, subdir)
             end
         end
     end
-    return defs, errors
+    return defs, errors, vars
 end
 
 -- source.instantiate(fs, def, args [, errors]) -> block | nil, message: a scripted trigger,

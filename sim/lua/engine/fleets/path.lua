@@ -28,6 +28,7 @@
 -- FTL inhibitors and magnets.
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local defs = require("engine.defs")
 local ffi = require("ffi")
 
@@ -195,6 +196,7 @@ function path.galaxy()
     end
     galaxy = {}
     for _, id in ipairs(world.all("system")) do
+        slice.tick("fleets/path.lua:197")
         local g = world.object("system", id)
         local c = world.field(g, "coordinate")
         local lanes = {}
@@ -319,6 +321,7 @@ local function list_set(block)
     end
     local s, any = {}, false
     for _, v in ipairs(world.list(block)) do
+        slice.tick("path lists")
         s[tonumber(v)] = true
         any = true
     end
@@ -330,6 +333,7 @@ local function list_array(block)
     end
     local a = {}
     for _, v in ipairs(world.list(block)) do
+        slice.tick("path lists")
         a[#a + 1] = tonumber(v)
     end
     return #a > 0 and a or nil
@@ -506,6 +510,7 @@ function path.find(data, from, to)
     node[from] = { sys = from, cost = 0 }
     hc[0], hi[0], n, pos[from] = 0, from, 1, 0
     while n > 0 do
+        slice.tick("path search")
         -- pop: the last to the root, sifted down over the first n - 1
         swap(0, n - 1)
         local i = 0

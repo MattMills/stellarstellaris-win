@@ -14,6 +14,7 @@
 --   script.with(f, ...) -> f's results
 
 local eval = require("simscript.eval")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local script = { stats = {} }
 
@@ -31,6 +32,7 @@ end
 trig.has_monthly_income = function(e, ctx)
     local res, op, amount = nil, ">=", 0
     for _, x in ipairs(e.value) do
+        slice.tick("ai/economy/script.lua:33")
         if x.op then
             local xk = x.key.text:lower()
             if xk == "resource" then res = x.value.text
@@ -44,7 +46,9 @@ trig.has_monthly_income = function(e, ctx)
     local lm = require("engine.ai.budget").last_month(c)
     local v = 0
     for side, sign in pairs({ income = 1, expenses = -1 }) do
+        slice.tick("ai/economy/script.lua:46")
         for _, t in pairs(lm[side] or {}) do
+            slice.tick("ai/economy/script.lua:47")
             v = v + sign * (t[res] or 0)
         end
     end
@@ -55,6 +59,7 @@ end
 trig.resource_expenses_compare = function(e, ctx)
     local res, op, amount = nil, "=", 0
     for _, x in ipairs(e.value) do
+        slice.tick("ai/economy/script.lua:57")
         if x.op then
             local xk = x.key.text:lower()
             if xk == "resource" then res = x.value.text
@@ -134,6 +139,7 @@ local installed = 0
 
 local function install()
     for k, f in pairs(trig) do
+        slice.tick("ai/economy/script.lua:136")
         orig[k] = TRIG[k]
         TRIG[k] = function(...)
             script.stats[k] = (script.stats[k] or 0) + 1
@@ -144,6 +150,7 @@ end
 
 local function uninstall()
     for k in pairs(trig) do
+        slice.tick("ai/economy/script.lua:146")
         TRIG[k] = orig[k]
     end
 end

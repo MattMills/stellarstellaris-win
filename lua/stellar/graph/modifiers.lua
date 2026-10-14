@@ -34,6 +34,12 @@
 -- definitions (without categories) when first used.
 
 local bit = require("bit")
+-- the simulation's engine.slice tick, when there is one (a phase run in pieces may stop between two
+-- nodes made on demand; sim docs/frame_timing.md)
+local tick = (function()
+    local ok, slice = pcall(require, "engine.slice")
+    return ok and slice.tick or function() end
+end)()
 
 local band, bor = bit.band, bit.bor
 local fmod = math.fmod
@@ -203,6 +209,7 @@ function M.new(g, defs)
         if n ~= nil then
             return n
         end
+        tick("modifier node made")
         n = g:sum(h.values[t] or 0)
         h.nodes[t] = n
         tree.owner[n], tree.type_of[n] = h, t

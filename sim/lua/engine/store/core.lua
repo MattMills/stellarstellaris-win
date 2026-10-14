@@ -30,6 +30,7 @@
 
 local ffi = require("ffi")
 local bit = require("bit")
+local tick = require("engine.slice").tick   -- a phase in pieces (docs/frame_timing.md)
 local band, bor = bit.band, bit.bor
 
 ffi.cdef [[
@@ -655,10 +656,12 @@ end
 
 -- S.build(tree) -> the block id of a pdxscript block (a tree, or any block in it)
 local function build(t)
+    tick("store build")
     local n = #t
     local bid = new_block(n)
     local first = B[bid].first
     for j = 1, n do
+        tick("store build entries")
         local x = t[j]
         local e = E[first + j - 1]
         e.pad = 0

@@ -62,6 +62,7 @@ M.MASKED = {
 M.PLANET_COUNTRY = { colonized = 1074300930, uncolonized = 557056 }
 
 -- M.MASKED by child category, then parent category (st:parents reads it for every link)
+local tick = require("engine.slice").tick   -- a phase in pieces (docs/frame_timing.md)
 local MASKED_BY = {}
 for k, v in pairs(M.MASKED) do
     local child, parent = k:match("^(.-)<(.*)$")
@@ -141,6 +142,7 @@ function S:index()
     -- a fleet's owner (the country whose fleets_manager owns it)
     self.fleet_owner = {}
     for _, cid in ipairs(w.all("country")) do
+        tick("modifier structure")
         local fm = w.field(w.object("country", cid), "fleets_manager")
         for _, b in ipairs(blocks_of(type(fm) == "table" and w.field(fm, "owned_fleets") or nil)) do
             local f = id_of(w.field(b, "fleet"))
@@ -152,6 +154,7 @@ function S:index()
     -- colonies: their planet
     self.planet_of_colony = {}
     for _, pid in ipairs(w.all("planet")) do
+        tick("modifier structure")
         local c = id_of(w.field(w.object("planet", pid), "colony"))
         if c then
             self.planet_of_colony[c] = pid
@@ -160,6 +163,7 @@ function S:index()
     -- sectors: their systems, their capital's planet
     self.sector_of_system, self.sector_capital = {}, {}
     for _, sid in ipairs(w.all("sectors")) do
+        tick("modifier structure")
         local o = w.object("sectors", sid)
         for _, sys in ipairs(list_ids(w, o, "systems")) do
             self.sector_of_system[sys] = sid
@@ -172,6 +176,7 @@ function S:index()
     -- systems: their starbases, relay network access, planets, megastructures
     self.starbases_of_system, self.system_of_starbase, self.relay_system = {}, {}, {}
     for _, gid in ipairs(w.all("galactic_object")) do
+        tick("modifier structure")
         local o = w.object("galactic_object", gid)
         for _, sb in ipairs(list_ids(w, o, "starbases")) do
             push(self.starbases_of_system, gid, sb)
@@ -183,6 +188,7 @@ function S:index()
     end
     self.megastructures_of_system = {}
     for _, mid in ipairs(w.all("megastructures")) do
+        tick("modifier structure")
         local sys = system_of(w, w.object("megastructures", mid))
         if sys then
             push(self.megastructures_of_system, sys, mid)
@@ -191,6 +197,7 @@ function S:index()
     -- starbases: their station, its fleet, the owner (the fleet's)
     self.starbase_owner, self.starbase_of_fleet, self.station_of = {}, {}, {}
     for _, sb in ipairs(w.all("starbases")) do
+        tick("modifier structure")
         local station = id_of(w.field(w.object("starbases", sb), "station"))
         local ship = station and w.object("ships", station)
         local fleet = ship and id_of(w.field(ship, "fleet"))
@@ -203,6 +210,7 @@ function S:index()
     -- the planet a starbase is at: the one its station's fleet orbits
     self.starbase_at_planet = {}
     for fleet, sb in pairs(self.starbase_of_fleet) do
+        tick("modifier structure")
         local mm = self:fleet_movement(fleet)
         local orbit = mm and w.field(mm, "orbit")
         local at = type(orbit) == "table" and w.field(orbit, "orbitable")
@@ -226,6 +234,7 @@ function S:index()
     -- federations: their leader
     self.federation_led = {}
     for _, fid in ipairs(w.all("federation")) do
+        tick("modifiers/structure.lua:236")
         local leader = id_of(w.field(w.object("federation", fid), "leader"))
         if leader then
             self.federation_led[leader] = fid
@@ -234,6 +243,7 @@ function S:index()
     -- the general of each fleet: the leader of an army embarked in it
     self.fleet_general = {}
     for _, aid in ipairs(w.all("army")) do
+        tick("modifier structure")
         local a = w.object("army", aid)
         local leader, ship = id_of(w.field(a, "leader")), id_of(w.field(a, "ship"))
         local s = ship and w.object("ships", ship)
@@ -279,6 +289,7 @@ function S:nodes()
     local out = {}
     local function add(category, store)
         for _, id in ipairs(w.all(store)) do
+            tick("modifier nodes")
             out[#out + 1] = { category = category, owner = id }
         end
     end

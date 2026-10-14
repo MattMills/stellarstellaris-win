@@ -49,6 +49,7 @@ local defs = require("engine.defs")
 local path = require("engine.fleets.path")
 local ffi = require("ffi")
 local live = require("engine.store.live")   -- the store's copy of what exploration reads (docs/data_layer.md)
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local I64 = ffi.typeof("int64_t")
 local raw, text, fmul, fdiv = path.raw, path.text, path.fmul, path.fdiv
@@ -265,6 +266,7 @@ local function collect_freed(a, store)
         table.insert(a.free, 1, index)
     end
     for _, id in ipairs(world.all(store)) do
+        slice.tick("fleets/stations.lua:268")
         if not a.live[id] then
             a.live[id] = true
             local index = id % GEN
@@ -945,6 +947,7 @@ local function refs()
     ref_index = { by_design = {}, by_sig = {}, by_size = {} }
     ref_key = key
     for _, sid in ipairs(world.all("ship")) do
+        slice.tick("station reference ships")
         local s = world.object("ship", sid)
         local sdi = s and world.field(s, "ship_design_implementation")
         local did = type(sdi) == "table" and tonumber(world.field(sdi, "design"))
@@ -1293,6 +1296,7 @@ end
 local function owned_systems(country)
     local out = {}
     for _, sid in ipairs(world.all("system")) do
+        slice.tick("fleets/stations.lua:1297")
         if world.system_owner[sid] == country then out[#out + 1] = sid end
     end
     return out
@@ -1315,6 +1319,7 @@ end
 function stations.update_borders(countries)
     local systems_of = {}
     for _, sid in ipairs(world.all("system")) do
+        slice.tick("fleets/stations.lua:1319")
         local o = world.system_owner[sid]
         if o then
             local l = systems_of[o]

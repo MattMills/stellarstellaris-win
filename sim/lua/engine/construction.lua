@@ -53,6 +53,7 @@
 
 local world = require("engine.world")
 local live = require("engine.store.live")   -- the store's copy of what exploration reads (docs/data_layer.md)
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local construction = {
     stats = { advanced = 0, finished = 0, not_modelled = {}, finish_not_modelled = {}, draws = 0,
@@ -136,6 +137,7 @@ end
 local function in_defensive_war(country)
     -- CCountry::IsInDefensiveWar [I]: a war whose defenders list the country
     for _, wid in ipairs(world.all("war")) do
+        slice.tick("construction.lua:139")
         local w = world.object("war", wid)
         for _, d in ipairs(world.blocks(world.field(w, "defenders"))) do
             if tonumber(world.field(d, "country")) == country then
@@ -194,6 +196,7 @@ end
 local function next_id(store)
     local max = -1
     for _, id in ipairs(world.all(store)) do
+        slice.tick("construction.lua:197")
         local index = id % 16777216
         if index > max then
             max = index
@@ -268,6 +271,7 @@ local function army_name(country, army_type)
     end
     local used = {}
     for _, aid in ipairs(world.all("army")) do
+        slice.tick("construction.lua:271")
         local a = world.object("army", aid)
         if tonumber(world.field(a, "owner")) == country then
             local nb = world.field(a, "name")
@@ -306,6 +310,7 @@ construction.army_name = army_name
 -- the type's health and morale times 200
 local function army_stats(country, army_type)
     for _, aid in ipairs(world.all("army")) do
+        slice.tick("construction.lua:309")
         local a = world.object("army", aid)
         if tonumber(world.field(a, "owner")) == country and unq(world.field(a, "type")) == army_type then
             return tonumber(world.field(a, "max_health")) or 200, tonumber(world.field(a, "max_health")) or 200,
@@ -621,6 +626,7 @@ function construction.daily(date)
     local today = date and date.year and string.format("%d.%02d.%02d", date.year, date.month, date.day) or nil
     local done = {}
     for _, qid in ipairs(world.all(QUEUES)) do
+        slice.tick("construction queue")
         local q = queues[qid]
         if q and world.field(q, "disabled") ~= "yes" then
             local list = world.field(q, "items")
@@ -628,6 +634,7 @@ function construction.daily(date)
             local n = math.min(#ids, tonumber(world.field(q, "simultaneous")) or 1)
             for i = n, 1, -1 do
                 local iid = tonumber(ids[i])
+                slice.tick("construction item")
                 local item = iid and items[iid]
                 if item then
                     local speed, kind = construction.speed(item)
@@ -650,6 +657,7 @@ function construction.daily(date)
     -- CConstructionQueueItemManager::DailyUpdate: the finished items
     for _, iid in ipairs(done) do
         local item = items[iid]
+        slice.check("construction finished")
         local kind, b = buildable(item)
         local ok, why, made = finish(item, kind, b, today)
         if ok then

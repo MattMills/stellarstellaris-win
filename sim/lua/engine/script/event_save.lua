@@ -11,6 +11,7 @@
 -- random_allowed, root = { }, from = { }, saved_event_target = { type id opener_id name }.
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local eval = require("simscript.eval")
 local SR = require("engine.script.scope_random")
 local events -- simscript.events, given to M.install (it installs this while it loads)
@@ -108,6 +109,7 @@ function M.load()
     M.loaded = true
     local day0 = save_day()
     for _, cid in ipairs(world.all("country")) do
+        slice.tick("script/event_save.lua:110")
         local h = holder_of("country", cid, false)
         for _, b in ipairs(h and world.fields(h, "delayed_event") or {}) do
             local entry = type(b) == "table" and entry_of(b, h, day0)
@@ -118,6 +120,7 @@ function M.load()
         end
     end
     for _, pid in ipairs(world.all("planet")) do
+        slice.tick("script/event_save.lua:120")
         local h = world.object("planet", pid)
         for _, b in ipairs(world.fields(h, "delayed_event")) do
             local entry = type(b) == "table" and entry_of(b, h, day0)

@@ -56,6 +56,7 @@
 -- from the AI's generators (the orders' start draws from the synchronized one, in engine.fleets).
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local cmds = require("engine.ai.commands")
 local defs = require("engine.defs")
 
@@ -130,6 +131,7 @@ end
 -- CFleet::GetLeader: the leader of the fleet's ships (a ship's `leader`)
 local function leader_of(f)
     for _, s in ipairs(world.list(world.field(f, "ships"))) do
+        slice.tick("ai/exploration.lua:133")
         local ship = world.object("ship", tonumber(s))
         local l = ship and tonumber(world.field(ship, "leader"))
         if l and l ~= NO_ID and world.object("leader", l) then
@@ -145,8 +147,10 @@ local function order_chain(f)
     local out = {}
     local block = world.field(f, "current_order")
     while type(block) == "table" do
+        slice.tick("ai/exploration.lua:148")
         local kind, body
         for _, e in ipairs(block) do
+            slice.tick("ai/exploration.lua:150")
             if e.op and e.key and type(e.value) == "table" then
                 kind, body = e.key.text, e.value
                 break
@@ -199,6 +203,7 @@ local function fleets_in(sid)
     if index_key ~= key then
         index_key, by_system = key, {}
         for _, fid in ipairs(world.all("fleet")) do
+            slice.tick("ai/exploration.lua:201")
             local f = fleet(fid)
             local s = f and system_of(f)
             if s then
@@ -226,6 +231,7 @@ local function intel_level(c, sid)
     if arr == nil or arr.day ~= M.today then
         arr = { day = M.today }
         for i, v in ipairs(world.list(list)) do
+            slice.tick("ai/exploration.lua:230")
             arr[i - 1] = tonumber(v) or 0
         end
         intel_cache[list] = arr
@@ -237,6 +243,7 @@ M.intel_level = intel_level
 -- the stored intel's hostiles of a system (`intel = { { object = <system> hostile = { ... } } }`)
 local function stored_hostiles(c, sid)
     for _, e in ipairs(world.blocks(world.field(c, "intel"))) do
+        slice.tick("ai/exploration.lua:241")
         if tonumber(world.field(e, "object")) == sid then
             local h = world.field(e, "hostile")
             return type(h) == "table" and #world.blocks(h) or 0
@@ -247,6 +254,7 @@ end
 
 local function visited(c, sid)
     for _, v in ipairs(world.list(world.field(c, "visited_objects"))) do
+        slice.tick("ai/exploration.lua:251")
         if tonumber(v) == sid then
             return true
         end
@@ -289,6 +297,7 @@ end
 -- SurveySystems' check of the target (0xbc093d-0xbc0a77): an enemy fleet in the system
 local function enemy_fleet_in(us, sid)
     for _, fid in ipairs(fleets_in(sid)) do
+        slice.tick("ai/exploration.lua:293")
         local f = fleet(fid)
         if f and present(f) and not prop(f, "cloaked") and hostile(us, owner_of(fid)) then
             return true
@@ -305,6 +314,7 @@ local function system_safe(us, c, sid, real)
         return true
     end
     for _, fid in ipairs(fleets_in(sid)) do
+        slice.tick("ai/exploration.lua:309")
         local f = fleet(fid)
         if f and not prop(f, "civilian") and present(f) and not prop(f, "cloaked")
             and hostile(us, owner_of(fid)) and (tonumber(world.field(f, "military_power")) or 0) > 0 then
@@ -325,9 +335,11 @@ local function path(from, to)
     local open = { from }
     local done = {}
     while #open > 0 do
+        slice.tick("ai/exploration.lua:329")
         -- the open system of the least (length, jumps); a linear scan (the graph is ~600 systems)
         local bi = 1
         for i = 2, #open do
+            slice.tick("ai/exploration.lua:332")
             local a, b = open[i], open[bi]
             if dist[a] < dist[b] or (dist[a] == dist[b] and jumps[a] < jumps[b]) then
                 bi = i
@@ -339,6 +351,7 @@ local function path(from, to)
         end
         done[s] = true
         for _, lane in ipairs(g.lanes[s] or {}) do
+            slice.tick("ai/exploration.lua:343")
             local n = lane.to
             if not done[n] then
                 local nd, nj = dist[s] + lane.length, jumps[s] + 1
@@ -356,6 +369,7 @@ local function path(from, to)
     end
     local out, s = {}, to
     while s ~= from do
+        slice.tick("ai/exploration.lua:360")
         table.insert(out, 1, s)
         s = prev[s]
     end
@@ -374,6 +388,7 @@ local function path_clear(us, c, from, to, real)
         return false
     end
     for _, sid in ipairs(p) do
+        slice.tick("ai/exploration.lua:378")
         if not system_safe(us, c, sid, real) then
             return false
         end
@@ -395,6 +410,7 @@ local function surveyed(c)
     if set == nil or set.n ~= #list or set.day ~= M.today then
         set = { n = #list, day = M.today }
         for _, e in ipairs(world.blocks(list)) do
+            slice.tick("ai/exploration.lua:399")
             if tonumber(world.field(e, "type")) == 0 then
                 local id = tonumber(world.field(e, "id"))
                 if id then set[id] = true end
@@ -418,6 +434,7 @@ local function fully_surveyed(us, c, sid)
     end
     local s = surveyed(c)
     for _, pid in ipairs(strategy().galaxy().planets_of[sid] or {}) do
+        slice.tick("ai/exploration.lua:422")
         if not s[pid] then
             return false
         end
@@ -430,6 +447,7 @@ end
 local colonizable_class = {}
 local function has_colonizable_planet(sid)
     for _, pid in ipairs(strategy().galaxy().planets_of[sid] or {}) do
+        slice.tick("ai/exploration.lua:434")
         local p = world.object("planet", pid)
         local cls = p and world.field(p, "planet_class")
         if cls then
@@ -470,6 +488,7 @@ local function explore_entries(c)
     end
     local T = strategy().TYPES.EXPLORE
     for _, e in ipairs(ai) do
+        slice.tick("ai/exploration.lua:474")
         if e.op and e.key and e.key.text == "strategy" and type(e.value) == "table" then
             if tonumber(world.field(e.value, "type")) == T then
                 out[#out + 1] = { id = tonumber(world.field(e.value, "id")), value = tonumber(world.field(e.value, "value")) or 0 }
@@ -502,6 +521,7 @@ local function survey_queue(us, c, f, sid)
     local s = surveyed(c)
     local left = {}
     for _, pid in ipairs(strategy().galaxy().planets_of[sid] or {}) do
+        slice.tick("ai/exploration.lua:506")
         local p = world.object("planet", pid)
         local at = p and xy(p)
         if at and not s[pid] then
@@ -529,8 +549,10 @@ local function survey_queue(us, c, f, sid)
     end
     local out = {}
     while #left > 0 do
+        slice.tick("ai/exploration.lua:533")
         local best, bd
         for i, e in ipairs(left) do
+            slice.tick("ai/exploration.lua:535")
             local dx, dy = e.at[1] - px, e.at[2] - py
             local d = dx * dx + dy * dy
             if bd == nil or d < bd then
@@ -553,6 +575,7 @@ local function survey_systems(us, c, f, fid, taken, blocked)
     local mult = defines().COLONIZABLE_MULT
     local cands = {}
     for _, e in ipairs(explore_entries(c)) do
+        slice.tick("ai/exploration.lua:557")
         local sid = e.id
         if sid and g.planets_of[sid] and not fully_surveyed(us, c, sid) and not blocked[sid] and not taken.systems[sid] then
             local v = e.value
@@ -570,6 +593,7 @@ local function survey_systems(us, c, f, fid, taken, blocked)
         return a.n < b.n
     end)
     for _, x in ipairs(cands) do
+        slice.tick("ai/exploration.lua:574")
         local sid = x.sid
         local ok = can_survey(us, sid)
         if ok and needs and (visited(c, sid) or intel_level(c, sid) == 3) then
@@ -592,6 +616,7 @@ local function anomalies_of(c)
     local ev = world.field(c, "events")
     local out = {}
     for _, v in ipairs(world.list(type(ev) == "table" and world.field(ev, "anomalies") or nil)) do
+        slice.tick("ai/exploration.lua:596")
         out[#out + 1] = tonumber(v)
     end
     return out
@@ -601,6 +626,7 @@ local function search_anomalies(us, c, f, taken)
     local from = system_of(f)
     local g = strategy().galaxy()
     for _, pid in ipairs(anomalies_of(c)) do
+        slice.tick("ai/exploration.lua:605")
         local p = pid and world.object("planet", pid)
         if p and world.field(p, "anomaly") ~= nil and not taken.dh["0:" .. pid] then
             local sid = g.system_of[pid]
@@ -658,8 +684,10 @@ local function taken_of(fleets)
     local taken = { dh = {}, systems = {} }
     local g = strategy().galaxy()
     for _, fid in ipairs(fleets) do
+        slice.tick("ai/exploration.lua:662")
         local f = fleet(fid)
         for _, o in ipairs(f and order_chain(f) or {}) do
+            slice.tick("ai/exploration.lua:664")
             if TAKEN_ORDERS[o.kind] then
                 local k = dh_key(world.field(o.body, "deposit_holder"))
                 local p = order_planet(o.body)
@@ -684,6 +712,7 @@ end
 local function owned_fleets(c)
     local out = {}
     for _, e in ipairs(world.blocks(world.path(c, "fleets_manager", "owned_fleets"))) do
+        slice.tick("ai/exploration.lua:688")
         local fid = tonumber(world.field(e, "fleet"))
         if fid and fleet(fid) then
             out[#out + 1] = fid
@@ -692,6 +721,7 @@ local function owned_fleets(c)
     -- the stable partition: starbases first
     local first, rest = {}, {}
     for _, fid in ipairs(out) do
+        slice.tick("ai/exploration.lua:696")
         if world.field(fleet(fid), "ship_class") == "shipclass_starbase" then
             first[#first + 1] = fid
         else
@@ -741,6 +771,7 @@ local function command(country, fid, d, today)
             if orders and d.kind == "survey" and runs(orders, "survey_planet_order") then
                 replace_orders(orders, fid)
                 for _, pid in ipairs(d.planets or {}) do
+                    slice.tick("ai/exploration.lua:745")
                     if orders.survey(fid, pid) then
                         done = true
                     end
@@ -788,6 +819,7 @@ function M.weekly(country, today, commands, host)
         M.blocked[country] = blocked
     end
     for _, fid in ipairs(fleets) do
+        slice.tick("ai/exploration.lua:792")
         local f = fleet(fid)
         if f and world.field(f, "ship_class") == "shipclass_science_ship" and prop(f, "civilian")
             and prop(f, "mobile") and not prop(f, "mia") and not moving_in_galaxy(f) then
@@ -826,6 +858,7 @@ end
 function M.log()
     local lines = {}
     for _, d in ipairs(M.decisions) do
+        slice.tick("ai/exploration.lua:830")
         lines[#lines + 1] = string.format("%s %d fleet %d %s %s%s", d.date or "?", d.country, d.fleet, d.kind,
             d.target and tostring(d.target) or "", d.planets and (" planets " .. table.concat(d.planets, " ")) or "")
     end

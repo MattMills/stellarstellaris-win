@@ -54,6 +54,7 @@
 -- place in the formation (it is made at the orbit's place), cloaking.
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local defs = require("engine.defs")
 local live = require("engine.store.live")   -- the store's copy of what exploration reads (docs/data_layer.md)
 
@@ -104,6 +105,7 @@ local function copy(v)
     end
     local out = {}
     for k, x in pairs(v) do
+        slice.tick("fleets/create.lua:107")
         out[k] = type(x) == "table" and copy(x) or x
     end
     return out
@@ -160,6 +162,7 @@ local function allocator(store)
     end
     a = { free = {}, gen = {}, live = {}, max = -1 }
     for _, e in ipairs(world.store_blocks[store] or {}) do
+        slice.tick("fleets/create.lua:163")
         if e.op and e.key then
             local id = tonumber(e.key.text)
             if id then
@@ -184,22 +187,26 @@ local function collect(a, store)
     local st = world.stores[store] or {}
     local gone = {}
     for id in pairs(a.live) do
+        slice.tick("fleets/create.lua:187")
         if st[id] == nil then gone[#gone + 1] = id end
     end
     table.sort(gone)
     for _, id in ipairs(gone) do
+        slice.tick("fleets/create.lua:191")
         a.live[id] = nil
         local index = id % GEN
         a.gen[index] = math.floor(id / GEN)
         table.insert(a.free, 1, index)
     end
     for _, id in ipairs(world.all(store)) do
+        slice.tick("fleets/create.lua:196")
         if not a.live[id] then
             a.live[id] = true
             local index, g = id % GEN, math.floor(id / GEN)
             if a.gen[index] == nil or a.gen[index] < g then a.gen[index] = g end
             if index > a.max then a.max = index end
             for i = #a.free, 1, -1 do
+                slice.tick("fleets/create.lua:204")
                 if a.free[i] == index then table.remove(a.free, i) end
             end
         end
@@ -246,8 +253,10 @@ local function keyed(folder)
     local source = require("stellar.script.source")
     if ok and db and db.fs then
         for _, file in ipairs(source.files(db.fs, folder, "txt")) do
+            slice.tick("fleets/create.lua:250")
             local tree = source.parse(db.fs, file)
             for _, e in ipairs(tree or {}) do
+                slice.tick("fleets/create.lua:252")
                 if e.op and e.key and e.value.text == nil then
                     local key = unq(defs.field(e.value, "key"))
                     if key then
@@ -268,17 +277,31 @@ create.sections = function() return keyed("common/section_templates") end
 local file_vars, global_vars = {}, nil
 local function vars_of(file, into)
     into = into or {}
+    -- the file's own as simscript.db reads them (one parse of each file, the definitions' made
+    -- with the load: engine.defs)
     pcall(function()
-        local db = require("simscript.db")
-        local source = require("stellar.script.source")
-        for _, e in ipairs(source.parse(db.fs, file) or {}) do
-            if e.op and e.key and e.key.text:sub(1, 1) == "@" and e.value.text then
-                into[e.key.text] = e.value.text
-            end
+        for k, v in pairs(require("simscript.db").filevars(file) or {}) do
+            slice.tick("fleets/create.lua:276")
+            into["@" .. k] = v
         end
     end)
     return into
 end
+local function globals()
+    if not global_vars then
+        global_vars = {}
+        pcall(function()
+            local db = require("simscript.db")
+            local source = require("stellar.script.source")
+            for _, f in ipairs(source.files(db.fs, "common/scripted_variables", "txt") or {}) do
+                slice.tick("fleets/create.lua:304")
+                vars_of(f, global_vars)
+            end
+        end)
+    end
+    return global_vars
+end
+create.scripted_globals = globals   -- (engine.load reads them with the load)
 local function number(v, file, depth)
     if type(v) == "number" then
         return v
@@ -296,17 +319,7 @@ local function number(v, file, depth)
         end
         local r = file and file_vars[file][v]
         if r == nil then
-            if not global_vars then
-                global_vars = {}
-                pcall(function()
-                    local db = require("simscript.db")
-                    local source = require("stellar.script.source")
-                    for _, f in ipairs(source.files(db.fs, "common/scripted_variables", "txt") or {}) do
-                        vars_of(f, global_vars)
-                    end
-                end)
-            end
-            r = global_vars[v]
+            r = globals()[v]
         end
         return r and number(r, file, (depth or 0) + 1) or nil
     end
@@ -325,6 +338,7 @@ local function add_mods(t, block, file)
         return
     end
     for _, e in ipairs(block) do
+        slice.tick("fleets/create.lua:327")
         if e.op and e.key and e.value.text then
             local v = number(e.value.text, file)
             if v then t[e.key.text] = (t[e.key.text] or 0) + v end
@@ -351,9 +365,11 @@ function create.design_info(did, stage)
                    formation_priority = sb and number(defs.field(sb, "formation_priority"), sfile) or 0,
                    culture = unq(world.field(d, "graphical_culture")) }
     for key, v in world.statements(gs) do
+        slice.tick("fleets/create.lua:353")
         if key == "section" and type(v) == "table" then
             local sec = { template = unq(world.field(v, "template")), slot = unq(world.field(v, "slot")), components = {} }
             for ckey, c in world.statements(v) do
+                slice.tick("fleets/create.lua:356")
                 if ckey == "component" and type(c) == "table" then
                     sec.components[#sec.components + 1] = { slot = unq(world.field(c, "slot")), template = unq(world.field(c, "template")) }
                 end
@@ -384,14 +400,17 @@ function create.hit_points(country, did, stage)
     add_mods(adds, sb and defs.field(sb, "modifier"), info.size_file)
     local C, T = create.components(), create.sections()
     for _, sec in ipairs(info.sections) do
+        slice.tick("fleets/create.lua:386")
         local st = T[sec.template]
         add_mods(adds, st and defs.field(st.block, "modifier"), st and st.file)
         for _, c in ipairs(sec.components) do
+            slice.tick("fleets/create.lua:389")
             local ct = C[c.template]
             add_mods(adds, ct and defs.field(ct.block, "modifier"), ct and ct.file)
         end
     end
     for _, r in ipairs(info.required) do
+        slice.tick("fleets/create.lua:394")
         local ct = C[r]
         add_mods(adds, ct and defs.field(ct.block, "modifier"), ct and ct.file)
     end
@@ -434,6 +453,7 @@ local function format_block(key, vars)
     world.append(b, "key", key, true)
     local vb = {}
     for _, v in ipairs(vars) do
+        slice.tick("fleets/create.lua:436")
         vb[#vb + 1] = v
     end
     world.append(b, "variables", vb)
@@ -457,6 +477,7 @@ end
 local function num_ship_name(country, key)
     local sn = ship_names(country)
     for _, e in ipairs(sn or {}) do
+        slice.tick("fleets/create.lua:459")
         if e.op and e.key and unq(e.key.text) == key then
             return tonumber(e.value.text) or 0
         end
@@ -471,6 +492,7 @@ local function add_ship_name(country, key)
         return
     end
     for _, e in ipairs(sn) do
+        slice.tick("fleets/create.lua:473")
         if e.op and e.key and unq(e.key.text) == key then
             world.set_entry(sn, e, (tonumber(e.value.text) or 0) + 1)
             return
@@ -493,6 +515,7 @@ local function name_lists(country, size)
         local out = {}
         local b = type(sn) == "table" and defs.field(sn, key)
         for _, e in ipairs(type(b) == "table" and b or {}) do
+            slice.tick("fleets/create.lua:495")
             if e.text then out[#out + 1] = unq(e.text) end
         end
         return out
@@ -523,6 +546,7 @@ function create.ship_name(country, info)
     local own, generic = name_lists(country, info.size)
     local key = ""
     for _ = 1, 100 do
+        slice.tick("fleets/create.lua:525")
         S.name_tries = S.name_tries + 1
         key = random_name_key(own, generic)
         if key ~= "" and num_ship_name(country, key) <= 0 then
@@ -615,10 +639,12 @@ function create.ship(o)
     local C = create.components()
     local nweapon = 0
     for _, sec in ipairs(info.sections) do
+        slice.tick("fleets/create.lua:617")
         local s = {}
         world.append(s, "design", sec.template, true)
         world.append(s, "slot", sec.slot, true)
         for _, comp in ipairs(sec.components) do
+            slice.tick("fleets/create.lua:621")
             local ct = C[comp.template]
             if ct and WEAPON_KINDS[ct.kind] then
                 local w = {}
@@ -694,6 +720,7 @@ local function add_owned_fleet(country, fid)
     world.append(e, "fleet", fid)
     local pos = #owned + 1
     for i, x in ipairs(owned) do
+        slice.tick("fleets/create.lua:696")
         if not x.op and not x.text then
             local id = tonumber(world.field(x, "fleet"))
             if id and id > fid then
@@ -721,6 +748,7 @@ function create.fleet(o)
     world.append(combat, "coordinate", cc)
     local fp = {}
     for _, k in ipairs({ "x", "y", "speed", "rotation", "forward_x", "forward_y" }) do
+        slice.tick("fleets/create.lua:723")
         world.append(fp, k, 0)
     end
     world.append(combat, "formation_pos", fp)
@@ -788,6 +816,7 @@ function create.fleet(o)
     world.append(b, "military_power", "0.00000")
     world.append(b, "diplomacy_weight", "0.00000")
     for _, k in ipairs({ "cached_killed_ships", "cached_disabled_ships", "cached_disengaged_ships", "cached_combined_removed_ships" }) do
+        slice.tick("fleets/create.lua:790")
         world.append(b, k, 0)
     end
     world.append(b, "commanding_armada", "none")
@@ -813,6 +842,7 @@ function create.transport_fleet_name(country)
         else
             local pos = #c + 1
             for i, e in ipairs(c) do
+                slice.tick("fleets/create.lua:815")
                 if e.op and e.key and e.key.text == "variables" then pos = i + 1 end
             end
             world.insert(c, pos, "next_transport_fleet_number", n + 1)
@@ -834,17 +864,20 @@ local function fleet_name(fid, f, country, info, ship_name)
         local rn = type(fn) == "table" and defs.field(fn, "random_names")
         local names = {}
         for _, e in ipairs(type(rn) == "table" and rn or {}) do
+            slice.tick("fleets/create.lua:836")
             if e.text then names[#names + 1] = unq(e.text) end
         end
         if #names > 0 then
             local taken = {}
             for other, owner in pairs(world.fleet_owner) do
+                slice.tick("fleets/create.lua:841")
                 if owner == country and other ~= fid then
                     local k = name_key(world.field(world.object("fleet", other), "name"))
                     if k then taken[k] = true end
                 end
             end
             for _ = 1, #names + 1 do
+                slice.tick("fleets/create.lua:847")
                 local k = names[draw() % #names + 1]
                 if not taken[k] then
                     return key_block(k)
@@ -856,10 +889,12 @@ local function fleet_name(fid, f, country, info, ship_name)
             local n = 1
             local used = {}
             for other, owner in pairs(world.fleet_owner) do
+                slice.tick("fleets/create.lua:858")
                 if owner == country then
                     local nb = world.field(world.object("fleet", other), "name")
                     if type(nb) == "table" and name_key(nb) == "%SEQ%" then
                         for _, v in ipairs(blocks(world.field(nb, "variables"))) do
+                            slice.tick("fleets/create.lua:862")
                             if name_key(v) == "num" then
                                 used[tonumber(name_key(world.field(v, "value"))) or 0] = true
                             end
@@ -904,6 +939,7 @@ local function template_add(country, fid, f, info, did)
         local orb = world.path(f, "movement_manager", "orbit", "orbitable")
         if type(orb) == "table" then
             for _, e in ipairs(orb) do
+                slice.tick("fleets/create.lua:906")
                 if e.op and e.key then world.append(ob, e.key.text, e.value.text) end
             end
         end
@@ -916,6 +952,7 @@ local function template_add(country, fid, f, info, did)
         -- the fleet's fleet_template, after its ships (the save's place)
         local pos = #f + 1
         for i, e in ipairs(f) do
+            slice.tick("fleets/create.lua:918")
             if e.op and e.key and e.key.text == "ships" then pos = i + 1 end
         end
         world.insert(f, pos, "fleet_template", id)
@@ -940,6 +977,7 @@ local function template_add(country, fid, f, info, did)
         list = world.child(t, "fleet_template_design")
     end
     for _, entry in ipairs(blocks(list)) do
+        slice.tick("fleets/create.lua:942")
         local sdi = world.field(entry, "ship_design_implementation")
         if type(sdi) == "table" and tonumber(world.field(sdi, "design")) == did and tonumber(world.field(sdi, "upgrade")) == NO_ID then
             local n = tonumber(world.field(entry, "count")) or 1
@@ -976,6 +1014,7 @@ create.on_action = on_action
 local function ship_ids(f)
     local out = {}
     for _, v in ipairs(world.list(world.field(f, "ships"))) do
+        slice.tick("fleets/create.lua:978")
         out[#out + 1] = tonumber(v)
     end
     return out
@@ -1005,6 +1044,7 @@ function create.add_ship(fid, sid, opts)
     end
     local pos = #list + 1
     for i, e in ipairs(list) do
+        slice.tick("fleets/create.lua:1007")
         if e.text then
             local odid, ostage = design_of_ship(tonumber(e.text))
             local oi = odid and create.design_info(odid, ostage)
@@ -1041,6 +1081,7 @@ function create.add_ship(fid, sid, opts)
         local c = world.object("country", country)
         if c then
             for _, k in ipairs({ "fleet_size", "used_naval_capacity" }) do
+                slice.tick("fleets/create.lua:1043")
                 local v = tonumber(world.field(c, k))
                 if v then world.set(c, k, v + info.size_multiplier) end
             end
@@ -1060,7 +1101,9 @@ end
 
 local function starbase_system(sbid)
     for _, sys in ipairs(world.all("galactic_object")) do
+        slice.tick("fleets/create.lua:1062")
         for _, v in ipairs(world.list(world.field(world.object("galactic_object", sys), "starbases"))) do
+            slice.tick("fleets/create.lua:1064")
             if tonumber(v) == sbid then return sys end
         end
     end
@@ -1143,6 +1186,7 @@ function create.enter_orbit(fid, kind, id, opts)
     -- the first free slot: no entry, or one that holds no fleet (4294967295, a fleet gone)
     local used, entry_of = {}, {}
     for _, e in ipairs(slots) do
+        slice.tick("fleets/create.lua:1146")
         local k = e.op and e.key and tonumber(e.key.text)
         if k then
             entry_of[k] = e
@@ -1158,6 +1202,7 @@ function create.enter_orbit(fid, kind, id, opts)
         -- in the slots' order
         local pos = #slots + 1
         for i, e in ipairs(slots) do
+            slice.tick("fleets/create.lua:1161")
             if (tonumber(e.key and e.key.text) or 0) > slot then
                 pos = i
                 break
@@ -1226,6 +1271,7 @@ local function fleets_in_orbit(kind, id)
     local out = {}
     local slots = slots_block(kind, id)
     for _, e in ipairs(slots or {}) do
+        slice.tick("fleets/create.lua:1229")
         if e.op and e.key and e.value.text then
             out[#out + 1] = tonumber(e.value.text)
         end
@@ -1240,6 +1286,7 @@ function create.find_merge_fleet(country, kind, id, info)
         return nil
     end
     for _, fid in ipairs(fleets_in_orbit(kind, id)) do
+        slice.tick("fleets/create.lua:1243")
         local f = world.object("fleet", fid)
         if f and world.fleet_owner[fid] == country and #ship_ids(f) > 0
             and world.field(f, "ship_class") == "shipclass_military" then
@@ -1278,6 +1325,7 @@ function create.around_orbital(o)
         if slot_at and s then
             local P = path()
             for _, k in ipairs({ "coordinate", "target_coordinate" }) do
+                slice.tick("fleets/create.lua:1281")
                 local c = world.field(s, k)
                 if type(c) == "table" then
                     world.set(c, "x", P.text(slot_at.x))

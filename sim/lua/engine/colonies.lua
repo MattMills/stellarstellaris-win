@@ -34,6 +34,7 @@ local ffi = require("ffi")
 local world = require("engine.world")
 local defs = require("engine.defs")
 local eval = require("simscript.eval")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local colonies = {
     stats = {
@@ -482,9 +483,11 @@ local function pop_groups_daily()
     local values = {}
     local order = {}
     for _, cid in ipairs(world.all("colony")) do
+        slice.tick("colonies.lua:485")
         local c = world.object("colony", cid)
         if c and world.colony_planet[cid] then
             for _, gid in ipairs(living_groups(c)) do
+                slice.tick("pop group values")
                 values[gid] = colonies.pop_group_values(gid)
                 order[#order + 1] = gid
             end
@@ -492,6 +495,7 @@ local function pop_groups_daily()
     end
     for _, gid in ipairs(order) do
         local g = world.object("pop_groups", gid)
+        slice.tick("pop group write")
         if write_pop_group(g, values[gid]) then
             s.groups_changed = s.groups_changed + 1
         end
@@ -708,8 +712,10 @@ local function colonies_daily()
     rule_cache = {}
     s.days = s.days + 1
     for _, cid in ipairs(world.all("colony")) do
+        slice.tick("colonies.lua:713")
         local c = world.object("colony", cid)
         if c and world.colony_planet[cid] then
+            slice.tick("colony")
             if write_colony(c, colonies.colony_values(cid)) then
                 s.colonies_changed = s.colonies_changed + 1
             end

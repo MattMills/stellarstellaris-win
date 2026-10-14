@@ -28,6 +28,9 @@ pub struct Pool {
     workers: Vec<Worker>,
     done: Receiver<(usize, Result<String, String>)>,
     _store: Arc<Store>,
+    /// a job posted ([`Pool::post`]): the answers still to come, and those in
+    outstanding: std::cell::Cell<usize>,
+    answers: std::cell::RefCell<Vec<Result<String, String>>>,
 }
 
 fn worker_main(
@@ -89,7 +92,13 @@ impl Pool {
                 .map_err(|e| e.to_string())?;
             workers.push(Worker { tx, handle: Some(handle) });
         }
-        let pool = Pool { workers, done, _store: store };
+        let pool = Pool {
+            workers,
+            done,
+            _store: store,
+            outstanding: std::cell::Cell::new(0),
+            answers: std::cell::RefCell::new(Vec::new()),
+        };
         let mut errors = Vec::new();
         for _ in 0..n {
             match pool.done.recv() {
@@ -110,17 +119,47 @@ impl Pool {
 
     /// `engine.store.worker[func](arg)` on every worker; their results in worker order.
     pub fn run(&self, func: &str, arg: &str) -> Vec<Result<String, String>> {
+        self.post(func, arg);
+        loop {
+            if let Some(out) = self.poll(std::time::Duration::from_secs(3600)) {
+                return out;
+            }
+        }
+    }
+
+    /// Starts `engine.store.worker[func](arg)` on every worker and returns at once; the results
+    /// come from [`Pool::poll`]. A job still running is waited for first.
+    pub fn post(&self, func: &str, arg: &str) {
+        while self.outstanding.get() > 0 {
+            if self.poll(std::time::Duration::from_secs(3600)).is_some() {
+                break;
+            }
+        }
+        *self.answers.borrow_mut() = (0..self.workers.len()).map(|_| Err("no answer".to_string())).collect();
+        self.outstanding.set(self.workers.len());
         for w in &self.workers {
             let _ = w.tx.send(Msg::Run(func.to_string(), arg.to_string()));
         }
-        let mut out: Vec<Result<String, String>> = (0..self.workers.len()).map(|_| Err("no answer".to_string())).collect();
-        for _ in 0..self.workers.len() {
-            match self.done.recv() {
-                Ok((i, r)) => out[i] = r,
-                Err(_) => break,
+    }
+
+    /// The posted job's results in worker order once every worker has answered, waiting at most
+    /// `wait` for them; None while some are still working.
+    pub fn poll(&self, wait: std::time::Duration) -> Option<Vec<Result<String, String>>> {
+        let until = std::time::Instant::now() + wait;
+        while self.outstanding.get() > 0 {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            match self.done.recv_timeout(left) {
+                Ok((i, r)) => {
+                    self.answers.borrow_mut()[i] = r;
+                    self.outstanding.set(self.outstanding.get() - 1);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return None,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    self.outstanding.set(0);
+                }
             }
         }
-        out
+        Some(std::mem::take(&mut *self.answers.borrow_mut()))
     }
 }
 
