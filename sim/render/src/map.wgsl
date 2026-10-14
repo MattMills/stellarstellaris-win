@@ -16,6 +16,13 @@ struct View {
     focal: f32,
     // 1 when the target stores sRGB (colours are given in sRGB and converted to linear)
     srgb: u32,
+    // 1: the HDR scene of the post effects (colours converted to linear, nothing clamped)
+    linear: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+    light_colour: vec4<f32>,
+    back_light: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> view: View;
@@ -41,7 +48,7 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 }
 
 fn output(c: vec3<f32>, alpha: f32) -> vec4<f32> {
-    if (view.srgb == 1u) {
+    if (view.srgb == 1u || view.linear == 1u) {
         return vec4<f32>(srgb_to_linear(c), alpha);
     }
     return vec4<f32>(c, alpha);

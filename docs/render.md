@@ -460,9 +460,18 @@ simplifications **[I]** (named).
   (PdxMeshPlanetEmissive, PdxMeshMoltenPlanet and their skinned forms): there everywhere (the
   molten planets' lava).
 - **The planets' lights** (CalculateSystemPointLight with IS_PLANET) **[V]**: the star's point
-  light, plus `system_back_light_diffuse` (A stars: hsv 0.58 0.25 0.55) on the side away from the
-  star (`CalculateLight(N, L, colour)` takes `dot(N, -L)`); the renderer's strengths (x 1.3, an
-  ambient of 0.08) are fitted by eye to the game's frames **[I]**.
+  light, the world's `system_light` of `gfx/lights` (A stars: `a_class_star`, white x 2.5), plus
+  `system_back_light_diffuse` (A stars: hsv 0.58 0.25 0.55) on the side away from the star
+  (`CalculateLight(N, L, colour)` takes `dot(N, -L)`).
+- **Colour constants are linear** **[V]** (4.5.2 Linux code): with `g_bUsesRGB` (the default;
+  `-nosRGB` and `-nohdr` clear it) `GfxToLinear` raises a colour to 2.2. It is applied to the
+  worldgfx lava colours (CWorldGraphicalMapData::ReadMember, before the `_intensity`), the planet
+  class's atmosphere colour (SetStarEntityCustomData, SetPlanetEntityCustomData), the system
+  light's colour (CGameRendering::SetSystemLight, then x its intensity), and twice to the light
+  settings (`system_back_light_diffuse`, `cam_light_*`, `ambient`, `rim_light_diffuse`:
+  SLightDescription::ReadMember and again in SetConstants, so ^4.84). Particle colours go through
+  `ToLinear` in particle.shader. Textures loaded with `AddTexture_sRGB` (the colour maps, the
+  star's noise, lava and stone) are read linear.
 - **Winding and culling** **[V]**: the game's meshes are front-facing clockwise under its
   left-handed view (D3D); the renderer culls back faces with that winding (and the atmospheres'
   front faces), as the frames of both agree.
@@ -479,22 +488,32 @@ simplifications **[I]** (named).
   the star class's `gfx/worldgfx/star_<x>_class.txt` (`lava_bright_color`,
   `lava_hot_stone_color`, `lava_cold_stone_color`, each x its `_intensity`; `tex_lava_diffuse` =
   `gfx/worldgfx/lava_d.dds`, `tex_stone_diffuse` = `stone_d.dds`, `tex_lava_noise` a cube map),
-  then the class's atmosphere colour toward the limb, a rim x 3.5, x 2. The class `pc_g_star` uses
-  the world `g_star` **[I]**. The game samples the noise cube at the direction, x 4 and x 8: the
-  same direction, so the same texel three times **[V]** (the code); the renderer uses a value noise
-  of the direction instead, and time 0 **[I]**.
-- **The star's glow** (PixelPdxMeshAtmosphereStar, additive) **[V]**: the colour x `dot(N, -V)³`,
-  alpha `dot(N, -V)⁴`, on the back faces.
+  then the class's atmosphere colour toward the limb, a rim x 3.5, x 2, alpha 0. The class
+  `pc_g_star` uses the world `g_star` **[I]**. The game samples the noise cube
+  (`gfx/worldgfx/lava_noise.dds`, 1024² DXT1, sRGB) at the direction, x 4 and x 8: the same
+  direction, so the same texel three times **[V]** (the code); the renderer does the same, at time
+  0. The textures' slots **[V]** (ReadMember's member table): noise, lava (`lava_d.dds`), stone
+  (`stone_d.dds`).
+- **The star's glow** (PixelPdxMeshAtmosphereStar, BlendStateAdditiveBlend) **[V]**: the colour x
+  `dot(N, -V)³`, alpha `dot(N, -V)⁴`, on the back faces; the blend writes alpha (see the bloom's
+  mask, section 11).
+- **Additive blending and alpha** **[V]**: the game's blend states without `SourceAlpha` /
+  `DestAlpha` keep the default alpha factors (ONE, ZERO, ADD), which makes the OpenGL backend call
+  `glBlendFunc` (SOpenGLBlendState::Init, GfxSetBlendStateOpenGL): alpha is blended by the colour
+  factors. So `BlendStateAdditiveBlend` and the particles' `BlendStateAdditive` (SRC_ALPHA, ONE,
+  RGBA written) add alpha² to the scene's alpha, the bloom's emissive mask; `...NoAlpha` and the
+  alpha-blended states write RGB only. The planet atmosphere (`BlendStateAdditiveBlendNoAlpha`)
+  returns alpha `1 + 2.9 dot(N, -V)`: SRC_ALPHA scales its colour by that (unclamped on the float
+  target).
 - **Ships** (PixelPdxMeshShip): the system light plus the ship camera lights of `gfx/worldgfx`
   (`cam_light_2_diffuse` hsv 0.55 0.4 0.45 from the right, `cam_light_3_diffuse` hsv 0.55 0.35 0.75
   from above) and `rim_light_diffuse` (hsv 0.56 0.5 0.25) **[V]** the colours, **[I]** the
   directions and the rim's range.
 - **The environment map** (`cubemap_intensity` 0.4 in worldgfx) **[V]**: drawn as a two-colour
   sky (dark below, grey-blue above the camera), with Schlick's Fresnel and the glossiness **[I]**.
-- **Not drawn**: shadows, the tiled point lights, bloom, HDR and tone mapping
-  (`tonemap_middlegrey`, `hdr_*`), the colour correction LUTs (`colorcorrection_*.tga`), empire
-  colours, city lights, the dissolve and flow effects, animation, the gas giants' and asteroids'
-  own shaders (drawn lit).
+- **Not drawn**: shadows, the tiled point lights, the lens flare, empire colours, city lights, the
+  dissolve and flow effects, animation, the gas giants' and asteroids' own shaders (drawn lit).
+  The post effects, the sky and the particles: section 11.
 
 ## 9. The command protocol (headless, TCP)
 
@@ -612,7 +631,7 @@ system draws a trail to that system **[I]**. The stars' places match the game's 
 | | matches | does not |
 |---|---|---|
 | camera | field of view, orientation, handedness, distances: the stars and bodies at the same pixels | |
-| system | the bodies' places and sizes; the starbase's place, size and facing; the molten planets' glow | the sky box (the game's system background is a nebula cube map, `gfx/map/sky_*.dds` in YCoCg: not drawn); the star's surface (the game's is finer and brighter, with HDR and bloom; the noise is the renderer's); the ships' empire colours; the A star's corona flares |
+| system | the bodies' places and sizes; the starbase's place, size and facing; the sky box, the exposure, the bloom and the colour grading (mean colour of the default view within 1/255 of the game's); the star's corona, flares and glow | the star's lava patches (a little purple where the game's are blue); the molten planets (the game's lava brighter and yellower); the ships' empire colours |
 | galaxy | the stars' places and icon size | terra incognita (the game shows only what the player knows: lanes and borders around the home, unknown stars dimmed; the renderer shows everything); the border style and extent (the game: a soft fill around the owned systems; the renderer: bolder, wider blobs); the player's colour (the game's border is beige, the renderer's green: the colour choice of section 1 is to be checked); the dust (the game's is grey, the renderer's tinted by `galaxycolor.dds`) |
 
 ### Frame times
@@ -628,6 +647,57 @@ The time of `frame` (scene, upload, the GPU's frame and the read-back; not the P
 The first frames are the textures' loading and decoding on the CPU (the planets' 2048x1024 maps,
 the ships' sets). The simulation behind it: `load-sim` 7.7 s, a day 0.35 to 0.6 s. The game:
 22 s from start to the loaded save, `step` about 30 ms a day.
+
+## 11. Visual parity with the game (3D)
+
+Each item is checked with one side-by-side at the game's default camera (system: pitch 50,
+distance 11,100 of the game's world; galaxy after a load: pitch 57.5, distance 200), the game's
+frame from `headless/view.sh` with the GUI off, the renderer's from the same command file.
+
+| | item | state | what is missing |
+|---|---|---|---|
+| 1 | post effects: bloom, exposure, tone map, colour grading | done | the lens flare (ghosts and halo x `gfx/lensdirt.dds`); the exposure's adaptation over time (a still frame is adapted) |
+| 2 | system backdrop: the sky box | done | the galaxy view's sky (the galaxy draws no post effects yet) |
+| 3 | stars: surface, glow, corona particles, the star's light on planets | done for the A star of system 401 | the lava patches a little purple; the particles' motion (a still snapshot); the other star classes, black holes, neutron stars and pulsars are not checked |
+| 4 | planets: atmospheres, gas giants, rings, asteroid belts, black holes, special stars | partial | the planet atmosphere shell is the game's; the molten planets' lava is darker; gas giants' and asteroids' shaders, rings and belts not drawn |
+| 5 | galaxy: terra incognita, borders, hyperlanes, star icons, the core | not started | everything known is shown; the borders are the renderer's own; no HDR there |
+| 6 | ships and stations: empire colours, engine glows, turrets, idle animations | not started | all four |
+
+**The post effects** (`sim/render/src/post.wgsl`, `render.rs`) **[V]**: the passes of
+CGameRendering::RenderPostEffects (4.5.2 Linux) with the shaders of `gfx/FX` and the world's
+`gfx/worldgfx` settings (`default` for the galaxy and model views, the star class's world such as
+`a_star` for a system):
+
+1. the scene is drawn into an RGBA16F target (as the game's CreateRenderTargets: format 0x15 =
+   GL_RGBA16F); its alpha is the bloom's emissive mask (opaque meshes write their emissive, additive
+   passes alpha², section 8);
+2. the bright pass (downsample.shader) at half size: `max(rgb) - bright_threshold`, then
+   `x / (0.5 + x)`, plus alpha x `emissive_bloom_strength`; the log luminance in alpha;
+3. the average luminance (`exp` of the mean log), clamped to `[hdr_min_adjustment,
+   hdr_max_adjustment]`;
+4. the bloom, a pyramid: `bloom_iterations` levels (at most `s_BloomIterations[quality]`, 32 at the
+   default quality 2) while a level is at least 4 pixels, each blurred along x then y over the whole
+   half-size target (CGameRendering::Bloom: a 17-tap Gaussian of `2σ² = max(2 bloom_width², 0.01)`
+   normalised x `bloom_scale` per pass, as a centre and four bilinear pairs), added into the
+   accumulated bloom (`downsample3`, ONE + ONE, the level's part stretched by BloomToScreenScale),
+   then halved into the top left of the cleared level target (`downsample2`);
+5. the restore (restorescene.shader): scene + bloom, x `tonemap_middlegrey` / the average
+   luminance, Uncharted 2 (W = 11.2), gamma 1/2.2, the world's `color_lut` (32³ cube) and Levels
+   (0.04, 0.8).
+
+**The sky** (`sim/render/src/sky.wgsl`) **[V]**: the world's `galaxy_background` cube maps
+(`gfx/map/sky_core|mid|rim.dds`, 2048² DXT5 in YCoCg) by the system's `distance_to_core_percent`,
+decoded, to linear (2.2), shifted by `galaxy_background_hsv_shift`, through
+`galaxy_background_lut`; drawn first at the far plane. The renderer's former dust sprites around a
+system are gone (the game has none; they hazed the whole frame through the bloom).
+
+**Particles** (`sim/render/lua/render/particles.lua`, `src/particles.rs`): an entity state's
+`event = { particle = ... }` (the star's `a_class_star_particle`) to the `pdxparticle` of
+`gfx/particles/*.gfx`, its `particle` type of the `.asset` files: each subsystem's live particles
+(`emission` x mean `life`, at most `max_amount`) at random places of its sphere emitter, each at a
+random age with the type's `animation` curves at that age (`size_grow` 1..3, `fade_in_out`), alpha
+x 0.8 (PixelParticle), the colour made linear; billboards added with alpha written. Not drawn:
+velocity, forces, trails, child systems, rotation over time.
 
 ## Open questions
 
@@ -646,8 +716,10 @@ the ships' sets). The simulation behind it: `load-sim` 7.7 s, a day 0.35 to 0.6 
   (`entity` + 1), the star class to `gfx/worldgfx` mapping, the texture lookup order, a repeated
   key's last value, and the lights' strengths. A ship's world transform from the game (`state
   ship ID`: CShipGraphics' entity) would settle the first.
-- **3D, to match the game** (section 10): the sky box, terra incognita, the borders' style and
-  extent and the player's colour, the dust's colour, the star's surface, bloom and tone mapping.
+- **3D, to match the game** (sections 10, 11): terra incognita, the borders' style and extent and
+  the player's colour, the dust's colour, the post effects on the galaxy, the lens flare, the
+  star's lava tint (the RE says the lava, stone and noise textures are sRGB and the lava colours
+  linear, which gives a purple tint the game's frame does not show).
 - **3D, not drawn yet**: animation (skeletons and `.anim`), LOD selection, the attachments of
   entities' `attach` (turrets, lights), the ships' empire colours and engine trails, planetary
   rings, asteroid belts, gas giants' and black holes' own shaders, the `PdxMeshShipFlow` and

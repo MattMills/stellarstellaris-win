@@ -31,6 +31,7 @@ mod dds;
 mod engine;
 mod math;
 mod models;
+mod particles;
 mod pdxmesh;
 mod system;
 mod font;
@@ -40,6 +41,7 @@ mod render;
 mod scene;
 mod verify;
 mod window;
+mod worldgfx;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -75,6 +77,7 @@ pub struct Map {
     pub borders_texture: usize,
     pub fonts: Option<HashMap<String, Font>>,
     pub models: models::Library,
+    pub particles: particles::Library,
     /// the GUI drawn (the top bar; a system's orbit lines): `gui off` hides it, as the game's
     /// g_bNoGUI
     pub gui: bool,
@@ -110,6 +113,7 @@ impl Map {
             borders_texture,
             fonts: None,
             models: models::Library::default(),
+            particles: particles::Library::default(),
             gui: true,
         })
     }
@@ -191,7 +195,18 @@ impl Map {
             gui: self.gui,
             game_dir: &self.game_dir,
         };
-        let scene = scene::build(&inputs, &mut self.textures, &mut self.cache.borrow_mut(), width, height, camera);
+        let mut scene = scene::build(&inputs, &mut self.textures, &mut self.cache.borrow_mut(), width, height, camera);
+        if camera.is_some() {
+            // the galaxy in 3D: the post effects of the `default` world (gfx/worldgfx/default.txt)
+            let rt: &Runtime = match &self.source {
+                Source::World(r) => r,
+                Source::Sim(s) => &s.runtime,
+            };
+            let world = worldgfx::read(rt, &self.game_dir, "default")?;
+            let mut cache = self.cache.borrow_mut();
+            scene.post = Some(world.post(&mut self.textures, &mut cache, &self.game_dir));
+            scene.sky = world.sky(&mut self.textures, &mut cache, &self.game_dir, 0.0);
+        }
         Ok(Frame { scene, topbar })
     }
 }

@@ -7,9 +7,9 @@
 // - clouds: the same, blended by the diffuse alpha, clipped towards the limb (IS_CLOUDS);
 // - atmospheres (PixelPdxMeshAtmosphere, PixelPdxMeshAtmosphereStar): the back faces of a larger
 //   sphere, added, brightest behind the body;
-// - stars (PixelPdxMeshStar): lava and stone textures over a noise (a procedural one here: the
-//   game's is a cube map), coloured by the star class's gfx/worldgfx settings.
-// No shadows, no environment map, no bloom, no tone mapping.
+// - stars (PixelPdxMeshStar): lava and stone textures over the noise cube map, coloured by the
+//   star class's gfx/worldgfx settings.
+// No shadows; the bloom and tone mapping are post.wgsl's (the HDR scene: `linear`).
 
 struct View {
     view_proj: mat4x4<f32>,
@@ -20,6 +20,16 @@ struct View {
     px_to_ndc: vec2<f32>,
     focal: f32,
     srgb: u32,
+    // 1: the HDR scene of the post effects (textures and colours converted to linear, nothing
+    // clamped; the alpha the emissive, for the bloom)
+    linear: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+    // the star's light (colour x intensity, gfx/lights) and the planets' back light
+    // (system_back_light_diffuse, gfx/worldgfx)
+    light_colour: vec4<f32>,
+    back_light: vec4<f32>,
 };
 
 struct Draw {
@@ -43,6 +53,7 @@ struct Draw {
 @group(1) @binding(1) var normal_tex: texture_2d<f32>;
 @group(1) @binding(2) var specular_tex: texture_2d<f32>;
 @group(1) @binding(3) var samp: sampler;
+@group(1) @binding(4) var noise_cube: texture_cube<f32>;
 @group(2) @binding(0) var<uniform> draw: Draw;
 
 struct VsOut {
@@ -80,11 +91,32 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 }
 
 fn output(c: vec3<f32>, alpha: f32) -> vec4<f32> {
+    if (view.linear == 1u) {
+        return vec4<f32>(max(c, vec3<f32>(0.0)), alpha);
+    }
     let s = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
     if (view.srgb == 1u) {
         return vec4<f32>(srgb_to_linear(s), alpha);
     }
     return vec4<f32>(s, alpha);
+}
+
+// a texture's colour, in the space the scene is lit in (the game samples its colour textures as
+// sRGB; its colour settings, the lights', the atmospheres', the lava's, the renderer makes linear
+// before they get here, as the game's GfxToLinear)
+fn lin(c: vec3<f32>) -> vec3<f32> {
+    if (view.linear == 1u) {
+        return srgb_to_linear(c);
+    }
+    return c;
+}
+
+// an opaque part's alpha: in the HDR scene its emissive (the bloom's mask), else 1
+fn emissive_alpha(e: f32) -> f32 {
+    if (view.linear == 1u) {
+        return e;
+    }
+    return 1.0;
 }
 
 fn hash3(p: vec3<f32>) -> f32 {
@@ -121,16 +153,21 @@ fn specular(n: vec3<f32>, l: vec3<f32>, v: vec3<f32>, gloss: f32) -> f32 {
 fn star(i: VsOut) -> vec4<f32> {
     // PixelPdxMeshStar: the noise (the game samples the cube map LavaNoise at the direction
     // three times, at the same direction: 3 x (noise - 0.5)), animated by time (0 here)
+    // the direction: the star mesh's tangent is its position ("tangent == position" in the
+    // game's code), here the model-space position; the cube sampled three times at the same
+    // direction (v, v x 4, v x 8): 3 x (noise - 0.5)
     let dir = normalize(i.local);
-    let noise = 3.0 * (noise3(dir * 7.0) * 0.6 + noise3(dir * 21.0) * 0.4 - 0.5);
+    // the game loads the noise, lava and stone textures as sRGB (AddTexture_sRGB in
+    // SetStarEntityCustomData): read linear
+    let noise = 3.0 * (lin(textureSample(noise_cube, samp, dir).rgb).r - 0.5);
     let animated = sin(noise * 10.0);
     let inv = (1.0 - animated) * 0.5;
     let inv2 = inv * inv;
     let lava_mask = clamp(-animated, 0.0, 1.0) * clamp(-animated, 0.0, 1.0);
     let to_camera = normalize(view.eye.xyz - i.world);
     let parallax = inv * to_camera.xz;
-    let lava_tex = textureSample(diffuse_tex, samp, i.uv * 10.0 - parallax * 0.1).rgb;
-    let stone_tex = textureSample(normal_tex, samp, i.uv * 25.0 - parallax * 0.15).rgb;
+    let lava_tex = lin(textureSample(diffuse_tex, samp, i.uv * 10.0 - parallax * 0.1).rgb);
+    let stone_tex = lin(textureSample(normal_tex, samp, i.uv * 25.0 - parallax * 0.15).rgb);
     var heated = stone_tex * draw.lava1.rgb * (pow(inv2, 0.5) + 0.1);
     let stone_lerp = 1.0 - clamp(animated, 0.0, 1.0);
     heated = mix(heated + stone_tex * draw.lava2.rgb, heated, stone_lerp);
@@ -141,8 +178,8 @@ fn star(i: VsOut) -> vec4<f32> {
     c = mix(c, draw.atmosphere.rgb, a * a * draw.atmosphere.a);
     let rim = smoothstep(0.5, 1.0, 1.0 - dot(n0, to_camera));
     c = clamp(c + c * rim * 3.5, vec3<f32>(0.0), vec3<f32>(1.0));
-    // x 2 as the game; its HDR and bloom brighten it further: a little of the star's colour added
-    return output(c * 2.0 + draw.atmosphere.rgb * 0.35, 1.0);
+    // x 2 and alpha 0 as the game (the bright pass blooms it, not its emissive)
+    return output(c * 2.0, emissive_alpha(0.0));
 }
 
 @fragment
@@ -163,16 +200,19 @@ fn fs_mesh(i: VsOut) -> @location(0) vec4<f32> {
         // PixelPdxMeshAtmosphere, on the back faces: the colour, lit (x 0.13) by the star,
         // x (NdotV x 1.2)^4, added
         let ndl = max(dot(n0, l), 0.0);
-        var c = draw.atmosphere.rgb * 0.15 + draw.atmosphere.rgb * ndl * 0.13 * 2.0 * 1.5;
+        let atm = draw.atmosphere.rgb;
+        var c = atm * 0.15 + atm * ndl * 0.13 * 2.0 * 1.5;
         let ndv = clamp(dot(n0, -v), 0.0, 1.0);
         c = c * pow(ndv * 1.2, 4.0);
-        return vec4<f32>(c, 1.0);
+        // alpha 1 + 2.9 NdotV as the game's: the blend's SRC_ALPHA scales the colour by it (an
+        // unclamped factor on the HDR target); alpha itself is not written (NoAlpha)
+        return vec4<f32>(c, 1.0 + ndv * 2.9);
     }
     let base = textureSample(diffuse_tex, samp, i.uv);
     let nm = textureSample(normal_tex, samp, i.uv);
     let sp = textureSample(specular_tex, samp, i.uv);
     if (kind > 0.5 && kind < 1.5) {
-        let c = base.rgb * draw.tint.rgb * draw.params.y;
+        let c = lin(base.rgb * draw.tint.rgb) * draw.params.y;
         return output(c, 1.0);
     }
     if (kind > 2.5 && dot(n0, v) < 0.27) {
@@ -193,11 +233,12 @@ fn fs_mesh(i: VsOut) -> @location(0) vec4<f32> {
     // the specular map: green the specular, blue the metalness, alpha the glossiness
     let spec_level = sp.g * sp.g * 0.4;
     let metal = 1.0 - (1.0 - sp.b) * (1.0 - sp.b);
-    let albedo = base.rgb * draw.tint.rgb;
+    let albedo = lin(base.rgb) * lin(draw.tint.rgb);
     let diffuse = mix(albedo, vec3<f32>(0.0), metal);
     let spec_colour = mix(vec3<f32>(spec_level), albedo, metal);
     let ndl = max(dot(n, l), 0.0);
-    var light = vec3<f32>(ndl);
+    // the star's point light: its colour x intensity (gfx/lights)
+    var light = view.light_colour.rgb * ndl;
     var spec_light = spec_colour * specular(n, l, v, sp.a) * ndl * draw.params.z;
     let ship = draw.extra.y > 1.5 && draw.extra.y < 2.5;
     let planet = (draw.extra.y > 0.5 && draw.extra.y < 1.5) || draw.extra.y > 2.5;
@@ -206,7 +247,7 @@ fn fs_mesh(i: VsOut) -> @location(0) vec4<f32> {
         // the star's light, and the system's back light on the side away from it
         // (CalculateSystemPointLight with IS_PLANET: system_back_light_diffuse, about hsv 0.58
         // 0.25 0.55 for the star classes of gfx/worldgfx)
-        light = light * 1.3 + vec3<f32>(0.41, 0.48, 0.55) * max(dot(n, -l), 0.0);
+        light = light + view.back_light.rgb * max(dot(n, -l), 0.0);
     }
     if (ship) {
         // the ship camera lights (gfx/worldgfx: cam_light_2 from the right, cam_light_3 from
@@ -215,13 +256,13 @@ fn fs_mesh(i: VsOut) -> @location(0) vec4<f32> {
         let l3 = normalize(view.up.xyz + v * 0.5);
         let c2 = vec3<f32>(0.27, 0.38, 0.45);
         let c3 = vec3<f32>(0.49, 0.65, 0.75) * 0.6;
-        light = light * 1.35 + c2 * max(dot(n, l2), 0.0) + c3 * max(dot(n, l3), 0.0);
+        light = light + c2 * max(dot(n, l2), 0.0) + c3 * max(dot(n, l3), 0.0);
         spec_light = spec_light + spec_colour * specular(n, l3, v, sp.a) * max(dot(n, l3), 0.0) * 0.5;
     }
     // the environment map's reflection (cubemap_intensity 0.4): a sky brighter above the
     // camera, by the glossiness, with Schlick's Fresnel
     let r = reflect(-v, n);
-    let sky = mix(vec3<f32>(0.06, 0.07, 0.1), vec3<f32>(0.55, 0.6, 0.7), clamp(dot(r, view.up.xyz) * 0.5 + 0.5, 0.0, 1.0));
+    let sky = lin(mix(vec3<f32>(0.06, 0.07, 0.1), vec3<f32>(0.55, 0.6, 0.7), clamp(dot(r, view.up.xyz) * 0.5 + 0.5, 0.0, 1.0)));
     let fresnel = spec_colour + (vec3<f32>(1.0) - spec_colour) * pow(1.0 - max(dot(n, v), 0.0), 5.0) * sp.a;
     var cubemap = 0.4;
     if (planet) {
@@ -248,7 +289,7 @@ fn fs_mesh(i: VsOut) -> @location(0) vec4<f32> {
         let rim = smoothstep(0.6, 1.0, 1.0 - dot(n0, v));
         c = mix(c, vec3<f32>(0.125, 0.21, 0.25), rim);
     }
-    var alpha = 1.0;
+    var alpha = emissive_alpha(emissive);
     if (kind > 2.5) {
         alpha = base.a * draw.tint.a;
     }

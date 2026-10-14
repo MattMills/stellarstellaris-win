@@ -64,6 +64,24 @@ local function settings_of(block)
     return out
 end
 
+-- the particle effects an entity's default state starts (`default_state = "idle"`, `state = {
+-- name = "idle" event = { node particle ... } }`): { { particle, node } }
+local function state_particles(e)
+    local want = get(e, "default_state") or "idle"
+    local out = {}
+    each(e, "state", function(s)
+        if get(s, "name") == want then
+            each(s, "event", function(ev)
+                local p = get(ev, "particle")
+                if p then
+                    out[#out + 1] = { particle = p, node = get(ev, "node") or "" }
+                end
+            end)
+        end
+    end)
+    return out
+end
+
 -- the files of gfx/models with an extension, recursively, no portraits
 local function files(game_dir, ext)
     local out = {}
@@ -121,7 +139,7 @@ function models.load(game_dir)
                     end)
                     db.entities[name] = {
                         name = name, pdxmesh = get(e, "pdxmesh"), clone = get(e, "clone"), scale = tonumber(get(e, "scale")) or 1,
-                        settings = settings_of(e), attach = attach, source = f,
+                        settings = settings_of(e), attach = attach, source = f, particles = state_particles(e),
                     }
                 end
             end)
@@ -155,6 +173,7 @@ local function resolve(db, e, depth)
         name = e.name, pdxmesh = base.pdxmesh, scale = (base.scale or 1) * (e.scale or 1),
         settings = settings, attach = #(e.attach or {}) > 0 and e.attach or base.attach,
         source = e.source, clone = e.clone,
+        particles = #(e.particles or {}) > 0 and e.particles or base.particles,
     }
 end
 
@@ -179,6 +198,7 @@ function models.describe(db, name)
         out.pdxmesh = e.pdxmesh
         out.scale = (e.scale or 1) * (m.scale or 1)
         out.attach = e.attach
+        out.particles = e.particles or {}
     else
         m = db.meshes[name]
         if not m then

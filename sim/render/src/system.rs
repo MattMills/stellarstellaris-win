@@ -26,7 +26,7 @@ use crate::gui;
 use crate::math::{M4, V3};
 use crate::models::{self, Library};
 use crate::scene::{self, Blend, Gui, Layer, Layout, Line, Look, Quad, Scene, Textures};
-use crate::{Map, Source};
+use crate::{particles, worldgfx, Map, Source};
 
 /// The system's plane: the game draws a system's bodies at y = -150 of its world (x 10: -15 map
 /// units) **[V]** (their entities' world transforms, `state planet ID` of headless/view.sh).
@@ -190,13 +190,19 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
     let id = map.galaxy.systems[index].id;
     let gd = map.game_dir.clone();
     // the top bar, as on the map
+    // the system's distance from the core, a share of the galaxy's radius (the sky's choice)
+    let core_pct = {
+        let s = &map.galaxy.systems[index];
+        let r = map.galaxy.systems.iter().map(|o| (o.x * o.x + o.y * o.y).sqrt()).fold(1.0f32, f32::max);
+        (s.x * s.x + s.y * s.y).sqrt() / r
+    };
     let topbar = gui::topbar(map.rt(), &gd, &map.cache, width, height)?;
     if map.fonts.is_none() {
         let mut fonts = HashMap::new();
         gui::fonts(map.rt(), &gd, &topbar.items, &mut fonts)?;
         map.fonts = Some(fonts);
     }
-    let Map { source, models: lib, textures: tex, cache, fonts, gui, .. } = map;
+    let Map { source, models: lib, textures: tex, cache, fonts, gui, particles: plib, .. } = map;
     let rt = source_rt(source);
     lib.ensure(rt, &gd)?;
     let data = extract(rt, &gd, id)?;
@@ -205,17 +211,6 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
     let mut lines = Vec::new();
     let mut meshes = Vec::new();
     let mut cache = cache.borrow_mut();
-
-    // a faint backdrop of dust, far below and around
-    if let Some(dust) = tex.game(&mut cache, &gd, "gfx/map/dust.dds") {
-        let mut rng = scene::Rng(0xd057_0001 ^ id);
-        let r = data.radius();
-        for _ in 0..40 {
-            let (a, d) = (rng.next() * std::f32::consts::TAU, r * (0.5 + 2.5 * rng.next()));
-            let colour = [0.35 + 0.2 * rng.next(), 0.35 + 0.15 * rng.next(), 0.45 + 0.2 * rng.next(), 0.25];
-            batches_push(&mut batches, Layer::Background, Blend::Add, dust, Quad::billboard(d * a.cos(), d * a.sin(), -r * 0.4 * rng.next(), r * 0.6, colour, rng.next() * 6.28, 0.0));
-        }
-    }
 
     let mut light = [0.0, 30.0, 0.0, 1.0];
     let mut first_star = true;
@@ -236,6 +231,18 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
                 let spin = (b.id as f32 * 1.7) % std::f32::consts::TAU;
                 let m = M4::translation(at).mul(&M4::rotation_y(spin)).mul(&M4::scaling(scale));
                 meshes.extend(models::draws(&model, m, [1.0; 4], &b.look, tex, &mut cache, &gd));
+                // its particle effects (a star's surface fire and flares), with the entity's transform
+                let em = m.mul(&M4::scaling(model.scale));
+                for name in &model.particles {
+                    match plib.effect(rt, &gd, name) {
+                        Ok(e) => {
+                            for (layer, blend, t, q) in particles::billboards(&e, &em, b.id, tex, &mut cache, &gd) {
+                                batches_push(&mut batches, layer, blend, t, q);
+                            }
+                        }
+                        Err(e) => missing.push(format!("{name}: {e}")),
+                    }
+                }
             }
             Some(Err(e)) => missing.push(format!("{} ({}): {e}", b.class, b.entity)),
             None => missing.push(format!("{}: no entity", b.class)),
@@ -302,6 +309,19 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
         eprintln!("system {id}: textures not loaded: {}", tex.missing.join("; "));
     }
 
+    // the post effects of the system's star: the gfx/worldgfx world of its class (pc_a_star: a_star)
+    let world = data.bodies.iter().find(|b| b.star).map(|b| b.class.trim_start_matches("pc_").to_string()).unwrap_or_else(|| "system_view".into());
+    let world_gfx = worldgfx::read(rt, &gd, &world)?;
+    let post = world_gfx.post(tex, &mut cache, &gd);
+    let sky = world_gfx.sky(tex, &mut cache, &gd, core_pct);
+    // the star's light (gfx/lights: the world's system_light, colour x intensity) and the back light
+    let lc = worldgfx::light(rt, &gd, &world_gfx.system_light).unwrap_or([1.3, 1.3, 1.3]);
+    let light_colour = [lc[0], lc[1], lc[2], 1.0];
+    // the game makes the light settings linear twice (^2.2 in SLightDescription::ReadMember and
+    // again in SetConstants): ^4.84
+    let bl = world_gfx.back_light.map(|c| c.max(0.0).powf(2.2 * 2.2));
+    let back_light = [bl[0], bl[1], bl[2], 1.0];
+    eprintln!("system {id}: world {world} ({}), light {} {:?}, back light {:?}", world_gfx.world, world_gfx.system_light, lc, world_gfx.back_light);
     let mut g = Gui::default();
     if *gui {
         scene::add_gui(&mut batches, &mut g, &topbar.items, fonts.as_ref().unwrap(), tex, &mut cache, &gd, &HashMap::new());
@@ -310,6 +330,8 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
         layout: Layout { width, height, world_to_ndc: [1.0, 1.0, 0.0, 0.0], scale: 1.0, lane_width: 1.0 },
         view,
         light,
+        light_colour,
+        back_light,
         batches,
         lines,
         meshes,
@@ -318,6 +340,8 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
         sprites: g.sprites,
         texts: g.texts,
         buttons: g.buttons,
+        post: Some(post),
+        sky,
     })
 }
 
@@ -365,6 +389,8 @@ pub fn model_scene(
         model.skipped.join(", "),
         look
     );
+    let post = worldgfx::read(rt, game_dir, "default")?.post(tex, cache, game_dir);
+    let sky = None;
     let view: ViewParams = camera.view_params(width, height);
     // the light from the upper left of the camera
     let to_eye = view.eye.sub(camera.target).norm();
@@ -373,6 +399,8 @@ pub fn model_scene(
         layout: Layout { width, height, world_to_ndc: [1.0, 1.0, 0.0, 0.0], scale: 1.0, lane_width: 1.0 },
         view,
         light: [l.0, l.1, l.2, 0.0],
+        light_colour: [1.3, 1.3, 1.3, 1.0],
+        back_light: [0.41, 0.48, 0.55, 1.0],
         batches: Vec::new(),
         lines: Vec::new(),
         meshes,
@@ -381,5 +409,7 @@ pub fn model_scene(
         sprites: Vec::new(),
         texts: Vec::new(),
         buttons: Vec::new(),
+        post: Some(post),
+        sky,
     })
 }

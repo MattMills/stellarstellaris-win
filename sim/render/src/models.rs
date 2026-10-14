@@ -38,6 +38,8 @@ pub struct Model {
     pub attach: Vec<(String, String)>,
     /// shapes skipped (collision, effects) and why
     pub skipped: Vec<String>,
+    /// the particle effects its default state starts (the entity's `state` events)
+    pub particles: Vec<String>,
 }
 
 impl Model {
@@ -276,7 +278,13 @@ impl Library {
         if parts.is_empty() {
             (lo, hi) = ([0.0; 3], [0.0; 3]);
         }
-        Ok(Model { name: name.to_string(), file, scale, parts, locators: mesh.locators.clone(), aabb: (lo, hi), attach, skipped })
+        let particles: Vec<String> = t
+            .get::<Option<Table>>("particles")
+            .ok()
+            .flatten()
+            .map(|p| p.sequence_values::<Table>().filter_map(|x| x.ok()?.get::<String>("particle").ok()).collect())
+            .unwrap_or_default();
+        Ok(Model { name: name.to_string(), file, scale, parts, locators: mesh.locators.clone(), aabb: (lo, hi), attach, skipped, particles })
     }
 }
 
@@ -296,6 +304,8 @@ fn part_texture(tex: &mut Textures, cache: &mut Cache, game_dir: &str, path: &st
 /// The star textures of gfx/worldgfx (tex_lava_diffuse, tex_stone_diffuse: the same in every
 /// star class's file).
 pub const LAVA_TEXTURES: [&str; 2] = ["gfx/worldgfx/lava_d.dds", "gfx/worldgfx/stone_d.dds"];
+/// The star classes' lava noise (tex_lava_noise in every star class's file): a cube map.
+pub const LAVA_NOISE: &str = "gfx/worldgfx/lava_noise.dds";
 
 /// What a part of the game's shader is lit as here: 1 a planet (IS_PLANET: PdxMeshPlanet,
 /// PdxMeshClouds, PdxMeshGasGiant), 3 a planet whose emissive glows everywhere (NO_PLANET_EMISSIVE:
@@ -337,6 +347,10 @@ pub fn draws(model: &Model, transform: M4, tint: [f32; 4], look: &Look, tex: &mu
             let mut d = MeshDraw::new(p.mesh.clone(), m, t, p.shading, tint);
             d.look = *look;
             d.look.kind = part_kind(&p.shader);
+            if p.shading == Shading::Star {
+                // the lava noise (gfx/worldgfx: tex_lava_noise, a cube map)
+                d.cube = tex.game_cube(cache, game_dir, LAVA_NOISE);
+            }
             if d.look.kind == 1.0 || d.look.kind == 3.0 {
                 d.params[3] = 0.08;
             }

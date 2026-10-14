@@ -182,11 +182,13 @@ pub struct MeshDraw {
     /// w: ambient
     pub params: [f32; 4],
     pub look: Look,
+    /// a cube map (an index into the scene's textures): the stars' lava noise
+    pub cube: Option<usize>,
 }
 
 impl MeshDraw {
     pub fn new(mesh: Arc<MeshData>, model: M4, textures: [usize; 3], shading: Shading, tint: [f32; 4]) -> MeshDraw {
-        MeshDraw { mesh, model, textures, shading, tint, params: [shading.number(), 1.6, 1.0, 0.12], look: Look::default() }
+        MeshDraw { mesh, model, textures, shading, tint, params: [shading.number(), 1.6, 1.0, 0.12], look: Look::default(), cube: None }
     }
 }
 
@@ -281,6 +283,26 @@ impl Textures {
         }
     }
 
+    /// A cube map from the game's files (dds::load_cube), under the name `cube:<path>`.
+    pub fn game_cube(&mut self, cache: &mut Cache, game_dir: &str, path: &str) -> Option<usize> {
+        let name = format!("cube:{path}");
+        if let Some(&i) = self.index.get(&name) {
+            return Some(i);
+        }
+        match cache.get_cube(game_dir, path) {
+            Ok(img) => {
+                let img = Arc::new(img.clone());
+                Some(self.add(&name, img))
+            }
+            Err(e) => {
+                if !self.missing.contains(&e) {
+                    self.missing.push(e);
+                }
+                None
+            }
+        }
+    }
+
     /// A generated texture: a soft disc (for markers), a flat colour.
     pub fn generated(&mut self, name: &str) -> usize {
         if let Some(i) = self.find(name) {
@@ -353,11 +375,39 @@ pub struct PlacedText {
     pub order: usize,
 }
 
+/// The sky behind a 3D view (sky.wgsl): a cube map, its YCoCg flag, the hue / saturation / value
+/// shift and the colour cube (gfx/worldgfx `galaxy_background*`).
+#[derive(Clone, Debug)]
+pub struct SkyDraw {
+    pub cube: usize,
+    pub ycocg: bool,
+    pub hsv_shift: [f32; 3],
+    pub lut: Option<usize>,
+}
+
+/// The post effects of a world (gfx/worldgfx: worldgfx.rs; the shaders: post.wgsl).
+#[derive(Clone, Debug)]
+pub struct Post {
+    pub bright_threshold: f32,
+    pub bloom_width: f32,
+    pub bloom_scale: f32,
+    pub bloom_iterations: u32,
+    pub emissive_bloom: f32,
+    pub hdr_min: f32,
+    pub hdr_max: f32,
+    pub middle_grey: f32,
+    /// the colour cube (an index into the scene's textures)
+    pub lut: Option<usize>,
+}
+
 pub struct Scene {
     pub layout: Layout,
     pub view: ViewParams,
     /// xyz: toward the light (w = 0) or the light's position (w = 1)
     pub light: [f32; 4],
+    /// the light's colour x intensity (linear); the planets' back light (gamma space)
+    pub light_colour: [f32; 4],
+    pub back_light: [f32; 4],
     pub batches: Vec<Batch>,
     pub lines: Vec<Line>,
     pub meshes: Vec<MeshDraw>,
@@ -366,6 +416,11 @@ pub struct Scene {
     pub sprites: Vec<PlacedSprite>,
     pub texts: Vec<PlacedText>,
     pub buttons: Vec<PlacedButton>,
+    /// the game's post effects (HDR, bloom, exposure, tone mapping, the colour cube), for the 3D
+    /// views; None: drawn straight to the target (the 2D map, the front end)
+    pub post: Option<Post>,
+    /// the sky drawn behind everything (with the post effects only)
+    pub sky: Option<SkyDraw>,
 }
 
 impl Scene {
@@ -563,6 +618,8 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
         layout,
         view,
         light: [0.4, 0.8, 0.3, 0.0],
+        light_colour: [1.3, 1.3, 1.3, 1.0],
+        back_light: [0.41, 0.48, 0.55, 1.0],
         batches,
         lines,
         meshes: Vec::new(),
@@ -571,6 +628,8 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
         sprites: gui.sprites,
         texts: gui.texts,
         buttons: gui.buttons,
+        post: None,
+        sky: None,
     }
 }
 
@@ -714,6 +773,8 @@ pub fn gui_scene(
         layout,
         view: ViewParams::orthographic(layout.world_to_ndc, width, height),
         light: [0.4, 0.8, 0.3, 0.0],
+        light_colour: [1.3, 1.3, 1.3, 1.0],
+        back_light: [0.41, 0.48, 0.55, 1.0],
         batches,
         lines: Vec::new(),
         meshes: Vec::new(),
@@ -722,5 +783,7 @@ pub fn gui_scene(
         sprites: gui.sprites,
         texts: gui.texts,
         buttons: gui.buttons,
+        post: None,
+        sky: None,
     }
 }

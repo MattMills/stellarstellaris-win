@@ -107,18 +107,58 @@ end
 -- A star class pc_<tag> uses the world <tag> [I]
 worldgfx = function(game_dir, f)
     f.worldgfx = {}
+    f.worldgfx_settings = {}
     for _, rel in ipairs(source.files(game_dir, "gfx/worldgfx", "txt")) do
         for _, e in ipairs(source.parse(game_dir, rel) or {}) do
             if e.op and e.key and e.key.text == "gfx_settings" and type(e.value) == "table" then
                 local b = e.value
                 local world = get(b, "world")
+                -- the game reads these colours linear (^2.2: GfxToLinear in
+                -- CWorldGraphicalMapData::ReadMember), then x the intensity
                 local function c(name)
                     local rgb = colour(get(b, name .. "_color"))
                     local k = tonumber(get(b, name .. "_intensity")) or 1
-                    return rgb and { rgb[1] * k, rgb[2] * k, rgb[3] * k }
+                    local function l(v)
+                        return math.max(v, 0) ^ 2.2 * k
+                    end
+                    return rgb and { l(rgb[1]), l(rgb[2]), l(rgb[3]) }
                 end
                 if world and get(b, "lava_bright_color") then
                     f.worldgfx[world] = { c("lava_bright"), c("lava_hot_stone"), c("lava_cold_stone") }
+                end
+                if world then
+                    -- the scalar settings (numbers and strings), the sky's backgrounds in order,
+                    -- and hsv triples by name
+                    local s = { backgrounds = {} }
+                    for _, x in ipairs(b) do
+                        if x.op and x.key then
+                            local k = x.key.text
+                            if x.value.text then
+                                s[k] = tonumber(x.value.text) or x.value.text
+                            elseif k == "galaxy_background" then
+                                local tex = get(x.value, "texture")
+                                local trig = get(x.value, "trigger")
+                                local pct
+                                for _, t in ipairs(type(trig) == "table" and trig or {}) do
+                                    if t.op and t.key and t.key.text == "distance_to_core_percent" then
+                                        pct = tonumber(t.value.text)
+                                    end
+                                end
+                                s.backgrounds[#s.backgrounds + 1] = { texture = tex, below = pct or 2.0, ycocg = get(x.value, "ycocg") == "yes" }
+                            elseif type(x.value) == "table" and x.value.type then
+                                s[k] = colour(x.value)
+                            elseif type(x.value) == "table" then
+                                local n = {}
+                                for _, t in ipairs(x.value) do
+                                    if t.text then
+                                        n[#n + 1] = tonumber(t.text)
+                                    end
+                                end
+                                s[k] = n
+                            end
+                        end
+                    end
+                    f.worldgfx_settings[world] = s
                 end
             end
         end
@@ -253,6 +293,48 @@ function system.look_of(game_dir, entity)
     local out = look(f, best or "")
     out.class = best
     return out
+end
+
+-- system.world_settings(game_dir, world) -> the gfx/worldgfx settings of a world tag ("default",
+-- "system_view", "g_star", ...): numbers and strings by key, colours (hsv { }) as rgb, lists as
+-- lists, `backgrounds` = { { texture, below = distance_to_core_percent bound, ycocg } } in order
+function system.world_settings(game_dir, world)
+    local f = files(game_dir)
+    return f.worldgfx_settings[world] or f.worldgfx_settings.default
+end
+
+-- system.light(game_dir, name) -> { r, g, b, intensity } of a light of gfx/lights/*.asset
+-- (`light = { name color = { r = { 1.0 } g = { 1.0 } b = { 1.0 } } intensity = 2.5 ... }`), or nil
+local lights
+function system.light(game_dir, name)
+    if not lights then
+        lights = {}
+        for _, rel in ipairs(source.files(game_dir, "gfx/lights", "asset")) do
+            for _, e in ipairs(source.parse(game_dir, rel) or {}) do
+                if e.op and e.key and e.key.text == "light" and type(e.value) == "table" then
+                    local b = e.value
+                    local n = get(b, "name")
+                    local c = get(b, "color")
+                    local function channel(k)
+                        local v = get(c, k)
+                        if type(v) == "table" then
+                            for _, t in ipairs(v) do
+                                if t.text then
+                                    return tonumber(t.text)
+                                end
+                            end
+                        end
+                        return tonumber(v) or 1
+                    end
+                    if n then
+                        local i = get(b, "intensity")
+                        lights[n] = { channel("r"), channel("g"), channel("b"), tonumber(type(i) == "string" and i:match("[%d%.]+") or i) or 1 }
+                    end
+                end
+            end
+        end
+    end
+    return lights[name]
 end
 
 return system

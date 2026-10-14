@@ -155,3 +155,35 @@ pub fn find_case_insensitive(root: &str, relative: &str) -> Option<String> {
     }
     Some(dir.to_string_lossy().into_owned())
 }
+
+/// A cube map's six faces (+x, -x, +y, -y, +z, -z: the DDS's order and wgpu's), mip 0, decoded
+/// and stacked top to bottom: an image `size` wide and 6 x `size` high, format "cube <format>".
+pub fn load_cube(path: &str) -> Result<Image, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
+    let dds = image_dds::ddsfile::Dds::read(std::io::BufReader::new(file)).map_err(|e| format!("{path}: {e}"))?;
+    let format = match dds.get_d3d_format() {
+        Some(f) => format!("{f:?}"),
+        None => dds.get_dxgi_format().map_or("unknown".to_string(), |f| format!("{f:?}")),
+    };
+    let surface = image_dds::SurfaceRgba8::decode_layers_mipmaps_dds(&dds, 0..6, 0..1).map_err(|e| format!("{path}: {format}: {e}"))?;
+    if surface.layers < 6 {
+        return Err(format!("{path}: not a cube map ({} layers)", surface.layers));
+    }
+    let face = (surface.width * surface.height * 4) as usize;
+    let mut rgba = surface.data;
+    rgba.truncate(face * 6);
+    Ok(Image { width: surface.width, height: surface.height * 6, rgba, format: format!("cube {format}") })
+}
+
+impl Cache {
+    /// A cube map at `relative` (see load_cube), loaded once.
+    pub fn get_cube(&mut self, game_dir: &str, relative: &str) -> Result<&Image, String> {
+        let rel = relative.replace('\\', "/");
+        let key = format!("cube:{rel}");
+        if !self.images.contains_key(&key) {
+            let path = find_case_insensitive(game_dir, &rel).unwrap_or_else(|| format!("{game_dir}/{rel}"));
+            self.images.insert(key.clone(), load_cube(&path));
+        }
+        self.images[&key].as_ref().map_err(|e| e.clone())
+    }
+}
