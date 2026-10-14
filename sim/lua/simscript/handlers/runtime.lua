@@ -2317,6 +2317,39 @@ return function(eval)
         return nil
     end
 
+    -- num_modifiers <op> n (CNumModifiersTrigger 0x1962520, a planet or colony): the planet's timed
+    -- modifiers (`timed_modifier = { items = { } }`; its static planet_modifier entries are not
+    -- counted); a ship: false
+    numeric("num_modifiers", { "planet", "colony" }, function(sc, r)
+        local kind, id = r.carrier_of(sc.kind, sc.id)
+        if kind ~= "planet" then return nil end
+        local tm = r.planet_field(id, "timed_modifier")
+        local items = type(tm) == "table" and wfield(tm, "items")
+        return #require("engine.world").blocks(type(items) == "table" and items or nil)
+    end)
+    -- count_deposits = { type = <deposit> category = <category> count <op> n } (CCountDepositsTrigger
+    -- 0x1993950, a planet, ship or colony): the carrier's deposits matching the filters given
+    TRIG["count_deposits"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r or e.value.text then return false end
+        local p = params(e)
+        local dtype = p.type and p.type.value.text
+        local cat = p.category and p.category.value.text
+        local cnt = p.count
+        if not cnt then return false end
+        if dtype and not r.defs().get("common/deposits", dtype) then return false end
+        if cat and not r.defs().get("common/deposit_categories", cat) then return false end
+        sync()
+        local kind, id = r.carrier_of(sc.kind, sc.id)
+        if not kind then return false end
+        local n = 0
+        for _, d in ipairs(r.carrier_deposits(kind, id)) do
+            local t = r.deposit_type(d)
+            if (not dtype or t == dtype) and (not cat or r.deposit_type_field(t, "category") == cat) then n = n + 1 end
+        end
+        return compare(n, cnt.op, eval.value(cnt.value, ctx, cnt))
+    end
+
     -- star (token 10778): the star of a system, or of the system a planet, ship, fleet, starbase,
     -- megastructure or ambient object is in (GetStarPlanetObject: its first planet of a star class)
     LINKS["star"] = function(cur)
