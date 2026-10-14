@@ -202,6 +202,178 @@ return function(eval)
     end
 
     -- -----------------------------------------------------------------------------------------
+    -- timed modifiers
+
+    -- add_modifier = <key> | { modifier days|months|years multiplier time_multiplier
+    -- clear_on_owner_change } (CAddModifierEffect: days an int, -1 by default (permanent);
+    -- GetDays: times time_multiplier, truncated; multiplier a CFixedPointVariableValue, 1 by default)
+    EFF["add_modifier"] = function(e, ctx)
+        local name, days, mult, tmult, clear
+        if e.value.text then
+            name = creation.unq(e.value.text)
+        else
+            for _, x in ipairs(e.value) do
+                if x.op then
+                    local xk = x.key.text:lower()
+                    if xk == "modifier" then name = text_of(x)
+                    elseif xk == "days" then days = trunc(eval.value(x.value, ctx, x))
+                    elseif xk == "months" then days = trunc(eval.value(x.value, ctx, x)) * 30
+                    elseif xk == "years" then days = trunc(eval.value(x.value, ctx, x)) * 360
+                    elseif xk == "multiplier" then mult = fixed(x, ctx)
+                    elseif xk == "time_multiplier" then tmult = fixed(x, ctx)
+                    elseif xk == "clear_on_owner_change" then clear = x.value.text == "yes" end
+                end
+            end
+        end
+        if not name then return end
+        if not I.db.static_modifiers[name] then
+            miss("static modifier", name, ctx, e)
+            return
+        end
+        days = days or -1
+        if tmult and tmult ~= 100000 then
+            days = trunc(creation.fmul(days * 100000, tmult) / 100000)
+        end
+        push({ type = "add_timed_modifier", kind = ctx.this.kind, id = ctx.this.id, modifier = name,
+            days = days, mult = mult, clear = clear })
+    end
+    -- remove_modifier = <key>
+    EFF["remove_modifier"] = function(e, ctx)
+        local name = e.value.text and creation.unq(e.value.text)
+        if not name then return end
+        push({ type = "remove_timed_modifier", kind = ctx.this.kind, id = ctx.this.id, modifier = name })
+    end
+
+    -- -----------------------------------------------------------------------------------------
+    -- opinion modifiers
+
+    -- the country a `who = <scope>` names (CEventTarget::GetTargetCountry)
+    local function who_country(x, ctx)
+        local t = x and x.value.text
+        if not t then return nil end
+        local found, sc = eval.resolve(t, ctx, x)
+        if not found or not sc then return nil end
+        if sc.kind == "country" then return sc.id end
+        local f2, owner = eval.resolve("owner", I.push(ctx, sc), x)
+        return f2 and owner and owner.kind == "country" and owner.id or nil
+    end
+
+    -- add_opinion_modifier = { who = <country> modifier = <key> }
+    EFF["add_opinion_modifier"] = function(e, ctx)
+        local p = params(e)
+        local key = text_of(p.modifier)
+        local who = who_country(p.who, ctx)
+        if not key or not who then return end
+        push({ type = "add_opinion_modifier", kind = ctx.this.kind, id = ctx.this.id, who = who, modifier = key })
+    end
+    -- remove_opinion_modifier = { who = <country> | all modifier = <key> }
+    EFF["remove_opinion_modifier"] = function(e, ctx)
+        local p = params(e)
+        local key = text_of(p.modifier)
+        if not key or not p.who then return end
+        local who = text_of(p.who) == "all" and "all" or who_country(p.who, ctx)
+        if not who then return end
+        push({ type = "remove_opinion_modifier", kind = ctx.this.kind, id = ctx.this.id, who = who, modifier = key })
+    end
+
+    -- -----------------------------------------------------------------------------------------
+    -- planets, surveys, countries
+
+    -- change_pc = <class> | { class = <class> inherit_entity = yes } (CChangePlanetClassEffect;
+    -- a random list of classes draws from the scope: not ported, counted unmodelled). The class
+    -- change draws once from the game's generator: applied at once
+    EFF["change_pc"] = function(e, ctx)
+        local class = e.value.text and creation.unq(e.value.text)
+        if not class then class = text_of(params(e).class) end
+        if not class then return end
+        if not require("engine.defs").get("common/planet_classes", class) then
+            return unmodelled("change_pc (random list)", ctx, e)
+        end
+        push({ type = "change_pc", kind = ctx.this.kind, id = ctx.this.id, class = class })
+        sync()
+    end
+
+    -- set_surveyed = { surveyed = yes|no surveyor = <country> } (surveys draw: applied at once)
+    EFF["set_surveyed"] = function(e, ctx)
+        local p = params(e)
+        local who = p.surveyor and who_country(p.surveyor, ctx)
+        if not who then return end
+        push({ type = "set_surveyed", kind = ctx.this.kind, id = ctx.this.id, surveyor = who,
+            surveyed = not p.surveyed or p.surveyed.value.text ~= "no" })
+        sync()
+    end
+
+    -- add_timeline_event = { type = <definition> date = <date> targets = { <scope> ... } }
+    EFF["add_timeline_event"] = function(e, ctx)
+        local p = params(e)
+        local def = text_of(p.type)
+        if not def then return end
+        local day = eval.today()
+        local d = p.date and p.date.value.text and creation.unq(p.date.value.text)
+        if d then
+            local y, m, dd = d:match("^(%d+)%.(%d+)%.(%d+)")
+            if y then day = tonumber(y) * 360 + (tonumber(m) - 1) * 30 + tonumber(dd) - 1 end
+        end
+        local targets = {}
+        if p.targets and p.targets.value.text == nil then
+            for _, x in ipairs(p.targets.value) do
+                local t = x.text or (x.op and x.value.text)
+                if t then
+                    local found, sc = eval.resolve(t, ctx, x)
+                    if found and sc and sc.kind ~= "none" then targets[#targets + 1] = { kind = sc.kind, id = sc.id } end
+                end
+            end
+        end
+        local c = ctx.this.kind == "country" and ctx.this or select(2, eval.resolve("owner", ctx, e))
+        if not c then return end
+        push({ type = "add_timeline_event", kind = c.kind, id = c.id, definition = def, date = day, targets = targets })
+    end
+
+    -- run_ai_strategic_war_data = yes (CRunAIStrategicWarDataEffect): the AI's war data computed
+    -- again; the AI's strategy is engine.ai's, nothing in the world changes here [I]
+    EFF["run_ai_strategic_war_data"] = EFF["run_ai_strategic_war_data"] or function() end
+
+    -- export_trigger_value_to_variable = { trigger = <name> parameters = { } variable = <name>
+    -- rounded = yes } (CExportTriggerValueToVariableEffect): the trigger's value. The script layer's
+    -- triggers compare, they do not return values: a trigger written `<name> <op> <number>` is read by
+    -- bisection of `<name> > v` (exact to 1e-5 for what the game keeps as fixed point) [I]; a trigger
+    -- with parameters is counted as not implemented
+    local function trigger_value(name, ctx, e)
+        local key = name:lower()
+        -- a fresh block each time: the compiler keys its caches on the block (weakly), so a block
+        -- evaluated once is only walked
+        local function gt(v)
+            local probe = { key = { text = name }, op = ">", value = { text = string.format("%.6f", v) }, line = e.line }
+            return eval.trigger({ probe }, ctx)
+        end
+        local lo, hi = -1, 1
+        while gt(hi) and hi < 1e12 do hi = hi * 2 end
+        while not gt(lo) and lo > -1e12 do lo = lo * 2 end
+        if gt(hi) or not gt(lo) then return nil end
+        for _ = 1, 80 do
+            local mid = (lo + hi) / 2
+            if gt(mid) then lo = mid else hi = mid end
+            if hi - lo < 1e-7 then break end
+        end
+        return floor(hi * 100000 + 0.5) / 100000, key
+    end
+    EFF["export_trigger_value_to_variable"] = function(e, ctx)
+        local p = params(e)
+        local name, var = text_of(p.trigger), text_of(p.variable)
+        if not name or not var then return end
+        if p.parameters then
+            return miss("effect", "export_trigger_value_to_variable " .. name .. " (parameters)", ctx, e)
+        end
+        local v = trigger_value(name, ctx, e)
+        if v == nil then
+            return miss("effect", "export_trigger_value_to_variable " .. name, ctx, e)
+        end
+        if p.rounded and p.rounded.value.text == "yes" then v = floor(v + 0.5) end
+        stats.script = stats.script + 1
+        eval.store.setvar(ctx.this, var, v)
+    end
+
+    -- -----------------------------------------------------------------------------------------
     -- resources
 
     -- add_monthly_resource_mult = { resource = <key> value = <v> min = <v> max = <v> mult = <v> }

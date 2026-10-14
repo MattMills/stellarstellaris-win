@@ -426,6 +426,426 @@ function systems.effects.add_monthly_resource_mult(t)
 end
 
 -- ---------------------------------------------------------------------------------------------
+-- timed modifiers (CTimedModifierCollection: { modifier, days, multiplier, clear_on_owner_change },
+-- the save's `timed_modifier = { items = { { modifier days [multiplier] } } }`)
+
+local function items_of(obj, create)
+    local tm = world.field(obj, "timed_modifier")
+    if type(tm) ~= "table" then
+        if not create then return nil end
+        tm = world.child(obj, "timed_modifier")
+    end
+    local items = world.field(tm, "items")
+    if type(items) ~= "table" then
+        if not create then return nil end
+        items = world.child(tm, "items")
+    end
+    return items
+end
+
+local function item_modifier(item)
+    return type(item) == "table" and not item.text and not item.op and unq(world.field(item, "modifier")) or nil
+end
+
+-- CCountry::AddTimedModifier (0x707d10), CColonyCarrier::AddTimedModifier (0xcce430): an item of the
+-- same modifier keeps the longer days (the new ones when its own are lower: a permanent -1 becomes
+-- the new duration) and takes the new multiplier and flag; else a new item at the end [V]
+local function add_timed(obj, name, days, mult, clear)
+    local items = items_of(obj, true)
+    for _, item in ipairs(items) do
+        if item_modifier(item) == name then
+            local old = tonumber(world.field(item, "days")) or -1
+            if old < days then world.set(item, "days", days) end
+            local om = world.field(item, "multiplier")
+            om = om and fp(om) or FP
+            if om ~= mult then
+                if mult == FP then
+                    for _, e in ipairs(item) do
+                        if e.op and e.key and e.key.text == "multiplier" then world.remove_entry(item, e); break end
+                    end
+                else
+                    world.set(item, "multiplier", mult / FP)
+                end
+            end
+            return "refreshed"
+        end
+    end
+    local item = {}
+    world.append(item, "modifier", name, true)
+    world.append(item, "days", days)
+    if mult ~= FP then world.append(item, "multiplier", mult / FP) end
+    if clear then world.append(item, "clear_on_owner_change", "yes") end
+    items[#items + 1] = item
+    return "added"
+end
+
+-- the objects an add_modifier in a scope goes to (CAddModifierEffect::ExecuteActual 0x17ccb40): the
+-- object itself; a colony's planet; a fleet's ships unless it is a starbase's fleet (ship class 10)
+-- or a station fleet, which keep it themselves [V] (the station test is the fleet's flag bit 2 [I])
+local function modifier_holders(kind, id)
+    if kind == "colony" then
+        local pid = world.colony_planet and world.colony_planet[id]
+        return { pid and world.object("planet", pid) }
+    elseif kind == "fleet" then
+        local f = world.object("fleet", id)
+        if not f then return {} end
+        local class = unq(world.field(f, "ship_class"))
+        local props = world.field(f, "properties")
+        local station = type(props) == "table" and world.field(props, "station") == "yes"
+        if class == "shipclass_starbase" or station then
+            return { f }
+        end
+        local out = {}
+        for _, v in ipairs(world.list(world.field(f, "ships"))) do
+            local s = world.object("ship", tonumber(v))
+            if s then out[#out + 1] = s end
+        end
+        return out
+    end
+    return { world.object(kind, id) }
+end
+
+-- add_modifier: t = { kind, id, modifier, days, mult (raw), clear }
+function systems.effects.add_timed_modifier(t)
+    local holders = modifier_holders(t.kind, t.id)
+    if #holders == 0 then
+        return skipped("add_modifier", "no object")
+    end
+    for _, obj in ipairs(holders) do
+        add_timed(obj, t.modifier, t.days, t.mult or FP, t.clear)
+    end
+    creation.modifiers_changed = true
+    return applied("add_modifier")
+end
+
+-- remove_modifier: t = { kind, id, modifier } (CColonyCarrier::RemoveTimedModifier 0xcce4f0,
+-- CCountry::RemoveTimedModifier: the first item of the modifier taken out) [V]
+function systems.effects.remove_timed_modifier(t)
+    local holders = modifier_holders(t.kind, t.id)
+    local removed = false
+    for _, obj in ipairs(holders) do
+        local items = items_of(obj, false)
+        for i, item in ipairs(items or {}) do
+            if item_modifier(item) == t.modifier then
+                table.remove(items, i)
+                removed = true
+                break
+            end
+        end
+    end
+    if not removed then
+        return skipped("remove_modifier", "not there")
+    end
+    creation.modifiers_changed = true
+    return applied("remove_modifier")
+end
+
+-- after a root effect (an event's immediate, option or after): the game updates its modifier nodes
+-- (CRootEffect::Execute -> CModifierNodeManager::Update) [V]; when a timed modifier changed, the
+-- world's graph is brought up to date then (engine.modifier_source.rebuild), not at the month's
+-- update only
+function creation.after_root_effect()
+    if not creation.modifiers_changed then
+        return
+    end
+    creation.modifiers_changed = false
+    local engine = package.loaded["engine"]
+    local source = engine and engine.modifier_source
+    if source and source.rebuild then
+        source.rebuild()
+        creation.modifier_updates = (creation.modifier_updates or 0) + 1
+    end
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- opinion modifiers (CRelation's CTimedOpinionModifier list: the relation's `modifier = { modifier
+-- date start_date value decay }` entries in the owner's relations_manager)
+
+local function relation_of(us, them, create)
+    local c = world.object("country", us)
+    local rm = c and world.field(c, "relations_manager")
+    if type(rm) ~= "table" then
+        if not create or not c then return nil end
+        rm = world.child(c, "relations_manager")
+    end
+    for _, e in ipairs(rm) do
+        if e.op and e.key and e.key.text == "relation" and type(e.value) == "table" and not e.value.text then
+            if tonumber(world.field(e.value, "country")) == them then
+                return e.value
+            end
+        end
+    end
+    if not create then return nil end
+    -- CDiplomacyCountryModule::AccessOrCreateRelation: a relation made (the save's defaults [I])
+    local rel = {}
+    world.append(rel, "owner", us)
+    world.append(rel, "country", them)
+    world.append(rel, "shared_rivals", 0)
+    world.append(rel, "border_range", 0)
+    world.append(rel, "threat", 0)
+    world.append(rel, "trust", 0)
+    world.append(rel, "relation_current", 0)
+    world.append(rel, "relation_last_month", 0)
+    world.append(rm, "relation", rel)
+    return rel
+end
+creation.relation_of = relation_of
+
+local function date_text(day)
+    local y = floor(day / 360)
+    local r = day - y * 360
+    return string.format("%d.%02d.%02d", y, floor(r / 30) + 1, r % 30 + 1)
+end
+
+-- COpinionModifier::GetValue: the `opinion` value (base, then the modifiers whose triggers hold) in
+-- this = us, from = them
+local function opinion_value(def, us, them)
+    local o = defs.field(def.block, "opinion")
+    if o == nil then return 0 end
+    if type(o) ~= "table" then return fp(o) end
+    local eval = require("simscript.eval")
+    local ctx = eval.new_ctx(eval.S("country", us), eval.S("country", them), nil, def.file)
+    local ok, v = pcall(eval.weight, o, ctx, 0)
+    return ok and fp(v) or 0
+end
+
+local function modifier_entries(rel, key)
+    local out = {}
+    for i, e in ipairs(rel) do
+        if e.op and e.key and e.key.text == "modifier" and type(e.value) == "table" and not e.value.text then
+            if not key or unq(world.field(e.value, "modifier")) == key then
+                out[#out + 1] = { index = i, entry = e }
+            end
+        end
+    end
+    return out
+end
+
+-- CRelation::RemoveOpinion (0x66aeb0): every entry of the modifier taken out, each replaced by the
+-- list's last [V]
+local function remove_opinion(rel, key)
+    local n = 0
+    while true do
+        local all = modifier_entries(rel, nil)
+        local hit
+        for k, m in ipairs(all) do
+            if unq(world.field(m.entry.value, "modifier")) == key then hit = k; break end
+        end
+        if not hit then break end
+        local last = all[#all]
+        if last.index ~= all[hit].index then
+            all[hit].entry.value = last.entry.value
+        end
+        world.remove_entry(rel, last.entry)
+        n = n + 1
+    end
+    return n
+end
+
+-- add_opinion_modifier: t = { kind = "country", id (us), who (them), modifier }
+-- (CAddOpinionModifierEffect 0x171ee70 -> CRelation::AddOpinion 0x66ab10): both countries alive and
+-- not the same; the value GetValue * 1, clamped to [min, max]; an accumulative modifier adds to its
+-- entry; a unique one replaces its entries; a new entry ends (`date`) after `months` when set,
+-- decays (`decay`, `start_date` today) when it has a decay or growth rate [V]
+function systems.effects.add_opinion_modifier(t)
+    if t.kind ~= "country" or t.id == t.who then
+        return skipped("add_opinion_modifier", "not a country / itself")
+    end
+    if not world.object("country", t.id) or not world.object("country", t.who) then
+        return skipped("add_opinion_modifier", "no country")
+    end
+    local def = defs.get("common/opinion_modifiers", t.modifier)
+    if not def then
+        return skipped("add_opinion_modifier", "unknown modifier")
+    end
+    local b = def.block
+    local maxv, minv = defs.field(b, "max"), defs.field(b, "min")
+    maxv = maxv and fp(maxv) or math.huge
+    minv = minv and fp(minv) or -math.huge
+    local value = opinion_value(def, t.id, t.who)
+    local rel = relation_of(t.id, t.who, true)
+    if defs.field(b, "accumulative") == "yes" then
+        local m = modifier_entries(rel, t.modifier)[1]
+        if m then
+            local v = fp(world.field(m.entry.value, "value"))
+            v = v + value
+            if v > maxv then v = maxv end
+            if v < minv then v = minv end
+            world.set(m.entry.value, "value", v / FP)
+            return applied("add_opinion_modifier")
+        end
+    end
+    if defs.field(b, "unique") == "yes" then
+        remove_opinion(rel, t.modifier)
+    end
+    if value > maxv then value = maxv end
+    if value < minv then value = minv end
+    local e = {}
+    world.append(e, "modifier", t.modifier, true)
+    local months = tonumber(defs.field(b, "months"))
+    local today = require("simscript.eval").today()
+    if months and months > 0 then
+        world.append(e, "date", date_text(today + months * 30), true)
+    end
+    local decays = defs.field(b, "decay") ~= nil or defs.field(b, "growth") ~= nil
+    if decays then
+        world.append(e, "start_date", date_text(today), true)
+    end
+    world.append(e, "value", value / FP)
+    if decays then
+        -- the growth direction -1 (decay) [I: the definition has decay, not growth]
+        world.append(e, "decay", defs.field(b, "growth") == nil and "yes" or "no")
+    end
+    -- after the last modifier entry (the list's end), else after trust
+    local pos
+    for i, x in ipairs(rel) do
+        if x.op and x.key and (x.key.text == "modifier" or (not pos and x.key.text == "trust")) then pos = i end
+    end
+    world.insert(rel, (pos or #rel) + 1, "modifier", e)
+    return applied("add_opinion_modifier")
+end
+
+-- remove_opinion_modifier: t = { kind = "country", id, who (a country id or "all"), modifier }
+function systems.effects.remove_opinion_modifier(t)
+    if t.kind ~= "country" then
+        return skipped("remove_opinion_modifier", "not a country")
+    end
+    local n = 0
+    if t.who == "all" then
+        local c = world.object("country", t.id)
+        local rm = c and world.field(c, "relations_manager")
+        for _, e in ipairs(type(rm) == "table" and rm or {}) do
+            if e.op and e.key and e.key.text == "relation" and type(e.value) == "table" and not e.value.text then
+                n = n + remove_opinion(e.value, t.modifier)
+            end
+        end
+    else
+        local rel = relation_of(t.id, t.who, false)
+        if rel then n = remove_opinion(rel, t.modifier) end
+    end
+    if n == 0 then
+        return skipped("remove_opinion_modifier", "not there")
+    end
+    return applied("remove_opinion_modifier")
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- planets
+
+-- change_pc: t = { kind = "planet", id, class } (CChangePlanetClassEffect 0x1704980 ->
+-- CPlanet::SetPlanetClass 0xdf9f60): nothing when the class is the planet's already; the class set;
+-- one draw of the game's generator, a scope made from it (this = the planet) for
+-- on_planet_class_changed [V]. A colony's consequences (ClearAndReplaceInvalidBuildingsAndDistricts,
+-- the pops' habitability, the terraforming cancelled) are not modelled: counted
+function systems.effects.change_pc(t)
+    local pid = t.kind == "planet" and t.id or (t.kind == "colony" and world.colony_planet and world.colony_planet[t.id])
+    local p = pid and world.object("planet", pid)
+    if not p then
+        return skipped("change_pc", "not a planet")
+    end
+    if not defs.get("common/planet_classes", t.class) then
+        return skipped("change_pc", "unknown class")
+    end
+    if unq(world.field(p, "planet_class")) == t.class then
+        return skipped("change_pc", "the same class")
+    end
+    world.set(p, "planet_class", t.class)
+    for _, e in ipairs(p) do
+        if e.op and e.key and e.key.text == "planet_class" then e.value.quoted = true end
+    end
+    if world.planet_colony and world.planet_colony[pid] then
+        stat("change_pc").colonies = (stat("change_pc").colonies or 0) + 1
+    end
+    creation.modifiers_changed = true
+    local seed = draw()
+    local host = package.loaded["simscript.host"]
+    if host then
+        host.on_action("on_planet_class_changed", "planet", pid, seed)
+    end
+    return applied("change_pc")
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- surveys
+
+-- set_surveyed: t = { kind, id, surveyor (country), surveyed (bool) } (CSetSurveyedEffect
+-- 0x170dbb0): a deposit holder (planet, ship, astral rift): yes -> CCountry::AddSurveyedDepositHolder
+-- (engine.fleets.survey.add_surveyed: the sorted list, three draws, on_*_surveyed), no ->
+-- RemoveSurveyedDepositHolder; a system: yes -> AddSurveyedSystem (its holders), no -> every holder
+-- of it removed [V]. The country's list of newly surveyed systems is not kept [I]
+local function remove_surveyed(country, ty, id)
+    local c = world.object("country", country)
+    local b = c and world.field(c, "surveyed_deposit_holders")
+    if type(b) ~= "table" then return false end
+    for i, e in ipairs(b) do
+        if not e.text and not e.op and tonumber(world.field(e, "type")) == ty and tonumber(world.field(e, "id")) == id then
+            table.remove(b, i)
+            return true
+        end
+    end
+    return false
+end
+function systems.effects.set_surveyed(t)
+    local survey = require("engine.fleets.survey")
+    local host = package.loaded["simscript.host"]
+    if not world.object("country", t.surveyor) then
+        return skipped("set_surveyed", "no surveyor")
+    end
+    if t.kind == "system" then
+        local g = world.object("galactic_object", t.id)
+        if not g then return skipped("set_surveyed", "no system") end
+        local holders = {}
+        for _, v in ipairs(world.fields(g, "planet")) do
+            if type(v) == "string" and tonumber(v) then holders[#holders + 1] = { 0, tonumber(v) } end
+        end
+        for _, h in ipairs(holders) do
+            if t.surveyed then survey.add_surveyed(t.surveyor, h[1], h[2], nil, host)
+            else remove_surveyed(t.surveyor, h[1], h[2]) end
+        end
+        return applied("set_surveyed")
+    end
+    local htype, hid = holder_of(t.kind, t.id)
+    if not htype then
+        return skipped("set_surveyed", "not a deposit holder")
+    end
+    if t.surveyed then
+        survey.add_surveyed(t.surveyor, htype, hid, nil, host)
+    else
+        remove_surveyed(t.surveyor, htype, hid)
+    end
+    return applied("set_surveyed")
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- countries
+
+-- add_timeline_event: t = { kind = "country", id, definition, date (day index), targets =
+-- { { kind, id } } } (CAddTimelineEventEffect 0x17c3e00): the country's `timeline_events` gets
+-- { date data types definition } at the end [V]; a definition's uniqueness is not checked [I]
+local TYPE_NAME = { system = "galactic_object" }
+function systems.effects.add_timeline_event(t)
+    local c = t.kind == "country" and world.object("country", t.id)
+    if not c then
+        return skipped("add_timeline_event", "not a country")
+    end
+    local list = world.child(c, "timeline_events")
+    local item = {}
+    world.append(item, "date", date_text(t.date), true)
+    if t.targets and #t.targets > 0 then
+        local data, types = {}, {}
+        for _, x in ipairs(t.targets) do
+            data[#data + 1] = { text = tostring(x.id) }
+            types[#types + 1] = { text = TYPE_NAME[x.kind] or x.kind }
+        end
+        world.append(item, "data", data)
+        world.append(item, "types", types)
+    end
+    world.append(item, "definition", t.definition, true)
+    list[#list + 1] = item
+    return applied("add_timeline_event")
+end
+
+-- ---------------------------------------------------------------------------------------------
 -- leaders
 
 -- add_experience: t = { kind = "leader", id, amount } (CLeader::AddExperience through engine.leaders)
