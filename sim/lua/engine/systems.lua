@@ -191,6 +191,10 @@ end
 P["daily.countries_parallel"] = function(host, date)
     each_object({ "country" }, count_down_modifiers)
     call_optional("engine.ethics", "countries_daily", host, date)
+    -- lambda_26 to lambda_28 of the day (visited systems, sensor coverage and intel levels, known
+    -- hyperlanes, the shared intel, terra incognita, the fleets in sensor range: engine.exploration;
+    -- its first call also runs the load's own pass, CGameState::RecalculateCachedData)
+    call_optional("engine.exploration", "countries_daily", host, date)
 end
 -- NColonyUpdate::DailyParallelUpdate: the timed modifiers; the colonies' own day (engine.colonies,
 -- once it is there: stability, amenities, happiness, crime, ...)
@@ -212,6 +216,9 @@ P["daily.countries_serial"] = function(host, date)
         -- CCountry::UpdateContacts -> CFirstContactsData::DailyUpdate: the country's first
         -- contacts (engine.first_contact), before its events
         call_optional("engine.first_contact", "country_daily", host, date, id)
+        -- then the deposit holders the day's shared intel surveyed or unsurveyed (_NewSurveyed,
+        -- _NewUnsurveyed: AddSurveyedDepositHolder, RemoveSurveyedDepositHolder; engine.exploration)
+        call_optional("engine.exploration", "country_serial", host, date, id)
         host.scope_daily_events("country", id)
     end)
     require("engine.research").daily(host, date)

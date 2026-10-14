@@ -1141,6 +1141,14 @@ E.has_anomaly = function(kind, id)
     return kind == "planet" and require("engine.fleets.survey").has_anomaly(id) or false
 end
 
+-- exploration
+-- E.is_inside_nebula(kind, id): the object's system is one of a nebula's (the save's top-level
+-- `nebula = { galactic_object = <id> ... }`, CGalacticObject::_pNebula; engine.exploration)
+E.is_inside_nebula = function(kind, id)
+    local sid = E.system_of(kind, id)
+    return sid ~= nil and require("engine.exploration").galaxy().nebula[sid] == true
+end
+
 -- ---------------------------------------------------------------------------------------------
 -- engine effects: queued, applied at the barrier by the systems that model them
 

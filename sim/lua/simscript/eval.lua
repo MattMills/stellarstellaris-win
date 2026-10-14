@@ -1580,6 +1580,16 @@ TRIG["has_anomaly"] = function(e, ctx)
     return (E.has_anomaly(sc.kind, sc.id) == true) == yes(e)
 end
 
+-- exploration
+-- is_inside_nebula = yes/no: the scope's system is in a nebula (E.is_inside_nebula; the game
+-- rule system_blocks_sensors reads it)
+TRIG["is_inside_nebula"] = function(e, ctx)
+    local sc = ctx.this
+    if sc == NONE or not E.is_inside_nebula then return false end
+    sync()
+    return (E.is_inside_nebula(sc.kind, sc.id) == true) == yes(e)
+end
+
 -- ---------------------------------------------------------------------------------------------
 -- effects
 
