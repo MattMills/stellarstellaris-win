@@ -83,8 +83,11 @@ pub struct Capacity {
 
 impl Capacity {
     /// The defaults, or `STELLAR_STORE_SCALE` times them (a factor, e.g. 0.25 on a small machine).
+    /// On Windows the default factor is 0.25: its allocator commits a large allocation at once,
+    /// where Linux maps pages as they are touched.
     pub fn from_env() -> Capacity {
-        let scale: f64 = std::env::var("STELLAR_STORE_SCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(1.0);
+        let default_scale = if cfg!(windows) { 0.25 } else { 1.0 };
+        let scale: f64 = std::env::var("STELLAR_STORE_SCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(default_scale);
         let s = |n: f64| (n * scale).max(1024.0);
         Capacity {
             entries: s(48.0 * 1048576.0) as u32,     // 768 MB virtual
@@ -314,6 +317,11 @@ pub fn install(lua: &mlua::Lua) -> mlua::Result<Handle> {
             }
             Ok(t)
         })?,
+    )?;
+    // the machine's threads (the default worker count)
+    rust.set(
+        "cpus",
+        lua.create_function(|_, ()| Ok(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)))?,
     )?;
     let s = shared.clone();
     rust.set(

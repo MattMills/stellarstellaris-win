@@ -55,6 +55,7 @@
 
 local world = require("engine.world")
 local defs = require("engine.defs")
+local live = require("engine.store.live")   -- the store's copy of what exploration reads (docs/data_layer.md)
 
 local create = {
     stats = { ships = 0, fleets = 0, merged = 0, draws = 0, name_tries = 0, on_actions = 0,
@@ -719,6 +720,7 @@ local function add_owned_fleet(country, fid)
             end
         end
     end
+    live.touch("country", country)
     table.insert(owned, pos, e)
     world.fleet_owner[fid] = country
 end
@@ -1033,6 +1035,7 @@ function create.add_ship(fid, sid, opts)
     end
     table.insert(list, pos, { text = tostring(sid) })
     local n = #ship_ids(f)
+    live.touch("fleet", fid)
     world.set(s, "fleet", fid)
     world.set(s, "reserve", n - 1)
     -- the ship's post_move_angle: the fleet's formation angle [I] (the saves' new ships)
@@ -1153,6 +1156,7 @@ function create.enter_orbit(fid, kind, id, opts)
     if type(mm) ~= "table" or not slots then
         return nil
     end
+    live.touch("fleet", fid)
     -- the first free slot: no entry, or one that holds no fleet (4294967295, a fleet gone)
     local used, entry_of = {}, {}
     for _, e in ipairs(slots) do

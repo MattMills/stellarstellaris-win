@@ -33,6 +33,7 @@
 local world = require("engine.world")
 local defs = require("engine.defs")
 local path = require("engine.fleets.path")
+local live = require("engine.store.live")   -- the store's copy of the fleet (docs/data_layer.md)
 
 local FP, NO_ID = path.FP, path.NO_ID
 local raw, text = path.raw, path.text
@@ -290,6 +291,7 @@ local function write_state(st)
         mm[i] = e
     end
     touched(mm)
+    live.touch("fleet", st.fid)
     S.writes = S.writes + 1
 end
 
@@ -1190,6 +1192,7 @@ local function repair(fid, f)
     world.set(lj, "bypass_from", NO_ID)
     world.set(lj, "bypass_to", NO_ID)
     cache[mm] = nil
+    live.touch("fleet", fid)
     S.repaired = (S.repaired or 0) + 1
 end
 

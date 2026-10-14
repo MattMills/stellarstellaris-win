@@ -48,6 +48,7 @@ local world = require("engine.world")
 local defs = require("engine.defs")
 local path = require("engine.fleets.path")
 local ffi = require("ffi")
+local live = require("engine.store.live")   -- the store's copy of what exploration reads (docs/data_layer.md)
 
 local I64 = ffi.typeof("int64_t")
 local raw, text, fmul, fdiv = path.raw, path.text, path.fmul, path.fdiv
@@ -1181,6 +1182,7 @@ local function add_owned_fleet(country, fid)
     end
     table.insert(owned, pos, e)
     world.fleet_owner[fid] = country
+    live.touch("country", country)
 end
 
 -- CPlanet::SetController (0xdf8690): the old controller's controlled_planets without it, the new
@@ -1191,6 +1193,9 @@ local function set_controller(pid, country)
     if old == country then
         return
     end
+    live.touch("planet", pid)
+    live.touch("country", old)
+    live.touch("country", country)
     if old then
         local oc = world.object("country", old)
         local l = oc and world.field(oc, "controlled_planets")
@@ -1265,6 +1270,7 @@ local function create_starbase(country, sid, pid, ship_id, design)
     world.append(b, "orbitals", {})
     stations.place("starbases", id, e, b)
     -- the system's starbases: the primary first (on the star), the others after
+    live.touch("system", sid)
     local g = world.object("system", sid)
     local list = world.field(g, "starbases")
     if type(list) ~= "table" then
@@ -1354,9 +1360,11 @@ function stations.update_borders(countries)
                 if b and not has then
                     put(r, "borders", "yes", { "contact", "communications", "truce", "num_hostile_acts" })
                     S.borders = S.borders + 1
+                    live.touch("country", country)
                 elseif not b and has then
                     remove_key(r, "borders")
                     S.borders = S.borders + 1
+                    live.touch("country", country)
                 end
                 -- the other side's relation
                 local oc = world.object("country", other)
@@ -1365,8 +1373,10 @@ function stations.update_borders(countries)
                         local has2 = world.field(r2, "borders") == "yes"
                         if b and not has2 then
                             put(r2, "borders", "yes", { "contact", "communications", "truce", "num_hostile_acts" })
+                            live.touch("country", other)
                         elseif not b and has2 then
                             remove_key(r2, "borders")
+                            live.touch("country", other)
                         end
                     end
                 end

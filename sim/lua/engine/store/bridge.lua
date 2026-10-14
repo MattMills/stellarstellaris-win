@@ -222,10 +222,79 @@ local function sync_object(name, id, tobj)
     return nb
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- keeping the mirror current: the objects the writers marked (engine.store.live), the new ones
+-- and the replaced ones are brought in; the others are left. With STELLAR_STORE_CHECK=1 the others
+-- are compared with the table world (read-only) and a stale one is counted by store and key, then
+-- brought in. STELLAR_STORE_SYNC=all brings every object in every day (the first version).
+
+local live = require("engine.store.live")
+local SYNC_ALL = os.getenv("STELLAR_STORE_SYNC") == "all"
+Bm.stats.stale, Bm.stats.stale_ids, Bm.stats.synced, Bm.stats.checked = {}, {}, 0, 0
+
+-- whether store block bid holds what the Lua block t holds (keys, kinds, texts; not the quoting)
+local same_block
+function same_block(bid, t)
+    local r = BL[bid]
+    local n = #t
+    if r.count ~= n then return false end
+    local first = r.first
+    for j = 1, n do
+        local x = t[j]
+        local i = first + j - 1
+        local e = E[i]
+        local v
+        if x.op then
+            if e.op == 0 or e.key ~= sid(x.key.text) then return false end
+            v = x.value
+        else
+            if x.param or e.op ~= 0 then return false end
+            v = x
+        end
+        if v.text then
+            if (e.kind ~= 1 and e.kind ~= 2) or S.text(i) ~= v.text then return false end
+        elseif e.kind ~= 3 or not same_block(e.v.u.a, v) then
+            return false
+        end
+    end
+    return true
+end
+
+-- whether the store's values of key k in block bid are the table's (vals, in order; the order of
+-- different keys does not matter: a list exploration adds goes at the block's end)
+local function same_key(bid, k, vals)
+    local i = S.find(bid, k)
+    for j = 1, #vals do
+        if not i then return false end
+        local e = E[i]
+        local v = vals[j]
+        if type(v) == "string" then
+            if (e.kind ~= 1 and e.kind ~= 2) or S.text(i) ~= v then return false end
+        elseif e.kind ~= 3 or not same_block(e.v.u.a, v) then
+            return false
+        end
+        i = S.find_next(bid, k, i)
+    end
+    return i == nil
+end
+
+-- the check of an unmarked object: the key that went stale ("static:" for a static key), or nil
+local function stale_key(name, id, tobj)
+    local b = MB[name][id]
+    for _, part in ipairs({ { STATIC_KEYS[name] or {}, "static:" }, { MIRROR[name], "" } }) do
+        for _, k in ipairs(part[1]) do
+            if not same_key(b, sid(k), world.fields(tobj, k)) then return part[2] .. k end
+        end
+    end
+    return nil
+end
+
 local mirror_root
+local LIVE = {}   -- store name -> the number of live objects last published
 -- B.sync(): the mirror made current from the table world, and the object tables published
 function Bm.sync()
     local t0 = RUST.clock()
+    local dirty = live.take()
     for name in pairs(MIRROR) do
         MB[name] = MB[name] or {}
         NSTATIC[name] = NSTATIC[name] or {}
@@ -233,15 +302,43 @@ function Bm.sync()
         local ts = RUST.clock()
         local store = world.stores[name] or {}
         local ids = world.ids[name] or {}
+        local mb, mt = MB[name], MTAB[name]
+        local d = dirty[name]
+        local every = SYNC_ALL or d == true
+        local changed, n = false, 0
+        local live_ids = {}
         for _, id in ipairs(ids) do
             local t = store[id]
-            if t then sync_object(name, id, t) end
+            if t then
+                n = n + 1
+                live_ids[n] = id
+                local b = mb[id]
+                local bring = every or not b or mt[id] ~= t or (d and d[id])
+                if not bring and live.check then
+                    Bm.stats.checked = Bm.stats.checked + 1
+                    local k = stale_key(name, id, t)
+                    if k then
+                        local key = name .. "." .. k
+                        Bm.stats.stale[key] = (Bm.stats.stale[key] or 0) + 1
+                        local ex = Bm.stats.stale_ids[key] or {}
+                        if #ex < 6 then ex[#ex + 1] = id end
+                        Bm.stats.stale_ids[key] = ex
+                        bring = true
+                        if k:sub(1, 7) == "static:" then mt[id] = nil end   -- built again, statics too
+                    end
+                end
+                if bring then
+                    Bm.stats.synced = Bm.stats.synced + 1
+                    if sync_object(name, id, t) ~= b then changed = true end
+                end
+            end
         end
         Bm.stats.sync_by[name] = (Bm.stats.sync_by[name] or 0) + (RUST.clock() - ts)
-        -- objects gone from the table world leave the object table
-        local live = {}
-        for _, id in ipairs(ids) do if store[id] then live[#live + 1] = id end end
-        O.publish(name, live, MB[name])
+        -- the object table again when an object came, went or moved to another block
+        if changed or n ~= LIVE[name] then
+            O.publish(name, live_ids, mb)
+            LIVE[name] = n
+        end
     end
     if not mirror_root then
         -- the world's root in the mirror: the top-level nebulae (exploration's galaxy reads them)
@@ -253,6 +350,18 @@ function Bm.sync()
         S.H.roots[0] = mirror_root
     end
     Bm.stats.sync = Bm.stats.sync + (RUST.clock() - t0)
+end
+
+-- B.stale_report() -> text: what the check found
+function Bm.stale_report()
+    local l = {}
+    for k, n in pairs(Bm.stats.stale) do l[#l + 1] = { k, n } end
+    table.sort(l, function(a, b) return a[2] > b[2] end)
+    local out = { string.format("store check: %d objects compared, %d brought in; %d stale keys", Bm.stats.checked, Bm.stats.synced, #l) }
+    for _, x in ipairs(l) do
+        out[#out + 1] = string.format("  %-50s %6d  e.g. %s", x[1], x[2], table.concat(Bm.stats.stale_ids[x[1]], " "))
+    end
+    return table.concat(out, "\n")
 end
 
 -- B.full(): the whole world's tree in the store instead of the mirror (engine.store.world), its
@@ -341,12 +450,12 @@ function Bm.setup()
     local t0 = RUST.clock()
     S.attach()
     E, BL = S.E, S.B
-    local which = os.getenv("STELLAR_STORE_DEFS")
-    if which == "exploration" then
+    -- the folders exploration reads (STELLAR_STORE_DEFS=all: every folder, 0.3 s more)
+    if os.getenv("STELLAR_STORE_DEFS") == "all" then
+        SD.build(defs)
+    else
         SD.build(defs, { "common/bypass", "common/country_types", "common/defines", "common/intel_categories",
             "common/intel_levels", "common/megastructures" })
-    else
-        SD.build(defs)
     end
     Bm.stats.defs = SD.seconds
     S.H.roots[3] = S.build(components_tree())
@@ -374,6 +483,7 @@ end
 -- B.inputs(): the day's typed arrays (the main thread, before part a)
 local IP = {}
 Bm.stats.input_parts = IP
+local SHIP_GEN, SHIP_S, SHIP_H   -- the ships' modifier values, by the modifier source's build
 local function ilap(name, t)
     local now = RUST.clock()
     IP[name] = (IP[name] or 0) + (now - t)
@@ -411,13 +521,26 @@ function Bm.inputs()
     local function mods(kind, id)
         return has and economy.modifiers(kind, id) or {}
     end
-    local ss, sh = {}, {}
-    for _, id in ipairs(world.all("ship")) do
-        local m = mods("ship", id)
-        ss[id], sh[id] = mod_int(m, "ship_sensor_range_add"), mod_int(m, "ship_hyperlane_range_add")
+    -- the ships' values are the modifier source's, which holds them by id until it is built
+    -- again (the monthly rebuild): kept until then, published when a ship is new
+    local engine_ = package.loaded["engine"]
+    local src = engine_ and engine_.modifier_source
+    local gen = src and src.stats and src.stats.builds or 0
+    if gen ~= SHIP_GEN then
+        SHIP_GEN, SHIP_S, SHIP_H = gen, {}, {}
     end
-    A.publish_map("x_ship_sensor", ss, "double", NONE)
-    A.publish_map("x_ship_hyper", sh, "double", NONE)
+    local new = false
+    for _, id in ipairs(world.all("ship")) do
+        if SHIP_S[id] == nil then
+            local m = mods("ship", id)
+            SHIP_S[id], SHIP_H[id] = mod_int(m, "ship_sensor_range_add"), mod_int(m, "ship_hyperlane_range_add")
+            new = true
+        end
+    end
+    if new then
+        A.publish_map("x_ship_sensor", SHIP_S, "double", NONE)
+        A.publish_map("x_ship_hyper", SHIP_H, "double", NONE)
+    end
     tl = ilap("ship_modifiers", tl)
     local cs, ch = {}, {}
     for _, c in ipairs(cids) do
@@ -628,7 +751,12 @@ local function start()
     S.attach()
     E, BL = S.E, S.B
     Bm.setup()
-    local n = tonumber(os.getenv("STELLAR_WORKERS") or "") or 0
+    -- STELLAR_WORKERS=N (0: the pass in this state); by default 4, or one less than the machine's
+    -- threads when it has fewer than 5
+    local n = tonumber(os.getenv("STELLAR_WORKERS") or "")
+    if n == nil then
+        n = math.max(0, math.min(4, (RUST.cpus and RUST.cpus() or 1) - 1))
+    end
     if n > 0 then
         RUST.pool_start(n)
         POOL = n
@@ -660,6 +788,14 @@ function Bm.report()
     return string.format("store exploration: %d days on %d workers, %.2f s (setup %.2f s, definitions %.2f s; sync %.2f, inputs %.2f, parts a %.2f b %.2f c %.2f (the slowest worker's a %.2f b %.2f c %.2f), merge %.2f); %d objects built, %d blocks built again; %d rule errors; the store %s",
         s.days, POOL, s.seconds, s.setup, s.defs or 0, s.sync, s.inputs, s.parts.a, s.parts.b, s.parts.c,
         s.worker.a, s.worker.b, s.worker.c, s.merge, s.built, s.rebuilt, s.rule_errors, S.usage()) .. "; the sync by store (s): " .. table.concat(by, ", ")
+        .. string.format("; %d objects brought in, %d marks", s.synced, live.marks)
+        .. (function()
+            local p = {}
+            for k, v in pairs(s.input_parts) do p[#p + 1] = string.format("%s %.2f", k, v) end
+            table.sort(p)
+            return "; the inputs (s): " .. table.concat(p, ", ")
+        end)()
+        .. (live.check and ("\n" .. Bm.stale_report()) or "")
 end
 
 -- ---------------------------------------------------------------------------------------------

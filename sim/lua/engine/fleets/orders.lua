@@ -40,6 +40,7 @@
 
 local world = require("engine.world")
 local eval = require("simscript.eval")
+local live = require("engine.store.live")   -- the store's copy of what exploration reads (docs/data_layer.md)
 
 local orders = {
     stats = { days = 0, ticked = {}, finished = {}, started = {}, cancelled = 0, issued = 0, refused = 0,
@@ -359,6 +360,7 @@ function orders.enter_orbit(fid, f, id, kind)
     end
     orders.leave_orbit(fid, f)
     local slot = -1
+    live.touch("fleet", fid)
     if p then
         slot = free_slot(p)
         world.append(world.child(p, "planet_orbitals"), tostring(slot), fid)
@@ -398,6 +400,7 @@ function orders.leave_orbit(fid, f)
         empty(o)
     end
     S.left_orbit = S.left_orbit + 1
+    live.touch("fleet", fid)
     return true
 end
 

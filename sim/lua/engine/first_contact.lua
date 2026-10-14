@@ -57,6 +57,7 @@
 local world = require("engine.world")
 local defs = require("engine.defs")
 local bit = require("bit")
+local live = require("engine.store.live")   -- the store's copy of what exploration reads (docs/data_layer.md)
 
 world.KINDS.first_contact = world.KINDS.first_contact or "contacts"
 
@@ -359,6 +360,8 @@ local function finish(host, id, fc)
     if owner and other then
         drop(relation(owner, other), "pre_communications_name")
         drop(relation(other, owner), "pre_communications_name")
+        live.touch("country", owner)
+        live.touch("country", other)
     end
     world.set(fc, "status", "finished")
     first_contact.stats.finished = first_contact.stats.finished + 1

@@ -40,14 +40,16 @@ time), so the timings carry noise of 10 to 30%; the medians and repeats are give
   it: each state's own JIT warm-up (every worker compiles the same traces, seeing each country 1/N
   as often), the hardware past 6 workers (SMT siblings, two CCDs, other jobs on the box), the
   costliest country (2 ms of 15 to 25), and the serial inputs.
-- **The gate**: the full 180-day diff with `STELLAR_STORE=ffi` on 0, 4 and 12 workers equals the run
-  without the store, field path by field path (723,380 equal, 13,251 differ with today's tree; the
+- **The gate**: the full 180-day diff with the store on 0, 4 and 12 workers, and with its defaults,
+  equals the run without it, field path by field path (723,380 equal, 13,251 differ with today's tree; the
   same 4,725,089 draws).
-- **The transition is what costs**: in the full simulation the rest of the engine still reads Lua
-  tables, so the store holds a mirror of what exploration reads, synced every day. The sync costs
-  about 40 ms a day, as much as the pool saves: the pass itself goes from about 60 ms (tables) to
-  14 ms (store, 4 to 8 workers), the phase from 75 to 92 ms (tables) to 75 to 84 ms (store, 4 to 8
-  workers, sync and inputs included). The gains need the engine itself on the store (section 11).
+- **The transition**: the rest of the engine still reads Lua tables, so the store holds a mirror
+  of what exploration reads. Synced in full every day it cost about 40 ms, as much as the pool
+  saved. Now the modules that write those fields mark what they changed (21 lines in 8 modules,
+  section 9), the sync takes 1 to 2 ms, and `daily.countries_parallel` falls from 49 to 58 ms a day
+  (tables) to 22 to 28 ms (the store, 4 workers: the pass 12 ms, its serial inputs 8 ms, ethics 1.6
+  ms); 180 days take 32.7 to 33.8 s against 36.9 to 39.1 s. The store is on by default
+  (`STELLAR_STORE=off` turns it off).
 - **For the in-game database builder** (databases.md section 4): the definitions in the game's
   order with duplicates kept, and their file and line locations, are designed (sections 6.2 and
   6.3) and listed as open items; the prototype keeps the last definition per name and no lines.
@@ -217,7 +219,9 @@ tree under root 1: `"common/country_types" = { default = { ... } fallen_empire =
 definition its own pdxscript block (the files in load order, a later definition replacing an
 earlier one, the names sorted). Built once after `engine.defs.load`: 0.30 s for 247 folders and
 21,128 definitions, about 0.6 M entries and 5.3 M index slots. A worker reads a definition with
-`D.get(folder, name)` and the raw API, without loading the game's files.
+`D.get(folder, name)` and the raw API, without loading the game's files. Since nothing but
+exploration reads them yet, the simulation puts only its six folders in by default (0.01 s);
+`STELLAR_STORE_DEFS=all` puts every folder in.
 
 That is enough for the simulation, which wants the definition in force. It is not enough for the
 in-game builder ([databases.md](databases.md) section 4): Lua building the game's own databases
@@ -338,35 +342,74 @@ worker order. That return is the barrier.
 worker computed it or when; the changes made at the barrier are made in country order. The 180-day
 diff on 0, 4 and 12 workers is the same field by field.
 
-**The inputs the main thread computes** (8 to 15 ms a day): the game rules exploration evaluates
-(`system_blocks_sensors` and `can_force_see_fleets_in_system` for 596 systems, `has_full_sensor_range`
-per country: 1,250 trigger evaluations, 5 to 10 ms), the modifier values it reads (2,504 ships, the
-colonies: 3 to 4 ms), the world's indexes (planet <-> colony, system and fleet owners), and once the
-pixel table and the component templates. They are serial because they are the script layer and the
-modifier graph, which are still Lua tables in the main state.
+**The inputs the main thread computes** (8 ms a day over 180 days): the game rules exploration
+evaluates (`system_blocks_sensors` and `can_force_see_fleets_in_system` for 596 systems,
+`has_full_sensor_range` per country: 1,250 trigger evaluations, 5 to 7 ms), the modifier values it
+reads (2,504 ships, the colonies: the source holds them by id until its monthly rebuild, so they are
+kept until then and published when a ship is new), the world's indexes (planet <-> colony, system and
+fleet owners), and once the pixel table and the component templates. They are serial because they
+are the script layer and the modifier graph, which are still Lua tables in the main state. They are
+what remains between the phase and the pass.
 
-## 9. The transition: a mirror of the table world
+**Defaults.** `STELLAR_WORKERS` is 4 when unset (one less than the machine's threads below 5); the
+worker states are made by `runtime::new_lua`, so they have the main state's JIT limits and collector
+pause.
+
+## 9. The transition: a mirror, kept current by its writers
 
 The rest of the engine reads and writes the Lua tables, directly in about 2,300 places (`.key.text`,
 `.value.text`, entries built as `{ key = ..., value = ... }`, `type(v) == "table"`, `table.insert`
 on blocks) besides 1,232 `world.field` calls, in 40,000 lines that other agents are changing. It
 cannot run on the store unconverted: a cdata handle is not a table, LuaJIT's `ipairs` and `#` on a
-table ignore metamethods, and identity-keyed caches break. So with `STELLAR_STORE=ffi` the table world
-stays the engine's, and the store holds a mirror of what exploration reads (11 stores, the keys it
-reads), synced every day before the pass:
+table ignore metamethods, and identity-keyed caches break. So the table world stays the engine's,
+and the store holds a mirror of what exploration reads (11 stores, the keys it reads):
 
 - an object is built once (with its static keys: the terra incognita map, which exploration owns,
   and the galaxy's geometry);
-- every day its dynamic keys are compared with the table's in place (the same keys and kinds: the
-  values overwritten), and its dynamic part built again where the shape changed;
 - after the pass, the lists, maps and surveys that changed go back into the table world with
   `engine.exploration`'s own `set_list` semantics.
 
-The sync costs about 40 ms a day (fleets 13 ms, ships 8, countries 6, planets 5, systems 4; a first
-version that scanned every entry of every object and synced the galaxy's geometry too took 55 to
-60): it touches every value the pass reads, which is most of the pass's reading. It is a transition
-cost, measured so as not to be confused with the store's: an engine on the store has nothing to
-sync.
+**The first version synced every object every day** (its dynamic keys compared with the table's in
+place, its dynamic part built again where the shape changed): about 40 ms a day (fleets 13 ms, ships
+8, countries 6, planets 5, systems 4), as much as the pool saved. It is still there as
+`STELLAR_STORE_SYNC=all`.
+
+**Now the writers say what they changed** (`engine/store/live.lua`): a module that changes one of the
+mirrored fields marks the object (`live.touch("fleet", fid)`), and the next pass brings in only the
+marked objects, the new ones (an id the mirror has not seen) and the replaced ones (an id whose
+table is another). The marks are 21 lines in 8 modules (and a `require` in each), at the places the
+modules write:
+
+| module | where | marks |
+|---|---|---|
+| `fleets/movement.lua` | `write_state` (the movement manager written back, every tick a fleet moves), `repair` (the load's) | the fleet |
+| `fleets/create.lua` | `add_owned_fleet`, `add_ship`, `enter_orbit` | the country; the fleet |
+| `fleets/orders.lua` | `enter_orbit`, `leave_orbit` | the fleet |
+| `fleets/stations.lua` | `add_owned_fleet`, `set_controller`, a starbase in its system, the borders in the relations | the country; the planet and both countries; the system; both countries |
+| `fleets/survey.lua` | `add_surveyed` | the country |
+| `construction.lua` | `add_owned_army` | the country |
+| `first_contact.lua` | the finish (the relations' pre-communications names) | both countries |
+| `exploration.lua` | `remove_surveyed` | the country |
+
+**Finding the writers: the check.** With `STELLAR_STORE_CHECK=1` every unmarked object is compared
+with the table world before each pass (read-only, key by key), and a stale one is counted by store
+and key, then brought in. Without any marks, 60 days found `fleet.movement_manager` (2,282
+object-days), `country.surveyed_deposit_holders` (15), `country.controlled_planets` and
+`planet.controller` (8 each), `country.fleets_manager` (2), `country.owned_armies`, `fleet.ships`
+and `galactic_object.starbases` (1 each). With the marks, 180 days found two more (`movement_manager`
+twice: orbits; `relations_manager` once: borders), and after those, none. A module that starts
+writing a mirrored field needs a mark; the check finds one that does not have it.
+
+What this is and is not: the table world stays the source of truth, and the marks are the
+write-through layer that keeps the store's copy current, applied at the next pass. Converting the
+writers to write the store itself would have meant rewriting how movement, creation and stations
+build their blocks; the marks cost a line each. The check covers what this save does in 180 days:
+war, colonization, megastructures or federations changing hands would exercise writers it has not
+seen, and should be run with the check once.
+
+The sync now costs 1 to 2 ms a day (over 180 days 2.0 ms with the first day's build of 12,909
+objects; 23,000 marks in 60 days and 15,000 objects brought in, most of them that first build).
+Measured, with the rest, in section 10 ("The whole simulation, with the write marks").
 
 ## 10. Measurements
 
@@ -477,6 +520,7 @@ it on every path; the reports differ only in timings, in the statistics of trigg
 719,675 was an earlier tree: with the working tree as it is now, other agents' changes included,
 it is 723,380. Every row is the same tree.
 
+**The first version** (the mirror synced in full every day; 2026-10-13, the collector's pause 200).
 60 days (`examples/run 60`), `daily.countries_parallel` (exploration, plus the countries' timed
 modifiers and ethics), two batches of the four runs; the store's part per day from its report
 (the first batch); the collector's share of the main state's samples from LuaJIT's profiler (the
@@ -495,6 +539,58 @@ the monthly modifier rebuild vary most): the store's effect on it is within the 
 mirror's sync (40 ms) eats what the pool saves (the pass from 36 to 14 ms, against about 60 ms for
 the table pass in the same phase).
 
+### The whole simulation, with the write marks
+
+2026-10-14, sim-engine at 5d6afa9 (the collector's pause 400, on both sides and in the workers),
+the box quiet (load 2 to 4), the process on CCD1 (6 cores, 12 threads), the store with its defaults
+(4 workers), runs one after the other. The gate (`diff ... 100000`, the four runs side by side):
+without the store 42.1 s, the store by default 35.5 s, `STELLAR_STORE=ffi STELLAR_WORKERS=0` 39.3 s,
+4 workers 37.2 s; all four 723,380 / 13,251 with 4,725,089 draws, every field path equal.
+`cargo test --release` passes.
+
+`examples/run`, `phase_report`, ms a call (phases of 0.1 s or more):
+
+| phase | 60 days, off | 60 days, on | 180 days, off | 180 days, on |
+|---|---|---|---|---|
+| `daily.countries_parallel` | 57.7 | 28.0 | 50.4 | 24.5 |
+| `monthly.modifiers` | 821.6 | 1,176.2 | 1,021.3 | 837.3 |
+| `monthly.budget` | 637.2 | 681.4 | 710.9 | 658.3 |
+| `daily.countries_serial` | 26.2 | 24.6 | 22.7 | 27.3 |
+| `ai.process` | 32.0 | 28.0 | 21.5 | 23.1 |
+| `micro.update` | 2.72 | 2.31 | 1.56 | 2.12 |
+| `daily.pop_groups` | 8.4 | 7.9 | 6.7 | 7.9 |
+| `daily.ships_fleets_armies` | 7.7 | 7.7 | 6.2 | 7.4 |
+| `daily.ai_attitudes` | 7.1 | 6.7 | 5.8 | 6.8 |
+| `monthly.countries_serial` | 165.6 | 160.6 | 154.3 | 152.1 |
+| `daily.colonies_parallel` | 4.1 | 4.1 | 3.7 | 4.0 |
+| `daily.script_state_expiry` | 3.6 | 4.6 | 4.3 | 3.0 |
+| `daily.construction_manager` | 3.0 | 2.6 | 1.9 | 2.4 |
+| `daily.galaxy` | 2.5 | 2.4 | 2.3 | 2.7 |
+| `monthly.colonies` | | | 22.7 | 21.2 |
+| all phases | 14.1 s | 12.5 s | 36.9 s | 33.5 s |
+
+Two more 180-day pairs: 37.8 s off against 33.8 s on (the other order), and 39.1 s against 32.7 s;
+`daily.countries_parallel` 48.9 and 53.1 ms against 22.5 and 22.6. The store on 0 workers (the pass
+in the main state) took 40.7 s with the phase at 49.8 ms: the pool is what makes it pay, not the
+store alone.
+
+`daily.countries_parallel` with the store, per day over 180 days (the bridge's report): the pass
+11.6 ms (parts a 6.3, b 2.2, c 3.2), the inputs 8.2 ms, the sync 2.0 ms (the first day's build of
+12,909 objects included), the merge 0.6 ms, ethics 1.6 ms, the timed modifier countdown under 0.1
+ms. Ethics (`engine.ethics.countries_daily`: every 30 days a country's attraction) and the countdown
+are too small to move to the pool; the inputs are the script layer's rules and stay serial until
+the script layer reads the store.
+
+Over 180 days the store's runs are consistently 3 to 5 ms a day slower in
+`daily.countries_serial`, about 0.4 ms a tick in `micro.update`, and 1 ms in the pop groups, and
+not over 60 days. The likely reason is the collector (not measured phase by phase): with the pause at 400
+a full cycle over the 4 to 4.5 GB heap comes once or twice in 180 days, its steps are paid by the
+phases that allocate in the main state, and with exploration's allocation moved to the workers a
+larger share of each cycle falls on the phases that remain. The total is still 3.4 to 6.4 s lower
+over 180 days. The heap's peak is about the same (4.5 GB against 4.0 GB: the mirror is extra, and
+the world and the definitions stay in the heap), so the store has no collector effect of its own
+yet, at this pause.
+
 ## 11. Assessment
 
 **What the prototype shows.** The store works as intended where code reads it: one copy of the
@@ -502,9 +598,10 @@ world and the definitions, mapped by every thread, read at compiled speed (2 to 
 thread), written under the game's own discipline with one extra rule (shape changes of shared
 blocks at the barrier), deterministic, and exact (the save written back as read; exploration's
 results identical on 0 to 12 workers over 180 days). Exploration, the heaviest daily parallel pass,
-takes 27 ms on 4 to 8 workers with its serial inputs (14 ms the pass, 13 ms the inputs) against
-about 60 ms for its table version: a little over 2x, and 4x for the pass alone; what is lost is
-the mirror's sync, which an engine on the store does not have.
+takes about 22 ms a day on 4 workers with its serial inputs and the mirror's upkeep (11.6 ms the
+pass, 8.2 the inputs, 2.0 the sync), against 47 to 56 ms for its table version, and the 180 days
+3.4 to 6.4 s less. The mirror, kept current by 21 marks in its writers, costs 2 ms a day instead of
+40; the inputs (the script layer's rules) are now the larger serial part.
 
 **What moving the whole engine takes.**
 
@@ -560,13 +657,18 @@ rest being the serial phases (the AI's commands, events) and the script layer's 
 | `store/exploration.lua` | exploration over the store, in three parts |
 | `store/bridge.lua` | the main thread's side: the mirror, the inputs, the pass on the pool, the merge; `B.check(days, workers, mirror)`, `B.scale(counts, reps, warm)`, `B.read_scale(...)` |
 | `store/worker.lua` | a worker's jobs (`part`, and benchmarks) |
+| `store/live.lua` | the write marks: `live.touch(store, id)`, called by the modules that write what the mirror holds (section 9) |
 | `store/bench.lua` | the round trip, the microbenchmarks, the heap |
-| `STELLAR_STORE=ffi` | exploration's day over the store (`engine/exploration.lua`: the only engine file changed, two lines) |
-| `STELLAR_WORKERS=N` | its pool (0: in the main state) |
-| `STELLAR_STORE_DEFS=exploration` | only the folders exploration reads in the store |
-| `STELLAR_STORE_SCALE=f` | the regions' capacities times f |
+| `STELLAR_STORE=off` | exploration's own pass on the table world (the store is on by default; `ffi` is the same as unset) |
+| `STELLAR_WORKERS=N` | the pool (0: the pass in the main state; unset: 4, or one less than the machine's threads below 5) |
+| `STELLAR_STORE_CHECK=1` | every unmarked mirrored object compared with the table world before each pass; the stale ones counted by store and key (in the bridge's report) and brought in |
+| `STELLAR_STORE_SYNC=all` | every mirrored object brought in every day (the first version) |
+| `STELLAR_STORE_DEFS=all` | every folder of definitions in the store (by default only the six exploration reads) |
+| `STELLAR_STORE_SCALE=f` | the regions' capacities times f (default 1; 0.25 on Windows, which commits a large allocation at once) |
 | `STELLAR_STORE_PROF=1` | the parts' functions timed, per state |
 
 Scripts used for the numbers (on hippo's share, `tmp_sim/`): `store_bench.lua`, `store_check.lua`,
 `store_scale.lua`, `store_read_scale.lua`, `store_defs.lua`, `store_gate.sh`, `store_days.sh`, run as
-`STELLAR_LUA=<script> examples/run 0 <save>`.
+`STELLAR_LUA=<script> examples/run 0 <save>`; for the write marks `store_gate2.sh` (the strict gate),
+`store_final2.sh` (gate, tests, timings), `phase_parts.lua` / `phase_parts_report.lua` (the phase's
+parts), `jit_events.lua` (trace events).

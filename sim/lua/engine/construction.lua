@@ -52,6 +52,7 @@
 -- items, colony ships' colonies (CGameState::CreateColonyInsideShip), arkships, the messages.
 
 local world = require("engine.world")
+local live = require("engine.store.live")   -- the store's copy of what exploration reads (docs/data_layer.md)
 
 local construction = {
     stats = { advanced = 0, finished = 0, not_modelled = {}, finish_not_modelled = {}, draws = 0,
@@ -344,6 +345,7 @@ local function add_owned_army(country, aid)
         l = world.child(c, "owned_armies")
     end
     world.append_value(l, aid)
+    live.touch("country", country)
 end
 
 -- CArmy::MoveToOrbit (0x22305e0 Linux): the transport ship (the army's name), a new transport
