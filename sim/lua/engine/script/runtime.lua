@@ -966,6 +966,180 @@ function R.is_active_resolution(rtype, can_be_active)
 end
 
 -- ---------------------------------------------------------------------------------------------
+-- situations, federations, galaxy settings, factions, technologies
+
+-- R.situation_stage_key(situation) -> the key of its current stage: `stage = <index>` (0-based)
+-- into its type's `stages = { <key> = { } ... }` (common/situations, definition order)
+function R.situation_stage_key(sid)
+    local s = obj("situation", sid)
+    local t = s and world.field(s, "type")
+    local d = t and defs().get("common/situations", t)
+    local stages = d and defs().field(d.block, "stages")
+    local i = s and tonumber(world.field(s, "stage"))
+    if type(stages) ~= "table" or not i then return nil end
+    local n = 0
+    for _, e in ipairs(stages) do
+        if e.op and e.key and e.value.text == nil then
+            if n == i then return e.key.text end
+            n = n + 1
+        end
+    end
+    return nil
+end
+
+-- R.situation_has_approach(type, key): the situation type has an approach of that key
+function R.situation_has_approach(stype, key)
+    local d = stype and defs().get("common/situations", stype)
+    local ap = d and defs().field(d.block, "approaches")
+    for _, e in ipairs(type(ap) == "table" and ap or {}) do
+        if e.op and e.key and e.value.text == nil then
+            local name = defs().field(e.value, "name") or e.key.text
+            if name == key or e.key.text == key then return true end
+        end
+    end
+    return false
+end
+
+-- R.federation_laws(federation) -> { [category] = law } of `federation_progression = { laws = {
+-- <category> = <law> } }`
+function R.federation_laws(fid)
+    local laws = {}
+    local f = obj("federation", fid)
+    local l = f and world.path(f, "federation_progression", "laws")
+    for _, e in ipairs(type(l) == "table" and l or {}) do
+        if e.op and e.key and e.value.text then laws[e.key.text] = e.value.text end
+    end
+    return laws
+end
+
+-- R.federation_perks(federation) -> the types of its `federation_progression = { perks = { { level
+-- type } } }`
+function R.federation_perks(fid)
+    local f = obj("federation", fid)
+    local out = {}
+    for _, b in ipairs(world.blocks(f and world.path(f, "federation_progression", "perks"))) do
+        local t = world.field(b, "type")
+        if t then out[#out + 1] = t end
+    end
+    return out
+end
+
+-- R.galaxy_field(key) -> a field of the save's `galaxy = { ... }` (the galaxy setup)
+function R.galaxy_field(key)
+    local g = world.meta and world.meta.galaxy
+    return type(g) == "table" and world.field(g, key) or nil
+end
+
+-- R.pop_factions(country) -> the pop faction ids of the country (`pop_factions` store, `country`)
+function R.pop_factions(country)
+    local out = {}
+    for _, id in ipairs(world.all("pop_factions")) do
+        if tonumber(world.field(obj("pop_factions", id), "country")) == country then out[#out + 1] = id end
+    end
+    return out
+end
+
+function R.pop_faction_field(fid, key)
+    local f = obj("pop_factions", fid)
+    return f and world.field(f, key)
+end
+
+-- R.tech_area(tech) -> its `area` (common/technology)
+function R.tech_area(tech)
+    local d = defs().get("common/technology", tech)
+    return d and defs().field(d.block, "area") or nil
+end
+
+-- R.tech_alternatives(country, area) -> the technologies offered in that area (`tech_status = {
+-- alternatives = { physics = { ... } society = { ... } engineering = { ... } } }`)
+function R.tech_alternatives(country, area)
+    local c = obj("country", country)
+    local alt = c and world.path(c, "tech_status", "alternatives")
+    local a = type(alt) == "table" and world.field(alt, area)
+    return world.list(type(a) == "table" and a or nil)
+end
+
+-- R.tradition_category(tradition) -> the tradition category (common/tradition_categories) that lists
+-- the tradition (its `traditions`, `adoption_bonus` or `finish_bonus`)
+local trad_cat
+function R.tradition_category(trad)
+    if trad_cat == nil then
+        trad_cat = {}
+        for cname, d in pairs(defs().folder("common/tradition_categories")) do
+            local l = defs().field(d.block, "traditions")
+            for _, e in ipairs(type(l) == "table" and l or {}) do
+                if e.text then trad_cat[e.text] = cname end
+            end
+            for _, k in ipairs({ "adoption_bonus", "finish_bonus" }) do
+                local v = defs().field(d.block, k)
+                if type(v) == "string" then trad_cat[v] = cname end
+            end
+        end
+    end
+    return trad_cat[trad]
+end
+
+-- R.player_events() -> the save's open player events (`player_event = { id event scope country }`)
+function R.player_events()
+    local out = {}
+    for _, e in ipairs(world.tree or {}) do
+        if e.op and e.key and e.key.text == "player_event" and e.value.text == nil then out[#out + 1] = e.value end
+    end
+    return out
+end
+
+-- R.leader_traits(leader) -> its `traits` values
+function R.leader_traits(lid)
+    local l = obj("leader", lid)
+    local out = {}
+    for _, t in ipairs(l and world.fields(l, "traits") or {}) do
+        if type(t) == "string" then out[#out + 1] = t end
+    end
+    return out
+end
+
+-- R.species_traits(species) -> its `traits = { trait = "x" ... }`
+function R.species_traits(sid)
+    local s = obj("species", sid)
+    local out = {}
+    local t = s and world.field(s, "traits")
+    for _, v in ipairs(type(t) == "table" and world.fields(t, "trait") or {}) do
+        if type(v) == "string" then out[#out + 1] = v end
+    end
+    return out
+end
+
+function R.trait_field(trait, key)
+    local d = trait and defs().get("common/traits", trait)
+    return d and defs().field(d.block, key) or nil
+end
+
+-- R.ideal_planet_class(species) -> the ideal_planet_class of the first of its traits that has one
+function R.ideal_planet_class(sid)
+    for _, t in ipairs(R.species_traits(sid)) do
+        local c = R.trait_field(t, "ideal_planet_class")
+        if type(c) == "string" then return c end
+    end
+    return nil
+end
+
+-- R.planet_class_field(planet, key) -> a field of the planet's class (common/planet_classes)
+function R.planet_class_field(pid, key)
+    local p = obj("planet", pid)
+    local class = p and world.field(p, "planet_class")
+    local d = class and defs().get("common/planet_classes", class)
+    return d and defs().field(d.block, key) or nil
+end
+
+-- R.orbital_station_class(planet) -> the ship_class of the planet's orbital station fleet
+-- (`shipclass_orbital_station = <fleet>`), or nil without one
+function R.orbital_station_class(pid)
+    local f = ref(R.planet_field(pid, "shipclass_orbital_station"))
+    if not (f and obj("fleet", f)) then return nil end
+    return R.fleet_field(f, "ship_class") or "shipclass_military"
+end
+
+-- ---------------------------------------------------------------------------------------------
 -- spatial objects and sites
 
 -- the ESpatialObjectType of a scope kind (a site's `location = { type id }`)

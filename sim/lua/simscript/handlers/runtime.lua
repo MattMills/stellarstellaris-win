@@ -825,7 +825,6 @@ return function(eval)
             return prev(e, ctx, lk or name)
         end
     end
-    scoped_property("has_trait", { "country", "pop_group", "leader", "species" })
     scoped_property("is_country_type", { "country" })
     scoped_property("is_ai", { "country" })
     scoped_property("is_megastructure_type", { "megastructure" })
@@ -1060,6 +1059,1378 @@ return function(eval)
         if sc.kind == "country" then return scopes("spy_network", r.country_spy_networks(sc.id)) end
         return scopes("spy_network", r.all("spy_network"))
     end
+
+    -- =========================================================================================
+    -- the most used keywords of vanilla not reached by the 180-day run (docs/script_runtime.md,
+    -- "Vanilla keywords")
+
+    -- a trigger on one scope kind comparing a field read by get(sc, r) with the argument text
+    local function equals_field(name, kinds, get)
+        local ok = {}
+        for _, k in ipairs(kinds) do ok[k] = true end
+        TRIG[name] = function(e, ctx)
+            local r, sc = rt(), ctx.this
+            local v = e.value.text
+            if not r or not v or not ok[sc.kind] then return false end
+            sync()
+            local have = get(sc, r)
+            return have ~= nil and have == v
+        end
+    end
+    -- a yes/no trigger: test(sc, r) -> the condition; on another scope `other` (default false)
+    local function yes_no_trigger(name, kinds, test, other)
+        local ok = {}
+        for _, k in ipairs(kinds) do ok[k] = true end
+        TRIG[name] = function(e, ctx)
+            local r, sc = rt(), ctx.this
+            if not r then return false end
+            if not ok[sc.kind] then
+                if other == "no" then return not yes(e) end
+                return false
+            end
+            sync()
+            return (test(sc, r) and true or false) == yes(e)
+        end
+    end
+    local function wfield(o, key) return require("engine.world").field(o, key) end
+
+    -- situations
+    -- is_situation_type = <type> (CSituationTypeTrigger 0x19c1630): the situation's `type`
+    equals_field("is_situation_type", { "situation" }, function(sc, r) return r.situation_field(sc.id, "type") end)
+    -- current_situation_approach = <approach> (CCurrentSituationApproachTrigger 0x19c2010): an
+    -- approach of the situation's type, and the situation's `approach`
+    TRIG["current_situation_approach"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v or sc.kind ~= "situation" then return false end
+        sync()
+        if not r.situation_has_approach(r.situation_field(sc.id, "type"), v) then return false end
+        return r.situation_field(sc.id, "approach") == v
+    end
+    -- current_stage = <stage> (CCurrentStageTrigger 0x19c1970): the key of the situation's stage
+    equals_field("current_stage", { "situation" }, function(sc, r) return r.situation_stage_key(sc.id) end)
+    -- situation_monthly_progress <op> x (CSituationMonthlyProgressTrigger 0x19c1470):
+    -- `last_month_progress`
+    numeric("situation_monthly_progress", { "situation" }, function(sc, r)
+        return tonumber(r.situation_field(sc.id, "last_month_progress")) or 0
+    end)
+
+    -- federations
+    -- has_federation_law = <law> (CFederation::HasLaw 0x666e80): the law enacted in its category
+    TRIG["has_federation_law"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v or sc.kind ~= "federation" then return false end
+        sync()
+        for _, law in pairs(r.federation_laws(sc.id)) do
+            if law == v then return true end
+        end
+        return false
+    end
+    -- has_any_federation_law_in_category = <category> (0x1a18c10): a law enacted in the category
+    TRIG["has_any_federation_law_in_category"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v or sc.kind ~= "federation" then return false end
+        sync()
+        return r.federation_laws(sc.id)[v] ~= nil
+    end
+    -- has_federation_perk = <perk> (CHasFederationPerkTrigger 0x1a181b0): an unlocked perk's `type`
+    TRIG["has_federation_perk"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v or sc.kind ~= "federation" then return false end
+        sync()
+        for _, p in ipairs(r.federation_perks(sc.id)) do
+            if p == v then return true end
+        end
+        return false
+    end
+    -- federation_cohesion <op> x (CFederationCohesionTrigger 0x1a17d60)
+    numeric("federation_cohesion", { "federation" }, function(sc, r)
+        return tonumber(r.federation_field(sc.id, "cohesion")) or 0
+    end)
+
+    -- the galactic community and the galaxy setup
+    -- has_galactic_emperor / has_galactic_custodian = yes/no (0x1a07440 / 0x1a07330, any scope)
+    TRIG["has_galactic_emperor"] = function(e)
+        local r = rt()
+        if not r then return false end
+        sync()
+        local leader, empire = r.gc_leader()
+        return (leader ~= nil and empire) == yes(e)
+    end
+    TRIG["has_galactic_custodian"] = function(e)
+        local r = rt()
+        if not r then return false end
+        sync()
+        local leader, empire = r.gc_leader()
+        return (leader ~= nil and not empire) == yes(e)
+    end
+    -- is_part_of_galactic_council = yes/no (0x1a04830): the community's leader, or in `council`
+    yes_no_trigger("is_part_of_galactic_council", { "country" }, function(sc, r)
+        local leader = r.gc_leader()
+        if leader == sc.id then return true end
+        local gc = r.galactic_community()
+        for _, v in ipairs(require("engine.world").list(gc and wfield(gc, "council"))) do
+            if tonumber(v) == sc.id then return true end
+        end
+        return false
+    end)
+    -- is_galactic_council_established = yes/no (0x1a063e0, any scope): `council_established` set
+    TRIG["is_galactic_council_established"] = function(e)
+        local r = rt()
+        if not r then return false end
+        sync()
+        local gc = r.galactic_community()
+        return (gc ~= nil and wfield(gc, "council_established") ~= nil) == yes(e)
+    end
+    -- galactic_community_rank <op> n (CGalacticCommunityRankTrigger 0x1a06920): 1 + its index in
+    -- `members`, -1 when not a member
+    numeric("galactic_community_rank", { "country" }, function(sc, r)
+        local gc = r.galactic_community()
+        for i, v in ipairs(require("engine.world").list(gc and wfield(gc, "members"))) do
+            if tonumber(v) == sc.id then return i end
+        end
+        return -1
+    end)
+    -- imperial_authority <op> x (CImperialAuthorityTrigger 0x1a07080, any scope)
+    TRIG["imperial_authority"] = function(e, ctx)
+        local r = rt()
+        if not r then return false end
+        sync()
+        local gc = r.galactic_community()
+        return compare_num(gc and tonumber(wfield(gc, "imperial_authority")) or 0, e, ctx)
+    end
+    -- galaxy_size = <template> (CGalaxySizeTrigger 0x19b4fc0, any scope): `galaxy = { template }`
+    TRIG["galaxy_size"] = function(e)
+        local r = rt()
+        return r ~= nil and e.value.text ~= nil and r.galaxy_field("template") == e.value.text
+    end
+    -- num_guaranteed_colonies <op> n (0x1959200, any scope)
+    TRIG["num_guaranteed_colonies"] = function(e, ctx)
+        local r = rt()
+        if not r then return false end
+        return compare_num(tonumber(r.galaxy_field("num_guaranteed_colonies")) or 0, e, ctx)
+    end
+    -- is_difficulty <op> <level> (CIsDifficultyTrigger 0x19776d0, any scope): EDifficulty of
+    -- `galaxy = { difficulty }`, a level name or a number on the right
+    local DIFFICULTY = { civilian = 0, cadet = 1, ensign = 2, captain = 3, commodore = 4, admiral = 5, grand_admiral = 6 }
+    TRIG["is_difficulty"] = function(e, ctx)
+        local r = rt()
+        if not r then return false end
+        local have = DIFFICULTY[tostring(r.galaxy_field("difficulty"))]
+        if have == nil then return false end
+        local want = e.value.text and DIFFICULTY[e.value.text] or eval.value(e.value, ctx, e)
+        return compare(have, e.op, want)
+    end
+    -- check_galaxy_setup_value = { setting = x value <op> y } (CCheckGalaxySetupValueTrigger
+    -- 0x196b4c0, any scope): the galaxy setup's value of the setting (its field of `galaxy`;
+    -- mid/end game and victory years from mid_game_start, end_game_start, victory_year: -1 the
+    -- defaults 100 / 200 / 300); an unknown setting: -1
+    local SETUP_FIELD = { mid_game_year = { "mid_game_start", 100 }, end_game_year = { "end_game_start", 200 },
+        victory_year = { "victory_year", 300 } }
+    TRIG["check_galaxy_setup_value"] = function(e, ctx)
+        local r = rt()
+        if not r or e.value.text then return false end
+        local p = params(e)
+        local setting, val = p.setting and p.setting.value.text, p.value
+        if not setting or not val then return false end
+        local spec = SETUP_FIELD[setting]
+        local v = tonumber(r.galaxy_field(spec and spec[1] or setting))
+        if spec and (v == nil or v == -1) then v = spec[2] end
+        return compare(v or -1, val.op, eval.value(val.value, ctx, val))
+    end
+
+    -- countries
+    -- has_tech_option = <technology> (CHasTechnologyOptionTrigger 0x1954d90): among the research
+    -- options of the technology's area (`tech_status = { alternatives = { <area> = { } } }`)
+    TRIG["has_tech_option"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v or sc.kind ~= "country" then return false end
+        sync()
+        local area = r.tech_area(v)
+        if not area then return false end
+        for _, t in ipairs(r.tech_alternatives(sc.id, area)) do
+            if t == v then return true end
+        end
+        return false
+    end
+    -- can_research_technology = <technology> (CCountry::CanResearchTechnology 0x72ebb0): every
+    -- prerequisite can be researched in turn, and the technology's `potential` holds for the
+    -- country (no potential: holds); researched or not does not matter
+    TRIG["can_research_technology"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v or sc.kind ~= "country" then return false end
+        sync()
+        local cctx = eval.new_ctx(sc, nil, nil, "can_research_technology")
+        local memo = {}
+        local function can(t, depth)
+            if memo[t] ~= nil then return memo[t] end
+            local d = r.defs().get("common/technology", t)
+            if not d or depth > 64 then memo[t] = false return false end
+            memo[t] = true
+            local ok = true
+            local pre = r.defs().field(d.block, "prerequisites")
+            for _, x in ipairs(type(pre) == "table" and pre or {}) do
+                if x.text and not can(x.text, depth + 1) then ok = false break end
+            end
+            if ok then
+                local pot = r.defs().field(d.block, "potential")
+                if type(pot) == "table" and not eval.trigger(pot, cctx) then ok = false end
+            end
+            memo[t] = ok
+            return ok
+        end
+        return can(v, 0)
+    end
+    -- has_pre_ftl_age = <age> (CHasPreFtlAge 0x195e4d0): `preftl_age`
+    equals_field("has_pre_ftl_age", { "country" }, function(sc, r) return r.country_field(sc.id, "preftl_age") end)
+    -- has_notification_modifier = <modifier> (0x19abb30): in `notification_modifiers`
+    TRIG["has_notification_modifier"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v or sc.kind ~= "country" then return false end
+        sync()
+        for _, m in ipairs(r.country_list(sc.id, "notification_modifiers")) do
+            if m == v then return true end
+        end
+        return false
+    end
+    -- has_valid_ai_personality = yes/no (0x1957600): `personality` names a personality
+    yes_no_trigger("has_valid_ai_personality", { "country" }, function(sc, r)
+        local p = r.country_field(sc.id, "personality")
+        return type(p) == "string" and r.defs().get("common/personalities", p) ~= nil
+    end)
+    -- is_preferred_patron = <patron> (CIsPreferredPatronTrigger 0x1a25530): `is_preferred_patron`
+    -- [I: the field's form]
+    equals_field("is_preferred_patron", { "country" }, function(sc, r) return r.country_field(sc.id, "is_preferred_patron") end)
+    -- is_preferred_weapons = <weapon type> (CIsFavoriteWeaponTrigger 0x199f4c0): the country's
+    -- ai_weapon_preference_override, else its personality's weapon_preferences
+    equals_field("is_preferred_weapons", { "country" }, function(sc, r)
+        local o = r.country_field(sc.id, "ai_weapon_preference_override")
+        if type(o) == "string" and o ~= "" then return o end
+        local p = r.country_field(sc.id, "personality")
+        local d = type(p) == "string" and r.defs().get("common/personalities", p)
+        return d and r.defs().field(d.block, "weapon_preferences") or ""
+    end)
+    -- galaxy_percentage <op> x (CGalaxyPercentageTrigger 0x19962c0): the systems it owns over all
+    numeric("galaxy_percentage", { "country" }, function(sc, r)
+        local all = r.all("system")
+        if #all == 0 then return -1 end
+        local n = 0
+        for _, sid in ipairs(all) do
+            if r.system_owner(sid) == sc.id then n = n + 1 end
+        end
+        return n / #all
+    end)
+    -- current_awareness_level <op> <level> (CAwarenessStageTrigger 0x1974790, a primitive country):
+    -- the stage of its awareness: < 1 none, < 30 low, < 60 medium, < 100 high, else full
+    local AWARENESS = { none = 1, low = 2, medium = 3, high = 4, full = 5 }
+    TRIG["current_awareness_level"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r or sc.kind ~= "country" then return false end
+        sync()
+        if r.country_type_flag(sc.id, "faction", "primitive") ~= "yes" then return false end
+        local a = tonumber(r.country_field(sc.id, "awareness")) or 0
+        local stage = a < 1 and 1 or a < 30 and 2 or a < 60 and 3 or a < 100 and 4 or 5
+        local want = e.value.text and AWARENESS[e.value.text] or eval.value(e.value, ctx, e)
+        return compare(stage, e.op, want)
+    end
+    -- num_cosmic_storms_encountered <op> n (CNumCosmicStormsEncountered 0x19ba810)
+    numeric("num_cosmic_storms_encountered", { "country" }, function(sc, r)
+        return tonumber(r.country_field(sc.id, "num_cosmic_storms_encountered")) or 0
+    end)
+    -- num_tradition_categories <op> n (0x197eb30): `tradition_categories`
+    numeric("num_tradition_categories", { "country" }, function(sc, r) return #r.country_list(sc.id, "tradition_categories") end)
+    -- empire_size <op> n (CEmpireSizeTrigger 0x1985850): the cached `empire_size`
+    numeric("empire_size", { "country" }, function(sc, r) return tonumber(r.country_field(sc.id, "empire_size")) or 0 end)
+    -- category_last_picked_tradition = <category> (0x1a23160): the category of
+    -- `last_picked_tradition`
+    TRIG["category_last_picked_tradition"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v or sc.kind ~= "country" then return false end
+        sync()
+        local last = r.country_field(sc.id, "last_picked_tradition")
+        return type(last) == "string" and r.tradition_category(last) == v
+    end
+    -- has_failed_special_project_in_log = <project> (CHasSpecialProjectStatusTrigger<Failed>
+    -- 0x19e5460): a special project of the key aborted, failed or timed out
+    local FAILED = { aborted = true, failed = true, timed_out = true }
+    TRIG["has_failed_special_project_in_log"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v or sc.kind ~= "country" then return false end
+        sync()
+        for _, b in ipairs(r.country_events(sc.id, "special_project")) do
+            if wfield(b, "special_project") == v and FAILED[tostring(wfield(b, "status"))] then return true end
+        end
+        return false
+    end
+    -- has_completed_event_chain_counter = { event_chain = x counter = y } (0x1979780): an active chain
+    -- of the key whose tracker count of the counter reached the counter's max (`counter = { n ... }`
+    -- in counter order of common/event_chains [I])
+    TRIG["has_completed_event_chain_counter"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r or sc.kind ~= "country" or e.value.text then return false end
+        local p = params(e)
+        local chain, counter = p.event_chain and p.event_chain.value.text, p.counter and p.counter.value.text
+        if not chain or not counter then return false end
+        sync()
+        local d = r.defs().get("common/event_chains", chain)
+        local cdefs = d and r.defs().field(d.block, "counter")
+        local idx, max = nil, nil
+        local i = 0
+        for _, x in ipairs(type(cdefs) == "table" and cdefs or {}) do
+            if x.op and x.key and x.value.text == nil then
+                i = i + 1
+                if x.key.text == counter then idx, max = i, tonumber(r.defs().field(x.value, "max")) end
+            end
+        end
+        if not idx or not max then return false end
+        for _, b in ipairs(r.country_events(sc.id, "event_chain")) do
+            if wfield(b, "event_chain") == chain then
+                local counts = require("engine.world").list(wfield(b, "counter"))
+                return (tonumber(counts[idx]) or 0) >= max
+            end
+        end
+        return false
+    end
+    -- has_active_event = { <event ids> } or <event> (CHasActiveEventTrigger 0x19b2260 ->
+    -- CGameState::HasOpenPlayerEvent): an open player event of one of the ids for the country
+    -- (`player_event = { event country }`; AI countries have none)
+    TRIG["has_active_event"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r or sc.kind ~= "country" then return false end
+        local ids = {}
+        if e.value.text then ids[e.value.text] = true else
+            for _, x in ipairs(e.value) do if x.text then ids[x.text] = true end end
+        end
+        sync()
+        for _, pe in ipairs(r.player_events()) do
+            if ids[tostring(wfield(pe, "event"))] and tonumber(wfield(pe, "country")) == sc.id then return true end
+        end
+        return false
+    end
+    -- has_election_type = democratic / oligarchic / none (CHasElectionTypeTrigger 0x195bb10): the
+    -- election type of the authority's advanced_authority_swap that applies to the country (the first
+    -- whose trigger holds and that sets one), else the authority's
+    TRIG["has_election_type"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v or sc.kind ~= "country" then return false end
+        sync()
+        local gov = r.country_field(sc.id, "government")
+        local auth = type(gov) == "table" and wfield(gov, "authority")
+        local d = auth and r.defs().get("common/governments/authorities", auth)
+        if not d then return false end
+        local t
+        local cctx = eval.new_ctx(sc, nil, nil, "has_election_type")
+        for _, x in ipairs(d.block) do
+            if x.op and x.key and x.key.text == "advanced_authority_swap" and x.value.text == nil then
+                local et = r.defs().field(x.value, "election_type")
+                local trig = r.defs().field(x.value, "trigger")
+                if et and (type(trig) ~= "table" or eval.trigger(trig, cctx)) then t = et break end
+            end
+        end
+        t = t or r.defs().field(d.block, "election_type") or "none"
+        return t == v
+    end
+    -- has_faction = <type> (CHasFactionTrigger 0x198b530): a pop faction of the country of the type
+    TRIG["has_faction"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v or sc.kind ~= "country" then return false end
+        sync()
+        for _, f in ipairs(r.pop_factions(sc.id)) do
+            if r.pop_faction_field(f, "type") == v then return true end
+        end
+        return false
+    end
+    -- the Shroud: is_in_domain, has_patron_relation need the Shroud DLC (bit 30 of _DLCMask), not
+    -- in the game's install or the saves: false, as the game evaluates them without it
+    local function shroud_enabled() return E.has_dlc and E.has_dlc("The Shroud") or false end
+    for _, k in ipairs({ "is_in_domain", "has_patron_relation" }) do
+        TRIG[k] = function(e, ctx)
+            if ctx.this.kind ~= "country" or not shroud_enabled() then return false end
+            miss("trigger", k .. " (with the Shroud)", ctx, e)
+            return false
+        end
+    end
+
+    -- pop factions
+    equals_field("is_pop_faction_type", { "pop_faction" }, function(sc, r) return r.pop_faction_field(sc.id, "type") end)
+    yes_no_trigger("is_faction_extorted", { "pop_faction" }, function(sc, r) return r.pop_faction_field(sc.id, "extorted") == "yes" end)
+    -- support <op> x (CSupportTrigger 0x198b8c0): a faction's `support_percent`; a leader's: the
+    -- factions of its country whose type's ethic is the leader's
+    numeric("support", { "pop_faction", "leader" }, function(sc, r)
+        if sc.kind == "pop_faction" then return tonumber(r.pop_faction_field(sc.id, "support_percent")) or 0 end
+        local ethic = r.leader_field(sc.id, "ethic")
+        local c = r.ref(r.leader_field(sc.id, "country"))
+        if not ethic or not c then return 0 end
+        local sum = 0
+        for _, f in ipairs(r.pop_factions(c)) do
+            local t = r.pop_faction_field(f, "type")
+            local d = t and r.defs().get("common/pop_faction_types", t)
+            if d and r.defs().field(d.block, "ethic") == ethic then
+                sum = sum + (tonumber(r.pop_faction_field(f, "support_percent")) or 0)
+            end
+        end
+        return sum
+    end)
+    -- list pop_faction (CPopFactionListBuilder 0x1814fb0): a country's factions
+    LISTS["pop_faction"] = function(sc)
+        local r = rt()
+        if not r or sc.kind ~= "country" then return {} end
+        sync()
+        return scopes("pop_faction", r.pop_factions(sc.id))
+    end
+    require("engine.world").KINDS.pop_faction = require("engine.world").KINDS.pop_faction or "pop_factions"
+
+    -- leaders
+    -- is_heir = yes/no (CIsHeirTrigger 0x19bea00): its country's `government = { heir }`
+    yes_no_trigger("is_heir", { "leader" }, function(sc, r)
+        local c = r.ref(r.leader_field(sc.id, "country"))
+        local gov = c and r.country_field(c, "government")
+        return type(gov) == "table" and tonumber(wfield(gov, "heir")) == sc.id
+    end)
+    -- is_immortal = yes/no (CLeader::IsImmortal 0x895700): the Immortal leader flag (2), a trait of
+    -- the leader or its species with immortal_leaders = yes [I: the species part], or the game rule
+    -- are_all_leaders_forced_immortal for its country
+    yes_no_trigger("is_immortal", { "leader" }, function(sc, r)
+        local f = tonumber(r.leader_field(sc.id, "leader_flags")) or 0
+        if math.floor(f / 2) % 2 == 1 then return true end
+        for _, t in ipairs(r.leader_traits(sc.id)) do
+            if r.trait_field(t, "immortal_leaders") == "yes" then return true end
+        end
+        local sp = r.ref(r.leader_field(sc.id, "species"))
+        for _, t in ipairs(sp and r.species_traits(sp) or {}) do
+            if r.trait_field(t, "immortal_leaders") == "yes" then return true end
+        end
+        local rule = r.defs().get("common/game_rules", "are_all_leaders_forced_immortal")
+        local c = r.ref(r.leader_field(sc.id, "country"))
+        if rule and c then
+            return eval.trigger(rule.block, eval.new_ctx(S("country", c), nil, nil, rule.file))
+        end
+        return false
+    end)
+    -- num_traits <op> n (CNumTraitsTrigger 0x1987760): a leader's traits; a country's founder
+    -- species', a pop group's species', a species' own
+    numeric("num_traits", { "country", "pop_group", "leader", "species" }, function(sc, r)
+        if sc.kind == "leader" then return #r.leader_traits(sc.id) end
+        local sid = E.species_of and E.species_of(sc.kind, sc.id)
+        return sid and #r.species_traits(sid) or 0
+    end)
+
+    -- species rights: has_purge_type, has_living_standard, has_military_service_type = { type = x
+    -- country = <who> } (CHasSpeciesRightsTrigger<...> 0x1a2b080 / 0x1a29460 / 0x1a2be90): the
+    -- country's (by default the scope's owner) rights for the scope's species
+    for _, spec in ipairs({ { "has_purge_type", "purge" }, { "has_living_standard", "living_standard" },
+        { "has_military_service_type", "military_service" } }) do
+        local key = spec[2]
+        TRIG[spec[1]] = function(e, ctx)
+            local sc = ctx.this
+            if not E.species_right or sc == NONE or e.value.text then return false end
+            if sc.kind ~= "pop_group" and sc.kind ~= "leader" and sc.kind ~= "species" then return false end
+            local p = params(e)
+            local want = p.type and p.type.value.text
+            local who
+            if p.country and p.country.value.text then
+                local f, s2 = eval.resolve(p.country.value.text, ctx, p.country)
+                who = f and s2 or nil
+            else
+                who = LINKS.owner and LINKS.owner(sc, ctx)
+            end
+            if not want or not who or who.kind ~= "country" then return false end
+            sync()
+            local sid = E.species_of(sc.kind, sc.id)
+            return sid ~= nil and E.species_right(who.id, sid, key) == want
+        end
+    end
+
+    -- planets, colonies, carriers
+    -- the planet a scope's carrier is (a planet; a colony's planet carrier; nil for a ship carrier)
+    local function carrier_planet(sc, r)
+        local kind, id = r.carrier_of(sc.kind, sc.id)
+        return kind == "planet" and id or nil
+    end
+    -- planet class flags read through the planet scope only (is_star, is_asteroid: a ship or colony
+    -- scope never reaches its planet in the game, `= no` holds; is_astral_scar: false)
+    yes_no_trigger("is_star", { "planet" }, function(sc, r) return r.planet_class_flag(sc.id, "star") end, "no")
+    yes_no_trigger("is_asteroid", { "planet" }, function(sc, r) return r.planet_class_flag(sc.id, "asteroid") end, "no")
+    yes_no_trigger("is_astral_scar", { "planet" }, function(sc, r) return r.planet_class_flag(sc.id, "astral_scar") end)
+    -- is_ringworld = yes/no (CIsRingworldTrigger 0x195d7a0): the carrier class's ringworld flag
+    yes_no_trigger("is_ringworld", { "planet", "colony" }, function(sc, r)
+        local p = carrier_planet(sc, r)
+        return p ~= nil and r.planet_class_flag(p, "ringworld")
+    end)
+    -- has_climate = <climate> (CPlanetClimateTrigger 0x1a09670): the carrier class's `climate`
+    TRIG["has_climate"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v then return false end
+        sync()
+        local p = carrier_planet(sc, r)
+        return p ~= nil and r.planet_class_field(p, "climate") == v
+    end
+    -- is_moon = yes/no (CIsMoonTrigger 0x195cb50): the IsMoon planet flag (512 of `binary_flags`);
+    -- another scope: `= no` holds
+    TRIG["is_moon"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r then return false end
+        sync()
+        local kind, id = r.carrier_of(sc.kind, sc.id)
+        if not kind then return not yes(e) end
+        local is = kind == "planet" and math.floor((tonumber(r.planet_field(id, "binary_flags")) or 0) / 512) % 2 == 1
+        return is == yes(e)
+    end
+    -- has_moon = yes/no (CHasMoonTrigger 0x195cd30): the planet has `moons`; the trigger has no
+    -- yes/no field, so `= no` is the same as `= yes`
+    TRIG["has_moon"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r then return false end
+        sync()
+        local p = carrier_planet(sc, r)
+        return p ~= nil and #require("engine.world").list(r.planet_field(p, "moons")) > 0
+    end
+    -- planet_size <op> n (CPlanetSizeTrigger 0x1986400): the carrier's `planet_size`
+    numeric("planet_size", { "planet", "ship", "colony" }, function(sc, r)
+        local kind, id = r.carrier_of(sc.kind, sc.id)
+        if kind ~= "planet" then return nil end
+        return tonumber(r.planet_field(id, "planet_size"))
+    end)
+    -- is_star_class = <star class | system> (CIsStarClassTrigger 0x1953200): the star class of the
+    -- system of a planet, a ship or the system itself
+    TRIG["is_star_class"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v then return false end
+        sync()
+        local want = v
+        if not v:match("^sc_") then
+            local t = target(e, ctx)
+            if not t or t.kind ~= "system" then return false end
+            want = r.system_field(t.id, "star_class")
+        end
+        local sid
+        if sc.kind == "system" then sid = sc.id
+        elseif sc.kind == "planet" or sc.kind == "ship" then sid = r.system_of(sc.kind, sc.id) end
+        return sid ~= nil and r.system_field(sid, "star_class") == want
+    end
+    -- has_planet_modifier = <modifier> (CHasPlanetModifierTrigger 0x19866a0): the planet's
+    -- `planet_modifier` entries
+    TRIG["has_planet_modifier"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v then return false end
+        sync()
+        local p = carrier_planet(sc, r)
+        if not p then return false end
+        for _, m in ipairs(require("engine.world").fields(r.obj("planet", p), "planet_modifier")) do
+            if m == v then return true end
+        end
+        return false
+    end
+    -- the planet's orbital station: has_mining_station / has_research_station (its fleet's class),
+    -- has_orbital_station (any); a ship or another scope: `= no` holds
+    for _, spec in ipairs({ { "has_mining_station", "shipclass_mining_station" },
+        { "has_research_station", "shipclass_research_station" }, { "has_orbital_station", false } }) do
+        local class = spec[2]
+        yes_no_trigger(spec[1], { "planet" }, function(sc, r)
+            local c = r.orbital_station_class(sc.id)
+            return c ~= nil and (not class or c == class)
+        end, "no")
+    end
+    -- has_observation_outpost = yes/no (CHasObservationOutpostTrigger 0x1970e60): the planet's
+    -- orbital station is an observation station
+    yes_no_trigger("has_observation_outpost", { "planet", "ship", "colony" }, function(sc, r)
+        local p = carrier_planet(sc, r)
+        return p ~= nil and r.orbital_station_class(p) == "shipclass_observation_station"
+    end)
+    -- has_deposit_for = <ship class> (CHasDepositForTrigger 0x1984ec0): shipclass_starbase holds;
+    -- else the carrier's orbital deposit class: none for an unowned colonizable planet or no
+    -- deposits, else the first deposit's type's `station`
+    TRIG["has_deposit_for"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v then return false end
+        sync()
+        local kind, id = r.carrier_of(sc.kind, sc.id)
+        if not kind then return false end
+        if v == "shipclass_starbase" then return true end
+        if kind == "planet" and r.planet_owner(id) == nil and r.planet_class_flag(id, "colonizable") then return false end
+        local d = r.carrier_deposits(kind, id)[1]
+        return d ~= nil and r.deposit_type_field(r.deposit_type(d), "station") == v
+    end
+    -- is_deposit_type / has_deposit_category (a deposit): its type / its type's category
+    equals_field("is_deposit_type", { "deposit" }, function(sc, r) return r.deposit_type(sc.id) end)
+    equals_field("has_deposit_category", { "deposit" }, function(sc, r) return r.deposit_type_field(r.deposit_type(sc.id), "category") end)
+    -- has_any_megastructure = yes/no (CHasAnyMegastructureTrigger 0x19a7a50): a planet's system has
+    -- a megastructure at the planet (else `= no` holds); a system has one
+    TRIG["has_any_megastructure"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r then return false end
+        sync()
+        if sc.kind == "system" then return (#r.system_list(sc.id, "megastructures") > 0) == yes(e) end
+        if sc.kind ~= "planet" then return false end
+        local sid = r.system_of("planet", sc.id)
+        for _, m in ipairs(sid and r.system_list(sid, "megastructures") or {}) do
+            local mo = r.obj("megastructure", m)
+            if mo and tonumber(wfield(mo, "planet")) == sc.id then return yes(e) end
+        end
+        return not yes(e)
+    end
+    -- original_owner = yes/no (COriginalOwnerTrigger 0x19489e0): the carrier's owner is its
+    -- original owner; no carrier or owner: `= no` holds
+    TRIG["original_owner"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r then return false end
+        sync()
+        local p = carrier_planet(sc, r)
+        local owner = p and r.planet_owner(p)
+        if not owner then return not yes(e) end
+        return (r.ref(r.planet_field(p, "original_owner")) == owner) == yes(e)
+    end
+    -- is_terraforming = yes/no (CIsTerraformingTrigger 0x1a09ca0): the planet has a
+    -- `scripted_terraform_process` [I: present = running]
+    yes_no_trigger("is_terraforming", { "planet", "ship", "colony" }, function(sc, r)
+        local p = carrier_planet(sc, r)
+        return p ~= nil and r.planet_field(p, "scripted_terraform_process") ~= nil
+    end)
+    -- is_inside_border = <country> (CIsInsideBorder 0x195c5e0): the owner of the system of a planet,
+    -- a ship, a fleet's first ship, or a system is the country
+    TRIG["is_inside_border"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r then return false end
+        local t = target(e, ctx)
+        if not t or t.kind ~= "country" then return false end
+        sync()
+        local sid
+        if sc.kind == "system" then sid = sc.id
+        elseif sc.kind == "planet" then sid = r.system_of("planet", sc.id)
+        elseif sc.kind == "ship" or sc.kind == "fleet" then
+            local fid = sc.kind == "fleet" and sc.id or r.ship_fleet(sc.id)
+            if sc.kind == "fleet" and #r.fleet_ships(sc.id) == 0 then return false end
+            sid = fid and (r.system_of("fleet", fid) or r.last_jump_origin(fid))
+        end
+        return sid ~= nil and r.system_owner(sid) == t.id
+    end
+    -- is_owned_by = <country> (CIsOwnedByTrigger 0x194c930): the scope's owner (the `owner` link)
+    -- and the country both exist and are the same
+    TRIG["is_owned_by"] = function(e, ctx)
+        local t = target(e, ctx)
+        if not t or t.kind ~= "country" or ctx.this == NONE then return false end
+        local o = LINKS.owner and LINKS.owner(ctx.this, ctx)
+        return o ~= nil and o ~= NONE and o.kind == "country" and o.id == t.id
+    end
+    -- has_ground_combat = yes/no (CHasGroundCombat 0x1958060): the colony's `ground_combat` set
+    TRIG["has_ground_combat"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r then return false end
+        sync()
+        local col = r.colony_of(sc.kind, sc.id)
+        local g = col and r.ref(r.colony_field(col, "ground_combat"))
+        return (g ~= nil) == yes(e)
+    end
+    -- num_districts = { type = <district | any> value <op> n } (CNumDistrictsTrigger 0x196f9a0): any:
+    -- the levels of the colony's districts; a type: the level of its first district of the type; a
+    -- country: summed over its colonies
+    TRIG["num_districts"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r or e.value.text then return false end
+        local p = params(e)
+        local dtype, val = p.type and p.type.value.text or "any", p.value
+        if not val then return false end
+        sync()
+        local function count(col)
+            local n = 0
+            for _, d in ipairs(require("engine.world").list(r.colony_field(col, "districts"))) do
+                local o = r.obj("districts", tonumber(d))
+                if o then
+                    if dtype == "any" then n = n + (tonumber(wfield(o, "level")) or 0)
+                    elseif wfield(o, "type") == dtype then return tonumber(wfield(o, "level")) or 0 end
+                end
+            end
+            return n
+        end
+        local n = 0
+        local col = r.colony_of(sc.kind, sc.id)
+        if col then
+            n = count(col)
+        elseif sc.kind == "country" then
+            for _, c in ipairs(require("engine.world").list(r.country_field(sc.id, "owned_planets"))) do
+                local cid = tonumber(c)
+                if cid and r.obj("colony", cid) then n = n + count(cid) end
+            end
+        else
+            return false
+        end
+        return compare(n, val.op, eval.value(val.value, ctx, val))
+    end
+    -- free_housing <op> n (CFreeHousingTrigger 0x197bdf0): the colony's `free_housing`, truncated
+    numeric("free_housing", { "planet", "ship", "colony" }, function(sc, r)
+        local col = r.colony_of(sc.kind, sc.id)
+        local v = col and tonumber(r.colony_field(col, "free_housing")) or 0
+        return v < 0 and math.ceil(v) or math.floor(v)
+    end)
+    -- free_jobs <op> n (CFreeJobsTrigger 0x1959b50): the vacancies of the colony's jobs with a
+    -- workforce (workforce_limit - workforce, summed, at least 0)
+    numeric("free_jobs", { "planet", "ship", "colony" }, function(sc, r)
+        local col = r.colony_of(sc.kind, sc.id)
+        if not col then return 0 end
+        local sum = 0
+        for _, v in ipairs(require("engine.world").list(r.colony_field(col, "pop_jobs"))) do
+            local j = r.obj("pop_job", tonumber(v))
+            if j and (tonumber(wfield(j, "max_workforce")) or 0) > 0 then
+                sum = sum + (tonumber(wfield(j, "workforce_limit")) or 0) - (tonumber(wfield(j, "workforce")) or 0)
+            end
+        end
+        return math.max(0, sum)
+    end)
+    -- num_assigned_jobs = { job = x value <op> n } (CNumAssignedJobsTrigger 0x199b750): the pop
+    -- amounts of the colony's first job of the type (a country's colonies, a system's colonies summed)
+    TRIG["num_assigned_jobs"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r or e.value.text then return false end
+        local p = params(e)
+        local job, val = p.job and p.job.value.text, p.value
+        if not job or not val then return false end
+        sync()
+        local function count(col)
+            local j = r.colony_job(col, job)
+            local n = 0
+            for _, b in ipairs(require("engine.world").blocks(j and wfield(j, "pop_groups"))) do
+                n = n + (tonumber(wfield(b, "amount")) or 0)
+            end
+            return n
+        end
+        local cols = {}
+        local col = r.colony_of(sc.kind, sc.id)
+        if col then cols = { col }
+        elseif sc.kind == "country" then
+            for _, c in ipairs(require("engine.world").list(r.country_field(sc.id, "owned_planets"))) do cols[#cols + 1] = tonumber(c) end
+        elseif sc.kind == "system" then
+            for _, pid in ipairs(E.system_planets and E.system_planets(sc.id) or {}) do
+                local c = r.colony_of("planet", pid)
+                if c then cols[#cols + 1] = c end
+            end
+        else
+            return false
+        end
+        local n = 0
+        for _, c in ipairs(cols) do if c and r.obj("colony", c) then n = n + count(c) end end
+        return compare(n, val.op, eval.value(val.value, ctx, val))
+    end
+    -- has_active_building = <building> (CHasActiveBuildingTrigger 0x196d160): one of the colony's
+    -- (owner's) buildings of the type that is neither ruined nor disabled
+    TRIG["has_active_building"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v then return false end
+        sync()
+        local col = r.colony_of(sc.kind, sc.id)
+        if not col then return false end
+        for _, b in ipairs(r.colony_buildings(col)) do
+            if r.building_field(b, "type") == v and r.building_field(b, "ruined") ~= "yes"
+                and r.building_field(b, "disabled") ~= "yes" then return true end
+        end
+        return false
+    end
+
+    -- pop groups, pop jobs, species
+    local function group_species(sc)
+        return E.species_of and E.species_of(sc.kind, sc.id)
+    end
+    -- is_pop_category = <category> (CIsPopCategory 0x1977e60, a pop group): `key = { category }`
+    equals_field("is_pop_category", { "pop_group" }, function(sc, r)
+        local k = r.obj("pop_group", sc.id) and wfield(r.obj("pop_group", sc.id), "key")
+        return type(k) == "table" and wfield(k, "category") or nil
+    end)
+    -- pop_group_size <op> n (CPopGroupSizeTrigger 0x19b3340): `size`; another scope reads 0
+    TRIG["pop_group_size"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r then return false end
+        sync()
+        local g = sc.kind == "pop_group" and r.obj("pop_group", sc.id)
+        return compare_num(g and tonumber(wfield(g, "size")) or 0, e, ctx)
+    end
+    TVAL["pop_group_size"] = function(ctx)
+        local r, sc = rt(), ctx.this
+        local g = r and sc.kind == "pop_group" and r.obj("pop_group", sc.id)
+        return g and tonumber(wfield(g, "size")) or 0
+    end
+    -- pop_group_has_trait = <trait> (CPopGroupHasTrait 0x196b790): the group's species' traits
+    TRIG["pop_group_has_trait"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v or sc.kind ~= "pop_group" then return false end
+        sync()
+        local sid = group_species(sc)
+        for _, t in ipairs(sid and r.species_traits(sid) or {}) do
+            if t == v then return true end
+        end
+        return false
+    end
+    -- is_robot_pop_group = yes/no (CIsRobotPopGroup 0x1994b30): the species class's archetype is
+    -- robotic
+    yes_no_trigger("is_robot_pop_group", { "pop_group" }, function(sc, r)
+        local sid = group_species(sc)
+        local class = sid and E.species_field and E.species_field(sid, "class")
+        local cd = type(class) == "string" and r.defs().get("common/species_classes", class)
+        local arch = cd and r.defs().field(cd.block, "archetype") or "BIOLOGICAL"
+        local ad = r.defs().get("common/species_archetypes", arch)
+        return ad ~= nil and r.defs().field(ad.block, "robotic") == "yes"
+    end)
+    -- is_unemployed = yes/no (CIsUnemployed 0x1978380): the pop group's category (a pop job's job's
+    -- category) has is_unemployment_job
+    TRIG["is_unemployed"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r then return false end
+        sync()
+        local cat
+        if sc.kind == "pop_group" then
+            local k = r.obj("pop_group", sc.id) and wfield(r.obj("pop_group", sc.id), "key")
+            cat = type(k) == "table" and wfield(k, "category")
+        elseif sc.kind == "pop_job" then
+            local jt = wfield(r.obj("pop_job", sc.id), "type")
+            local jd = jt and r.defs().get("common/pop_jobs", jt)
+            cat = jd and r.defs().field(jd.block, "category")
+        else
+            return not yes(e)
+        end
+        local cd = type(cat) == "string" and r.defs().get("common/pop_categories", cat)
+        return (cd ~= nil and r.defs().field(cd.block, "is_unemployment_job") == "yes") == yes(e)
+    end
+    -- has_job_type = <job> (CHasJobType 0x1a1ecf0, a pop job): its `type`
+    equals_field("has_job_type", { "pop_job" }, function(sc, r) return wfield(r.obj("pop_job", sc.id), "type") end)
+    -- is_exact_same_species = <target> (CIsSameSpeciesBase 0x194d510): the same species object
+    TRIG["is_exact_same_species"] = function(e, ctx)
+        if not E.species_of or ctx.this == NONE then return false end
+        local t = target(e, ctx)
+        if not t then return false end
+        sync()
+        local a, b = E.species_of(ctx.this.kind, ctx.this.id), E.species_of(t.kind, t.id)
+        return a ~= nil and a == b
+    end
+    -- ideal_planet_class = <class | planet> (CIdealPlanetClass 0x195f6c0): the ideal class of the
+    -- species (a country's founder species, a pop group's) is it (a planet target: its class)
+    TRIG["ideal_planet_class"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v then return false end
+        if sc.kind ~= "country" and sc.kind ~= "pop_group" and sc.kind ~= "species" then return false end
+        sync()
+        local sid = E.species_of and E.species_of(sc.kind, sc.id)
+        local ideal = sid and r.ideal_planet_class(sid)
+        if not ideal then return false end
+        local want = v
+        if not r.defs().get("common/planet_classes", v) then
+            local t = target(e, ctx)
+            if not t or t.kind ~= "planet" then return false end
+            want = r.planet_field(t.id, "planet_class")
+        end
+        return ideal == want
+    end
+    -- is_ideal_planet_class = { who = <species holder> status = yes/no } (0x1968600, a planet): the
+    -- planet's class is the species' ideal class
+    TRIG["is_ideal_planet_class"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r or e.value.text then return false end
+        local p = params(e)
+        if not p.who or not p.who.value.text then return false end
+        local f, w = eval.resolve(p.who.value.text, ctx, p.who)
+        if not f or not w or w == NONE then return false end
+        local status = not p.status or p.status.value.text ~= "no"
+        sync()
+        local pl = carrier_planet(sc, r)
+        if not pl then return false end
+        local sid = E.species_of and E.species_of(w.kind, w.id)
+        local ideal = sid and r.ideal_planet_class(sid)
+        if not sid then return false end
+        return (ideal ~= nil and ideal == r.planet_field(pl, "planet_class")) == status
+    end
+    -- is_scope_type = <scope type> (CIsScopeTypeTrigger 0x19b2630): the scope's EScopeType name
+    local SCOPE_NAME = { system = "galactic_object", none = "no_scope", pop_faction = "pop_faction" }
+    TRIG["is_scope_type"] = function(e, ctx)
+        local sc = ctx.this
+        local v = e.value.text
+        if not v then return false end
+        local name = (sc == NONE or sc == nil) and "no_scope" or (SCOPE_NAME[sc.kind] or sc.kind)
+        return name == v
+    end
+    -- army_type = <type> (CArmyTypeTrigger 0x1972320, an army): its `type`
+    equals_field("army_type", { "army" }, function(sc, r) return wfield(r.obj("army", sc.id), "type") end)
+    -- is_ambient_object_type = <type> (0x19515a0, an ambient object): its `data`
+    require("engine.world").KINDS.ambient_object = require("engine.world").KINDS.ambient_object or "ambient_object"
+    equals_field("is_ambient_object_type", { "ambient_object" }, function(sc, r) return wfield(r.obj("ambient_object", sc.id), "data") end)
+    -- is_storm_type = <type> (CIsStormType 0x19bbc40, a cosmic storm): its `type`
+    equals_field("is_storm_type", { "cosmic_storm" }, function(sc, r) return r.storm_type(sc.id) end)
+
+    -- fleets and ships, more
+    -- num_ships <op> n (CNumShipsTrigger 0x1986be0): the alive ships of a country's fleets, a
+    -- fleet's, a ship's fleet's
+    numeric("num_ships", { "country", "fleet", "ship" }, function(sc, r)
+        if sc.kind == "country" then return #r.alive_ships(r.owned_fleets(sc.id)) end
+        local fid = sc.kind == "fleet" and sc.id or r.ship_fleet(sc.id)
+        return fid and #r.alive_ships({ fid }) or 0
+    end)
+    -- num_fleets <op> n (CNumFleetsTrigger 0x1986a10): the country's fleets (stations included)
+    numeric("num_fleets", { "country" }, function(sc, r) return #r.owned_fleet_entries(sc.id) end)
+    -- fleet_size <op> x (CFleetSizeTrigger 0x196c210): the ship sizes' size_multiplier, summed
+    numeric("fleet_size", { "fleet" }, function(sc, r)
+        local n = 0
+        for _, s in ipairs(r.fleet_ships(sc.id)) do
+            if r.obj("ship", s) then n = n + (tonumber(r.ship_size_field(r.ship_size_of(s), "size_multiplier")) or 1) end
+        end
+        return n
+    end)
+    -- is_mobile / is_civilian = yes/no (CIsMobileTrigger 0x19bd0a0, CIsCivilianTrigger 0x1a1fc20): a
+    -- fleet's `properties`; a ship's ship size's is_civilian
+    yes_no_trigger("is_mobile", { "fleet" }, function(sc, r) return r.fleet_property(sc.id, "mobile") end)
+    yes_no_trigger("is_civilian", { "fleet", "ship" }, function(sc, r)
+        if sc.kind == "fleet" then return r.fleet_property(sc.id, "civilian") end
+        return r.ship_size_flag(r.ship_size_of(sc.id), "is_civilian")
+    end)
+    -- is_disabled = yes/no (CIsDisabledTrigger 0x197a980, a fleet): its disabled ships are all its
+    -- ships not killed (`cached_disabled_ships`, `cached_killed_ships`); a ship's flag is not read
+    yes_no_trigger("is_disabled", { "fleet" }, function(sc, r)
+        local n = #r.fleet_ships(sc.id)
+        if n == 0 then return false end
+        local dis = tonumber(r.fleet_field(sc.id, "cached_disabled_ships")) or 0
+        local killed = tonumber(r.fleet_field(sc.id, "cached_killed_ships")) or 0
+        return dis > 0 and dis >= n - killed
+    end)
+    -- has_hp_percentage <op> x (CHasHitPointsPercentageTrigger 0x1967400): a ship's hitpoints over
+    -- max_hitpoints; a fleet's summed
+    numeric("has_hp_percentage", { "ship", "fleet" }, function(sc, r)
+        local ships = sc.kind == "ship" and { sc.id } or r.fleet_ships(sc.id)
+        local hp, max = 0, 0
+        for _, s in ipairs(ships) do
+            hp = hp + (tonumber(r.ship_field(s, "hitpoints")) or 0)
+            max = max + (tonumber(r.ship_field(s, "max_hitpoints")) or 0)
+        end
+        if max <= 0 then return 0 end
+        return hp / max
+    end)
+    -- has_component = <component> (CHasComponentTrigger 0x19ab850, a ship): a component (or a
+    -- required component) of its design's current growth stage
+    TRIG["has_component"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v or sc.kind ~= "ship" then return false end
+        sync()
+        local impl = r.ship_field(sc.id, "ship_design_implementation")
+        if type(impl) ~= "table" then return false end
+        local g = r.design_stage(tonumber(wfield(impl, "design")), wfield(impl, "growth_stage"))
+        if not g then return false end
+        local w = require("engine.world")
+        for _, sec in ipairs(w.fields(g, "section")) do
+            for _, comp in ipairs(type(sec) == "table" and w.fields(sec, "component") or {}) do
+                if type(comp) == "table" and wfield(comp, "template") == v then return true end
+            end
+        end
+        for _, k in ipairs(w.fields(g, "required_component")) do
+            if k == v then return true end
+        end
+        return false
+    end
+
+    -- distance = { source = <scope> min_distance / max_distance <op> x type = euclidean
+    -- same_solar_system = yes } (CDistanceTrigger 0x1964df0): the euclidean distance between the
+    -- two systems (both in one system: false unless same_solar_system); the hyperlane distance and
+    -- jumps (the galaxy's distance cache) are not modelled: a miss
+    TRIG["distance"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r or e.value.text or sc == NONE then return false end
+        local p = params(e)
+        if not p.source or not p.source.value.text then return false end
+        local f, src = eval.resolve(p.source.value.text, ctx, p.source)
+        if not f or not src or src == NONE then return false end
+        local euclid = p.type and p.type.value.text == "euclidean"
+        local same = p.same_solar_system and p.same_solar_system.value.text == "yes"
+        if not euclid and not same then
+            miss("trigger", "distance (hyperlane)", ctx, e)
+            return false
+        end
+        sync()
+        local a, b = r.system_of(sc.kind, sc.id), r.system_of(src.kind, src.id)
+        if not a or not b then return false end
+        if same then
+            miss("trigger", "distance (same_solar_system)", ctx, e)
+            return false
+        end
+        if a == b then return false end
+        local function xy(sid)
+            local c = r.system_field(sid, "coordinate")
+            return tonumber(wfield(c, "x")) or 0, tonumber(wfield(c, "y")) or 0
+        end
+        local ax, ay = xy(a)
+        local bx, by = xy(b)
+        local d = math.sqrt((ax - bx) ^ 2 + (ay - by) ^ 2)
+        local function bound(x, ops)
+            if not x then return true end
+            local lim = eval.value(x.value, ctx, x)
+            if lim == 0 then return true end
+            if not ops[x.op] then return nil end
+            return compare(d, x.op, lim)
+        end
+        local lo = bound(p.min_distance, { [">"] = true, [">="] = true })
+        local hi = bound(p.max_distance, { ["<"] = true, ["<="] = true })
+        return lo == true and hi == true
+    end
+
+    -- lists: a planet's moons, a carrier's deposits, every species
+    LISTS["moon"] = function(sc)
+        local r = rt()
+        if not r then return {} end
+        sync()
+        local p = carrier_planet(sc, r)
+        local out = {}
+        for _, v in ipairs(require("engine.world").list(p and r.planet_field(p, "moons"))) do
+            local id = tonumber(v)
+            if id and r.obj("planet", id) then out[#out + 1] = S("planet", id) end
+        end
+        return out
+    end
+    LISTS["deposit"] = function(sc)
+        local r = rt()
+        if not r then return {} end
+        sync()
+        local kind, id = r.carrier_of(sc.kind, sc.id)
+        return kind and scopes("deposit", r.carrier_deposits(kind, id)) or {}
+    end
+    LISTS["galaxy_species"] = function()
+        local r = rt()
+        if not r then return {} end
+        sync()
+        return scopes("species", r.all("species"))
+    end
+
+    -- scope links: contact_country (a first contact's `country`)
+    LINKS["contact_country"] = function(cur)
+        local r = rt()
+        if not r or cur.kind ~= "first_contact" then return nil end
+        sync()
+        local o = r.obj("first_contact", cur.id)
+        local c = o and r.ref(wfield(o, "country"))
+        return (c and r.obj("country", c)) and S("country", c) or nil
+    end
+
+    -- has_trait = <trait> (CHasTrait 0x194b8c0; GetTraitsFromScope 0x194b920): a leader's `traits`;
+    -- a species' own, a pop group's species', a country's founder species' traits; any other scope
+    -- (a planet) fails the scope check
+    TRIG["has_trait"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v then return false end
+        sync()
+        local list
+        if sc.kind == "leader" then
+            list = r.leader_traits(sc.id)
+        elseif sc.kind == "species" or sc.kind == "pop_group" or sc.kind == "country" then
+            local sid = E.species_of and E.species_of(sc.kind, sc.id)
+            list = sid and r.species_traits(sid) or {}
+        else
+            return false
+        end
+        for _, t in ipairs(list) do
+            if t == v then return true end
+        end
+        return false
+    end
+
+    -- check_variable_arithmetic = { which = <value> <op> = x ... value <op> y }
+    -- (CCheckVariableArithmeticTrigger 0x1969910): `which`, then the arithmetic in order (add,
+    -- subtract, multiply, divide, modulo, min, max; a division by 0 fails), compared with `value`
+    local ARITH = { add = true, subtract = true, multiply = true, divide = true, modulo = true, min = true, max = true }
+    TRIG["check_variable_arithmetic"] = function(e, ctx)
+        if e.value.text then return false end
+        local acc, cmp
+        for _, x in ipairs(e.value) do
+            if x.op and x.key then
+                local k = x.key.text:lower()
+                if k == "which" then
+                    acc = eval.value(x.value, ctx, x)
+                elseif ARITH[k] and acc then
+                    local v = eval.value(x.value, ctx, x)
+                    if k == "add" then acc = acc + v
+                    elseif k == "subtract" then acc = acc - v
+                    elseif k == "multiply" then acc = acc * v
+                    elseif k == "divide" then if v == 0 then return false end acc = acc / v
+                    elseif k == "modulo" then if v == 0 then return false end acc = acc % v
+                    elseif k == "min" then acc = math.max(acc, v)
+                    elseif k == "max" then acc = math.min(acc, v) end
+                elseif k == "value" then
+                    cmp = x
+                end
+            end
+        end
+        if not acc or not cmp then return false end
+        return compare(acc, cmp.op, eval.value(cmp.value, ctx, cmp))
+    end
+
+    -- switch = { trigger = <trigger> <case> = { ... } default = { ... } } as a trigger
+    -- (CSwitchTriggerBase<0>::ActualEvaluate 0x19f18b0): the first case for which `<trigger> =
+    -- <case>` holds selects its body, else the default; that body is evaluated (no default: true)
+    TRIG["switch"] = function(e, ctx)
+        if e.value.text then return false end
+        local tkey, default
+        local cases = {}
+        for _, x in ipairs(e.value) do
+            if x.op and x.key then
+                local k = x.key.text:lower()
+                if k == "trigger" then tkey = x.value.text
+                elseif k == "default" then default = x.value
+                elseif x.value.text == nil then cases[#cases + 1] = x end
+            end
+        end
+        if not tkey then return false end
+        for _, c in ipairs(cases) do
+            local stmt = { key = { text = tkey }, op = "=", value = { text = c.key.text }, line = c.line }
+            if eval.trigger1(stmt, ctx) then return eval.trigger(c.value, ctx) end
+        end
+        if default then return eval.trigger(default, ctx) end
+        return true
+    end
+
+    -- is_site_completed = yes/no (CIsArchaeologicalSiteFinishedTrigger 0x1a10c00, an archaeological
+    -- site): its stage index (`index`) reached its type's number of stages (`stage` blocks of
+    -- common/archaeological_site_types)
+    yes_no_trigger("is_site_completed", { "archaeological_site" }, function(sc, r)
+        local s = r.obj("archaeological_site", sc.id)
+        local t = s and wfield(s, "type")
+        local d = t and r.defs().get("common/archaeological_site_types", t)
+        if not d then return false end
+        local n = 0
+        for _, x in ipairs(d.block) do
+            if x.op and x.key and x.key.text == "stage" and x.value.text == nil then n = n + 1 end
+        end
+        return (tonumber(wfield(s, "index")) or 0) >= n
+    end)
+
+    -- num_buildings = { type = <building | any> category = c value <op> n owner_type = x
+    -- in_construction = yes/no/any disabled = yes/no/any limit = { } } (CNumBuildingsTrigger
+    -- 0x196dbf0): the buildings of the type in the colony (its owner's: buildings_cache; disabled
+    -- ones as asked; in construction: the queued planet buildings of the type), with `any` the
+    -- buildings of its districts' zones (of the category); a country: over its colonies (limit in
+    -- each); a system: over its colonies. owner_type other than normal (holdings, branch offices)
+    -- and queued buildings of other owners are not counted [I]
+    TRIG["num_buildings"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r or e.value.text then return false end
+        local p = params(e)
+        local btype = p.type and p.type.value.text or "any"
+        local val = p.value
+        if not val then return false end
+        local in_con = p.in_construction and p.in_construction.value.text or "no"
+        local disabled = p.disabled and p.disabled.value.text or "any"
+        local category = p.category and p.category.value.text
+        if category == "any" then category = nil end
+        local owner_type = p.owner_type and p.owner_type.value.text or "normal"
+        local limit = p.limit and p.limit.value.text == nil and p.limit.value or nil
+        sync()
+        if btype ~= "any" and category then
+            local bd = r.defs().get("common/buildings", btype)
+            if not bd or r.defs().field(bd.block, "category") ~= category then
+                return compare(0, val.op, eval.value(val.value, ctx, val))
+            end
+        end
+        local function count(col, lctx)
+            if limit and not eval.trigger(limit, lctx) then return 0 end
+            if owner_type ~= "normal" then return 0 end
+            local n = 0
+            if btype == "any" then
+                for _, b in ipairs(r.colony_zone_buildings(col)) do
+                    local bt = r.building_field(b, "type")
+                    local bd = category and bt and r.defs().get("common/buildings", bt)
+                    if not category or (bd and r.defs().field(bd.block, "category") == category) then n = n + 1 end
+                end
+                return n
+            end
+            if in_con ~= "yes" then
+                for _, b in ipairs(r.colony_buildings(col)) do
+                    if r.building_field(b, "type") == btype then
+                        local dis = r.building_field(b, "disabled") == "yes"
+                        if disabled == "any" or dis == (disabled == "yes") then n = n + 1 end
+                    end
+                end
+            end
+            if in_con ~= "no" then
+                local pid = select(2, r.carrier_of("colony", col))
+                for _, it in pairs(r.construction_items()) do
+                    local qb = wfield(it, "buildable_planet_building")
+                    if type(qb) == "table" and wfield(qb, "building") == btype and tonumber(wfield(qb, "planet")) == pid then
+                        n = n + 1
+                    end
+                end
+            end
+            return n
+        end
+        local n = 0
+        local col = r.colony_of(sc.kind, sc.id)
+        if col then
+            n = count(col, ctx)
+        elseif sc.kind == "country" or sc.kind == "system" then
+            local cols = {}
+            if sc.kind == "country" then
+                for _, c in ipairs(require("engine.world").list(r.country_field(sc.id, "owned_planets"))) do cols[#cols + 1] = tonumber(c) end
+            else
+                for _, pid in ipairs(E.system_planets and E.system_planets(sc.id) or {}) do
+                    local c = r.colony_of("planet", pid)
+                    if c then cols[#cols + 1] = c end
+                end
+            end
+            for _, c in ipairs(cols) do
+                if c and r.obj("colony", c) then
+                    local kind, pid = r.carrier_of("colony", c)
+                    n = n + count(c, I.push(ctx, kind and S(kind, pid) or NONE))
+                end
+            end
+        else
+            return false
+        end
+        return compare(n, val.op, eval.value(val.value, ctx, val))
+    end
+
+    -- links: sector_capital (a sector's local capital: its colony, given as its planet, the
+    -- simulation's scope for a colony [I]); ship (a starbase's station; a colony's or planet's
+    -- carrier when it is a ship)
+    LINKS["sector_capital"] = function(cur)
+        local r = rt()
+        if not r or cur.kind ~= "sector" then return nil end
+        sync()
+        local s = r.obj("sector", cur.id)
+        local col = s and r.ref(wfield(s, "local_capital"))
+        local kind, id = col and r.carrier_of("colony", col)
+        return kind and S(kind, id) or nil
+    end
+    LINKS["ship"] = function(cur)
+        local r = rt()
+        if not r or cur == NONE then return nil end
+        if cur.kind == "ship" then return cur end
+        sync()
+        if cur.kind == "starbase" then
+            local st = r.ref(r.starbase_field(cur.id, "station"))
+            return (st and r.obj("ship", st)) and S("ship", st) or nil
+        end
+        if cur.kind == "colony" then
+            local kind, id = r.carrier_of("colony", cur.id)
+            return kind == "ship" and S("ship", id) or nil
+        end
+        return nil
+    end
+
+    -- lists: envoy (COwnedEnvoyListBuilder 0x18144d0: a country's leaders whose class has
+    -- can_be_envoy), system_ambient_object (a system's `ambient_object`)
+    LISTS["envoy"] = function(sc)
+        local r = rt()
+        if not r or sc.kind ~= "country" then return {} end
+        sync()
+        local out = {}
+        for _, l in ipairs(E.leaders and E.leaders(sc.id) or {}) do
+            local class = r.leader_field(l, "class")
+            local d = class and r.defs().get("common/leader_classes", class)
+            if d and r.defs().field(d.block, "can_be_envoy") == "yes" then out[#out + 1] = S("leader", l) end
+        end
+        return out
+    end
+    LISTS["system_ambient_object"] = function(sc)
+        local r = rt()
+        if not r or sc.kind ~= "system" then return {} end
+        sync()
+        local out = {}
+        for _, a in ipairs(r.system_list(sc.id, "ambient_object")) do
+            if r.obj("ambient_object", a) then out[#out + 1] = S("ambient_object", a) end
+        end
+        return out
+    end
+
+    -- has_envoy_task = { task = <assignment> target = <country> } (CHasEnvoyTaskTrigger 0x1989020, a
+    -- leader): its location's assignment (CLeaderLocation +0x4, `location = { assignment }`) is the
+    -- task; with a target, the location's country (`id`) is it [I: the target branch read in part]
+    TRIG["has_envoy_task"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r or sc.kind ~= "leader" or e.value.text then return false end
+        local p = params(e)
+        local task = p.task and p.task.value.text
+        if not task then return false end
+        sync()
+        local loc = r.leader_field(sc.id, "location")
+        if type(loc) ~= "table" or wfield(loc, "assignment") ~= task then return false end
+        if p.target and p.target.value.text then
+            local f, t = eval.resolve(p.target.value.text, ctx, p.target)
+            if not f or not t or t.kind ~= "country" then return false end
+            return tonumber(wfield(loc, "id")) == t.id
+        end
+        return true
+    end
+
+    -- round_to = n in a value block (EScriptMaths RoundTo, CFixedPoint::RoundTo): the nearest
+    -- multiple of n [I: RoundTo not read]
+    eval.VALUE_OP["round_to"] = function(acc, n)
+        if n == 0 then return acc end
+        return math.floor(acc / n + 0.5) * n
+    end
+
+    -- `pow`: the game's NFixedInt64Internal::ipow (0x1b43a50): 0 to the power 0 is 1, else 0; a
+    -- negative base takes the sign of the exponent's fixed point raw value's parity (an even raw
+    -- value, as 3.0's 300000, gives a positive result)
+    eval.pow = function(b, x)
+        if b == 0 then return x == 0 and 1 or 0 end
+        if b > 0 then return b ^ x end
+        local v = (-b) ^ x
+        local raw = math.floor(x * 100000 + 0.5)
+        if raw % 2 == 1 then return -v end
+        return v
+    end
+
+    -- `trigger:<name>` of eval.lua's own comparison triggers (CIntTrigger / CValueTrigger), with
+    -- no arguments (CVariableValue::ReadTriggerModifierOrScriptValue 0x34c550)
+    TVAL["years_passed"] = function() return math.floor(eval.today() / 360) - 2200 end
+    TVAL["mid_game_years_passed"] = function() return math.floor(eval.today() / 360) - 2300 end
+    TVAL["end_game_years_passed"] = function() return math.floor(eval.today() / 360) - 2400 end
+    TVAL["days_passed"] = function() return eval.today() - 2200 * 360 end
+    TVAL["has_base_skill"] = function(ctx)
+        if ctx.this.kind ~= "leader" then return 0 end
+        sync()
+        return tonumber(E.get("leader", ctx.this.id, "has_base_skill")) or 0
+    end
+    TVAL["fleet_power"] = function(ctx)
+        if not E.fleet_power or ctx.this == NONE then return 0 end
+        sync()
+        return E.fleet_power(ctx.this.kind, ctx.this.id) or 0
+    end
+    for _, k in ipairs({ "num_owned_planets", "num_colonies" }) do
+        TVAL[k] = function(ctx)
+            if ctx.this.kind ~= "country" then return 0 end
+            sync()
+            return tonumber(E.get("country", ctx.this.id, "num_colonies")) or 0
+        end
+    end
+    -- a scripted trigger whose body is one count iterator (pop_amount): the count, as eval
+    -- compares it [I]
+    setmetatable(TVAL, { __index = function(t, name)
+        local db = I.db
+        local def = db and db.scripted_triggers[name]
+        if not def then return nil end
+        local f
+        f = function(ctx, e)
+            local body = I.scripted_call(def, name, { value = { text = "yes" } }, "trigger")
+            local only
+            for _, x in ipairs(body or {}) do
+                if x.op then
+                    if only then return nil end
+                    only = x
+                end
+            end
+            return only and eval.count_value(only.key.text:lower(), only.value, I.with_file(ctx, def.file)) or nil
+        end
+        rawset(t, name, f)
+        return f
+    end })
 
     -- STELLAR_RUNTIME_OFF=<name,name,...> (or `all`): those keywords (triggers, links, lists,
     -- trigger values) as they were before this module, to measure what each changes

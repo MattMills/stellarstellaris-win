@@ -6,11 +6,14 @@
 -- - links: `owner` and `planet` of a pop group (its `planet` field is its colony's id, not a
 --   planet's), `species` of a pop group or leader, `colony` of a planet (the planet);
 -- - triggers on pop groups: has_trait (the species' traits), is_enslaved, is_being_purged,
---   is_sapient, is_robot_pop_group, is_pop_category, is_unemployed, has_living_standard,
---   has_citizenship_type (the owner's species rights); leaders: is_heir, has_envoy_task; ships:
---   has_component (is_scope_valid, is_space_fauna, is_councilor, has_starbase_building and
---   has_active_tradition are the script layer's now: simscript/handlers/runtime.lua; has_ethic of
---   a pop group or leader goes to it).
+--   is_sapient, has_citizenship_type (the owner's species rights); leaders: is_ruler;
+--   planets: num_zones; relations, federations (has_federation).
+--   The script layer has these now (simscript/handlers/runtime.lua, docs/script_runtime.md):
+--   is_scope_valid, is_space_fauna, is_councilor, has_starbase_building, has_active_tradition,
+--   is_robot_pop_group, is_pop_category, is_unemployed, has_living_standard, is_heir,
+--   has_climate, is_ringworld, has_active_building, is_scope_type, has_component,
+--   has_federation_perk, has_federation_law, has_envoy_task; has_ethic and has_trait of a
+--   leader (has_ethic: of a pop group too) and of a country go to it.
 
 local defs = require("engine.defs")
 local world = require("engine.world")
@@ -194,7 +197,8 @@ trig.has_trait = function(e, ctx, lk)
         local sid = sc.kind == "pop_group" and group_species(sc.id) or sc.id
         return species_traits(sid)[e.value.text or ""] == true
     end
-    return eval.property(lk)(e, ctx, lk)
+    -- (a leader's, a country's: the script layer's, simscript/handlers/runtime.lua)
+    return (orig_trig.has_trait or eval.property(lk))(e, ctx, lk)
 end
 -- a pop group's flags, from its species rights in its owner
 local function citizenship(id)
@@ -214,31 +218,11 @@ trig.is_sapient = function(e, ctx)
     if not sid then return false == yes(e) end
     return (archetype(sid) ~= "PRESAPIENT") == yes(e)
 end
-trig.is_robot_pop_group = function(e, ctx)
-    if ctx.this.kind ~= "pop_group" then return false == yes(e) end
-    local a = archetype(group_species(ctx.this.id))
-    return (a == "ROBOT" or a == "MACHINE") == yes(e)
-end
-trig.is_pop_category = function(e, ctx)
-    if ctx.this.kind ~= "pop_group" then return false end
-    return (pop_category_def(ctx.this.id)) == e.value.text
-end
-trig.is_unemployed = function(e, ctx)
-    if ctx.this.kind ~= "pop_group" then return false == yes(e) end
-    local _, d = pop_category_def(ctx.this.id)
-    local u = d and defs.field(d.block, "is_unemployment_job") == "yes"
-    return (u == true) == yes(e)
-end
-trig.has_living_standard = function(e, ctx)
-    if ctx.this.kind ~= "pop_group" then return false end
-    return group_right(ctx.this.id, "living_standard") == param(e, "type")
-end
 trig.has_citizenship_type = function(e, ctx)
     if ctx.this.kind ~= "pop_group" then return false end
     return citizenship(ctx.this.id) == param(e, "type")
 end
--- leaders: the ruler is the country's `ruler`; the heir its `heir`, or (the save writes none) the
--- leader with trait_imperial_heir who is not the ruler
+-- leaders: the ruler is the country's `ruler`
 local function leader_country(id)
     local o = tonumber(world.field(world.object("leader", id), "country"))
     return o and world.object("country", o)
@@ -251,28 +235,6 @@ trig.is_ruler = function(e, ctx)
     if ctx.this.kind ~= "leader" then return eval.property("is_ruler")(e, ctx, "is_ruler") end
     return is_ruler(ctx.this.id) == yes(e)
 end
-trig.is_heir = function(e, ctx)
-    if ctx.this.kind ~= "leader" then return false == yes(e) end
-    local c = leader_country(ctx.this.id)
-    local heir = c and tonumber(world.field(c, "heir"))
-    local r
-    if heir then
-        r = heir == ctx.this.id
-    else
-        local traits = world.fields(world.object("leader", ctx.this.id), "traits")
-        r = false
-        for _, t in ipairs(traits) do
-            if t == "trait_imperial_heir" then r = not is_ruler(ctx.this.id) end
-        end
-    end
-    return r == yes(e)
-end
-trig.has_envoy_task = function(e, ctx)
-    if ctx.this.kind ~= "leader" then return false end
-    local task = world.path(world.object("leader", ctx.this.id), "location", "assignment")
-    local want = param(e, "task")
-    return want ~= nil and task == want
-end
 
 -- planets
 local function planet_class_def(pid)
@@ -281,25 +243,6 @@ local function planet_class_def(pid)
 end
 local function planet_colony(pid)
     return world.object("colony", tonumber(world.field(world.object("planet", pid), "colony")))
-end
-trig.has_climate = function(e, ctx)
-    if ctx.this.kind ~= "planet" then return false end
-    local d = planet_class_def(ctx.this.id)
-    return d ~= nil and defs.field(d.block, "climate") == e.value.text
-end
-trig.is_ringworld = function(e, ctx)
-    if ctx.this.kind ~= "planet" then return false == yes(e) end
-    local d, class = planet_class_def(ctx.this.id)
-    local r = (d and defs.field(d.block, "ringworld") == "yes") or (class and class:find("ringworld") ~= nil)
-    return (r and true or false) == yes(e)
-end
-trig.has_active_building = function(e, ctx)
-    if ctx.this.kind ~= "planet" then return false end
-    local c = planet_colony(ctx.this.id)
-    for _, bid in ipairs(world.list(world.field(c, "buildings_cache"))) do
-        if world.field(world.object("buildings", tonumber(bid)), "type") == e.value.text then return true end
-    end
-    return false
 end
 -- num_zones = N, or num_zones = { type = zone_x value >= N }
 trig.num_zones = function(e, ctx)
@@ -344,31 +287,6 @@ end
 trig.is_archetype = function(e, ctx)
     local sid = scope_species(ctx.this)
     return sid ~= nil and archetype(sid) == e.value.text
-end
--- any scope
-local SCOPE_TYPES = { pop_group = "pop_group", planet = "planet", country = "country", ship = "ship", fleet = "fleet",
-    leader = "leader", starbase = "starbase", army = "army", species = "species" }
-trig.is_scope_type = function(e, ctx)
-    return SCOPE_TYPES[ctx.this.kind] == e.value.text
-end
--- ships: a component of the ship's design
-trig.has_component = function(e, ctx)
-    if ctx.this.kind ~= "ship" then return false end
-    local s = world.object("ship", ctx.this.id)
-    local impl = world.field(s, "ship_design_implementation")
-    local design = world.object("ship_design", tonumber(world.field(impl, "design")))
-    local want = e.value.text
-    for _, g in ipairs(world.blocks(world.field(design, "growth_stages"))) do
-        for _, sec in ipairs(world.fields(g, "section")) do
-            for _, comp in ipairs(world.fields(sec, "component")) do
-                if world.field(comp, "template") == want then return true end
-            end
-        end
-        for _, key in ipairs(world.fields(g, "required_component")) do
-            if key == want then return true end
-        end
-    end
-    return false
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -470,22 +388,6 @@ links.federation = function(cur)
     if cur.kind ~= "country" then return nil end
     local f = federation_of(cur.id)
     return f and S("federation", f) or nil
-end
-trig.has_federation_perk = function(e, ctx)
-    if ctx.this.kind ~= "federation" then return false end
-    local p = world.path(world.object("federation", ctx.this.id), "federation_progression", "perks")
-    for _, v in ipairs(world.list(p)) do
-        if v == e.value.text then return true end
-    end
-    return false
-end
-trig.has_federation_law = function(e, ctx)
-    if ctx.this.kind ~= "federation" then return false end
-    local laws = world.path(world.object("federation", ctx.this.id), "federation_progression", "laws")
-    for _, x in ipairs(type(laws) == "table" and laws or {}) do
-        if x.op and x.value.text == e.value.text then return true end
-    end
-    return false
 end
 
 -- ---------------------------------------------------------------------------------------------
