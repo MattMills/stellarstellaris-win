@@ -56,6 +56,7 @@
 -- from the AI's generators (the orders' start draws from the synchronized one, in engine.fleets).
 
 local world = require("engine.world")
+local cmds = require("engine.ai.commands")
 local defs = require("engine.defs")
 
 local M = {
@@ -808,7 +809,7 @@ function M.weekly(country, today, commands, host)
                 M.stats[sk] = (M.stats[sk] or 0) + 1
                 M.decisions[#M.decisions + 1] = { date = today, country = country, fleet = fid,
                     kind = d.kind, target = d.target, system = d.system, planets = d.planets }
-                commands[#commands + 1] = command(country, fid, d, today)
+                commands[#commands + 1] = cmds.make("engine.ai.exploration", "command", command, country, fid, d, today)
             else
                 M.stats.nothing = M.stats.nothing + 1
             end
@@ -836,5 +837,7 @@ function M.report()
     return string.format("ai exploration: %d weeks, %d science ships seen (%d busy), %d anomalies, %d surveys, %d returns, %d idle; %d systems blocked; commands %d executed, %d recorded",
         s.weeks, s.fleets, s.busy, s.anomaly or 0, s.survey or 0, s["return"] or 0, s.nothing, s.blocked, s.executed, s.recorded)
 end
+
+M.ctor = { command = command }
 
 return M

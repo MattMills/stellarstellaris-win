@@ -39,6 +39,15 @@ function rng.position(country)
     return gen(country).position
 end
 
+-- a country's unsynced generator, read and set (the AI on the workers: engine.store.worker)
+function rng.state(country)
+    local g = gen(country)
+    return g.seed, g.position
+end
+function rng.set_state(country, seed, position)
+    unsynced[country] = { seed = seed, position = position }
+end
+
 -- rng.weighted(weights, r) -> index (1-based) or nil (GetWeightedRandomInternal, 0x1b4ad80): the
 -- weights are the game's fp15 integers; total = the sum of the positive ones; none positive: the
 -- fallback r % n; else the first index whose running sum exceeds r % total

@@ -369,17 +369,17 @@ function create.design_info(did, stage)
                    size_multiplier = sb and number(defs.field(sb, "size_multiplier"), sfile) or 1,
                    formation_priority = sb and number(defs.field(sb, "formation_priority"), sfile) or 0,
                    culture = unq(world.field(d, "graphical_culture")) }
-    for _, e in ipairs(gs) do
-        if e.op and e.key and e.key.text == "section" and type(e.value) == "table" then
-            local sec = { template = unq(world.field(e.value, "template")), slot = unq(world.field(e.value, "slot")), components = {} }
-            for _, c in ipairs(e.value) do
-                if c.op and c.key and c.key.text == "component" and type(c.value) == "table" then
-                    sec.components[#sec.components + 1] = { slot = unq(world.field(c.value, "slot")), template = unq(world.field(c.value, "template")) }
+    for key, v in world.statements(gs) do
+        if key == "section" and type(v) == "table" then
+            local sec = { template = unq(world.field(v, "template")), slot = unq(world.field(v, "slot")), components = {} }
+            for ckey, c in world.statements(v) do
+                if ckey == "component" and type(c) == "table" then
+                    sec.components[#sec.components + 1] = { slot = unq(world.field(c, "slot")), template = unq(world.field(c, "template")) }
                 end
             end
             info.sections[#info.sections + 1] = sec
-        elseif e.op and e.key and e.key.text == "required_component" and e.value.text then
-            info.required[#info.required + 1] = unq(e.value.text)
+        elseif key == "required_component" and type(v) ~= "table" then
+            info.required[#info.required + 1] = unq(v)
         end
     end
     return info

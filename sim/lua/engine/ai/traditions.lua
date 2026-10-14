@@ -34,6 +34,7 @@
 -- is empty); the weighted pick; CanActivate again; CCountryActivateAscensionPerkCommand.
 
 local world = require("engine.world")
+local cmds = require("engine.ai.commands")
 local defs = require("engine.defs")
 local eval = require("simscript.eval")
 local traditions = require("engine.traditions")
@@ -214,6 +215,15 @@ local function command(country, name, host)
     }
 end
 
+local function perk_command(country, name, host)
+    return {
+        kind = "ascension_perk", country = country, tradition = name, host = host,
+        execute = function(cmd, d)
+            return traditions.activate(cmd.country, cmd.tradition, cmd.host, d)
+        end,
+    }
+end
+
 function M.handle_traditions(country, today, commands, host)
     M.stats.months = M.stats.months + 1
     local D = traditions.defines()
@@ -283,7 +293,7 @@ function M.handle_traditions(country, today, commands, host)
     M.picks[#M.picks + 1] = { country = country, tradition = name, date = today, candidates = candidates,
         unity = traditions.stockpile(country, "unity"), cost = select(2, traditions.cost(country, name)) }
     M.months[#M.months + 1] = { country = country, date = today, outcome = "pick " .. name }
-    commands[#commands + 1] = command(country, name, host)
+    commands[#commands + 1] = cmds.make("engine.ai.traditions", "command", command, country, name, host)
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -313,12 +323,7 @@ function M.handle_perks(country, today, commands, host)
     end
     M.stats.perk_picks = M.stats.perk_picks + 1
     M.picks[#M.picks + 1] = { country = country, tradition = name, date = today, perk = true }
-    commands[#commands + 1] = {
-        kind = "ascension_perk", country = country, tradition = name, host = host,
-        execute = function(cmd, d)
-            return traditions.activate(cmd.country, cmd.tradition, cmd.host, d)
-        end,
-    }
+    commands[#commands + 1] = cmds.make("engine.ai.traditions", "perk_command", perk_command, country, name, host)
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -351,5 +356,7 @@ function M.report()
     return string.format("ai traditions: %d months (%d at the category limit, %d over budget, %d with nothing), %d draws, %d picks (%d not activatable); perks: %d months, %d picks",
         s.months, s.maxed, s.no_budget, s.none, s.draws, s.picks, s.cannot, s.perk_months, s.perk_picks)
 end
+
+M.ctor = { command = command, perk_command = perk_command }
 
 return M

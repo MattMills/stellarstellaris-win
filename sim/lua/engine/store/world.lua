@@ -23,6 +23,7 @@ local pdxscript = require("pdxscript")
 -- the builtin: a worker makes the global type say "table" for a block handle, for the engine's
 -- modules (engine.store.worker); here a handle must stay a cdata
 local type = type
+local band = require("bit").band
 
 local W = {
     stores = {}, ids = {}, entries = {}, store_blocks = {}, meta = {}, bids = {}, seconds = 0,
@@ -66,10 +67,21 @@ end
 local TEXT, NUMBER, BLOCK = S.TEXT, S.NUMBER, S.BLOCK
 local token, text, find, find_next, kid, sid = S.token, S.text, S.find, S.find_next, S.kid, S.id
 
+-- W.overlay: block id -> a Lua table (pdxscript form) given instead of the block's handle. A worker
+-- puts there the blocks it may write (an AI country's own state: engine.store.worker), materialized
+-- from the copy; engine.world's functions on those tables are the table world's.
+W.overlay = {}
+local overlay = W.overlay
+
+local function block_value(a)
+    return overlay[a] or (B + a)
+end
+S.block_value = block_value
+
 -- the value of entry i: a token's (number or text), or a block's handle
 local function value(i)
     local e = E[i]
-    if e.kind == BLOCK then return B + e.v.u.a end
+    if e.kind == BLOCK then return block_value(e.v.u.a) end
     return token(i)
 end
 
@@ -194,7 +206,7 @@ function W.fields(obj, key)
     while i do
         n = n + 1
         local e = E[i]
-        out[n] = e.kind == BLOCK and (B + e.v.u.a) or text(i)
+        out[n] = e.kind == BLOCK and block_value(e.v.u.a) or text(i)
         i = find_next(bid, k, i)
     end
     return out
@@ -225,17 +237,63 @@ function W.blocks(block)
             local e = E[i]
             if e.op == 0 and e.kind == BLOCK then
                 n = n + 1
-                out[n] = B + e.v.u.a
+                out[n] = block_value(e.v.u.a)
             end
         end
     end
     return out
 end
 
+-- W.statements(h) -> an iterator over the block's `key = value` statements: the key's text and the
+-- value (a token's text, or a block) (engine.world.statements)
+function W.statements(h)
+    if not W.is_block(h) then return function() return nil end end
+    local i, last = h.first - 1, h.first + h.count - 1
+    return function()
+        while i < last do
+            i = i + 1
+            local e = E[i]
+            if e.op ~= 0 then
+                return S.str(e.key), (e.kind == BLOCK and block_value(e.v.u.a) or text(i))
+            end
+        end
+        return nil
+    end
+end
+
+-- W.to_table(h) -> the block as a Lua table in pdxscript's form (a block's entries, with their keys,
+-- operators, quoting and types), for a worker's overlay
+local OP_TEXT = S.OP_TEXT
+local function to_table(bid)
+    local b = B[bid]
+    local t = {}
+    for i = b.first, b.first + b.count - 1 do
+        local e = E[i]
+        local v
+        if e.kind == BLOCK then
+            v = to_table(e.v.u.a)
+            if e.v.u.b ~= 0 then v.type = S.str(e.v.u.b) end
+        else
+            v = { text = text(i), quoted = band(e.flags, 2) ~= 0 or nil }
+        end
+        if e.op ~= 0 then
+            t[#t + 1] = { key = { text = S.str(e.key), quoted = band(e.flags, 1) ~= 0 or nil }, op = OP_TEXT[e.op],
+                value = v }
+        else
+            t[#t + 1] = v
+        end
+    end
+    return t
+end
+function W.to_table(h)
+    return to_table(tonumber(h - B))
+end
+
 function W.path(obj, ...)
     local v = obj
     for _, k in ipairs({ ... }) do
-        if not W.is_block(v) then return nil end
+        -- a block handle, or an overlay's Lua table (W.field is the worker's dispatching one then)
+        if type(v) ~= "table" and not W.is_block(v) then return nil end
         v = W.field(v, k)
     end
     return v

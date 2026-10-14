@@ -34,6 +34,7 @@
 -- section 9): what holds them back is not found yet.
 
 local world = require("engine.world")
+local cmds = require("engine.ai.commands")
 local defs = require("engine.defs")
 local rng = require("engine.ai.rng")
 
@@ -509,7 +510,7 @@ function M.build_ships(country, today, commands)
     end
     -- the item's own cost (the shipyard's modifiers) is what the command takes
     local item_cost = M.ship_table(country, best.did, "cost", economy_mod.modifiers("starbase", best.starbase) or {})
-    commands[#commands + 1] = ship_command(country, best.size, best.idx, best.did, best.starbase, best.queue, item_cost, today)
+    commands[#commands + 1] = cmds.make("engine.ai.shipbuilding", "ship_command", ship_command, country, best.size, best.idx, best.did, best.starbase, best.queue, item_cost, today)
     budget.withdraw(country, best.category, best.cost)
     S.ship_posts = S.ship_posts + 1
     M.posted[#M.posted + 1] = { date = today, country = country, kind = "ship", design = best.did, size = best.size,
@@ -663,7 +664,7 @@ function M.build_armies(country, today, commands)
         S.army_unaffordable = S.army_unaffordable + 1
         return
     end
-    commands[#commands + 1] = army_command(country, best_colony, planet, best_type, species, cost)
+    commands[#commands + 1] = cmds.make("engine.ai.shipbuilding", "army_command", army_command, country, best_colony, planet, best_type, species, cost)
     budget.withdraw(country, category, cost)
     S.army_posts = S.army_posts + 1
     M.posted[#M.posted + 1] = { date = today, country = country, kind = "army", army_type = best_type, colony = best_colony, cost = cost }
@@ -701,5 +702,7 @@ function M.report()
     end
     return text
 end
+
+M.ctor = { ship_command = ship_command, army_command = army_command }
 
 return M

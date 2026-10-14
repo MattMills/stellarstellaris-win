@@ -666,8 +666,8 @@ source of truth, and the copy is brought up to date at each sync from marks the 
 - `STELLAR_STORE_CHECK=1` compares every object with the table world each day and reports stale
   keys by path. Over 180 days from `autosave_2210.01.01` it reports **0 stale keys**, from 43 kinds
   when only exploration's writers marked.
-- Cost: about 9 ms a simulated day over 180 days (blocks 5.6, objects 3.6). The copy builds about
-  620 new blocks a day for tables the table world makes anew, and never frees the old ones yet.
+- Cost: about 9 ms a simulated day over 180 days at first (blocks 5.6, objects 3.6); see the
+  marks below. The copy builds about 620 new blocks a day for tables the table world makes anew, and never frees the old ones yet.
 
 **A worker's engine** (`store/worker.lua`, job `engine`). `engine.store.world` is attached to the
 copy and bound as `engine.world`, then `require("engine")`, `host.init` and `defs.load` as the main
@@ -694,6 +694,38 @@ and the workers' slower reads (handles allocated per read, blocks scanned where 
 index). The large parallel phases are next: the AI's decisions (`UpdateAIParallel`), pops and
 colonies, the monthly strategy.
 
+**The sync's marks.** Besides the writers' block marks, `world.set` reports the key it set (the
+one token written in place), and the object marks of `engine.store.live` count too: several
+writers change an object's blocks themselves and say so only with `live.touch` (the owned fleets
+and armies, the surveyed deposits, orbits, borders), and without those the 180-day check found 56
+stale keys. With them it reports 0, at about 5.3 ms a simulated day. Each sync also copies the
+main state's derived indexes (`planets_of`, `planet_colony`, `colony_planet`, `pop_groups_of`,
+`leaders_of`, `fleet_owner`, `system_owner`: kept by the writers, not computed again) into root 8;
+a worker reads them in place of its own.
+
+**The modifier values** (`store/modifiers.lua`). The economy's modifier source in the main state
+is the world's modifier graph; a worker has none and reads the values the graph gives from the
+store (root 6: `"<Category>:<owner>" = { <modifier> = <value> }`, each a NUMBER entry holding the
+float as it is). They are held from one rebuild of the graph to the next, so the copy is written
+again only after a rebuild, for the holders the incremental update reports changed. Ships are not
+copied; a worker asking for one raises an error.
+
+**The AI's decisions** (`STELLAR_PARALLEL=ai`, the worker job `ai`). Each AI country decides in
+the worker that always takes it (country id modulo the workers), because the AI modules keep a
+country's state in Lua between days. Its unsynced generator goes out with the job and comes back.
+Its `ai` block is held as Lua tables while it decides (`SW.overlay`: `world.field(c, "ai")` gives
+the table, and a second instance of `engine.world`'s module reads and writes it), and comes back as
+text when it changed, which the main state merges in place (`commands.merge`: a block at the same
+place under the same key keeps its table, so its copy keeps its store block). A command is a
+recipe in a worker (`engine.ai.commands`: the module, the constructor's name and the arguments; a
+store block as its id, the country's `ai` block or a block in it as a path, a module by name), and
+the main state rebuilds it with the same constructor and executes the commands in country order.
+A command the AI keeps for itself (`internal`, the construction ships' NeedsStations flag) is
+executed in the worker. Not at parity yet: the AI's budget reads `engine.economy.last_month`, the
+main state's monthly budgets, which a worker does not have (the first difference is a ship one
+country posts on day 19). `STELLAR_AI_LOG=<file>` writes each day's commands and every AI
+generator's position, for comparing a serial run with a parallel one.
+
 ## Files and switches
 
 | | |
@@ -706,7 +738,9 @@ colonies, the monthly strategy.
 | `store/defs.lua` | the definitions in the store |
 | `store/exploration.lua` | exploration over the store, in three parts |
 | `store/bridge.lua` | the main thread's side: the mirror, the inputs, the pass on the pool, the merge; `B.check(days, workers, mirror)`, `B.scale(counts, reps, warm)`, `B.read_scale(...)` |
-| `store/worker.lua` | a worker's jobs (`part`, and benchmarks) |
+| `store/worker.lua` | a worker's jobs (`part`, `engine`, `attitudes`, `ai`, and benchmarks) |
+| `store/full.lua`, `store/parallel.lua`, `store/modifiers.lua` | the whole world's copy, the phases on the workers, the modifier values in the store |
+| `STELLAR_PARALLEL=<phases>` | the phases on the workers (`attitudes`, `ai`; `all`) |
 | `store/live.lua` | the write marks: `live.touch(store, id)`, called by the modules that write what the mirror holds (section 9) |
 | `store/bench.lua` | the round trip, the microbenchmarks, the heap |
 | `STELLAR_STORE=off` | exploration's own pass on the table world (the store is on by default; `ffi` is the same as unset) |

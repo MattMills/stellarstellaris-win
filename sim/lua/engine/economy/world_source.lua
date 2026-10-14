@@ -77,7 +77,7 @@ function M.new(types_log)
     -- of every node, and every value still cached, with it (docs/modifier_incremental.md)
     local check = os.getenv("STELLAR_MODIFIER_CHECK")
     check = check ~= nil and check ~= "" and check ~= "0" and check ~= "off"
-    local wg, cache
+    local wg, cache, pending
     -- full: the graph built whole from the same world (before the update, so that a trigger reading
     -- a modifier reads the month before's in both, as the full rebuild alone does)
     local function check_graph(full, seconds)
@@ -172,6 +172,9 @@ function M.new(types_log)
             -- only the cached values of the holders whose values may have changed (new and gone
             -- ones among them) are dropped, and the misses (a holder may be new)
             local changed = wg:update()
+            -- kept until engine.store.modifiers takes them (the copy for the workers)
+            pending = pending or {}
+            for key in pairs(changed) do pending[key] = true end
             for key in pairs(changed) do
                 if cache[key] ~= nil then
                     cache[key] = nil
@@ -191,6 +194,7 @@ function M.new(types_log)
             cache = {}
         end
         source.stats.builds = source.stats.builds + 1
+        if not incremental then pending = nil end
         source.stats.seconds = source.stats.seconds + (RUST.clock() - t0)
         if check then
             if incremental then
@@ -202,6 +206,16 @@ function M.new(types_log)
         if economy and economy.invalidate then
             economy.invalidate()
         end
+    end
+    -- the graph (engine.modifiers.incremental or .world), and the keys of the holders whose values
+    -- may have changed since the last take (nil: every holder)
+    function source.graph()
+        return wg
+    end
+    function source.take_changed()
+        local p = pending
+        pending = {}
+        return p
     end
     function source.get(kind, id)
         if wg == nil then

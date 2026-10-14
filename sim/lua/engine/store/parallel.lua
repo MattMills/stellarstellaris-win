@@ -49,6 +49,7 @@ end
 function P.run(job, arg)
     local t0 = RUST.clock()
     require("engine.store.full").sync()
+    require("engine.store.modifiers").sync()
     local world = require("engine.world")
     RUST.pool_run("date", tostring(world.meta.date))
     local res = RUST.pool_run(job, arg)

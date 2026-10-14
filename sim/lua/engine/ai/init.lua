@@ -146,54 +146,150 @@ ai.counters = counters
 -- construction ships, engine.ai.construction_ships, are the civilian fleets' constructor branch)
 ai.INTERIOR = { "economy", "starbases", "exploration", "construction_ships", "traditions" }
 
--- ai.process(host, date): the day's AI (CGameState::ProcessAI)
-function ai.process(host, date)
-    local today = date_text(date)
-    local commands = {}
-    local research = require("engine.ai.research")
-    ai.stats.days = ai.stats.days + 1
-    for _, country in ipairs(world.all("country")) do
-        local c = world.object("country", country)
-        if c and type(world.field(c, "ai")) == "table" and setting(country, "enabled") and not human(country) then
-            ai.stats.countries = ai.stats.countries + 1
-            -- CAICore::Update: the modules' daily updates (in the country type's module order:
-            -- military, foreign, interior, ...; only the interior minister's research is ported),
-            -- then the weekly, monthly and yearly ones when their counters are due
-            local interior = has_module(country, "interior_minister_module")
-            if interior and setting(country, "tech") then
-                research.daily(country, today, commands)
+-- whether a country's AI runs (CGameState::ProcessAI's filter)
+local function runs(country)
+    local c = world.object("country", country)
+    return c ~= nil and type(world.field(c, "ai")) == "table" and setting(country, "enabled") and not human(country)
+end
+ai.runs = runs
+
+-- ai.decide(country, today, due, commands, host): one AI country's day (CAICore::Update), its
+-- commands appended to commands; due = { week, month, year } from the day counters. It reads the
+-- world and writes only the country's own AI state, so it may run on a worker (engine.store.worker).
+function ai.decide(country, today, due, commands, host)
+    -- the modules' daily updates (in the country type's module order: military, foreign,
+    -- interior, ...; only the interior minister's research is ported), then the weekly, monthly
+    -- and yearly ones when their counters are due
+    local interior = has_module(country, "interior_minister_module")
+    if interior and setting(country, "tech") then
+        require("engine.ai.research").daily(country, today, commands)
+    end
+    -- then the interior minister's armies and ships (engine.ai.shipbuilding: BuildArmies,
+    -- BuildShips; CAIInteriorMinister::DailyUpdate after the research)
+    local shipbuilding = interior and optional("engine.ai.shipbuilding")
+    if shipbuilding and shipbuilding.daily then
+        shipbuilding.daily(country, today, commands)
+    end
+    -- the weekly updates, then the monthly (CCountryAI::MonthlyUpdate: the AI's budget,
+    -- engine.ai.budget, before the modules' monthly updates), then the yearly: on a day
+    -- where the week and the month are both due, the week's orders use last month's budget
+    -- and plan (docs/ai_economy.md section 1)
+    for _, period in ipairs({ "week", "month", "year" }) do
+        if due[period] then
+            if period == "month" then
+                local budget = optional("engine.ai.budget")
+                if budget and budget.monthly then
+                    budget.monthly(country, today, commands, host)
+                end
             end
-            -- then the interior minister's armies and ships (engine.ai.shipbuilding: BuildArmies,
-            -- BuildShips; CAIInteriorMinister::DailyUpdate after the research)
-            local shipbuilding = interior and optional("engine.ai.shipbuilding")
-            if shipbuilding and shipbuilding.daily then
-                shipbuilding.daily(country, today, commands)
-            end
-            local due = tick_counters(country)
-            -- the weekly updates, then the monthly (CCountryAI::MonthlyUpdate: the AI's budget,
-            -- engine.ai.budget, before the modules' monthly updates), then the yearly: on a day
-            -- where the week and the month are both due, the week's orders use last month's budget
-            -- and plan (docs/ai_economy.md section 1)
-            for _, period in ipairs({ "week", "month", "year" }) do
-                if due[period] then
-                    if period == "month" then
-                        local budget = optional("engine.ai.budget")
-                        if budget and budget.monthly then
-                            budget.monthly(country, today, commands, host)
-                        end
-                    end
-                    if interior then
-                        local fn = ({ week = "weekly", month = "monthly", year = "yearly" })[period]
-                        for _, name in ipairs(ai.INTERIOR) do
-                            local m = optional("engine.ai." .. name)
-                            if m and m[fn] then
-                                m[fn](country, today, commands, host)
-                            end
-                        end
+            if interior then
+                local fn = ({ week = "weekly", month = "monthly", year = "yearly" })[period]
+                for _, name in ipairs(ai.INTERIOR) do
+                    local m = optional("engine.ai." .. name)
+                    if m and m[fn] then
+                        m[fn](country, today, commands, host)
                     end
                 end
             end
         end
+    end
+end
+
+-- the countries' decisions on the workers (STELLAR_PARALLEL=ai; engine.store.worker's `ai` job):
+-- each country decides in the worker that always takes it, as ai.decide does here; its unsynced
+-- generator, its `ai` block and its commands come back and are applied here in country order
+local function decide_on_workers(list, today, commands)
+    local parallel = require("engine.store.parallel")
+    local rng = require("engine.ai.rng")
+    local cmds = require("engine.ai.commands")
+    local lines = {}
+    for i, c in ipairs(list) do
+        local due = tick_counters(c)
+        local seed, pos = rng.state(c)
+        lines[i] = string.format("%d %d %d %d %d %d", c, due.week and 1 or 0, due.month and 1 or 0,
+            due.year and 1 or 0, seed, pos)
+    end
+    local res = {}
+    for w, text in ipairs(parallel.run("ai", today .. "\n" .. table.concat(lines, "\n"))) do
+        local at, cur = 1, nil
+        while at <= #text do
+            local tag, len, start = text:match("^(%u)(%d+)\n()", at)
+            if not tag then error("ai: worker " .. w .. "'s answer unreadable: " .. text:sub(at, at + 80)) end
+            local payload = text:sub(start, start + tonumber(len) - 1)
+            at = start + tonumber(len)
+            if tag == "C" then
+                local c, s, p = payload:match("^(%d+) (%d+) (%d+)$")
+                cur = { seed = tonumber(s), position = tonumber(p), commands = {} }
+                res[tonumber(c)] = cur
+            elseif tag == "O" then
+                cur.text = payload
+            elseif tag == "E" then
+                cur.error = payload
+            else
+                cur.commands[#cur.commands + 1] = payload
+            end
+        end
+    end
+    local pdx = require("pdxscript")
+    local env = { B = require("engine.store.full").table_of, M = require }
+    for _, c in ipairs(list) do
+        local r = res[c]
+        if not r then error("ai: no worker decided for country " .. c) end
+        rng.set_state(c, r.seed, r.position)
+        local block = world.field(world.object("country", c), "ai")
+        if r.text then
+            cmds.merge(block, assert(pdx.parse(r.text)))
+            world.retrack(block)
+        end
+        if r.error then
+            ai.stats.errors = (ai.stats.errors or 0) + 1
+            ai.stats.first_error = ai.stats.first_error or (c .. ": " .. r.error)
+        end
+        env.A = function(...)
+            local t = block
+            for i = 1, select("#", ...) do
+                local s = select(i, ...)
+                if s == "v" then t = t.value else t = t[s] end
+            end
+            return t
+        end
+        for _, line in ipairs(r.commands) do
+            commands[#commands + 1] = cmds.rebuild(line, env)
+        end
+    end
+end
+
+-- ai.process(host, date): the day's AI (CGameState::ProcessAI)
+function ai.process(host, date)
+    local today = date_text(date)
+    local commands = {}
+    ai.stats.days = ai.stats.days + 1
+    local list = {}
+    for _, country in ipairs(world.all("country")) do
+        if runs(country) then
+            ai.stats.countries = ai.stats.countries + 1
+            list[#list + 1] = country
+        end
+    end
+    if #list > 0 and require("engine.store.parallel").enabled("ai") then
+        decide_on_workers(list, today, commands)
+    else
+        for _, country in ipairs(list) do
+            ai.decide(country, today, tick_counters(country), commands, host)
+        end
+    end
+    -- STELLAR_AI_LOG=<file>: the day's commands, in order (serial and parallel runs compared)
+    local log = os.getenv("STELLAR_AI_LOG")
+    if log then
+        local f = io.open(log, "a")
+        for _, cmd in ipairs(commands) do
+            f:write(today, " ", tostring(cmd.country), " ", tostring(cmd.kind), " ", tostring(cmd.tech or cmd.name or ""), "\n")
+        end
+        local rng = require("engine.ai.rng")
+        for _, c in ipairs(list) do
+            f:write(today, " rng ", c, " ", rng.position(c), "\n")
+        end
+        f:close()
     end
     ai.stats.commands = ai.stats.commands + #commands
     for _, cmd in ipairs(commands) do
@@ -208,6 +304,9 @@ function ai.report()
     local r = require("engine.ai.research").stats
     local text = string.format("ai: %d days, %d country-days; research: %d draws, %d picks; %d commands, %d executed",
         s.days, s.countries, r.draws, r.picks, s.commands, s.executed)
+    if s.errors then
+        text = text .. string.format("; %d decisions failed on the workers (first: %s)", s.errors, s.first_error)
+    end
     local ex = package.loaded["engine.ai.exploration"]
     if type(ex) == "table" and ex.report then
         text = text .. "\n" .. ex.report()

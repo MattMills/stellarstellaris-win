@@ -69,11 +69,11 @@ local function own(block, obj, parent)
     end
 end
 
-local function wrote(block, how)
+local function wrote(block, how, key)
     local f = world.on_write
     if f then
         local o = object_of[owner[block]]
-        if o then f(o[1], o[2], block, how) end
+        if o then f(o[1], o[2], block, how, key) end
     end
 end
 
@@ -95,6 +95,11 @@ function world.adopt(name, id, block)
     object_of[block] = { name, id }
     own(block, block, world.store_blocks[name])
     if world.on_write then world.on_write(name, id) end
+end
+
+-- world.retrack(block): the blocks now in block (its entries replaced) given its object and itself as parent
+function world.retrack(block)
+    if tracking then own(block, owner[block], parent_of[block]) end
 end
 
 -- world.track_owners(): every object's blocks given their object, from now on kept by the writers
@@ -337,9 +342,17 @@ local function appended(obj, key, entry)
 end
 
 -- world.set(obj, key, value): the first `key = <token>` of obj changed, or added
+-- world.token_entry(obj, key) -> the first `key = <token>` entry of obj (the one world.set sets), or nil
+function world.token_entry(obj, key)
+    for _, e in ipairs(fields(obj)[key] or {}) do
+        if e.value.text ~= nil then return e end
+    end
+    return nil
+end
+
 function world.set(obj, key, value)
     local text = type(value) == "number" and number_text(value) or tostring(value)
-    if tracking then wrote(obj, "own") end
+    if tracking then wrote(obj, "own", key) end
     for _, e in ipairs(fields(obj)[key] or {}) do
         if e.value.text ~= nil then
             e.value.text = text
@@ -548,6 +561,24 @@ function world.index()
 end
 
 -- the blocks of a list block (`hyperlane = { { to = 1 } { to = 2 } }`)
+-- world.statements(block) -> an iterator over block's `key = value` statements: the key's text and
+-- the value (a token's text, or a block), in order
+function world.statements(block)
+    local i = 0
+    return function()
+        while block do
+            i = i + 1
+            local e = block[i]
+            if e == nil then return nil end
+            if e.op and e.key then
+                local v = e.value
+                return e.key.text, (v.text or v)
+            end
+        end
+        return nil
+    end
+end
+
 -- world.count(block) -> the number of its entries; world.key(block) -> a key for a cache of
 -- something about the block (the block itself here; engine.store.world gives the block's id, as two
 -- handles of one block are two values)

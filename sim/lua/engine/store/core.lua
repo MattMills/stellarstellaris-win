@@ -780,4 +780,36 @@ function S.usage()
         tonumber(H.n_bytes) / 1048576)
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- a block handle walked the way engine.world's tables are (the engine's code on a worker:
+-- engine.store.worker, docs/data_layer.md section 12): ipairs(h) gives each entry as a table of
+-- pdxscript's form, made for the walk (changing it changes nothing in the store), #h is the number of
+-- entries, and a field a block record does not have (.text, .op, .key, .value) reads nil. A block in
+-- an entry is a handle again, or the Lua table a worker holds for it (S.block_value, set by
+-- engine.store.world).
+S.block_value = function(a) return B + a end
+local function entry_table(i)
+    local e = E[i]
+    local v
+    if e.kind == BLOCK then
+        v = S.block_value(e.v.u.a)
+    else
+        v = { text = text(i), quoted = band(e.flags, 2) ~= 0 or nil }
+    end
+    if e.op ~= 0 then
+        return { key = { text = str(e.key), quoted = band(e.flags, 1) ~= 0 or nil }, op = OP_TEXT[e.op], value = v }
+    end
+    return v
+end
+local function next_entry(h, j)
+    j = j + 1
+    if j > h.count then return nil end
+    return j, entry_table(h.first + j - 1)
+end
+ffi.metatype("pdx_block", {
+    __index = function() return nil end,
+    __len = function(h) return h.count end,
+    __ipairs = function(h) return next_entry, h, 0 end,
+})
+
 return S
