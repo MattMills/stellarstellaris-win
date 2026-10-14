@@ -2034,7 +2034,7 @@ function M.status(kind, key)
         if db.scripted_triggers[key] then return "scripted" end
         local it, l = lk:match("^(any)_(.+)$")
         if not it then it, l = lk:match("^(count)_(.+)$") end
-        if it then return (LISTS[l] or l == "in_list") and "iterator" or nil end
+        if it then return (LISTS[l] or AMOUNTS[l] or l == "in_list") and "iterator" or nil end
     else
         if EFF[lk] then return "lua" end
         if EVENT_EFFECT[lk] then return "event" end
