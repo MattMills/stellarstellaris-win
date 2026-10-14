@@ -880,18 +880,20 @@ home system at the same place and scale, the top bar's clock, the outliner.
   left, one `fleet_view_entry` row: the window grows with it); a starbase `starbase_view`; a
   system nothing (CGalacticObject::OnSelect is empty). Drawn: their frames, the name, the close
   button (which clears the selection); not their lists, tabs and the parts the game fills.
-- **The marker**: the game draws none in 3D; the selected thing's GUI map icon is tinted
-  RELATION_COLOR_SELECTED_RGB { 1.5 1.1 0 } (mapicons.gui; the renderer draws no map icons yet:
-  a ring in that colour stands in) **[I]**.
+- **The marker**: the game draws none in 3D; the selected thing's map label (below) turns
+  RELATION_COLOR_SELECTED_RGB { 1.5 1.1 0 } (GetDiplomaticRelationColor's `selected`). In a
+  system that is done; on the galaxy (no star labels yet) a ring in that colour stands in.
 - **The outliner** (outliner.gui: `outliner_controller_window`, `tabs_outliner_window`,
   `outliner_tab_window` "Overview"): a group header (`outliner_title_entry_window`) and the
   group's rows (`outliner_member_*_entry_window`) down to the screen's bottom margin; a row's
-  background selects its planet or fleet. Groups as the game's frame of this save shows them:
-  Utility Ships, Military Fleets, Shipyards (the starbases), then the colonies; empty groups left
-  out; mining and research stations not listed. Names from the save are localised by
-  render.names: the name block's key (or literal), its `$VAR$` variables, the engine's
-  `%ADJECTIVE%` (adjective and noun) and `%ACRONYM%` (initials made up to three letters from the
-  last word: "Uthabulan Order" UOR); a text wider than its box is cut with " ...".
+  background selects its planet or fleet. The order of the groups (COutlinerSettings::GetSort,
+  4.5.2 Linux): the settings' tab 0 reads the observer tab's order (libstdc++'s unordered_map
+  iterates the tabs 4..0), every Overview group sorts at -1 and the merge sort reverses their
+  creation (enum) order: Utility Ships, Military Fleets, Shipyards, Sectors as the frame shows.
+  Colonies (PLANETS) are disabled by default (GetDefaultDisabled); empty groups are left out.
+  Names from the save are localised by render.names: the name block's key (or literal), its
+  `$VAR$` variables, the engine's `%ADJECTIVE%` and `%ACRONYM%` (initials made up to three letters
+  from the last word: "Uthabulan Order" UOR); a text wider than its box is cut with " ...".
 - **Tooltips: the hook** (`app.rs`): `App::hovered` keeps what the cursor is over (a GUI element's
   path or a pickable thing on the map) and since when; `App::tooltip(rest)` asks a `Tooltips`
   implementation (`text(target, date)`) once the cursor has rested. The next phase implements it
@@ -900,16 +902,72 @@ home system at the same place and scale, the top bar's clock, the outliner.
   builders, for reference: CInGameIdler::BuildToolTip (the map), CFleet / CPlanet /
   CGalacticObject::GetToolTip, the map icons' and COutlinerMember::GetToolTip.
 
+### The main screen's GUI (the game's frame after a load: `parity/8_gui.png`)
+
+- **Map labels in a system** (mapicons.gui; CFleetMapIcon, CPlanetMapIcon, CMapIcon; app.rs
+  `system_labels`, scene.rs `add_labels`) **[V]**: every fleet and station has a
+  `fleet_map_icon` (at its .gui position (-65, 8) from the fleet's point): its flag, the bars
+  (health, armor full; the shield hidden at 0), the type icon (GFX_ship_class_small; the frame by
+  what the fleet is **[I]**: CFleet::GetIconFrame not read) and, when its military_power is above
+  0, its strength (MILITARY_POWER: whole under 1000, then K with one decimal). A planet with an
+  owner or deposits has a `planet_map_icon` under it (the planet's point less 0.6 x its display
+  size along the camera's up): the name on a plate as wide as the name + 23 (AdjustNameBg), the
+  flag at its left (the capital: bg_capital, flag_capital and its decoration), a colony's type and
+  health at its right, a `resource_icon_item` per deposit resource (the sum of what its deposits
+  produce, the amount in green). Plates, flag frames and type frames take the relation colour
+  (CColor::SwitchHSVtoRGB of RELATION_COLOR_PLAYER_HSV: (-0.93, 0.89, 0.61) for the player's,
+  grey 0.56 for others). Labels that touch stack (UpdateIconStacks: the first stack a label
+  touches, a stack centred on its members' mean centre, the heights summed; inside, the highest
+  sort key first: military fleets, civilian fleets, planets, each by id), each at the top centre
+  of its slot: the frame's columns of planets 64 px apart and stations 48 apart.
+- **Flags** (flag.rs; flag_sprite.shader, flagSpriteType) **[V]**: the background's red, green
+  and blue weight the flag's first three colours (flags/colors.txt `flag`), the emblem
+  (flags/<category>[/small|/map]/<file>) over it in its rectangle, the alpha cut by the mask, the
+  sprite's frame over all, the frame multiplied by ModulateColor (a label's relation colour);
+  composed on the CPU once per country, sprite and colour. Drawn: the top-left empire flag
+  (`button_topbar_government`, GFX_empire_flag_64 of interface/game_setup/customization.gfx:
+  interface/'s subfolders' .gfx files are read too), the banner's, the labels'.
+- **Orbits** (CGraphicalMap::Render pass 0, gfx/FX/lines.shader) **[V]**: one-pixel lines,
+  128 segments of 3.142 / 64 radians, ORBIT_HSV { 0.44 0.8 0.6 } made linear, alpha 0.1 at zoom
+  step 1 down to 0.05 at step 6 (SYSTEM_LINE_ALPHA_FADE_*), under the planets and through the
+  post effects; the system's inner border (white) and outer border (SYSTEM_OUTER_BORDER_HSV) at
+  the save's radii, every other segment (64 dashes, opposite phases).
+- **The top bar's numbers** (resource_groups formats, CreateSIValueNoColor) **[V]**: the
+  stockpile, then the month's balance (budget.current_month.balance summed) with its sign; whole
+  under 1000, then K and M with one decimal, cut not rounded (9084 "9.0K +75"); research its
+  income alone ("+39").
+- **The bottom banner** (main_bottom.gui `maingui_bottombar` / `leave_system_window`,
+  CMainGuiBottomBarLeaveSystemWindow::Update) **[V]**: "Paused" (GAME_SPEED_0) and its glow while
+  paused, the system's name, its type (sys_homeworld for the owner's capital system, else
+  colonised, outpost, unclaimed or alien **[I]**: common/system_types' weights not evaluated), the
+  owner's flag, the galaxy button; `leave_galaxy_window` on the galaxy (the empire's name). The
+  map modes' window and the toolbar (home, find, chat, databank, menu) of the same file; the map
+  mode buttons' list is not filled.
+- **The left bar** (main.gui `maingui_left_bar_buttons`, collapsed at its hide_position): the
+  views' icons (GFX_topbar_<view>_button x 0.6) down its gridbox, in the frame's order
+  (situation, council, traditions, technology, leaders, species, empire, expansion planner, fleet
+  manager, contacts, discoveries, claims, market) **[I]**; its background (clipped to the window
+  in the game) is left out.
+- **Alerts** (alerts.gui `alerticon_window`; CAlertManager) **[V]**: from (200, 30), 55 x 72
+  apart, five a row, the banner by priority (common/alerts.txt), the alert's icon (a sprite sheet's
+  frame: `sprite_sheet_sprite_type`, `default_frame`). Read so far: the research alerts (an area
+  with no `<area>_queue`, ShouldShowTechAlert).
+
 ### Not done yet
 
-- The outliner's sectors (the game groups the colonies by sector: Sectors, then each sector's
-  planets), the rows' second lines (ship class, fleet size, "Empire Capital") and icons, their
-  order within a group, the other tabs, collapsing groups.
-- The map icons (system names, fleet and planet icons; mapicons.gui), and with them the true
-  selection marker and the fleets' clicks on the galaxy; box selection; right-click orders.
+- Map labels on the galaxy (star_mapicon: system names, owner flags; CGalacticObjectMapIcon
+  not read) and the zoom rules (GALAXY_SHOW_STARNAME_ZOOM ...); the labels' ship counters and the
+  military power's text icon (£military_power£: text icons are not drawn); the fleet type icon's
+  frame rule; the order of stations within a stack; the hyperlane exit arrows (CNavigationArrow,
+  navigation_arrow_entity).
+- Alerts: unlock tradition, first contact stage, council agenda (and the other 60 conditions).
+- The map mode buttons (common/map_modes), the left bar's background strip (needs clipping).
+- The outliner's sectors (Sectors, then each sector's planets: `sectors` in the save), the rows'
+  second lines (ship class, fleet size, "Empire Capital") and icons, their order within a group,
+  the other tabs, collapsing groups.
 - The planet, fleet and starbase windows' contents (their lists and tabs).
-- The camera's slide between systems (Update: along the hyperlane's exit), the system camera's
-  near and far planes, the game's zoom on a focused object (CalcMinZoom).
+- Box selection, right-click orders; the camera's slide between systems, the system camera's
+  near and far planes, the zoom on a focused object (CalcMinZoom).
 - The headless game has no `speed`, `wait` or `select` (headless/ is not changed here).
 
 ## Open questions

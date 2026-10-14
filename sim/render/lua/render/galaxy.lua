@@ -94,9 +94,9 @@ local function exists(path)
     return false
 end
 
--- name -> { r, g, b }: the `map` swatches of flags/colors.txt
+-- name -> { r, g, b }: the `map` swatches of flags/colors.txt (and the `flag` swatches)
 local function map_swatches(game_dir)
-    local out = {}
+    local out, flag = {}, {}
     local tree = source.parse(game_dir, "flags/colors.txt")
     local colors = tree and field(tree, "colors")
     for _, e in ipairs(type(colors) == "table" and colors or {}) do
@@ -105,9 +105,13 @@ local function map_swatches(game_dir)
             if r then
                 out[e.key.text] = { r, g, b }
             end
+            local fr, fg, fb = colour(field(e.value, "flag"))
+            if fr then
+                flag[e.key.text] = { fr, fg, fb }
+            end
         end
     end
-    return out
+    return out, flag
 end
 
 -- the defines of common/defines: namespace -> KEY -> value (a token's text or a block), files in
@@ -141,7 +145,7 @@ end
 --   border_hyperlane_thickness }
 function galaxy.extract(game_dir)
     local t0 = RUST.clock()
-    local swatches = map_swatches(game_dir)
+    local swatches, flag_swatches = map_swatches(game_dir)
     local named = source.definitions(game_dir, "common/named_colors")
     local classes = source.definitions(game_dir, "common/star_classes")
     local def = defines(game_dir)
@@ -240,8 +244,27 @@ function galaxy.extract(game_dir)
                 q = q3
             end
             q = q or p
+            -- the flag (flag = { icon = { category file } background = { category file } colors
+            -- = { names } }): its emblem, background and colours (the `flag` swatches)
+            local fl = world.field(c, "flag")
+            local function part(k)
+                local p = fl and world.field(fl, k)
+                if type(p) ~= "table" then
+                    return nil
+                end
+                return {
+                    category = tostring(world.field(p, "category") or ""):gsub('"', ""),
+                    file = tostring(world.field(p, "file") or ""):gsub('"', ""),
+                }
+            end
+            local fcolours = {}
+            for k, n in ipairs(names) do
+                fcolours[k] = flag_swatches[n] or { 1, 1, 1 }
+            end
             countries[#countries + 1] = {
+                flag = fl and { icon = part("icon"), background = part("background"), colours = fcolours } or nil,
                 id = o, name = galaxy.name_text(world.field(c, "name")) or ("country " .. o),
+                name_block = galaxy.name_block(world.field(c, "name")),
                 kind = tostring(world.field(c, "type") or ""),
                 colours = { names[1] or "", names[2] or "" },
                 primary = p or { 1, 1, 1 }, secondary = q or { 1, 1, 1 }, source = src or "",
@@ -283,6 +306,7 @@ function galaxy.extract(game_dir)
                 station = world.path(f, "properties", "station") == "yes",
                 ships = #world.list(world.field(f, "ships")),
                 military = (tonumber(world.field(f, "military_power")) or 0) > 0,
+                military_power = tonumber(world.field(f, "military_power")) or 0,
                 name = galaxy.name_block(world.field(f, "name")),
                 system = origin ~= NONE and origin or nil,
             }
@@ -364,6 +388,33 @@ function galaxy.extract(game_dir)
             }
         end
     end
+    -- the player's alerts (CAlertManager::Update; common/alerts.txt: icon, priority), as far as
+    -- read: a research area with nothing researched (ShouldShowTechAlert: no `<area>_queue`)
+    local alerts = {}
+    local alert_defs = {}
+    do
+        local tree = source.parse(game_dir, "common/alerts.txt")
+        local list = tree and field(tree, "alerts")
+        for _, e in ipairs(type(list) == "table" and list or {}) do
+            if e.op and e.key and type(e.value) == "table" then
+                alert_defs[e.key.text] = {
+                    icon = tostring(field(e.value, "icon") or ""):gsub('"', ""),
+                    priority = tostring(field(e.value, "priority") or "LOW"),
+                }
+            end
+        end
+    end
+    local ts = pc and world.field(pc, "tech_status")
+    if type(ts) == "table" then
+        for _, area in ipairs({ "physics", "society", "engineering" }) do
+            local q = world.field(ts, area .. "_queue")
+            if not (type(q) == "table" and #world.blocks(q) > 0) then
+                local key = "alert_" .. area .. "_research"
+                local d = alert_defs[key] or {}
+                alerts[#alerts + 1] = { key = key, icon = d.icon or "", priority = d.priority or "MEDIUM" }
+            end
+        end
+    end
     local communications = {}
     local rm = pc and world.field(pc, "relations_manager")
     for _, r in ipairs(rm and world.fields(rm, "relation") or {}) do
@@ -409,6 +460,7 @@ function galaxy.extract(game_dir)
         terra_incognita = ti, core_radius = core_radius or 0, player = player,
         communications = pc and communications or nil,
         planets = planets,
+        alerts = alerts,
         capital = capital,
     }
     out.notes = string.format(

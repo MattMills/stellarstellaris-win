@@ -31,6 +31,8 @@ pub enum GuiItem {
         /// a button (clickable), and what a click does
         button: bool,
         action: Option<String>,
+        /// its colour multiplied in (the relation colour of a map label)
+        tint: [f32; 4],
     },
     Text {
         path: String,
@@ -95,6 +97,25 @@ pub fn install(runtime: &Runtime, game_dir: &str, cache: &Rc<RefCell<Cache>>) ->
         })
     })?;
     lua.globals().set("RENDER_TEXTURE_SIZE", size)?;
+    // the subdirectories under a directory of the game (relative paths, recursively, sorted): the
+    // .gfx files of interface/'s subfolders are loaded too (game_setup/customization.gfx has the
+    // empire flags)
+    let gd2 = game_dir.to_string();
+    let subdirs = lua.create_function(move |_, rel: String| {
+        fn walk(base: &std::path::Path, rel: &str, out: &mut Vec<String>) {
+            let Ok(rd) = std::fs::read_dir(base.join(rel)) else { return };
+            let mut dirs: Vec<String> = rd.flatten().filter(|e| e.path().is_dir()).map(|e| format!("{rel}/{}", e.file_name().to_string_lossy())).collect();
+            dirs.sort();
+            for d in dirs {
+                out.push(d.clone());
+                walk(base, &d, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(std::path::Path::new(&gd2), &rel, &mut out);
+        Ok(out)
+    })?;
+    lua.globals().set("RENDER_SUBDIRS", subdirs)?;
     lua.globals().set("RENDER_GAME_DIR", game_dir.replace('\\', "/"))?;
     lua.load("if not RENDER_GFX then RENDER_GFX = require('render.gfx').load(RENDER_GAME_DIR) end").exec()
 }
@@ -151,6 +172,10 @@ fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
                     None => None,
                 },
                 button: button.is_some(),
+                tint: match it.get::<Option<Table>>("tint")? {
+                    Some(t) => [t.get(1)?, t.get(2)?, t.get(3)?, t.get::<Option<f32>>(4)?.unwrap_or(1.0)],
+                    None => [1.0; 4],
+                },
             });
         } else {
             let mut spans = Vec::new();
@@ -387,6 +412,132 @@ pub fn windows(runtime: &Runtime, width: u32, height: u32, outliner: &[OutlinerG
         Ok(Layout { items: read_items(t.get("items")?)?, missing: missing(&report)?, note: String::new() })
     };
     read().map_err(|e| format!("render.windows: {e}"))
+}
+
+/// A window to lay out (render.windows.specs): its file and name, and what the game decides at
+/// run time: the children drawn (`only`, none: all) and hidden, texts, sprite frames, button
+/// actions, sizes, a path prefix, the rectangle it is laid out in (none: the screen).
+#[derive(Clone, Debug, Default)]
+pub struct WindowSpec {
+    pub file: String,
+    pub window: String,
+    pub only: Option<Vec<String>>,
+    pub hide: Vec<String>,
+    pub text: Vec<(String, String)>,
+    pub frames: Vec<(String, u32)>,
+    pub actions: Vec<(String, String)>,
+    pub sizes: Vec<(String, (f32, f32))>,
+    pub positions: Vec<(String, (f32, f32))>,
+    pub sprites: Vec<(String, String)>,
+    pub tints: Vec<(String, [f32; 4])>,
+    pub prefix: Option<String>,
+    pub parent: Option<[f32; 4]>,
+}
+
+impl WindowSpec {
+    pub fn new(file: &str, window: &str) -> WindowSpec {
+        WindowSpec { file: file.into(), window: window.into(), ..Default::default() }
+    }
+}
+
+/// Windows laid out for a screen of `width` x `height`, in a runtime with the GUI installed (the
+/// front end's: localisation too).
+pub fn layout_specs(runtime: &Runtime, width: u32, height: u32, specs: &[WindowSpec]) -> Result<Layout, String> {
+    let read = || -> mlua::Result<Layout> {
+        let lua = &runtime.lua;
+        let list = lua.create_table()?;
+        for s in specs {
+            let t = lua.create_table()?;
+            t.set("file", s.file.as_str())?;
+            t.set("window", s.window.as_str())?;
+            if let Some(only) = &s.only {
+                t.set("only", lua.create_sequence_from(only.iter().map(|v| v.as_str()))?)?;
+            }
+            t.set("hide", lua.create_sequence_from(s.hide.iter().map(|v| v.as_str()))?)?;
+            let map = |pairs: &[(String, String)]| -> mlua::Result<Table> {
+                let m = lua.create_table()?;
+                for (k, v) in pairs {
+                    m.set(k.as_str(), v.as_str())?;
+                }
+                Ok(m)
+            };
+            t.set("text", map(&s.text)?)?;
+            t.set("actions", map(&s.actions)?)?;
+            let frames = lua.create_table()?;
+            for (k, v) in &s.frames {
+                frames.set(k.as_str(), *v)?;
+            }
+            t.set("frames", frames)?;
+            let sizes = lua.create_table()?;
+            for (k, (w, h)) in &s.sizes {
+                sizes.set(k.as_str(), lua.create_sequence_from([*w, *h])?)?;
+            }
+            t.set("sizes", sizes)?;
+            let positions = lua.create_table()?;
+            for (k, (x, y)) in &s.positions {
+                positions.set(k.as_str(), lua.create_sequence_from([*x, *y])?)?;
+            }
+            t.set("positions", positions)?;
+            t.set("sprites", map(&s.sprites)?)?;
+            let tints = lua.create_table()?;
+            for (k, c) in &s.tints {
+                tints.set(k.as_str(), lua.create_sequence_from(*c)?)?;
+            }
+            t.set("tints", tints)?;
+            if let Some(p) = &s.prefix {
+                t.set("prefix", p.as_str())?;
+            }
+            if let Some(r) = s.parent {
+                let p = lua.create_table()?;
+                p.set("x", r[0])?;
+                p.set("y", r[1])?;
+                p.set("w", r[2])?;
+                p.set("h", r[3])?;
+                t.set("parent", p)?;
+            }
+            list.push(t)?;
+        }
+        lua.globals().set("RENDER_SPECS", list)?;
+        let t: Table = lua
+            .load(format!(
+                "local items, report = require('render.windows').specs(RENDER_GAME_DIR, RENDER_GFX, {{ width = {width}, height = {height} }}, RENDER_TEXTURE_SIZE, RENDER_LOC, RENDER_SPECS) return {{ items = items, report = report }}"
+            ))
+            .eval()?;
+        let report: Table = t.get("report")?;
+        Ok(Layout { items: read_items(t.get("items")?)?, missing: missing(&report)?, note: String::new() })
+    };
+    read().map_err(|e| format!("render.windows.specs: {e}"))
+}
+
+/// A sprite's frame size in pixels (its texture's width over its frames).
+pub fn sprite_size(runtime: &Runtime, cache: &Rc<RefCell<Cache>>, game_dir: &str, name: &str) -> Option<(f32, f32)> {
+    let s: Table = runtime.lua.load(format!("return RENDER_GFX.sprites[{name:?}]")).eval::<Option<Table>>().ok()??;
+    let texture: String = s.get::<Option<String>>("texture").ok()??;
+    let frames: u32 = s.get::<Option<u32>>("frames").ok().flatten().unwrap_or(1).max(1);
+    let mut c = cache.borrow_mut();
+    let img = c.get(game_dir, &texture).ok()?;
+    Some((img.width as f32 / frames as f32, img.height as f32))
+}
+
+/// A flagSpriteType's definition from the .gfx database (render.gfx), if `name` is one.
+pub fn flag_sprite(runtime: &Runtime, name: &str) -> Option<crate::flag::FlagSprite> {
+    let s: Table = runtime.lua.load(format!("return RENDER_GFX.sprites[{name:?}]")).eval::<Option<Table>>().ok()??;
+    if s.get::<Option<String>>("kind").ok()?? != "flagSpriteType" {
+        return None;
+    }
+    let rect = |p: &str, z: &str| -> Option<([f32; 2], [f32; 2])> {
+        let a: Table = s.get::<Option<Table>>(p).ok()??;
+        let b: Table = s.get::<Option<Table>>(z).ok()??;
+        Some(([a.get(1).ok()?, a.get(2).ok()?], [b.get(1).ok()?, b.get(2).ok()?]))
+    };
+    Some(crate::flag::FlagSprite {
+        frame: s.get::<Option<String>>("texture").ok()??,
+        mask: s.get("mask").ok().flatten(),
+        texture_size: s.get("texture_size").ok().flatten(),
+        bg: rect("bg_position", "bg_size"),
+        symbol: rect("symbol_position", "symbol_size"),
+        mask_rect: rect("mask_offset", "mask_size"),
+    })
 }
 
 /// Names from the save, localised (render.names, in the front end's runtime: its localisation).

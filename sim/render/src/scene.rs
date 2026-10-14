@@ -410,6 +410,127 @@ pub struct Pick {
 pub struct Overlay {
     pub selected: Option<Pickable>,
     pub items: Vec<GuiItem>,
+    /// map labels (mapicons.gui): GUI laid out at the screen's origin, drawn where their world
+    /// point is
+    pub labels: Vec<Label>,
+}
+
+/// A map label (CMapIcon): GUI items laid out about (0, 0), moved to the screen point of
+/// `anchor` (less `drop` world units along the camera's up: a planet's label under it,
+/// CPlanetMapIcon::Update3DPosition); its buttons carry their actions (a click selects its
+/// object). `bounds`: the rectangle (relative to that point, pixels) it takes in a stack of
+/// labels, and `sort` its place there (UpdateIconStacks: the highest first); None, never stacked.
+#[derive(Clone, Debug)]
+pub struct Label {
+    pub anchor: V3,
+    pub drop: f32,
+    pub items: Vec<GuiItem>,
+    pub bounds: Option<[f32; 4]>,
+    pub sort: i64,
+}
+
+/// The labels at their places (projected; behind the camera or far off the screen left out),
+/// stacked where they overlap as the game does (CMapIconManager::UpdateIconStacks: each joins
+/// the first stack it touches, a stack is centred on its members' mean centre with their heights
+/// summed, overlapping stacks merge; inside, the highest sort first, each at the stack's centre
+/// line), drawn under the windows.
+#[allow(clippy::too_many_arguments)]
+pub fn add_labels(
+    batches: &mut Vec<Batch>,
+    gui: &mut Gui,
+    labels: &[Label],
+    view: &ViewParams,
+    fonts: &HashMap<String, Font>,
+    tex: &mut Textures,
+    cache: &mut Cache,
+    game_dir: &str,
+    states: &HashMap<String, ButtonState>,
+) {
+    let (w, h) = (view.width as f32, view.height as f32);
+    // each label's point on the screen
+    let mut points: Vec<Option<(f32, f32)>> = Vec::with_capacity(labels.len());
+    for l in labels {
+        let at = l.anchor.sub(view.up.scale(l.drop));
+        let p = view.project(at).filter(|&(px, py, z)| (0.0..=1.0).contains(&z) && px > -200.0 && py > -200.0 && px < w + 200.0 && py < h + 200.0);
+        points.push(p.map(|(x, y, _)| (x.trunc(), y.trunc())));
+    }
+    // the stacks: (rectangle, members)
+    let mut stacks: Vec<([f32; 4], Vec<usize>)> = Vec::new();
+    let overlap = |a: &[f32; 4], b: &[f32; 4]| a[0] <= b[0] + b[2] && b[0] <= a[0] + a[2] && a[1] <= b[1] + b[3] && b[1] <= a[1] + a[3];
+    let rect_of = |members: &[usize], points: &[Option<(f32, f32)>]| -> [f32; 4] {
+        let (mut cx, mut cy, mut mw, mut sh) = (0.0, 0.0, 0.0f32, 0.0);
+        for &i in members {
+            let (px, py) = points[i].unwrap();
+            let b = labels[i].bounds.unwrap();
+            cx += px + b[0] + b[2] / 2.0;
+            cy += py + b[1] + b[3] / 2.0;
+            mw = mw.max(b[2]);
+            sh += b[3];
+        }
+        let n = members.len() as f32;
+        [cx / n - mw / 2.0, cy / n - sh / 2.0, mw, sh]
+    };
+    for (i, l) in labels.iter().enumerate() {
+        let (Some((px, py)), Some(b)) = (points[i], l.bounds) else { continue };
+        let r = [px + b[0], py + b[1], b[2], b[3]];
+        match stacks.iter_mut().find(|s| s.1.len() < 32 && overlap(&s.0, &r)) {
+            Some(s) => {
+                s.1.push(i);
+                s.0 = rect_of(&s.1, &points);
+            }
+            None => stacks.push((r, vec![i])),
+        }
+    }
+    // overlapping stacks merge (the later into the earlier) until none do
+    loop {
+        let mut merged = false;
+        'outer: for a in 0..stacks.len() {
+            for b in (a + 1..stacks.len()).rev() {
+                if overlap(&stacks[a].0, &stacks[b].0) {
+                    let m = stacks.remove(b).1;
+                    stacks[a].1.extend(m);
+                    stacks[a].0 = rect_of(&stacks[a].1, &points);
+                    merged = true;
+                    break 'outer;
+                }
+            }
+        }
+        if !merged {
+            break;
+        }
+    }
+    // a stacked label's point: its slot on the stack's centre line
+    let mut slot: Vec<Option<(f32, f32)>> = points.clone();
+    for (r, members) in &mut stacks {
+        if members.len() < 2 {
+            continue;
+        }
+        members.sort_by(|&a, &b| labels[b].sort.cmp(&labels[a].sort));
+        let mut y = r[1];
+        for &i in members.iter() {
+            // the label's origin at its slot's top centre (its window then at that + its .gui position)
+            slot[i] = Some((r[0] + r[2] / 2.0, y));
+            y += labels[i].bounds.unwrap()[3];
+        }
+    }
+    for (i, l) in labels.iter().enumerate() {
+        let Some((dx, dy)) = slot[i] else { continue };
+        let moved: Vec<GuiItem> = l
+            .items
+            .iter()
+            .map(|it| {
+                let mut it = it.clone();
+                match &mut it {
+                    GuiItem::Sprite { x, y, .. } | GuiItem::Text { x, y, .. } => {
+                        *x += dx.round();
+                        *y += dy.round();
+                    }
+                }
+                it
+            })
+            .collect();
+        add_gui(batches, gui, &moved, fonts, tex, cache, game_dir, states);
+    }
 }
 
 /// A GUI sprite drawn: its element, sprite, rectangle on screen, and whether its frame has any
@@ -898,6 +1019,7 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
     // ---- the top bar's sprites and texts, then the windows over the view
     let mut gui = Gui::default();
     if inp.gui {
+        add_labels(&mut batches, &mut gui, &inp.overlay.labels, &view, inp.fonts, tex, cache, inp.game_dir, inp.states);
         add_gui(&mut batches, &mut gui, &inp.topbar.items, inp.fonts, tex, cache, inp.game_dir, inp.states);
         add_gui(&mut batches, &mut gui, &inp.overlay.items, inp.fonts, tex, cache, inp.game_dir, inp.states);
     }
@@ -990,7 +1112,7 @@ pub fn add_gui(
 ) {
     for item in items {
         match item {
-            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action } => {
+            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action, tint } => {
                 let Some(t) = tex.game(cache, game_dir, texture) else { continue };
                 let img = tex.images[t].clone();
                 let (tw, th) = (img.width as f32, img.height as f32);
@@ -1021,11 +1143,11 @@ pub fn add_gui(
                         let vs = [0.0, by / th, 1.0 - by / th, 1.0];
                         for r in 0..3 {
                             for c in 0..3 {
-                                push(batches, layer, Blend::Alpha, t, screen_quad([xs[c], ys[r], xs[c + 1], ys[r + 1]], [us[c], vs[r], us[c + 1], vs[r + 1]], [1.0; 4]));
+                                push(batches, layer, Blend::Alpha, t, screen_quad([xs[c], ys[r], xs[c + 1], ys[r + 1]], [us[c], vs[r], us[c + 1], vs[r + 1]], *tint));
                             }
                         }
                     }
-                    _ => push(batches, layer, Blend::Alpha, t, screen_quad([*x, *y, x + w, y + h], [u0, 0.0, u1, 1.0], [1.0; 4])),
+                    _ => push(batches, layer, Blend::Alpha, t, screen_quad([*x, *y, x + w, y + h], [u0, 0.0, u1, 1.0], *tint)),
                 }
                 if layer == Layer::Gui {
                     let order = gui.sprites.len() + gui.texts.len();

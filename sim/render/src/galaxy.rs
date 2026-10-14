@@ -39,6 +39,17 @@ pub struct Country {
     pub primary: [f32; 3],
     pub secondary: [f32; 3],
     pub systems: usize,
+    /// its flag: emblem and background (category, file) and colours (sRGB, the `flag` swatches)
+    pub flag: Option<Flag>,
+    /// its name block (render.names localises it)
+    pub name_block: Name,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Flag {
+    pub icon: (String, String),
+    pub background: (String, String),
+    pub colours: Vec<[f32; 3]>,
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +87,8 @@ pub struct Galaxy {
     pub planets: Vec<PlanetInfo>,
     /// the player's capital: its planet and system (save ids)
     pub capital: Option<(u32, u32)>,
+    /// the player's alerts: (key, icon sprite, priority HIGH/MEDIUM/LOW), in their order
+    pub alerts: Vec<(String, String, String)>,
 }
 
 impl Galaxy {
@@ -111,6 +124,8 @@ pub struct Fleet {
     pub station: bool,
     pub ships: u32,
     pub military: bool,
+    /// the save's military_power (the map label's strength)
+    pub military_power: f32,
     pub from: Option<(f32, f32)>,
     pub to: Option<(f32, f32)>,
     pub name: Name,
@@ -241,6 +256,25 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                 primary: rgb(&c.get("primary")?)?,
                 secondary: rgb(&c.get("secondary")?)?,
                 systems: 0,
+                name_block: Name::read(c.get("name_block")?)?,
+                flag: match c.get::<Option<Table>>("flag")? {
+                    Some(f) => {
+                        let part = |k: &str| -> mlua::Result<(String, String)> {
+                            Ok(match f.get::<Option<Table>>(k)? {
+                                Some(p) => (p.get("category")?, p.get("file")?),
+                                None => (String::new(), String::new()),
+                            })
+                        };
+                        let mut colours = Vec::new();
+                        if let Some(cs) = f.get::<Option<Table>>("colours")? {
+                            for c in cs.sequence_values::<Table>() {
+                                colours.push(rgb(&c?)?);
+                            }
+                        }
+                        Some(Flag { icon: part("icon")?, background: part("background")?, colours })
+                    }
+                    None => None,
+                },
             });
         }
         let mut systems = Vec::new();
@@ -288,6 +322,7 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                 station: f.get("station")?,
                 ships: f.get("ships")?,
                 military: f.get("military")?,
+                military_power: f.get::<Option<f32>>("military_power")?.unwrap_or(0.0),
                 from: pair("from_x", "from_y")?,
                 to: pair("to_x", "to_y")?,
                 name: Name::read(f.get("name")?)?,
@@ -339,6 +374,16 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
             core_radius: g.get::<Option<f32>>("core_radius")?.unwrap_or(0.0),
             player: g.get::<Option<u32>>("player")?.unwrap_or(0),
             communications: g.get::<Option<Table>>("communications")?.map(|t| t.sequence_values::<u32>().collect::<mlua::Result<Vec<_>>>()).transpose()?,
+            alerts: match g.get::<Option<Table>>("alerts")? {
+                Some(t) => t
+                    .sequence_values::<Table>()
+                    .map(|a| -> mlua::Result<(String, String, String)> {
+                        let a = a?;
+                        Ok((a.get("key")?, a.get("icon")?, a.get("priority")?))
+                    })
+                    .collect::<mlua::Result<_>>()?,
+                None => Vec::new(),
+            },
             capital: match g.get::<Option<Table>>("capital")? {
                 Some(t) => Some((t.get("planet")?, t.get("system")?)),
                 None => None,

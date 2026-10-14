@@ -157,6 +157,37 @@ local function selected_window(ctx, sel, items, report)
     end
 end
 
+-- windows.specs(game_dir, db, screen, texture_size, loc, specs) -> items, report: windows laid
+-- out one after the other, each spec { file, window, only, hide, text, frames, actions, sizes,
+-- prefix, parent = { x, y, w, h } } as render.gui's options (lists of names become sets)
+function windows.specs(game_dir, db, screen, texture_size, loc, specs)
+    local items = {}
+    local report = { sprites = 0, texts = 0, missing_sprites = {}, skipped = {}, rects = {} }
+    local function set(list)
+        if not list then
+            return nil
+        end
+        local s = {}
+        for _, n in ipairs(list) do
+            s[n] = true
+        end
+        return s
+    end
+    for _, s in ipairs(specs) do
+        local ok, i, r = pcall(gui.layout, game_dir, db, s.file, s.window, screen, {
+            texture_size = texture_size, loc = loc, only = set(s.only), hide = set(s.hide), text = s.text,
+            frames = s.frames, actions = s.actions, sizes = s.sizes, prefix = s.prefix, parent = s.parent,
+            positions = s.positions, sprites = s.sprites, tints = s.tints,
+        })
+        if ok then
+            merge(items, report, i, r)
+        else
+            report.missing_sprites[#report.missing_sprites + 1] = tostring(s.window) .. ": " .. tostring(i)
+        end
+    end
+    return items, report
+end
+
 function windows.build(game_dir, db, screen, texture_size, loc, data)
     local ctx = { game_dir = game_dir, db = db, screen = screen, texture_size = texture_size, loc = loc }
     local items = {}

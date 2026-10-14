@@ -31,6 +31,7 @@ mod clock;
 mod dds;
 mod effects;
 mod engine;
+mod flag;
 mod math;
 mod models;
 mod particles;
@@ -285,8 +286,39 @@ impl Map {
         Ok(d)
     }
 
+    /// The flag sprites among `items` (flagSpriteType) drawn as `country`'s flag (an index into
+    /// the galaxy's countries): composed once (flag.rs) into the map's textures as
+    /// `@flag:<country id>:<sprite>`.
+    pub fn flags(&mut self, items: &mut [gui::GuiItem], country: Option<usize>) {
+        for it in items.iter_mut() {
+            let gui::GuiItem::Sprite { sprite, kind, texture, tint, .. } = it else { continue };
+            if kind != "flagSpriteType" {
+                continue;
+            }
+            let Some(c) = country.and_then(|c| self.galaxy.countries.get(c)) else { continue };
+            // the sprite's tint is the shader's ModulateColor: the frame's only
+            let modulate = *tint;
+            let name = if modulate == [1.0; 4] { format!("@flag:{}:{}", c.id, sprite) } else { format!("@flag:{}:{}:{:?}", c.id, sprite, modulate) };
+            if self.textures.find(&name).is_none() {
+                // the .gfx database in this runtime (the top bar installs it; windows may come first)
+                let _ = gui::install(&self.runtime, &self.game_dir, &self.cache);
+                let def = gui::flag_sprite(&self.runtime, sprite);
+                let (Some(def), Some(flag)) = (def, c.flag.as_ref()) else { continue };
+                let Some(img) = flag::compose(&mut self.cache.borrow_mut(), &self.game_dir, &def, flag, modulate) else { continue };
+                self.textures.add(&name, Arc::new(img));
+            }
+            *texture = name;
+            *tint = [1.0; 4];
+        }
+    }
+
+    /// The player's country (an index into the galaxy's countries).
+    pub fn player_country(&self) -> Option<usize> {
+        self.galaxy.countries.iter().position(|c| c.id == self.galaxy.player)
+    }
+
     /// The top bar for a screen of `width` x `height`: laid out again when the size, the clock or
-    /// the snapshot changed; its fonts loaded.
+    /// the snapshot changed; its fonts loaded; the empire's flag at its left.
     pub fn topbar(&mut self, width: u32, height: u32) -> Result<Topbar, String> {
         let generation = self.snapshot.as_ref().map_or(0, |s| s.generation);
         let key = (width, height, self.paused, self.speed, generation);
@@ -304,7 +336,9 @@ impl Map {
             speed: self.speed,
             speed_name,
         };
-        let topbar = gui::topbar(&self.runtime, &self.game_dir, &self.cache, width, height, &state)?;
+        let mut topbar = gui::topbar(&self.runtime, &self.game_dir, &self.cache, width, height, &state)?;
+        let player = self.player_country();
+        self.flags(&mut topbar.items, player);
         gui::fonts(&self.runtime, &self.game_dir, &topbar.items, self.fonts.get_or_insert_with(HashMap::new))?;
         self.topbar_cache = Some((key, topbar.clone()));
         Ok(topbar)

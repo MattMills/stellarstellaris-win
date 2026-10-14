@@ -39,16 +39,27 @@ local LISTED = {
     physics_research = true, society_research = true, engineering_research = true,
 }
 
--- a stockpile as the bar shows it: whole units, thousands as K from 10000
+-- a stockpile as the bar shows it: whole units below 1000, then thousands (K) and millions (M)
+-- with one decimal, cut not rounded (the game's frame: 9084 "9.0K", 4855 "4.8K", 1479 "1.4K")
 function topbar.format(v)
     v = tonumber(v) or 0
     local a = math.abs(v)
+    local s = v < 0 and "-" or ""
     if a >= 1e6 then
-        return string.format("%.1fM", v / 1e6)
-    elseif a >= 1e4 then
-        return string.format("%.1fK", v / 1e3)
+        return string.format("%s%.1fM", s, math.floor(a / 1e5) / 10)
+    elseif a >= 1e3 then
+        return string.format("%s%.1fK", s, math.floor(a / 1e2) / 10)
     end
-    return string.format("%d", v >= 0 and math.floor(v) or -math.floor(-v))
+    return string.format("%s%d", s, math.floor(a))
+end
+
+-- a resource as the bar shows it: the stockpile, then the monthly income with its sign
+function topbar.amount(value, income)
+    if income == nil then
+        return topbar.format(value)
+    end
+    local sign = income < 0 and "-" or "+"
+    return topbar.format(value) .. " " .. sign .. topbar.format(math.abs(income))
 end
 
 -- the player's country id (meta.player = { { name = "..." country = 0 } }), 0 if none
@@ -75,24 +86,41 @@ function topbar.values(cid)
             res[e.key.text] = tonumber(e.value.text)
         end
     end
+    -- the monthly income: the budget's current_month.balance, summed over its categories
+    local income = {}
+    local bal = world.path(c, "budget", "current_month", "balance")
+    for _, e in ipairs(type(bal) == "table" and bal or {}) do
+        if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
+            for _, r in ipairs(e.value) do
+                if r.op and r.key and r.value and r.value.text then
+                    income[r.key.text] = (income[r.key.text] or 0) + (tonumber(r.value.text) or 0)
+                end
+            end
+        end
+    end
+    topbar.income = income
     local out = {}
-    local function put(group, value, text, src)
-        out[group] = { value = value, text = text or topbar.format(value), source = src }
+    local function put(group, value, text, src, inc)
+        out[group] = { value = value, income = inc, text = text or topbar.amount(value, inc), source = src }
     end
     for group, r in pairs(topbar.STOCKPILES) do
         if res[r] ~= nil or not OPTIONAL[group] then
-            put(group, res[r] or 0, nil, "resources." .. r)
+            put(group, res[r] or 0, nil, "resources." .. r, income[r] or 0)
         end
     end
     local research = (res.physics_research or 0) + (res.society_research or 0) + (res.engineering_research or 0)
-    put("tb_research_group", research, nil, "resources.physics_research + society_research + engineering_research")
-    local strategic = 0
+    local research_income = (income.physics_research or 0) + (income.society_research or 0) + (income.engineering_research or 0)
+    -- research has no stockpile: the bar shows its income alone ("+39")
+    put("tb_research_group", research, (research_income < 0 and "-" or "+") .. topbar.format(math.abs(research_income)),
+        "income: physics_research + society_research + engineering_research", research_income)
+    local strategic, strategic_income = 0, 0
     for k, v in pairs(res) do
         if not LISTED[k] then
             strategic = strategic + v
+            strategic_income = strategic_income + (income[k] or 0)
         end
     end
-    put("tb_others_group", strategic, nil, "resources (strategic)")
+    put("tb_others_group", strategic, nil, "resources (strategic)", strategic_income)
     put("empire_size_group", tonumber(world.field(c, "empire_size")) or 0, nil, "empire_size")
     local leaders = #world.list(world.path(c, "modules", "standard_leader_module", "leaders"))
     put("leaders_group", leaders, tostring(leaders), "standard_leader_module.leaders")
@@ -124,8 +152,6 @@ function topbar.build(game_dir, db, screen, texture_size, state)
     local paused = state.paused ~= false
     local speed = math.max(1, math.min(5, tonumber(state.speed) or 3))
     local text, hide = {}, {
-        -- the government button carries the empire's flag, composed at run time
-        button_topbar_government = true,
     }
     if paused then
         hide.pause_bg = true
@@ -175,9 +201,19 @@ function topbar.build(game_dir, db, screen, texture_size, state)
     local items, report = gui.layout(game_dir, db, "interface/main.gui", "maingui", screen, opts)
     local flag_items, flag_report = gui.layout(game_dir, db, "interface/main.gui", "maingui_flag", screen,
         { hide = hide, text = {}, texture_size = texture_size })
-    -- the flag window is drawn under the bar's sprites
+    -- the flag window's decoration is drawn under the bar's sprites, the empire's flag over them
+    -- (the game's frame)
+    local flag_button
+    for i = #flag_items, 1, -1 do
+        if flag_items[i].path:find("button_topbar_government", 1, true) then
+            flag_button = table.remove(flag_items, i)
+        end
+    end
     for i, it in ipairs(items) do
         flag_items[#flag_items + 1] = it
+    end
+    if flag_button then
+        flag_items[#flag_items + 1] = flag_button
     end
     for _, m in ipairs(report.missing_sprites) do
         flag_report.missing_sprites[#flag_report.missing_sprites + 1] = m

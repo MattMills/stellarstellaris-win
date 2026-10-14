@@ -52,13 +52,40 @@ local function read_sprite(kind, b, file)
     end
     local border = get(b, "borderSize")
     local texture = get(b, "texturefile") or get(b, "textureFile1")
-    return unquote(name), {
+    local function xy(k, a, c)
+        local v = get(b, k)
+        if type(v) ~= "table" then
+            return nil
+        end
+        return { tonumber(get(v, a)) or 0, tonumber(get(v, c)) or 0 }
+    end
+    local s = {
         kind = kind,
         texture = texture and unquote(texture):gsub("\\", "/"),
         frames = tonumber(get(b, "noOfFrames")) or 1,
         border = type(border) == "table" and { x = tonumber(get(border, "x")) or 0, y = tonumber(get(border, "y")) or 0 } or nil,
         file = file,
     }
+    -- a sprite that is a frame of another (sprite_sheet_sprite_type, default_frame)
+    local sheet = get(b, "sprite_sheet_sprite_type")
+    if sheet then
+        s.sheet = unquote(sheet)
+        s.default_frame = tonumber(get(b, "default_frame")) or 1
+    end
+    if kind == "flagSpriteType" then
+        -- the flag's parts in the frame (flag_sprite.shader's BGPos, BGSize, SymbolPos,
+        -- SymbolSize, MaskOffset, MaskSize), its mask and the emblems' size
+        local mask = get(b, "masking_texture")
+        s.mask = mask and unquote(mask):gsub("\\", "/")
+        s.texture_size = get(b, "texture_size")
+        s.bg_position = xy("bg_position", "x", "y")
+        s.bg_size = xy("bg_size", "width", "height")
+        s.symbol_position = xy("symbol_position", "x", "y")
+        s.symbol_size = xy("symbol_size", "width", "height")
+        s.mask_offset = xy("mask_offset", "x", "y")
+        s.mask_size = xy("mask_size", "width", "height")
+    end
+    return unquote(name), s
 end
 
 -- gfx.load(game_dir) -> { sprites, fonts, files, counts }
@@ -66,7 +93,12 @@ function gfx.load(game_dir)
     local t0 = RUST.clock()
     local db = { sprites = {}, fonts = {}, textcolors = {}, files = 0, counts = {}, errors = {} }
     local files = {}
-    for _, dir in ipairs({ "gfx", "interface" }) do
+    -- gfx/*.gfx and interface/**/*.gfx (its subfolders too, when the renderer can list them)
+    local dirs = { "gfx", "interface" }
+    for _, d in ipairs(RENDER_SUBDIRS and RENDER_SUBDIRS("interface") or {}) do
+        dirs[#dirs + 1] = d
+    end
+    for _, dir in ipairs(dirs) do
         for _, f in ipairs(source.files(game_dir, dir, "gfx")) do
             files[#files + 1] = f
         end

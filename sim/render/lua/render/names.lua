@@ -52,14 +52,23 @@ function names.format(loc, n, depth)
         if engine == "ACRONYM" then
             return acronym(vars.base or first or "")
         end
-        if engine == "ADJECTIVE" or engine == "ADJ" then
+        if engine == "ADJECTIVE" then
             -- the adjective and the noun after it ("Uthabulan Order")
             local a, noun = vars.adjective or first or "", vars["1"]
-            return noun and (a .. " " .. noun) or a
+            return noun and vars.adjective and (a .. " " .. noun) or a
+        end
+        if engine == "ADJ" then
+            -- its name ("Sacred Uthabulan Order")
+            return vars["1"] or first or ""
         end
         return vars.base or first or ""
     end
-    local text = loc and loc.has(key) and loc.raw(key) or key
+    local known = loc and loc.has(key)
+    local text = known and loc.raw(key) or key
+    -- a plain word with a name after it ("Sacred" with "Uthabulan Order") [I]
+    if vars["1"] and not text:find("$", 1, true) then
+        text = text .. " " .. vars["1"]
+    end
     -- a station's name whose text leaves out its planet ("Starbase") has the planet before it
     -- (the game's outliner: "Ithni Zerak A Sta...") [I]
     if vars.PLANET and not text:find("$PLANET$", 1, true) and not text:find("[PLANET]", 1, true) then

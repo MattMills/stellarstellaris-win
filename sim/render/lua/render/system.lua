@@ -75,6 +75,9 @@ local function files(game_dir)
         end
     end
     cache.classes = source.definitions(game_dir, "common/planet_classes")
+    -- the deposits (common/deposits): what each produces (resources.produces), for the planets'
+    -- map labels
+    cache.deposits = source.definitions(game_dir, "common/deposits")
     for _, f in ipairs(source.files(game_dir, "common/section_templates", "txt")) do
         for _, e in ipairs(source.parse(game_dir, f) or {}) do
             if e.op and e.key and e.key.text == "ship_section_template" and type(e.value) == "table" then
@@ -386,6 +389,7 @@ function system.extract(game_dir, id)
     -- the system's size (outer_radius: the zoom steps are ZOOM_STEPS_SYSTEM_PERCENTAGES x it) and
     -- the world of gfx/worldgfx its star class names (common/star_classes `class`)
     out.outer_radius = tonumber(world.field(obj, "outer_radius")) or 0
+    out.inner_radius = tonumber(world.field(obj, "inner_radius")) or 0
     local sc = f.star_classes[tostring(world.field(obj, "star_class") or ""):gsub('"', "")]
     out.world = sc and get(sc.block, "class") or ""
     -- the asteroid belts: type (its meshes, shader, density, width) and inner_radius
@@ -419,6 +423,34 @@ function system.extract(game_dir, id)
                 ring = math.floor((tonumber(world.field(p, "binary_flags")) or 0) / 256) % 2 == 1,
                 look = look(f, class),
                 name = require("render.galaxy").name_block(world.field(p, "name")),
+                owner = tonumber(world.field(p, "owner")) or -1,
+                colony = world.field(p, "colony") ~= nil,
+                deposits = (function()
+                    -- what its deposits produce, summed by resource (CPlanet::ListResourcesForMapmode)
+                    local sums, order = {}, {}
+                    for _, did in ipairs(world.list(world.field(p, "deposits"))) do
+                        local d = world.object("deposit", tonumber(did))
+                        local ty = d and tostring(world.field(d, "type") or ""):gsub('"', "")
+                        local def = ty and f.deposits[ty]
+                        local produces = def and get(get(def.block, "resources"), "produces")
+                        for _, e in ipairs(type(produces) == "table" and produces or {}) do
+                            if e.op and e.key and e.value and e.value.text and tonumber(e.value.text) then
+                                local r = e.key.text
+                                if not sums[r] then
+                                    order[#order + 1] = r
+                                end
+                                sums[r] = (sums[r] or 0) + tonumber(e.value.text)
+                            end
+                        end
+                    end
+                    local out = {}
+                    for _, r in ipairs(order) do
+                        if sums[r] > 0 then
+                            out[#out + 1] = { resource = r, amount = sums[r] }
+                        end
+                    end
+                    return out
+                end)(),
             }
         end
     end

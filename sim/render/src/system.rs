@@ -60,6 +60,10 @@ pub struct Body {
     /// it has a ring (binary_flags bit 8): PLANET_RING_ENTITY drawn with it
     pub ring: bool,
     pub name: crate::galaxy::Name,
+    /// its owner (a country id, -1 none), whether it is a colony, what its deposits produce
+    pub owner: i64,
+    pub colony: bool,
+    pub deposits: Vec<(String, f32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -126,6 +130,8 @@ pub struct SystemData {
     /// outer_radius (map units): the zoom steps are ZOOM_STEPS_SYSTEM_PERCENTAGES x it (x 10 in the
     /// game's world)
     pub outer_radius: f32,
+    /// inner_radius (map units): the system's inner border circle
+    pub inner_radius: f32,
     /// the gfx/worldgfx world of its star class (common/star_classes `class`: m_star for sc_m_giant)
     pub world: String,
 }
@@ -170,6 +176,12 @@ pub fn extract(rt: &Runtime, game_dir: &str, id: u32) -> Result<SystemData, Stri
                 look: read_look(&b.get::<Table>("look")?)?,
                 ring: b.get::<Option<bool>>("ring")?.unwrap_or(false),
                 name: crate::galaxy::Name::read(b.get("name")?)?,
+                owner: b.get::<Option<i64>>("owner")?.unwrap_or(-1),
+                colony: b.get::<Option<bool>>("colony")?.unwrap_or(false),
+                deposits: match b.get::<Option<Table>>("deposits")? {
+                    Some(t) => t.sequence_values::<Table>().map(|d| -> mlua::Result<(String, f32)> { let d = d?; Ok((d.get("resource")?, d.get("amount")?)) }).collect::<mlua::Result<_>>()?,
+                    None => Vec::new(),
+                },
             });
         }
         let mut ships = Vec::new();
@@ -214,7 +226,7 @@ pub fn extract(rt: &Runtime, game_dir: &str, id: u32) -> Result<SystemData, Stri
                 width: b.get("width")?,
             });
         }
-        Ok(SystemData { id, bodies, ships, belts, outer_radius: t.get::<Option<f32>>("outer_radius")?.unwrap_or(0.0), world: t.get::<Option<String>>("world")?.unwrap_or_default() })
+        Ok(SystemData { id, bodies, ships, belts, outer_radius: t.get::<Option<f32>>("outer_radius")?.unwrap_or(0.0), inner_radius: t.get::<Option<f32>>("inner_radius")?.unwrap_or(0.0), world: t.get::<Option<String>>("world")?.unwrap_or_default() })
     };
     read().map_err(|e| format!("render.system: {e}"))
 }
@@ -304,6 +316,13 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
     let mut picks = Vec::new();
     let mut cache = cache.borrow_mut();
 
+    // the system's lines (CGraphicalMap::Render pass 0, with the GUI): their alpha by the zoom, the
+    // border circles at the save's inner and outer radius
+    let line_alpha = orbit_alpha(camera.distance, data.outer_radius);
+    if *gui && data.inner_radius > 0.0 {
+        orbit_circle(&mut lines, 0.0, 0.0, data.inner_radius, INNER_BORDER_RGB, line_alpha, Some(1));
+        orbit_circle(&mut lines, 0.0, 0.0, data.outer_radius, OUTER_BORDER_RGB, line_alpha, Some(0));
+    }
     let mut light = [0.0, 30.0, 0.0, 1.0];
     let mut first_star = true;
     let positions: HashMap<u32, (f32, f32)> = data.bodies.iter().map(|b| (b.id, (b.x, b.y))).collect();
@@ -360,17 +379,7 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
             // the orbit: around the planet a moon orbits, else around the system's centre
             let (cx, cy) = if b.moon_of >= 0 { positions.get(&(b.moon_of as u32)).copied().unwrap_or((0.0, 0.0)) } else { (0.0, 0.0) };
             let r = ((b.x - cx).powi(2) + (b.y - cy).powi(2)).sqrt();
-            let n = 96;
-            for k in 0..n {
-                let (a0, a1) = (k as f32 / n as f32 * std::f32::consts::TAU, (k + 1) as f32 / n as f32 * std::f32::consts::TAU);
-                lines.push(Line {
-                    a: V3(cx + r * a0.cos(), PLANE_Y, cy + r * a0.sin()),
-                    b: V3(cx + r * a1.cos(), PLANE_Y, cy + r * a1.sin()),
-                    colour: [0.45, 0.6, 0.85, if b.moon_of >= 0 { 0.25 } else { 0.35 }],
-                    width: 1.2,
-                    mode: 0.0,
-                });
-            }
+            orbit_circle(&mut lines, cx, cy, r, ORBIT_RGB, line_alpha, None);
         }
     }
 
@@ -522,11 +531,9 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
     if verbose {
         eprintln!("system {id}: world {world} ({}), light {} {:?}, back light {:?}", world_gfx.world, world_gfx.system_light, lc, world_gfx.back_light);
     }
-    if let Some(sel) = overlay.selected {
-        scene::selection_marker(&mut batches, &mut lines, tex, &mut cache, &gd, &view, &picks, sel, true);
-    }
     let mut g = Gui::default();
     if *gui {
+        scene::add_labels(&mut batches, &mut g, &overlay.labels, &view, fonts.as_ref().unwrap(), tex, &mut cache, &gd, button_states);
         scene::add_gui(&mut batches, &mut g, &topbar.items, fonts.as_ref().unwrap(), tex, &mut cache, &gd, button_states);
         scene::add_gui(&mut batches, &mut g, &overlay.items, fonts.as_ref().unwrap(), tex, &mut cache, &gd, button_states);
     }
@@ -551,6 +558,45 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
         env,
         maps: None,
     })
+}
+
+/// The orbits' colour: NGraphics.ORBIT_HSV { 0.44 0.8 0.6 } in RGB (made linear by the line
+/// shader's output, as the game's GetLinearPdxColor)
+const ORBIT_RGB: [f32; 3] = [0.12, 0.6, 0.4272];
+/// The system's border circles: inner SYSTEM_INNER_BORDER_HSV { 0 0 1 }, outer
+/// SYSTEM_OUTER_BORDER_HSV { 0.1 0.8 0.9 }
+const INNER_BORDER_RGB: [f32; 3] = [1.0, 1.0, 1.0];
+const OUTER_BORDER_RGB: [f32; 3] = [0.9, 0.612, 0.18];
+
+/// The lines' alpha by the camera's distance (CGraphicalMap::Update): SYSTEM_LINE_ALPHA_FADE_VALUE
+/// 0.1 at zoom step 1 down to 0.05 at step 6 (SYSTEM_LINE_ALPHA_FADE_STEP), linearly on the
+/// distance; the steps are ZOOM_STEPS_SYSTEM_PERCENTAGES x the outer radius.
+pub fn orbit_alpha(distance: f32, outer_radius: f32) -> f32 {
+    let (z1, z6) = (0.1 * outer_radius, 3.0 * outer_radius);
+    if distance <= z1 {
+        0.1
+    } else if distance >= z6 {
+        0.05
+    } else {
+        0.1 - 0.05 * (distance - z1) / (z6 - z1).max(1e-6)
+    }
+}
+
+/// A circle on the bodies' plane as the game builds it (CPlanet::CreateOrbitVertexArray,
+/// CGalacticObject::CreateRadiusBorderVertexArray): 128 one-pixel segments of 3.142 / 64
+/// radians, point i at (cx - sin(i t) r, cz + cos(i t) r); `dashes`: none, every segment;
+/// Some(phase), every other one (64 dashes: the inner border 1..2, 3..4, ..., the outer 0..1,
+/// 2..3, ...).
+fn orbit_circle(lines: &mut Vec<Line>, cx: f32, cy: f32, r: f32, rgb: [f32; 3], alpha: f32, dashes: Option<usize>) {
+    let t = 3.142f32 / 64.0;
+    let p = |i: usize| V3(cx - (i as f32 * t).sin() * r, PLANE_Y, cy + (i as f32 * t).cos() * r);
+    let segments: Vec<(usize, usize)> = match dashes {
+        None => (1..=128).map(|i| (i - 1, i)).collect(),
+        Some(phase) => (phase..128).step_by(2).map(|i| (i, i + 1)).collect(),
+    };
+    for (a, b) in segments {
+        lines.push(Line { a: p(a), b: p(b), colour: [rgb[0], rgb[1], rgb[2], alpha], width: 1.0, mode: 0.0 });
+    }
 }
 
 /// The draws of an entity's `attach = { locator = entity }` (recursively): each at its parent's
