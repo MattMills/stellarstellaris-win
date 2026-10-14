@@ -306,12 +306,15 @@ end
 P["daily.ships_fleets_armies"] = function(host, date)
     call_optional("engine.fleets.orders", "daily", host, date)
 end
--- CGameState::MicroUpdate, every tick: movement and combat are not modelled, but the ship pool is
--- drawn as the game draws it (UpdateShipParallel: CRandom::GetIntegersForMacro of one value per
--- live ship, every entry of the ships store, after the fleet phase), so the stream's position
--- stays the game's. Its values seed only the ships whose fleet is in combat (headless/README.md,
--- "The random pools, traced"): with no combat modelled, the draws are skipped, not made.
-P["micro.update"] = function()
+-- CGameState::MicroUpdate, every tick: first the fleet phase's movement (engine.fleets.movement:
+-- CFleetMovementManager::MicroUpdate, its draws for the systems left and entered; combat is not
+-- modelled), then the ship pool drawn as the game draws it (UpdateShipParallel:
+-- CRandom::GetIntegersForMacro of one value per live ship, every entry of the ships store, after
+-- the fleet phase), so the stream's position stays the game's. Its values seed only the ships
+-- whose fleet is in combat (headless/README.md, "The random pools, traced"): with no combat
+-- modelled, the draws are skipped, not made.
+P["micro.update"] = function(host, date)
+    call_optional("engine.fleets.movement", "tick", host, date)
     RUST.skip(#world.all("ship"))
 end
 -- CGameState::ProcessAI: the AI's decisions (engine.ai, once it is there; docs/ai.md)
