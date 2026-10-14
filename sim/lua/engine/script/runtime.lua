@@ -577,6 +577,43 @@ function R.country_starbases(country)
     return out
 end
 
+-- a define of common/defines (NGameplay, ...), or the default
+local function define(group, key, default)
+    local g = defs().get("common/defines", group)
+    return g and tonumber(defs().field(g.block, key)) or default
+end
+R.define = define
+
+-- R.starbase_capacity_used(country) (CCountry::CalcStarbaseCapacityUsed 0x749b30): the levels'
+-- starbase_capacity_used of the starbases it owns (megastructures' capacity used: none in vanilla,
+-- not counted)
+function R.starbase_capacity_used(country)
+    local n = 0
+    for _, sb in ipairs(R.country_starbases(country)) do
+        n = n + (tonumber(R.level_field(R.starbase_level(sb), "starbase_capacity_used")) or 0)
+    end
+    return n
+end
+
+-- R.starbase_capacity(country) (CCountry::CalcStarbaseCapacity 0x73bb40): STARBASE_CAPACITY_BASE +
+-- STARBASE_CAPACITY_SYSTEM_MULT per owned system + STARBASE_CAPACITY_POP_MULT per pop +
+-- country_starbase_capacity_add, times 1 + country_starbase_capacity_mult, rounded down [I: it
+-- gives every country's saved starbase_capacity at 2210.01.01]
+function R.starbase_capacity(country)
+    local systems = 0
+    for _, sid in ipairs(world.all("system")) do
+        if R.system_owner(sid) == country then systems = systems + 1 end
+    end
+    local c = obj("country", country)
+    local pops = c and tonumber(world.field(c, "num_sapient_pops")) or 0
+    local ok, economy = pcall(require, "engine.economy")
+    local M = ok and economy.modifiers and economy.modifiers("country", country) or {}
+    local v = define("NGameplay", "STARBASE_CAPACITY_BASE", 3) + define("NGameplay", "STARBASE_CAPACITY_SYSTEM_MULT", 0.1) * systems
+        + define("NGameplay", "STARBASE_CAPACITY_POP_MULT", 0) * pops + (M.country_starbase_capacity_add or 0)
+    v = v * (1 + (M.country_starbase_capacity_mult or 0))
+    return math.min(math.floor(v + 1e-9), define("NGameplay", "STARBASE_CAPACITY_MAX", 999))
+end
+
 -- R.upgrading_outposts(country) (CCountry::CalcNumUpgradingOutpostStarbases 0x749db0): the systems of
 -- the country whose primary starbase is not upgraded (its level has no lower level: the outpost)
 -- and has an upgrade queued
@@ -647,6 +684,19 @@ function R.deposit_has_resources(dtype)
                 if x.op and x.key and (x.value.text == nil or (tonumber(x.value.text) or 1) ~= 0) then
                     return true
                 end
+            end
+        end
+    end
+    return false
+end
+
+-- R.deposit_produces(type, resource): the type's `resources = { produces = { <resource> = x } }`
+function R.deposit_produces(dtype, res)
+    local t = R.deposit_type_field(dtype, "resources")
+    for _, e in ipairs(type(t) == "table" and t or {}) do
+        if e.op and e.key and e.key.text == "produces" and e.value.text == nil then
+            for _, x in ipairs(e.value) do
+                if x.op and x.key and x.key.text == res and (tonumber(x.value.text) or 1) ~= 0 then return true end
             end
         end
     end
@@ -1137,6 +1187,19 @@ function R.orbital_station_class(pid)
     local f = ref(R.planet_field(pid, "shipclass_orbital_station"))
     if not (f and obj("fleet", f)) then return nil end
     return R.fleet_field(f, "ship_class") or "shipclass_military"
+end
+
+-- R.ai_strategy_count(country, type) -> the entries of that STRATEGIC_DATA_TYPES list in the
+-- country's `ai = { strategy = { id target value type } }` (CAIStrategicBase::GetStrategy; the lists
+-- engine.ai.strategy keeps: built again monthly for the types it ports, kept as saved for the others)
+function R.ai_strategy_count(country, stype)
+    local c = obj("country", country)
+    local ai = c and world.field(c, "ai")
+    local n = 0
+    for _, s in ipairs(type(ai) == "table" and world.fields(ai, "strategy") or {}) do
+        if type(s) == "table" and tonumber(world.field(s, "type")) == stype then n = n + 1 end
+    end
+    return n
 end
 
 -- ---------------------------------------------------------------------------------------------

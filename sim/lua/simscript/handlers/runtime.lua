@@ -251,15 +251,12 @@ return function(eval)
     end
 
     -- used_starbase_capacity_percent <op> x (CUsedStarbaseCapacityPercentTrigger 0x199d0d0, a
-    -- country): (starbase_capacity_used + the outposts being upgraded) / starbase_capacity; false at
-    -- capacity 0. The save's numbers (CCountry +0x33e8, +0x33f0) are recomputed by the game daily;
-    -- the simulation reads them as saved
+    -- country): (the capacity used + the outposts being upgraded) / the capacity; false at capacity
+    -- 0. The game recomputes both daily (CCountry +0x33e8, +0x33f0): computed here the same way
     numeric("used_starbase_capacity_percent", { "country" }, function(sc, r)
-        local c = r.obj("country", sc.id)
-        local cap = c and tonumber(require("engine.world").field(c, "starbase_capacity")) or 0
+        local cap = r.starbase_capacity(sc.id)
         if cap == 0 then return nil end
-        local used = tonumber(require("engine.world").field(c, "starbase_capacity_used")) or 0
-        return (used + r.upgrading_outposts(sc.id)) / cap
+        return (r.starbase_capacity_used(sc.id) + r.upgrading_outposts(sc.id)) / cap
     end)
 
     -- count_starbase_sizes = { starbase_size = <ship size> count <op> n } (CCountStarbaseSizesTrigger
@@ -1109,9 +1106,13 @@ return function(eval)
     end
     -- current_stage = <stage> (CCurrentStageTrigger 0x19c1970): the key of the situation's stage
     equals_field("current_stage", { "situation" }, function(sc, r) return r.situation_stage_key(sc.id) end)
-    -- situation_monthly_progress <op> x (CSituationMonthlyProgressTrigger 0x19c1470):
-    -- `last_month_progress`
+    -- situation_monthly_progress <op> x (CSituationMonthlyProgressTrigger 0x19c1470): the latest
+    -- monthly progress (+0x220): engine.situations' computed one, else the saved
+    -- `last_month_progress` (as engine/situations.lua's own version read it)
     numeric("situation_monthly_progress", { "situation" }, function(sc, r)
+        local sit = package.loaded["engine.situations"]
+        local m = type(sit) == "table" and sit.monthly and sit.monthly[sc.id]
+        if m ~= nil then return m / 100000 end
         return tonumber(r.situation_field(sc.id, "last_month_progress")) or 0
     end)
 
@@ -2109,15 +2110,8 @@ return function(eval)
         return scopes("species", r.all("species"))
     end
 
-    -- scope links: contact_country (a first contact's `country`)
-    LINKS["contact_country"] = function(cur)
-        local r = rt()
-        if not r or cur.kind ~= "first_contact" then return nil end
-        sync()
-        local o = r.obj("first_contact", cur.id)
-        local c = o and r.ref(wfield(o, "country"))
-        return (c and r.obj("country", c)) and S("country", c) or nil
-    end
+    -- (the contact_country link is engine/first_contact.lua's: a first contact's `country`, as the
+    -- game's CFirstContact::GetContactCountry)
 
     -- has_trait = <trait> (CHasTrait 0x194b8c0; GetTraitsFromScope 0x194b920): a leader's `traits`;
     -- a species' own, a pop group's species', a country's founder species' traits; any other scope
@@ -2366,6 +2360,115 @@ return function(eval)
             return tonumber(wfield(loc, "id")) == t.id
         end
         return true
+    end
+
+    -- the AI's strategic data (CAIStrategicBase::GetStrategy 0x1af290 on CCountry +0x1b28): the
+    -- country's `ai = { strategy }` lists as engine.ai.strategy builds them monthly. A list it does
+    -- not build yet is the save's, stale after the first month: its trigger is left unanswered
+    -- (a miss) until the list is ported (strategy.PORTED)
+    local function strategy_ported(t)
+        local ok, strategy = pcall(require, "engine.ai.strategy")
+        return ok and type(strategy) == "table" and strategy.PORTED and strategy.PORTED[t] == true
+    end
+    -- ai_colonize_plans <op> n (CAIColonizePlans 0x19af8b0): the COLONIZE (1) entries
+    numeric("ai_colonize_plans", { "country" }, function(sc, r) return r.ai_strategy_count(sc.id, 1) end)
+    local ai_colonize_plans = TRIG["ai_colonize_plans"]
+    TRIG["ai_colonize_plans"] = function(e, ctx, lk)
+        if not strategy_ported(1) then
+            miss("trigger", "ai_colonize_plans", ctx, e)
+            return false
+        end
+        return ai_colonize_plans(e, ctx, lk)
+    end
+    local ai_colonize_value = TVAL["ai_colonize_plans"]
+    TVAL["ai_colonize_plans"] = function(ctx, e)
+        if not strategy_ported(1) then return nil end
+        return ai_colonize_value(ctx, e)
+    end
+    -- has_ai_expansion_plan = yes/no (CAIHasExpansionPlans 0x19aff20): an EXPAND_BORDERS (19) entry
+    TRIG["has_ai_expansion_plan"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r or sc.kind ~= "country" then return false end
+        if not strategy_ported(19) then
+            miss("trigger", "has_ai_expansion_plan", ctx, e)
+            return false
+        end
+        sync()
+        return (r.ai_strategy_count(sc.id, 19) > 0) == yes(e)
+    end
+
+    -- districts: CColonyCarrier::CalcMaxDistricts (0xccc980) as engine.ai.economy.slots ports it
+    -- (planet size, the defines, the country's and colony's max-district modifiers)
+    local function district_info(sc, r)
+        local col = r.colony_of(sc.kind, sc.id)
+        local kind, pid = col and r.carrier_of("colony", col)
+        if kind ~= "planet" then return nil end
+        local ok, slots = pcall(require, "engine.ai.economy.slots")
+        if not ok then return nil end
+        return slots.colony({ colony = col, planet = pid, owner = r.planet_owner(pid) }), slots
+    end
+    -- free_district_slots <op> n (CFreeDistrictSlotsTrigger 0x197cc10): the max districts minus the
+    -- levels of the colony's districts (not the queued ones); no colony: 0
+    numeric("free_district_slots", { "planet", "ship", "colony" }, function(sc, r)
+        local info, slots = district_info(sc, r)
+        if not info then return 0 end
+        local built = 0
+        for _, d in ipairs(info.list) do built = built + d.level end
+        return slots.max_districts(info) - built
+    end)
+    -- num_free_districts = { type = <district | any> value <op> n } (CNumFreeDistrictsTrigger
+    -- 0x196f590): free = the max districts minus the levels with the queued ones; any: free; a
+    -- capped type: min(free, its cap minus its levels and queued); an uncapped type already there:
+    -- free; one not there yet: free when its potential and allow hold, else 0; no colony: false
+    TRIG["num_free_districts"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        if not r or e.value.text then return false end
+        local p = params(e)
+        local dtype, val = p.type and p.type.value.text or "any", p.value
+        if not val then return false end
+        sync()
+        local info, slots = district_info(sc, r)
+        if not info then return false end
+        local free = slots.max_districts(info) - info.levels
+        local n = free
+        if dtype ~= "any" then
+            local d = r.defs().get("common/districts", dtype)
+            if not d then return false end
+            local have = (info.districts[dtype] and info.districts[dtype].level or 0) + (info.queued[dtype] or 0)
+            local cap = slots.district_cap(info, d, dtype)
+            if cap then
+                n = math.min(free, cap - have)
+            elseif have == 0 then
+                local dctx = slots.ctx(info, d.file)
+                local x = slots.expanded(d)
+                if not (slots.holds(r.defs().field(x, "potential"), dctx) and slots.holds(r.defs().field(x, "allow"), dctx)) then
+                    n = 0
+                end
+            end
+        end
+        return compare(n, val.op, eval.value(val.value, ctx, val))
+    end
+
+    -- has_strategic_resource = yes / no / <resource> (CHasStrategicResourceTrigger 0x1954570, a
+    -- planet or ship carrier): yes/no, a deposit of the carrier has resources (no carrier: `= no`
+    -- holds); a resource, a deposit produces it. The deposits' resource tables are read as written,
+    -- their produce triggers not evaluated [I] (as has_deposit = yes/no)
+    TRIG["has_strategic_resource"] = function(e, ctx)
+        local r, sc = rt(), ctx.this
+        local v = e.value.text
+        if not r or not v then return false end
+        sync()
+        local kind, id = r.carrier_of(sc.kind, sc.id)
+        if not kind then return v == "no" end
+        for _, d in ipairs(r.carrier_deposits(kind, id)) do
+            local t = r.deposit_type(d)
+            if v == "yes" or v == "no" then
+                if r.deposit_has_resources(t) then return v == "yes" end
+            elseif r.deposit_produces(t, v) then
+                return true
+            end
+        end
+        return v == "no"
     end
 
     -- round_to = n in a value block (EScriptMaths RoundTo, CFixedPoint::RoundTo): the nearest
