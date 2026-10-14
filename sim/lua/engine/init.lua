@@ -13,6 +13,11 @@
 -- engine.command(kind, ...), engine.report().
 
 local engine = {}
+-- STELLAR_WORLD=store: the world lives in the shared store, the one copy every state reads and
+-- writes (engine.store.engine_world); else as Lua tables (engine.world)
+if os.getenv("STELLAR_WORLD") == "store" then
+    require("engine.store.engine_world").install()
+end
 engine.defs = require("engine.defs")
 engine.world = require("engine.world")
 require("engine.interface")

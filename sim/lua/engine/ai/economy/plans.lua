@@ -394,10 +394,7 @@ local function write_table(ai, key, t, after)
             world.append(ai, key, block)
         end
     end
-    for i = #block, 1, -1 do
-        block[i] = nil
-    end
-    world.wrote(block)
+    world.replace(block, {})
     for _, r in ipairs(resources()) do
         local v = t[r]
         if v and v ~= 0 then
@@ -424,13 +421,11 @@ local function write_dates(ai, key, dates)
         block = {}
         world.append(ai, key, block)
     end
-    for i = #block, 1, -1 do
-        block[i] = nil
-    end
+    local items = {}
     for _, d in ipairs(dates) do
-        block[#block + 1] = { text = d, quoted = true }
+        items[#items + 1] = { text = d, quoted = true }
     end
-    world.wrote(block)
+    world.replace(block, items)
 end
 
 function plans.update_records(country, target, today)

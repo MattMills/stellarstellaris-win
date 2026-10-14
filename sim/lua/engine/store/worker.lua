@@ -126,7 +126,8 @@ function W.engine(arg)
     SW.track_owners = function() end
     SW.parent = function() return nil end
     for _, name in ipairs({ "set", "child", "append", "insert", "append_value", "remove_value", "remove_entry",
-        "remove", "create", "push" }) do
+        "remove", "create", "push", "set_text", "set_key", "insert_value", "remove_at", "replace", "set_entry",
+        "append_entry", "place" }) do
         SW[name] = forbidden("engine.world." .. name)
     end
     -- the blocks a worker holds as Lua tables (SW.overlay: an AI country's own state while it
@@ -134,7 +135,8 @@ function W.engine(arg)
     -- engine.world's module): each block function goes to it for a table, to the store's for a handle
     TW = dofile(package.searchpath("engine.world", package.path))
     for _, name in ipairs({ "field", "fields", "list", "blocks", "statements", "count", "key", "token_entry",
-        "set", "child", "append", "insert", "append_value", "remove_value", "remove_entry", "push", "reindex" }) do
+        "set", "child", "append", "insert", "append_value", "remove_value", "remove_entry", "push", "reindex",
+        "set_text", "set_key", "insert_value", "remove_at", "replace", "set_entry", "append_entry" }) do
         local s, t = SW[name], TW[name]
         if t then
             SW[name] = function(obj, ...)
@@ -151,7 +153,7 @@ function W.engine(arg)
     -- store block is a cdata handle here, so type says "table" for it. Code that then walks it as a
     -- Lua table (ipairs, #, .text) fails loudly, and is moved to engine.world's API.
     local ffi = require("ffi")
-    local rawtype, istype, block_ptr = type, ffi.istype, ffi.typeof("pdx_block *")
+    local rawtype, istype, block_ptr = type, ffi.istype, S.handle_t
     _G.type = function(v)
         local t = rawtype(v)
         if t == "cdata" and istype(block_ptr, v) then return "table" end
@@ -224,11 +226,11 @@ end
 local pdxscript_ = nil
 local function hold_ai(country)
     local ch = SW.object("country", country)
-    local i = ch and S.find(tonumber(ch - S.B), S.id("ai"))
+    local i = ch and S.find(SW.bid(ch), S.id("ai"))
     local e = i and S.E[i]
     if not (e and e.kind == S.BLOCK) then return nil end
     local bid = e.v.u.a
-    local t = SW.to_table(S.B + bid)
+    local t = SW.to_table(SW.handle(bid))
     SW.overlay[bid] = t
     pdxscript_ = pdxscript_ or require("pdxscript")
     return bid, t, pdxscript_.write(t)

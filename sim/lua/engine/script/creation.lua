@@ -409,7 +409,7 @@ function systems.effects.add_monthly_resource_mult(t)
     if area then
         local now = stock + x
         if now < 0 then now = 0 end
-        block[area].text = world.number_text(now / FP)
+        world.set_text(block, area, world.number_text(now / FP))
     else
         local now = stock + x
         if now < 0 then now = 0 end
@@ -475,7 +475,7 @@ local function add_timed(obj, name, days, mult, clear)
     world.append(item, "days", days)
     if mult ~= FP then world.append(item, "multiplier", mult / FP) end
     if clear then world.append(item, "clear_on_owner_change", "yes") end
-    items[#items + 1] = item
+    world.push(items, item)
     return "added"
 end
 
@@ -527,7 +527,7 @@ function systems.effects.remove_timed_modifier(t)
         local items = items_of(obj, false)
         for i, item in ipairs(items or {}) do
             if item_modifier(item) == t.modifier then
-                table.remove(items, i)
+                world.remove_at(items, i)
                 removed = true
                 break
             end
@@ -634,7 +634,7 @@ local function remove_opinion(rel, key)
         if not hit then break end
         local last = all[#all]
         if last.index ~= all[hit].index then
-            all[hit].entry.value = last.entry.value
+            world.set_entry(rel, all[hit].entry, last.entry.value)
         end
         world.remove_entry(rel, last.entry)
         n = n + 1
@@ -779,7 +779,7 @@ local function remove_surveyed(country, ty, id)
     if type(b) ~= "table" then return false end
     for i, e in ipairs(b) do
         if not e.text and not e.op and tonumber(world.field(e, "type")) == ty and tonumber(world.field(e, "id")) == id then
-            table.remove(b, i)
+            world.remove_at(b, i)
             return true
         end
     end
@@ -977,8 +977,7 @@ function creation.remove_project_research(country, ids)
             if type(x) == "table" and not x.text then
                 local v = x.op and x.value or x
                 if type(v) == "table" and not v.text and set[tonumber(world.field(v, "special_project"))] then
-                    table.remove(b, i)
-                    world.reindex(b)
+                    world.remove_at(b, i)
                 else
                     scrub(v, depth + 1)
                 end

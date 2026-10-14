@@ -233,7 +233,7 @@ local function write_state(st)
     if type(formation) == "table" then
         for _, e in ipairs(formation) do
             if e.op and e.key and e.key.text == "angle" then
-                e.value.text = text(st.angle or 0)
+                world.set_entry(formation, e, text(st.angle or 0))
             end
         end
         touched(formation)
@@ -284,12 +284,7 @@ local function write_state(st)
             out[#out + 1] = e
         end
     end
-    for i = #mm, 1, -1 do
-        mm[i] = nil
-    end
-    for i, e in ipairs(out) do
-        mm[i] = e
-    end
+    world.replace(mm, out)
     touched(mm)
     live.touch("fleet", st.fid)
     S.writes = S.writes + 1
@@ -1081,7 +1076,7 @@ end
 
 local function set_entry(s, key, value, after)
     for _, e in ipairs(entries(s, key)) do
-        e.value = type(value) == "table" and value or { text = value }
+        world.set_entry(s, e, value)
         return
     end
     local pos = #s + 1

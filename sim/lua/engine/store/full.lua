@@ -199,7 +199,7 @@ local function bring(name, id)
     if not (tstore and bids) then return end
     local t = tstore[id]
     local bid = bids[id]
-    local holder = W.store_blocks[name]
+    local holder = W.store_blocks[name] and W.bid(W.store_blocks[name])
     F.stats.objects = F.stats.objects + 1
     if type(t) == "table" and bid then
         if bid_of[t] == bid then

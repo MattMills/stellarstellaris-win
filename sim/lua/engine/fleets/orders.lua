@@ -755,7 +755,7 @@ local function start_first_queued(fid, f, host)
     count(S.started, h.type)
     call(h, "start", fid, f, host)
     local now = current_handle(f)
-    if now and now.block == h.block then
+    if now and world.same(now.block, h.block) then
         on_ship_order(fid, f)
     end
     return h
@@ -826,7 +826,7 @@ local function handle_orders(fid, f, host)
         call(h, "finish", fid, f, host)
         count(S.finished, h.type)
         local now = current_handle(f)
-        if now and now.block == h.block then
+        if now and world.same(now.block, h.block) then
             set_current(f, nil)
         end
         if #queue_handles(f) > 0 then
@@ -910,7 +910,7 @@ function orders.issue(fid, order, opts)
     end
     S.issued = S.issued + 1
     local first = queue_handles(f)[1]
-    if not current_handle(f) and first and first.block == ob then
+    if not current_handle(f) and first and world.same(first.block, ob) then
         start_first_queued(fid, f, opts.host)
     end
     return id

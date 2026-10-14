@@ -200,7 +200,7 @@ function M.on_removed(entry)
     if entry.block and entry.holder then
         for i = #entry.holder, 1, -1 do
             local e = entry.holder[i]
-            if e.op and e.key and e.key.text == "delayed_event" and e.value == entry.block then
+            if e.op and e.key and e.key.text == "delayed_event" and world.same(e.value, entry.block) then
                 world.remove_entry(entry.holder, e)
                 M.stats.removed = M.stats.removed + 1
                 break

@@ -726,6 +726,42 @@ main state's monthly budgets, which a worker does not have (the first difference
 country posts on day 19). `STELLAR_AI_LOG=<file>` writes each day's commands and every AI
 generator's position, for comparing a serial run with a parallel one.
 
+## 13. The world in the store
+
+The copy of section 12 is the wrong shape for parallel work: the main state keeps the world as Lua
+tables and the workers read a copy, so each phase on the workers pays a sync before and a merge
+after. With `STELLAR_WORLD=store` the main state's `engine.world` is the store itself
+(`store/engine_world.lua` installs `engine.store.world` before the engine loads): the save is parsed
+into the store (0.2 s), there is no table world, and every state can read and write the one world
+in place.
+
+- **Handles.** A block is a `pdx_handle` (a struct holding the block's pointer), one per block
+  (interned), so caches keyed by a block find it again. `h[i]`, `#h`, `ipairs` and `pairs` give
+  read-only views of the entries (`_b`, `_p`: the block and position, for the writers); a number
+  index on a raw pointer would have been pointer arithmetic, another block's record.
+- **Writers.** Besides `set`, `append`, `insert`, ... the engine's direct edits of blocks (an
+  entry's text set, `table.insert`, `table.remove`, a block rebuilt by index) go through new
+  functions both worlds have: `set_entry`, `set_text`, `set_key`, `insert_value`, `remove_at`,
+  `replace`, `append_entry`, `push`; a freed slot is taken with `none_slot` and `place`; `same`
+  compares blocks. `replace` writes a Lua table into the block already at the same place under
+  the same key, in place, so a writer that rebuilds a block each tick takes no new store blocks.
+- **Blocks a module builds.** A Lua table is a block not in the world yet (the table world's
+  functions read and write it). Once a writer puts it into the store, it stays the table of its
+  store block: each write through `engine.world` goes to both, so a module that holds the table
+  reads what the store has (LuaJIT here does not honour `__len` on tables, so the table cannot
+  just stand for the block).
+- **Indexes.** A write that moves a block's entries drops its key index; the index is built again
+  in the same slots when the keys still fit (it was a leak that filled the index region).
+- **Parity.** The 180-day gate is identical to the table world's (723,928 / 12,466, 4,723,614
+  draws, 0 errors), and the world written after 180 days differs in one value (`-0.` against `0`,
+  a stored research value) and in quotes the store does not keep yet. Day 66 is identical.
+- **Not done.** Serial speed: 50 s against 28 s for 180 days (entry views are allocated per read,
+  writes to held tables go to both). The phases on the workers still use the copy of section 12;
+  next they read and write this world directly (an AI country's own block written in place by the
+  worker that decides for it, its commands as records in a block of the store), and the copy,
+  its sync and its text are removed. Since the handles changed, that copy-based AI path no longer
+  matches the serial run (723,883 / 12,366).
+
 ## Files and switches
 
 | | |
@@ -741,6 +777,8 @@ generator's position, for comparing a serial run with a parallel one.
 | `store/worker.lua` | a worker's jobs (`part`, `engine`, `attitudes`, `ai`, and benchmarks) |
 | `store/full.lua`, `store/parallel.lua`, `store/modifiers.lua` | the whole world's copy, the phases on the workers, the modifier values in the store |
 | `STELLAR_PARALLEL=<phases>` | the phases on the workers (`attitudes`, `ai`; `all`) |
+| `STELLAR_WORLD=store` | the main state's world in the store (section 13; the table world by default) |
+| `store/engine_world.lua` | the store as `engine.world` for the main state |
 | `store/live.lua` | the write marks: `live.touch(store, id)`, called by the modules that write what the mirror holds (section 9) |
 | `store/bench.lua` | the round trip, the microbenchmarks, the heap |
 | `STELLAR_STORE=off` | exploration's own pass on the table world (the store is on by default; `ffi` is the same as unset) |

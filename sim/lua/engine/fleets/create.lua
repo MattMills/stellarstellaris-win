@@ -220,35 +220,16 @@ function create.allocate(store)
     local g = old < 0 and 0 or old + 1
     a.gen[index] = g
     local id = index + g * GEN
-    local e
-    if old >= 0 then
-        for _, x in ipairs(world.store_blocks[store] or {}) do
-            local xid = x.op and x.key and tonumber(x.key.text)
-            if xid and xid % GEN == index and x.value.text == "none" then
-                e = x
-                break
-            end
-        end
-    end
+    -- a freed slot (`<old id> = none`) the object takes
+    local e = old >= 0 and world.none_slot(store, index, GEN) or nil
     a.live[id] = true
     return id, e
 end
 
-function create.place(store, id, e, block)
-    if e and e.value and e.value.text == "none" then
-        local old = tonumber(e.key.text)
-        e.key.text = tostring(id)
-        e.value = block
-        world.stores[store][id] = block
-        world.entries[store][id] = e
-        if old and old ~= id then world.entries[store][old] = nil end
-        local ids = world.ids[store]
-        ids[#ids + 1] = id
-        table.sort(ids, function(x, y) return x % GEN < y % GEN end)
-        world.adopt(store, id, block)
-        return block
-    end
-    return world.create(store, id, block)
+-- create.place(store, id, old, block) -> the object's block in the world: the freed slot `old =
+-- none` (create.allocate's) becomes the object, else it goes at the end
+function create.place(store, id, old, block)
+    return world.place(store, id, old, block, GEN)
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -491,13 +472,11 @@ local function add_ship_name(country, key)
     end
     for _, e in ipairs(sn) do
         if e.op and e.key and unq(e.key.text) == key then
-            e.value.text = tostring((tonumber(e.value.text) or 0) + 1)
-            world.wrote(sn)
+            world.set_entry(sn, e, (tonumber(e.value.text) or 0) + 1)
             return
         end
     end
-    sn[#sn + 1] = { key = { text = key, quoted = true }, op = "=", value = { text = "1" } }
-    world.wrote(sn)
+    world.append_entry(sn, { key = { text = key, quoted = true }, op = "=", value = { text = "1" } })
 end
 
 -- the country's name list's ship names for a size: its own list and the generic one
@@ -724,7 +703,7 @@ local function add_owned_fleet(country, fid)
         end
     end
     live.touch("country", country)
-    table.insert(owned, pos, e)
+    world.insert_value(owned, pos, e)
     world.fleet_owner[fid] = country
 end
 create.add_owned_fleet = add_owned_fleet
@@ -1036,7 +1015,7 @@ function create.add_ship(fid, sid, opts)
             end
         end
     end
-    table.insert(list, pos, { text = tostring(sid) })
+    world.insert_value(list, pos, sid)
     local n = #ship_ids(f)
     live.touch("fleet", fid)
     world.set(s, "fleet", fid)
@@ -1174,10 +1153,17 @@ function create.enter_orbit(fid, kind, id, opts)
     local slot = 0
     while used[slot] do slot = slot + 1 end
     if entry_of[slot] then
-        entry_of[slot].value = { text = tostring(fid) }
+        world.set_entry(slots, entry_of[slot], fid)
     else
-        slots[#slots + 1] = { key = { text = tostring(slot) }, op = "=", value = { text = tostring(fid) } }
-        table.sort(slots, function(x, y) return (tonumber(x.key and x.key.text) or 0) < (tonumber(y.key and y.key.text) or 0) end)
+        -- in the slots' order
+        local pos = #slots + 1
+        for i, e in ipairs(slots) do
+            if (tonumber(e.key and e.key.text) or 0) > slot then
+                pos = i
+                break
+            end
+        end
+        world.insert(slots, pos, tostring(slot), fid)
     end
     -- CFleet::CalcCanRepairFromOrbit [I]: in orbit of a starbase above an outpost
     if kind == "starbase" then
@@ -1192,7 +1178,7 @@ function create.enter_orbit(fid, kind, id, opts)
     if type(o) ~= "table" then
         o = world.child(mm, "orbit")
     end
-    for i = #o, 1, -1 do o[i] = nil end
+    world.replace(o, {})
     local ob = {}
     world.append(ob, kind, id)
     world.append(o, "orbitable", ob)

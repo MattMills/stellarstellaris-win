@@ -429,8 +429,7 @@ local function quoted_list(c, key)
     return world.child(c, key)
 end
 local function append_name(block, name)
-    block[#block + 1] = { text = name, quoted = true }
-    world.wrote(block)
+    world.append_value(block, name, true)
 end
 
 -- CTraditionType::GetTraditionSwap: of the `tradition_swap`s whose trigger holds, the one with

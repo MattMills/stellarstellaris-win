@@ -528,7 +528,7 @@ function first_contact.country_daily(host, date, country)
         else
             -- gone: out of the list (the last one moved into its place), the contact destroyed
             local last = entries[#entries]
-            entries[i].text = last.text
+            world.set_entry(list, entries[i], last.text)
             world.remove_entry(list, last)
             table.remove(entries)
             if fc then

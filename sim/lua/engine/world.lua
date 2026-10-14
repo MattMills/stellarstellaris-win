@@ -419,8 +419,8 @@ function world.push(block, value)
 end
 
 -- world.append_value(block, text): a bare value at the end of a list block
-function world.append_value(block, text)
-    block[#block + 1] = { text = tostring(text) }
+function world.append_value(block, text, quoted)
+    block[#block + 1] = { text = tostring(text), quoted = quoted or nil }
     if tracking then wrote(block, "own") end
 end
 
@@ -469,6 +469,130 @@ function world.remove(kind, id)
 end
 
 -- world.create(kind, id, block): a new object in its store (and in the save, at the store's end)
+-- the writers both worlds have for what modules did to blocks directly (engine.store.world has the
+-- same: the main state runs on either)
+
+-- world.replace(block, entries): the block's entries replaced by entries (the pdxscript form)
+function world.replace(block, entries)
+    local list = {}
+    for i, x in ipairs(entries) do list[i] = x end
+    for i = #block, 1, -1 do block[i] = nil end
+    for i, x in ipairs(list) do block[i] = x end
+    fields_of[block] = nil
+    if tracking then
+        own(block, owner[block], parent_of[block])
+        wrote(block, "deep")
+    end
+end
+
+-- world.append_entry(block, e): an entry of the pdxscript form (a keyed entry, a bare token or block)
+-- at the end of the block
+function world.append_entry(block, e)
+    block[#block + 1] = e
+    fields_of[block] = nil
+    if tracking then
+        local v = e.op and e.value or e
+        if type(v) == "table" and v.text == nil then own(v, owner[block], block) end
+        wrote(block, "own")
+    end
+end
+
+-- world.same(a, b): whether a and b are the same block (engine.store.world compares a handle with a
+-- table it was made from)
+function world.same(a, b)
+    return a == b
+end
+
+-- world.set_entry(block, e, text): the token of entry e of block (an entry `key = token`, or a bare
+-- token, as ipairs gives it) set
+function world.set_entry(block, e, value)
+    if type(value) == "table" and value.text == nil then
+        -- a block: the entry's value
+        e.value = value
+        if tracking then
+            own(value, owner[block], block)
+            wrote(block, "own")
+        end
+        return
+    end
+    local text = tostring(type(value) == "table" and value.text or value)
+    local v = e.op and e.value or e
+    if e.op and v.text == nil then e.value = { text = text } else v.text = text end
+    if tracking then wrote(block, "own") end
+end
+
+-- world.set_text(block, i, text): the token of the block's entry i (1-based) set
+function world.set_text(block, i, text)
+    local x = block[i]
+    local v = x.op and x.value or x
+    v.text = tostring(text)
+    if x.op then fields_of[block] = nil end
+    if tracking then wrote(block, "own") end
+end
+
+-- world.set_key(block, i, key): the key of the block's entry i
+function world.set_key(block, i, key)
+    block[i].key.text = tostring(key)
+    fields_of[block] = nil
+    if tracking then wrote(block, "own") end
+end
+
+-- world.insert_value(block, pos, value): a bare value (a token's text or a block) at position pos
+function world.insert_value(block, pos, value)
+    local v = type(value) == "table" and value or { text = tostring(value) }
+    table.insert(block, pos, v)
+    if tracking then
+        if v.text == nil then own(v, owner[block], block) end
+        wrote(block, "own")
+    end
+    return v
+end
+
+-- world.remove_at(block, i): the block's entry i taken out
+function world.remove_at(block, i)
+    if tracking then wrote(block, "own") end
+    table.remove(block, i)
+    fields_of[block] = nil
+end
+
+-- world.none_slot(store, index, gen) -> the id of the first `<id> = none` slot of the store whose
+-- id is index modulo gen (a freed slot a new object may take), or nil
+function world.none_slot(name, index, gen)
+    name = world.KINDS[name] or name
+    for _, x in ipairs(world.store_blocks[name] or {}) do
+        local id = x.op and x.key and tonumber(x.key.text)
+        if id and id % gen == index and x.value.text == "none" then return id end
+    end
+    return nil
+end
+
+-- world.place(store, id, old, block, gen) -> the object's block: a freed slot `old = none` becomes
+-- the object (the save keeps its place), else the object goes at the end (world.create)
+function world.place(name, id, old, block, gen)
+    name = world.KINDS[name] or name
+    local e
+    if old then
+        for _, x in ipairs(world.store_blocks[name] or {}) do
+            if x.op and x.key and tonumber(x.key.text) == old and x.value.text == "none" then
+                e = x
+                break
+            end
+        end
+    end
+    if not e then return world.create(name, id, block) end
+    e.key.text = tostring(id)
+    e.value = block
+    world.stores[name][id] = block
+    world.entries[name][id] = e
+    if old ~= id then world.entries[name][old] = nil end
+    local ids = world.ids[name]
+    ids[#ids + 1] = id
+    table.sort(ids, function(x, y) return x % gen < y % gen end)
+    fields_of[world.store_blocks[name]] = nil
+    world.adopt(name, id, block)
+    return block
+end
+
 function world.create(kind, id, block)
     local name = world.KINDS[kind] or kind
     local holder = world.store_blocks[name]

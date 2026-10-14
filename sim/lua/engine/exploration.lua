@@ -407,17 +407,14 @@ local function set_list(obj, key, values)
         if e then world.remove_entry(obj, e) end
         return
     end
-    local block
+    local tokens = {}
+    for i, v in ipairs(values) do tokens[i] = { text = tostring(v) } end
     if e and e.value.text == nil then
-        block = e.value
-        for i = #block, 1, -1 do block[i] = nil end
+        world.replace(e.value, tokens)
     else
         if e then world.remove_entry(obj, e) end
-        block = {}
-        world.append(obj, key, block)
+        world.append(obj, key, tokens)
     end
-    for i, v in ipairs(values) do block[i] = { text = tostring(v) } end
-    world.wrote(block)
 end
 local function copy(t)
     local out = {}
@@ -1455,7 +1452,7 @@ local function remove_surveyed(cid, ty, id)
     for i, e in ipairs(b) do
         if not e.text and not e.op and (tonumber(world.field(e, "type")) or 0) == ty
             and tonumber(world.field(e, "id")) == id then
-            table.remove(b, i)
+            world.remove_at(b, i)
             X.stats.unsurveyed = (X.stats.unsurveyed or 0) + 1
             require("engine.store.live").touch("country", cid)
             return true

@@ -276,7 +276,7 @@ function survey.add_surveyed(country, ty, id, fleet, host)
     local h = {}
     world.append(h, "type", ty)
     world.append(h, "id", id)
-    table.insert(b, pos, h)
+    world.insert_value(b, pos, h)
     live.touch("country", country)
     S.holders_added = S.holders_added + 1
     RUST.rand()

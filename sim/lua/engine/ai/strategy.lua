@@ -602,10 +602,8 @@ local function write(ai, fresh, rebuilt)
     for i = 1, pos - 1 do new[#new + 1] = out[i] end
     for _, e in ipairs(entries) do new[#new + 1] = e end
     for i = pos, #out do new[#new + 1] = out[i] end
-    for i = 1, math.max(#ai, #new) do ai[i] = new[i] end
-    -- the block's entries replaced directly: its field index dropped, and the lists' version
-    -- moved on (the readers' lookup caches, e.g. engine.ai.shipbuilding's, rebuild)
-    world.reindex(ai)
+    world.replace(ai, new)
+    -- the lists' version moved on (the readers' lookup caches, e.g. engine.ai.shipbuilding's, rebuild)
     strategy.version = (strategy.version or 0) + 1
     strategy.stats.kept = strategy.stats.kept + #kept
     return #all

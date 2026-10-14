@@ -52,9 +52,9 @@ local function ser(v, paths, seen, out)
     elseif t == "string" then
         out[#out + 1] = (string.format("%q", v):gsub("\\\n", "\\n"))
     elseif t == "cdata" then
-        block_ptr = block_ptr or ffi.typeof("pdx_block *")
+        block_ptr = block_ptr or require("engine.store.core").handle_t
         if not ffi.istype(block_ptr, v) then error("a command argument of an unknown cdata type") end
-        out[#out + 1] = "B(" .. tostring(tonumber(v - require("engine.store.core").B)) .. ")"
+        out[#out + 1] = "B(" .. tostring(require("engine.store.world").bid(v)) .. ")"
     elseif t == "table" then
         local p = paths and paths[v]
         if p then

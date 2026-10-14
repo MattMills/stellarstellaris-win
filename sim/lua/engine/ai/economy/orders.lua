@@ -93,7 +93,7 @@ local function allocate()
     local id = index + g * GEN
     local entry
     if old >= 0 then
-        entry = world.entries[ITEMS] and world.entries[ITEMS][index + old * GEN]
+        entry = index + old * GEN   -- the freed slot's id (`<id> = none`)
     end
     return id, entry
 end
@@ -101,23 +101,9 @@ end
 -- an item block in the store: a reused slot keeps its place in the save (`old = none` becomes the
 -- new id), a new slot goes at the end
 local function store_item(id, entry, block)
-    if entry and entry.value and entry.value.text == "none" then
-        local old = tonumber(entry.key.text)
-        entry.key.text = tostring(id)
-        entry.value = block
-        world.stores[ITEMS][id] = block
-        world.entries[ITEMS][id] = entry
-        if old and old ~= id then
-            world.entries[ITEMS][old] = nil
-        end
-        local ids = world.ids[ITEMS]
-        ids[#ids + 1] = id
-        table.sort(ids, function(a, b) return a % GEN < b % GEN end)
-        world.adopt(ITEMS, id, block)
-    else
-        world.create(ITEMS, id, block)
-    end
+    local b = world.place(ITEMS, id, entry, block, GEN)
     live[id] = true
+    return b
 end
 
 -- the stockpile of a country (nil for one without the economy module)

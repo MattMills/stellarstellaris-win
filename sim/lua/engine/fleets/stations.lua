@@ -211,7 +211,7 @@ end
 local function set_meta(key, value)
     for _, e in ipairs(world.tree or {}) do
         if e.op and e.key and e.key.text == key and e.value.text ~= nil then
-            e.value.text = tostring(value)
+            world.set_entry(world.tree, e, value)
             world.meta[key] = tonumber(value) or value
             return
         end
@@ -313,17 +313,8 @@ function stations.new_id(store)
     if old < 0 then g = 0 end
     a.gen[index] = g
     local id = index + g * GEN
-    local e
-    if old >= 0 then
-        local holder = world.store_blocks[store]
-        for _, x in ipairs(holder or {}) do
-            local xid = x.op and x.key and tonumber(x.key.text)
-            if xid and xid % GEN == index and x.value.text == "none" then
-                e = x
-                break
-            end
-        end
-    end
+    -- a freed slot (`<old id> = none`) the object takes
+    local e = old >= 0 and world.none_slot(store, index, GEN) or nil
     a.live[id] = true
     return id, e
 end
@@ -335,20 +326,7 @@ function stations.place(store, id, e, block)
     if cr and cr.place then
         return cr.place(store, id, e, block)
     end
-    if e and e.value and e.value.text == "none" then
-        local old = tonumber(e.key.text)
-        e.key.text = tostring(id)
-        e.value = block
-        world.stores[store][id] = block
-        world.entries[store][id] = e
-        if old and old ~= id then world.entries[store][old] = nil end
-        local ids = world.ids[store]
-        ids[#ids + 1] = id
-        table.sort(ids, function(x, y) return x % GEN < y % GEN end)
-        world.adopt(store, id, block)
-        return block
-    end
-    return world.create(store, id, block)
+    return world.place(store, id, e, block, GEN)
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -1181,7 +1159,7 @@ local function add_owned_fleet(country, fid)
             end
         end
     end
-    table.insert(owned, pos, e)
+    world.insert_value(owned, pos, e)
     world.fleet_owner[fid] = country
     live.touch("country", country)
 end
@@ -1284,7 +1262,7 @@ local function create_starbase(country, sid, pid, ship_id, design)
             if v.text then first = v break end
         end
         if first then
-            first.text = tostring(id)
+            world.set_entry(list, first, id)
         else
             world.append_value(list, id)
         end

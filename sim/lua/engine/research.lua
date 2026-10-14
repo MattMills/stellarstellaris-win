@@ -508,8 +508,7 @@ function research.increase_potential(country, area)
         if not offered[name] and research.can_research(country, name) then
             local e = by[name]
             if e then
-                e.value.text = tostring((tonumber(e.value.text) or 0) + 1)
-                world.wrote(block)
+                world.set_entry(block, e, (tonumber(e.value.text) or 0) + 1)
             else
                 world.append(block, name, "1", true)
                 by[name] = block[#block]
@@ -550,7 +549,7 @@ function research.update_alternatives(country, area, reset)
         end
         for i = #block, 1, -1 do
             if block[i].text then
-                table.remove(block, i)
+                world.remove_at(block, i)
             end
         end
     else
@@ -560,7 +559,7 @@ function research.update_alternatives(country, area, reset)
                 if research.can_research(country, e.text) then
                     n = n - 1
                 else
-                    table.remove(block, i)
+                    world.remove_at(block, i)
                 end
             end
         end
@@ -590,8 +589,7 @@ function research.update_alternatives(country, area, reset)
     while added < n and #names > 0 do
         local r = RUST.rand()
         local i = rng.weighted(weights, r) or (r % #names + 1)
-        world.append_value(block, names[i])
-        block[#block].quoted = true
+        world.append_value(block, names[i], true)
         -- the chosen one out: the last candidate takes its place
         names[i], weights[i] = names[#names], weights[#weights]
         names[#names], weights[#weights] = nil, nil
@@ -642,8 +640,7 @@ function research.add_technology(country, name)
                 last = i
             elseif k == "level" then
                 if found then
-                    e.value.text = tostring((tonumber(e.value.text) or 1) + 1)
-                    world.wrote(status)
+                    world.set_entry(status, e, (tonumber(e.value.text) or 1) + 1)
                     return true
                 end
                 last = i
@@ -767,15 +764,14 @@ local function area_day(host, country, status, area, day)
         local add = A + B
         local progress = (pe and tonumber(pe.value.text) or 0) + add
         if add > A and slot then
-            slot.text = world.number_text((tonumber(slot.text) or 0) - (add - A))
-            world.wrote(world.field(status, "stored_techpoints"))
+            world.set_entry(world.field(status, "stored_techpoints"), slot, world.number_text((tonumber(slot.text) or 0) - (add - A)))
         end
         world.wrote(item)
         research.stats.added = research.stats.added + add
         A = A - math.min(add, A)
         progress = math.floor(progress * 100000 + 0.5) / 100000
         if pe then
-            pe.value.text = world.number_text(progress)
+            world.set_entry(item, pe, world.number_text(progress))
         else
             world.insert(item, 1, "progress", progress)
         end
@@ -833,7 +829,7 @@ local function area_day(host, country, status, area, day)
         research.stats.queues_emptied = research.stats.queues_emptied + 1
     end
     if monthly and slot and A > 0 then
-        slot.text = world.number_text((tonumber(slot.text) or 0) + A)
+        world.set_entry(world.field(status, "stored_techpoints"), slot, world.number_text((tonumber(slot.text) or 0) + A))
     end
     -- the options of an area not researching, topped up (UpdateTechAlternatives without reset)
     research.update_alternatives(country, area, false)

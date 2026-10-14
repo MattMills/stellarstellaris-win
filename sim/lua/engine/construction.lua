@@ -439,12 +439,19 @@ end
 local function set_slot(block, slot, value)
     for _, e in ipairs(block) do
         if e.op and e.key and tonumber(e.key.text) == slot then
-            e.value = { text = value }
+            world.set_entry(block, e, value)
             return
         end
     end
-    block[#block + 1] = { key = { text = tostring(slot) }, op = "=", value = { text = value } }
-    table.sort(block, function(x, y) return (tonumber(x.key and x.key.text) or 0) < (tonumber(y.key and y.key.text) or 0) end)
+    -- in the slots' order
+    local pos = #block + 1
+    for i, e in ipairs(block) do
+        if (tonumber(e.key and e.key.text) or 0) > slot then
+            pos = i
+            break
+        end
+    end
+    world.insert(block, pos, tostring(slot), value)
 end
 
 -- CStarbase::SetLevel (0x2030f30 Linux): the level; the station's size in its design (the
@@ -559,7 +566,7 @@ local function finish(item, kind, b, date)
         world.append(z, "type", world.field(b, "zone"), true)
         world.append(z, "buildings", {})
         world.create("zones", id, z)
-        values[slot + 1].text = tostring(id)
+        world.set_entry(zones, values[slot + 1], id)
         world.wrote(zones)
         planet_done("on_zone_complete", planet)
         return true

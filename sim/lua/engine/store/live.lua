@@ -20,7 +20,7 @@ local others = {}   -- consumer name -> its marks (store name -> { [id] = true }
 
 -- exploration over the store unless STELLAR_STORE=off (engine.exploration asks L.on)
 local mode = os.getenv("STELLAR_STORE")
-L.on = mode ~= "off"
+L.on = mode ~= "off" and os.getenv("STELLAR_WORLD") ~= "store"   -- (the world in the store: exploration reads it, no mirror)
 L.check = L.on and os.getenv("STELLAR_STORE_CHECK") == "1"
 
 -- the store a scope kind lives in (engine.world.KINDS), or the name itself
