@@ -156,33 +156,55 @@ pub fn find_case_insensitive(root: &str, relative: &str) -> Option<String> {
     Some(dir.to_string_lossy().into_owned())
 }
 
-/// A cube map's six faces (+x, -x, +y, -y, +z, -z: the DDS's order and wgpu's), mip 0, decoded
-/// and stacked top to bottom: an image `size` wide and 6 x `size` high, format "cube <format>".
-pub fn load_cube(path: &str) -> Result<Image, String> {
+/// A cube map's six faces (+x, -x, +y, -y, +z, -z: the DDS's order and wgpu's), decoded and
+/// stacked top to bottom: an image `size` wide and 6 x `size` high, format "cube <format>"; the
+/// file's further mip levels follow in `rgba`, each as six faces (the pre-filtered environment
+/// maps are sampled by level).
+pub fn load_cube(path: &str, max_levels: u32) -> Result<Image, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
     let dds = image_dds::ddsfile::Dds::read(std::io::BufReader::new(file)).map_err(|e| format!("{path}: {e}"))?;
     let format = match dds.get_d3d_format() {
         Some(f) => format!("{f:?}"),
         None => dds.get_dxgi_format().map_or("unknown".to_string(), |f| format!("{f:?}")),
     };
-    let surface = image_dds::SurfaceRgba8::decode_layers_mipmaps_dds(&dds, 0..6, 0..1).map_err(|e| format!("{path}: {format}: {e}"))?;
+    let mips = dds.get_num_mipmap_levels().clamp(1, max_levels.max(1));
+    let surface = image_dds::SurfaceRgba8::decode_layers_mipmaps_dds(&dds, 0..6, 0..mips).map_err(|e| format!("{path}: {format}: {e}"))?;
     if surface.layers < 6 {
         return Err(format!("{path}: not a cube map ({} layers)", surface.layers));
     }
-    let face = (surface.width * surface.height * 4) as usize;
-    let mut rgba = surface.data;
-    rgba.truncate(face * 6);
+    let mut rgba = Vec::new();
+    for m in 0..surface.mipmaps {
+        if (surface.width >> m).max(1) < 4 {
+            break;
+        }
+        for f in 0..6 {
+            rgba.extend_from_slice(surface.get(f, 0, m).ok_or_else(|| format!("{path}: face {f} level {m} missing"))?);
+        }
+    }
     Ok(Image { width: surface.width, height: surface.height * 6, rgba, format: format!("cube {format}") })
 }
 
+/// The mip levels a cube map image of load_cube holds.
+pub fn cube_levels(img: &Image) -> u32 {
+    let mut left = img.rgba.len();
+    let mut n = 0;
+    let mut s = img.width as usize;
+    while s >= 1 && left >= s * s * 24 {
+        left -= s * s * 24;
+        n += 1;
+        s /= 2;
+    }
+    n.max(1)
+}
+
 impl Cache {
-    /// A cube map at `relative` (see load_cube), loaded once.
-    pub fn get_cube(&mut self, game_dir: &str, relative: &str) -> Result<&Image, String> {
+    /// A cube map at `relative` (see load_cube) with at most `levels` mip levels, loaded once.
+    pub fn get_cube(&mut self, game_dir: &str, relative: &str, levels: u32) -> Result<&Image, String> {
         let rel = relative.replace('\\', "/");
-        let key = format!("cube:{rel}");
+        let key = format!("cube{levels}:{rel}");
         if !self.images.contains_key(&key) {
             let path = find_case_insensitive(game_dir, &rel).unwrap_or_else(|| format!("{game_dir}/{rel}"));
-            self.images.insert(key.clone(), load_cube(&path));
+            self.images.insert(key.clone(), load_cube(&path, levels));
         }
         self.images[&key].as_ref().map_err(|e| e.clone())
     }

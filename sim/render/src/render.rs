@@ -31,6 +31,8 @@ struct ViewUniform {
     /// the star's light (colour x intensity) and the planets' back light (gfx/lights, gfx/worldgfx)
     light_colour: [f32; 4],
     back_light: [f32; 4],
+    /// the ships' lights: cam_light_1..3_diffuse, rim_light_diffuse, ambient (linear)
+    cam_lights: [[f32; 4]; 5],
 }
 
 /// One post-effect pass's constants (post.wgsl's Post), one 256-byte slot each.
@@ -79,6 +81,27 @@ fn bloom_kernel(width: f32, scale: f32) -> (f32, [f32; 4], [f32; 4]) {
     (w[0] * n, weights, offsets)
 }
 
+/// The view's bind group: its uniform, the galaxy view's five map textures (map.wgsl) and a
+/// clamping linear sampler.
+fn view_bind_with(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, maps: [&wgpu::TextureView; 5], sampler: &wgpu::Sampler) -> wgpu::BindGroup {
+    fn t(b: u32, v: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
+        wgpu::BindGroupEntry { binding: b, resource: wgpu::BindingResource::TextureView(v) }
+    }
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("view"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+            t(1, maps[0]),
+            t(2, maps[1]),
+            t(3, maps[2]),
+            t(4, maps[3]),
+            t(5, maps[4]),
+            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    })
+}
+
 /// The pipelines of the map and the meshes for one target format.
 struct Pipelines {
     quad_alpha: wgpu::RenderPipeline,
@@ -89,6 +112,10 @@ struct Pipelines {
     mesh_add: wgpu::RenderPipeline,
     /// added, alpha left alone (the game's BlendStateAdditiveBlendNoAlpha)
     mesh_add_rgb: wgpu::RenderPipeline,
+    /// both faces, blended, alpha added (BlendStateAlphaBlendWriteAlpha: the planets' rings)
+    mesh_ring: wgpu::RenderPipeline,
+    /// additive effects (PixelPdxMeshAdditive), back faces culled
+    mesh_glow: wgpu::RenderPipeline,
 }
 
 /// The post effects' sized resources and their bind groups, for the uploaded scene: the HDR
@@ -116,6 +143,8 @@ struct QuadInstance {
     uv: [f32; 4],
     colour: [f32; 4],
     misc: [f32; 4],
+    fx: [f32; 4],
+    fx2: [f32; 4],
 }
 
 #[repr(C)]
@@ -136,7 +165,9 @@ struct DrawUniform {
     atmosphere: [f32; 4],
     extra: [f32; 4],
     lava: [[f32; 4]; 3],
-    pad: [[f32; 4]; 5],
+    std: [f32; 4],
+    /// a ship's PixelPdxMeshShip constants (MeshDraw::ship)
+    ship: [[f32; 4]; 4],
 }
 
 const DRAW_SLOT: u64 = 256;
@@ -271,7 +302,7 @@ struct Draw {
 
 struct MeshDrawGpu {
     mesh: String,
-    textures: (String, String, String, String),
+    textures: (String, String, String, String, String),
     shading: Shading,
     slot: u32,
 }
@@ -286,6 +317,9 @@ pub struct Renderer {
     hdr: Pipelines,
     uniform: wgpu::Buffer,
     view_bind: wgpu::BindGroup,
+    view_layout: wgpu::BindGroupLayout,
+    /// the map textures the view bind group holds (their names), rebuilt when they change
+    view_maps: Option<[String; 5]>,
     gui_uniform: wgpu::Buffer,
     gui_view_bind: wgpu::BindGroup,
     post_bright: wgpu::RenderPipeline,
@@ -315,7 +349,7 @@ pub struct Renderer {
     wrap_sampler: wgpu::Sampler,
     textures: HashMap<String, GpuTexture>,
     meshes: HashMap<String, GpuMesh>,
-    mesh_binds: HashMap<(String, String, String, String), wgpu::BindGroup>,
+    mesh_binds: HashMap<(String, String, String, String, String), wgpu::BindGroup>,
     quads: Option<wgpu::Buffer>,
     lines: Option<wgpu::Buffer>,
     n_lines: u32,
@@ -362,7 +396,22 @@ impl Renderer {
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         };
-        let view_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("view"), entries: &[uniform_entry(0, false)] });
+        let cube_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::Cube,
+                multisampled: false,
+            },
+            count: None,
+        };
+        // the view: its uniform; the galaxy view's map textures (terra incognita, the borders'
+        // distance, edge and fill colours, the dust's colour map: map.wgsl) and their sampler
+        let view_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("view"),
+            entries: &[uniform_entry(0, false), texture_entry(1), texture_entry(2), texture_entry(3), texture_entry(4), texture_entry(5), sampler_entry(6)],
+        });
         let texture_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("texture"), entries: &[texture_entry(0), sampler_entry(1)] });
         let mesh_texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -373,16 +422,9 @@ impl Renderer {
                 texture_entry(2),
                 sampler_entry(3),
                 // a cube map: the stars' lava noise (gfx/worldgfx/lava_noise.dds)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::Cube,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
+                cube_entry(4),
+                // the world's environment map
+                cube_entry(5),
             ],
         });
         let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("draw"), entries: &[uniform_entry(0, true)] });
@@ -391,11 +433,6 @@ impl Renderer {
             size: std::mem::size_of::<ViewUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
-        });
-        let view_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("view"),
-            layout: &view_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }],
         });
         let sampler_with = |mode: wgpu::AddressMode| {
             device.create_sampler(&wgpu::SamplerDescriptor {
@@ -428,6 +465,8 @@ impl Renderer {
             attr(1, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(QuadInstance, uv)),
             attr(2, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(QuadInstance, colour)),
             attr(3, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(QuadInstance, misc)),
+            attr(4, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(QuadInstance, fx)),
+            attr(5, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(QuadInstance, fx2)),
         ];
         let line_attrs = [
             attr(0, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(LineInstance, a)),
@@ -504,6 +543,10 @@ impl Renderer {
         // their own, so OpenGL's glBlendFunc blends alpha by the same factors) add alpha x alpha;
         // the alpha-blended ones (RGB only in the game) leave it
         let additive_hdr = wgpu::BlendState { color: additive.color, alpha: additive.color };
+        let ring_blend = wgpu::BlendState {
+            color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
+            alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+        };
         let set = |format: wgpu::TextureFormat, hdr: bool| {
             let (all, colour) = (wgpu::ColorWrites::ALL, if hdr { wgpu::ColorWrites::COLOR } else { wgpu::ColorWrites::ALL });
             let alpha = Some(wgpu::BlendState::ALPHA_BLENDING);
@@ -516,6 +559,12 @@ impl Renderer {
                 mesh_alpha: pipeline("meshes blended", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, alpha, tested.clone(), Some(wgpu::Face::Back), format, colour),
                 mesh_add: pipeline("meshes added", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, add, tested.clone(), Some(wgpu::Face::Front), format, all),
                 mesh_add_rgb: pipeline("meshes added rgb", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, Some(additive), tested.clone(), Some(wgpu::Face::Front), format, colour),
+                // BlendStateAlphaBlendWriteAlpha: SRC_ALPHA, INV_SRC_ALPHA; DestAlpha ONE with
+                // the default SourceAlpha ONE: alpha added
+                mesh_ring: pipeline("meshes ring", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, Some(ring_blend), tested.clone(), None, format, all),
+                // PixelPdxMeshAdditive effects: BlendStateAdditiveBlend (alpha written), the default
+                // rasterizer (back faces culled), no depth write
+                mesh_glow: pipeline("meshes glow", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, add, tested.clone(), Some(wgpu::Face::Back), format, all),
             }
         };
         let ldr = set(format, false);
@@ -575,11 +624,6 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let gui_view_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("gui view"),
-            layout: &view_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: gui_uniform.as_entire_binding() }],
-        });
         let dummy = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("dummy"),
             size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
@@ -591,6 +635,8 @@ impl Renderer {
             view_formats: &[],
         });
         let dummy_view = dummy.create_view(&wgpu::TextureViewDescriptor::default());
+        let view_bind = view_bind_with(device, &view_layout, &uniform, [&dummy_view; 5], &sampler);
+        let gui_view_bind = view_bind_with(device, &view_layout, &gui_uniform, [&dummy_view; 5], &sampler);
         let dummy_cube = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("dummy cube"),
             size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 6 },
@@ -659,6 +705,8 @@ impl Renderer {
             hdr,
             uniform,
             view_bind,
+            view_layout,
+            view_maps: None,
             gui_uniform,
             gui_view_bind,
             post_bright: full("post bright", "fs_bright", HDR_FORMAT),
@@ -743,23 +791,31 @@ impl Renderer {
         if self.cubes.get(name).is_some_and(|c| Arc::ptr_eq(&c.0, img)) {
             return;
         }
+        self.mesh_binds.retain(|k, _| k.3 != name && k.4 != name);
         let size = img.width;
+        let levels = crate::dds::cube_levels(img);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(name),
             size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 6 },
-            mip_level_count: 1,
+            mip_level_count: levels,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            &img.rgba,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size * 4), rows_per_image: Some(size) },
-            wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 6 },
-        );
+        let mut offset = 0usize;
+        for m in 0..levels {
+            let s = (size >> m).max(1);
+            let bytes = (s * s * 24) as usize;
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: m, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &img.rgba[offset..offset + bytes],
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(s * 4), rows_per_image: Some(s) },
+                wgpu::Extent3d { width: s, height: s, depth_or_array_layers: 6 },
+            );
+            offset += bytes;
+        }
         let view = texture.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::Cube), ..Default::default() });
         self.cubes.insert(name.to_string(), (img.clone(), texture, view));
     }
@@ -802,11 +858,27 @@ impl Renderer {
             _pad: [0; 3],
             light_colour: scene.light_colour,
             back_light: scene.back_light,
+            cam_lights: scene.cam_lights,
         };
         // the scene's view (linear under the post effects) and the GUI's (over the target)
         let hdr = scene.post.is_some();
         let scene_view = ViewUniform { srgb: if hdr { 0 } else { self.srgb as u32 }, linear: hdr as u32, ..view };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&scene_view));
+        // the galaxy view's map textures in the view's bind group (rebuilt when they change)
+        let maps = scene.maps.map(|m| m.map(|i| textures.names[i].clone()));
+        if let Some(m) = scene.maps {
+            for i in m {
+                self.texture(device, queue, &textures.names[i], &textures.images[i]);
+            }
+        }
+        if maps.is_some() || maps != self.view_maps {
+            let views: [&wgpu::TextureView; 5] = match &maps {
+                Some(names) => [0, 1, 2, 3, 4].map(|k| &self.textures[&names[k]].view),
+                None => [&self.dummy_view; 5],
+            };
+            self.view_bind = view_bind_with(device, &self.view_layout, &self.uniform, views, &self.sampler);
+            self.view_maps = maps;
+        }
         queue.write_buffer(&self.gui_uniform, 0, bytemuck::bytes_of(&view));
         self.clear = scene.clear;
         if self.depth.as_ref().is_none_or(|d| (d.0, d.1) != (v.width, v.height)) {
@@ -844,13 +916,15 @@ impl Renderer {
                     q.height,
                     q.least_px,
                 ],
+                fx: q.fx,
+                fx2: q.fx2,
             }));
             self.draws.push(Draw { layer: b.layer, blend: b.blend, texture: name.clone(), range: start..instances.len() as u32 });
         }
         let lines: Vec<LineInstance> = scene
             .lines
             .iter()
-            .map(|l| LineInstance { a: [l.a.0, l.a.1, l.a.2, l.width], b: [l.b.0, l.b.1, l.b.2, 0.0], colour: l.colour })
+            .map(|l| LineInstance { a: [l.a.0, l.a.1, l.a.2, l.width], b: [l.b.0, l.b.1, l.b.2, l.mode], colour: l.colour })
             .collect();
         let buffer = |label: &str, bytes: &[u8]| {
             let buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -874,8 +948,13 @@ impl Renderer {
         let mut order: Vec<usize> = (0..scene.meshes.len()).collect();
         order.sort_by_key(|&i| match scene.meshes[i].shading {
             Shading::Lit | Shading::Emissive | Shading::Star => 0,
-            Shading::Clouds => 1,
-            Shading::Atmosphere | Shading::StarAtmosphere => 2,
+            Shading::Clouds | Shading::Ring => 1,
+            Shading::Atmosphere | Shading::StarAtmosphere | Shading::Additive => 2,
+        });
+        // the world's environment map (its levels by glossiness), shared by every mesh
+        let env_name = scene.env.map(|(i, _)| {
+            self.cube(device, queue, &textures.names[i], &textures.images[i]);
+            textures.names[i].clone()
         });
         for i in order {
             let m = &scene.meshes[i];
@@ -892,6 +971,7 @@ impl Renderer {
                 textures.names[m.textures[1]].clone(),
                 textures.names[m.textures[2]].clone(),
                 cube_name.clone().unwrap_or_default(),
+                env_name.clone().unwrap_or_default(),
             );
             if !self.mesh_binds.contains_key(&names) {
                 let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -903,6 +983,7 @@ impl Renderer {
                         wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.textures[&names.2].view) },
                         wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.wrap_sampler) },
                         wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(cube_name.as_ref().map_or(&self.dummy_cube_view, |c| &self.cubes[c].2)) },
+                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(env_name.as_ref().map_or(&self.dummy_cube_view, |c| &self.cubes[c].2)) },
                     ],
                 });
                 self.mesh_binds.insert(names.clone(), bind);
@@ -920,7 +1001,8 @@ impl Renderer {
                 atmosphere,
                 extra: [k.width, k.kind, 0.0, 0.0],
                 lava: [l(k.lava[0]), l(k.lava[1]), l(k.lava[2])],
-                pad: [[0.0; 4]; 5],
+                std: [m.std[0], m.std[1], scene.env.map_or(0.0, |e| e.1), m.std[3]],
+                ship: m.ship,
             });
             self.mesh_draws.push(MeshDrawGpu { mesh: m.mesh.key.clone(), textures: names, shading: m.shading, slot: (uniforms.len() - 1) as u32 });
         }
@@ -1214,10 +1296,12 @@ impl Renderer {
                 pass.set_pipeline(match d.shading {
                     Shading::Lit | Shading::Emissive | Shading::Star => &pipes.mesh_opaque,
                     Shading::Clouds => &pipes.mesh_alpha,
+                    Shading::Ring => &pipes.mesh_ring,
                     // PdxMeshAtmosphere: BlendStateAdditiveBlendNoAlpha; PdxMeshAtmosphereStar:
                     // BlendStateAdditiveBlend (alpha written: the star's bloom)
                     Shading::Atmosphere => &pipes.mesh_add_rgb,
                     Shading::StarAtmosphere => &pipes.mesh_add,
+                    Shading::Additive => &pipes.mesh_glow,
                 });
                 pass.set_bind_group(1, &self.mesh_binds[&d.textures], &[]);
                 pass.set_bind_group(2, draw_bind, &[d.slot * DRAW_SLOT as u32]);

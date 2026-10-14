@@ -28,6 +28,11 @@ pub struct WorldGfx {
     pub system_light: String,
     /// the planets' back light (system_back_light_diffuse, gamma space)
     pub back_light: [f32; 3],
+    /// the meshes' reflections: environment_map (a pre-filtered cube map), cubemap_intensity
+    pub environment_map: String,
+    pub cubemap_intensity: f32,
+    /// the ships' light settings (gamma space): cam_light_1..3_diffuse, rim_light_diffuse, ambient
+    pub ship_lights: [[f32; 3]; 5],
 }
 
 /// The settings of a world tag (the `default` world's when the tag has none).
@@ -71,6 +76,12 @@ pub fn read(rt: &Runtime, game_dir: &str, world: &str) -> Result<WorldGfx, Strin
                 Ok(Value::Table(c)) => [c.get(1).unwrap_or(0.41), c.get(2).unwrap_or(0.48), c.get(3).unwrap_or(0.55)],
                 _ => [0.41, 0.48, 0.55],
             },
+            environment_map: text("environment_map"),
+            cubemap_intensity: num("cubemap_intensity", 0.4),
+            ship_lights: ["cam_light_1_diffuse", "cam_light_2_diffuse", "cam_light_3_diffuse", "rim_light_diffuse", "ambient"].map(|k| match t.get::<Value>(k) {
+                Ok(Value::Table(c)) => [c.get(1).unwrap_or(0.0), c.get(2).unwrap_or(0.0), c.get(3).unwrap_or(0.0)],
+                _ => [0.0; 3],
+            }),
         })
     };
     read().map_err(|e| format!("render.system.world_settings({world}): {e}"))
@@ -95,6 +106,14 @@ impl WorldGfx {
 }
 
 impl WorldGfx {
+    /// The environment map with its mip levels (the reflections by glossiness) and its intensity.
+    pub fn env(&self, tex: &mut Textures, cache: &mut Cache, game_dir: &str) -> Option<(usize, f32)> {
+        if self.environment_map.is_empty() {
+            return None;
+        }
+        Some((tex.game_cube_levels(cache, game_dir, &self.environment_map, 16)?, self.cubemap_intensity))
+    }
+
     /// The sky of this world for a place `core_pct` of the galaxy's radius from its core: the
     /// first `galaxy_background` whose `distance_to_core_percent` bound it is under (the last
     /// has `always = yes`).

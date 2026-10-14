@@ -221,8 +221,13 @@ impl Engine {
                 .unwrap_or_else(|| OrbitCamera::galaxy(500.0));
                 c.target = V3(v[0], v[1], v[2]);
                 c.yaw = v[3].to_radians();
-                c.pitch = v[4].to_radians().clamp(c.min_pitch, c.max_pitch);
-                c.distance = v[5].clamp(c.min_distance, c.max_distance);
+                // as the game's headless `camera`: set as given (the limits widened to it)
+                c.pitch = v[4].to_radians();
+                c.distance = v[5].max(1e-3);
+                c.min_pitch = c.min_pitch.min(c.pitch);
+                c.max_pitch = c.max_pitch.max(c.pitch);
+                c.min_distance = c.min_distance.min(c.distance);
+                c.max_distance = c.max_distance.max(c.distance);
                 self.app.set_camera(c);
                 Ok(Reply::ok("camera"))
             }

@@ -169,8 +169,11 @@ function galaxy.extract(game_dir)
             local d = classes[key]
             local class = d and field(d.block, "class") or key
             local scale = d and tonumber(field(d.block, "icon_scale")) or 1
+            -- the sprite: the class's `icon`, by default its `class` (CGalaxyGraphics::Init:
+            -- sc_m_giant draws m_star.dds), then the key
+            local icon = d and field(d.block, "icon") or class
             local texture
-            for _, name in ipairs({ key, class }) do
+            for _, name in ipairs({ icon, class, key }) do
                 local rel = "gfx/map/star_classes/" .. name .. ".dds"
                 if exists(game_dir .. "/" .. rel) then
                     texture = rel
@@ -196,6 +199,8 @@ function galaxy.extract(game_dir)
             systems[#systems + 1] = {
                 id = id, x = x, y = y, owner = world.system_owner[id] or -1,
                 star_class = sc, class = info.class, texture = info.texture, icon_scale = info.icon_scale,
+                -- the star's height over the galaxy's plane (the game's world: y = visual_height)
+                height = tonumber(world.path(obj, "coordinate", "visual_height")) or 0,
             }
             index[id] = #systems
         end
@@ -222,8 +227,18 @@ function galaxy.extract(game_dir)
             owners[o] = true
             local c = world.object("country", o)
             local names = world.list(world.path(c, "flag", "colors"))
+            for k, n in ipairs(names) do
+                names[k] = tostring(n):gsub('"', "")
+            end
             local p, src = resolve(names[1] or "")
-            local q = resolve(names[2] or "") or p
+            -- the fill: whichever of the second and third colours is further from the first
+            -- (CEmpireFlag::GetMapSecondaryColor)
+            local q = resolve(names[2] or "")
+            local q3 = resolve(names[3] or "")
+            if p and q3 and (not q or (q3[1] - p[1]) ^ 2 + (q3[2] - p[2]) ^ 2 + (q3[3] - p[3]) ^ 2 > (q[1] - p[1]) ^ 2 + (q[2] - p[2]) ^ 2 + (q[3] - p[3]) ^ 2) then
+                q = q3
+            end
+            q = q or p
             countries[#countries + 1] = {
                 id = o, name = galaxy.name_text(world.field(c, "name")) or ("country " .. o),
                 kind = tostring(world.field(c, "type") or ""),
@@ -291,7 +306,55 @@ function galaxy.extract(game_dir)
                 x = tonumber(world.field(c, "x")) or 0, y = tonumber(world.field(c, "y")) or 0,
                 radius = tonumber(world.field(e.value, "radius")) or 30,
                 name = tostring(world.path(e.value, "name", "key") or ""),
+                -- the systems in it (each gets a dust cloud of the nebula: CGalaxyGraphics::InitNebulas)
+                systems = {},
             }
+            for _, v in ipairs(world.fields(e.value, "galactic_object")) do
+                local n = nebulae[#nebulae]
+                n.systems[#n.systems + 1] = tonumber(v)
+            end
+        end
+    end
+
+    -- the player's terra incognita (country.terra_incognita = { size data = { runs } systems }):
+    -- run lengths over the size x size bitmap, row by row, the first run unknown (0x00), then
+    -- known (0xFF), alternating (CTerraIncognitaMap::WriteMembers)
+    local player = 0
+    local pl = world.meta and world.meta.player
+    if type(pl) == "table" then
+        for _, b in ipairs(world.blocks(pl)) do
+            player = tonumber(world.field(b, "country")) or player
+        end
+    end
+    local ti
+    local pc = world.object("country", player)
+    -- the countries the player has communications with (relations_manager.relation =
+    -- { country communications = yes }): only their systems get borders and coloured pins
+    -- (CBorderShapeCalculator::CalculateOwnerIds: CCountry::ListCommunications plus the player)
+    local communications = {}
+    local rm = pc and world.field(pc, "relations_manager")
+    for _, r in ipairs(rm and world.fields(rm, "relation") or {}) do
+        local other = type(r) == "table" and tonumber(world.field(r, "country"))
+        if other and world.field(r, "communications") == "yes" then
+            communications[#communications + 1] = other
+        end
+    end
+    local tib = pc and world.field(pc, "terra_incognita")
+    if type(tib) == "table" then
+        local runs = {}
+        for _, v in ipairs(world.list(world.field(tib, "data"))) do
+            runs[#runs + 1] = tonumber(v) or 0
+        end
+        local known = {}
+        for _, v in ipairs(world.list(world.field(tib, "systems"))) do
+            known[#known + 1] = tonumber(v)
+        end
+        ti = { size = tonumber(world.field(tib, "size")) or 256, runs = runs, systems = known }
+    end
+    local core_radius
+    for _, e in ipairs(world.tree or {}) do
+        if e.op and e.key and e.key.text == "galaxy" and type(e.value) == "table" then
+            core_radius = tonumber(world.field(e.value, "core_radius"))
         end
     end
 
@@ -310,6 +373,8 @@ function galaxy.extract(game_dir)
         border_texture_size = tonumber(ng.BORDER_TEXTURE_SIZE) or 2048,
         dust_size = tonumber(ng.GALAXY_DUST_SIZE) or 25,
         dust_size_extra = tonumber(ng.GALAXY_DUST_SIZE_EXTRA) or 35,
+        terra_incognita = ti, core_radius = core_radius or 0, player = player,
+        communications = pc and communications or nil,
     }
     out.notes = string.format(
         "%d fleets, %d nebulae; " ..

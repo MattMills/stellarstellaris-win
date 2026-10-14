@@ -28,6 +28,7 @@ mod app;
 mod border;
 mod camera;
 mod dds;
+mod effects;
 mod engine;
 mod math;
 mod models;
@@ -36,6 +37,7 @@ mod pdxmesh;
 mod system;
 mod font;
 mod galaxy;
+mod galaxymap;
 mod gui;
 mod render;
 mod scene;
@@ -75,6 +77,9 @@ pub struct Map {
     pub cache: Rc<RefCell<Cache>>,
     pub textures: Textures,
     pub borders_texture: usize,
+    /// the galaxy view's map textures (galaxymap.rs): terra incognita, the borders' distance, edge
+    /// and fill colours; made on the first 3D frame
+    pub maps: Option<[usize; 4]>,
     pub fonts: Option<HashMap<String, Font>>,
     pub models: models::Library,
     pub particles: particles::Library,
@@ -111,6 +116,7 @@ impl Map {
             cache: Rc::new(RefCell::new(Cache::default())),
             textures,
             borders_texture,
+            maps: None,
             fonts: None,
             models: models::Library::default(),
             particles: particles::Library::default(),
@@ -174,7 +180,27 @@ impl Map {
         self.borders = border::compute(&self.galaxy);
         let img = Image { width: self.borders.width, height: self.borders.height, rgba: self.borders.rgba.clone(), format: "generated".into() };
         self.borders_texture = self.textures.add("@borders", Arc::new(img));
+        self.maps = None;
         Ok(())
+    }
+
+    /// The galaxy view's map textures (made once per galaxy read).
+    fn galaxy_maps(&mut self) -> [usize; 4] {
+        if let Some(m) = self.maps {
+            return m;
+        }
+        let t0 = std::time::Instant::now();
+        let ti = galaxymap::terra_incognita(&self.galaxy);
+        let (sdf, edge, fill) = galaxymap::borders(&self.galaxy);
+        eprintln!("galaxy maps: terra incognita and borders in {:.2} s", t0.elapsed().as_secs_f64());
+        let m = [
+            self.textures.add("@terra_incognita", Arc::new(ti)),
+            self.textures.add("@border_sdf", Arc::new(sdf)),
+            self.textures.add("@border_edge", Arc::new(edge)),
+            self.textures.add("@border_fill", Arc::new(fill)),
+        ];
+        self.maps = Some(m);
+        m
     }
 
     /// The scene for a target of `width` x `height` (the top bar is laid out for that screen):
@@ -186,10 +212,12 @@ impl Map {
             gui::fonts(self.rt(), &self.game_dir, &topbar.items, &mut fonts)?;
             self.fonts = Some(fonts);
         }
+        let maps = if camera.is_some() { Some(self.galaxy_maps()) } else { None };
         let inputs = scene::Inputs {
             galaxy: &self.galaxy,
             borders: &self.borders,
             borders_texture: self.borders_texture,
+            maps,
             topbar: &topbar,
             fonts: self.fonts.as_ref().unwrap(),
             gui: self.gui,
@@ -206,6 +234,7 @@ impl Map {
             let mut cache = self.cache.borrow_mut();
             scene.post = Some(world.post(&mut self.textures, &mut cache, &self.game_dir));
             scene.sky = world.sky(&mut self.textures, &mut cache, &self.game_dir, 0.0);
+            scene.env = world.env(&mut self.textures, &mut cache, &self.game_dir);
         }
         Ok(Frame { scene, topbar })
     }

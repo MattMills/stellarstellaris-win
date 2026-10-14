@@ -23,6 +23,8 @@ pub struct Part {
     pub mesh: Arc<MeshData>,
     pub textures: [String; 3],
     pub shading: Shading,
+    /// the defines of its effect (gfx/FX/pdxmesh.shader: effects.rs bits)
+    pub flags: u32,
 }
 
 #[derive(Clone)]
@@ -40,6 +42,10 @@ pub struct Model {
     pub skipped: Vec<String>,
     /// the particle effects its default state starts (the entity's `state` events)
     pub particles: Vec<String>,
+    /// the entity's game_data bloom_factor (vBloomFactor: the lit colour times it), 1 if none
+    pub bloom_factor: f32,
+    /// game_data emissive_recolor_crunch (a ship's ShipVars.r), 1 if none
+    pub recolor_crunch: f32,
 }
 
 impl Model {
@@ -57,11 +63,15 @@ impl Model {
     }
 }
 
-/// How a shader of the game's is drawn here (None: not drawn: collision volumes, effects).
-pub fn shading_of(shader: &str) -> Option<Shading> {
+/// How a shader of the game's is drawn here (None: not drawn: collision volumes, effects not
+/// ported). Effects of PixelPdxMeshAdditive (gfx/FX/pdxmesh.shader) are drawn as Additive.
+pub fn shading_of(game_dir: &str, shader: &str) -> Option<Shading> {
     let s = shader.to_ascii_lowercase();
     if s.is_empty() || s.contains("collision") {
         return None;
+    }
+    if crate::effects::effect(game_dir, shader).is_some_and(|e| e.pixel_shader == "PixelPdxMeshAdditive") {
+        return Some(Shading::Additive);
     }
     if s.contains("atmospherestar") {
         return Some(Shading::StarAtmosphere);
@@ -71,6 +81,9 @@ pub fn shading_of(shader: &str) -> Option<Shading> {
     }
     if s.contains("clouds") {
         return Some(Shading::Clouds);
+    }
+    if s.contains("planetrings") {
+        return Some(Shading::Ring);
     }
     if s == "pdxmeshstar" {
         return Some(Shading::Star);
@@ -246,7 +259,7 @@ impl Library {
                     continue;
                 }
                 let shader = over.and_then(|o| o.4.clone()).unwrap_or_else(|| sm.material.shader.clone());
-                let Some(shading) = shading_of(&shader) else {
+                let Some(shading) = shading_of(game_dir, &shader) else {
                     skipped.push(format!("{} ({shader})", shape.name));
                     continue;
                 };
@@ -268,10 +281,11 @@ impl Library {
                 let key = format!("{file}#{}#{k}", shape.name);
                 parts.push(Part {
                     shape: shape.name.clone(),
-                    shader,
                     mesh: Arc::new(MeshData { key, vertices, indices: sm.indices.clone() }),
                     textures,
                     shading,
+                    flags: crate::effects::effect(game_dir, &shader).map_or(0, |e| e.flags()),
+                    shader,
                 });
             }
         }
@@ -284,7 +298,9 @@ impl Library {
             .flatten()
             .map(|p| p.sequence_values::<Table>().filter_map(|x| x.ok()?.get::<String>("particle").ok()).collect())
             .unwrap_or_default();
-        Ok(Model { name: name.to_string(), file, scale, parts, locators: mesh.locators.clone(), aabb: (lo, hi), attach, skipped, particles })
+        let bloom_factor = t.get::<Option<f32>>("bloom_factor").ok().flatten().unwrap_or(1.0);
+        let recolor_crunch = t.get::<Option<f32>>("recolor_crunch").ok().flatten().unwrap_or(1.0);
+        Ok(Model { name: name.to_string(), file, scale, parts, locators: mesh.locators.clone(), aabb: (lo, hi), attach, skipped, particles, bloom_factor, recolor_crunch })
     }
 }
 
@@ -354,6 +370,9 @@ pub fn draws(model: &Model, transform: M4, tint: [f32; 4], look: &Look, tex: &mu
             if d.look.kind == 1.0 || d.look.kind == 3.0 {
                 d.params[3] = 0.08;
             }
+            // PixelPdxMeshStandard's: the defines, vBloomFactor, (CubemapIntensity: the
+            // scene's), AtmosphereColor.a (a class with an atmosphere colour)
+            d.std = [p.flags as f32, model.bloom_factor, 0.0, look.colour_alpha];
             d
         })
         .collect()

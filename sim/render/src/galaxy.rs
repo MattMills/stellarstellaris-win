@@ -19,6 +19,8 @@ pub struct System {
     /// the star's sprite on the galaxy map (a path in the game directory), "" if none
     pub texture: String,
     pub icon_scale: f32,
+    /// the star's height over the plane (the save's visual_height: the game's world, map x 2)
+    pub height: f32,
 }
 
 /// A country that owns at least one system, with its two map colours.
@@ -59,6 +61,36 @@ pub struct Galaxy {
     pub nebulae: Vec<Nebula>,
     /// What the Lua query read (counts and timing).
     pub notes: String,
+    /// the player's terra incognita: its bitmap (size x size, row by row, 0 unknown, 255 known)
+    /// and the systems it has cleared
+    pub terra_incognita: Option<TerraIncognita>,
+    /// the save's galaxy.core_radius (map units)
+    pub core_radius: f32,
+    /// the player's country id
+    pub player: u32,
+    /// the countries the player has communications with (None: no player country, all shown)
+    pub communications: Option<Vec<u32>>,
+}
+
+impl Galaxy {
+    /// The owner a system's border and pin show (CBorderShapeCalculator::CalculateOwnerIds): its
+    /// owner when that is the player or a country the player has communications with.
+    pub fn shown_owner(&self, s: &System) -> Option<usize> {
+        let o = s.owner?;
+        let id = self.countries[o].id;
+        match &self.communications {
+            Some(c) if id != self.player && !c.contains(&id) => None,
+            _ => Some(o),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TerraIncognita {
+    pub size: usize,
+    pub bitmap: Vec<u8>,
+    #[allow(dead_code)]
+    pub systems: Vec<u32>,
 }
 
 /// A fleet on the map: its position (its system's, or the galaxy coordinate between systems),
@@ -84,6 +116,8 @@ pub struct Nebula {
     pub radius: f32,
     #[allow(dead_code)]
     pub name: String,
+    /// the ids of the systems in it
+    pub systems: Vec<u32>,
 }
 
 /// The renderer's Lua directory (`sim/render/lua`), for `package.path`.
@@ -168,6 +202,7 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                 star_class: s.get("star_class")?,
                 texture: s.get("texture")?,
                 icon_scale: s.get("icon_scale")?,
+                height: s.get::<Option<f32>>("height")?.unwrap_or(0.0),
             });
         }
         let mut lanes = Vec::new();
@@ -202,7 +237,13 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
         let mut nebulae = Vec::new();
         for n in g.get::<Table>("nebulae")?.sequence_values::<Table>() {
             let n = n?;
-            nebulae.push(Nebula { x: n.get("x")?, y: n.get("y")?, radius: n.get("radius")?, name: n.get("name")? });
+            nebulae.push(Nebula {
+                x: n.get("x")?,
+                y: n.get("y")?,
+                radius: n.get("radius")?,
+                name: n.get("name")?,
+                systems: n.get::<Option<Table>>("systems")?.map(|t| t.sequence_values::<u32>().collect::<mlua::Result<Vec<_>>>()).transpose()?.unwrap_or_default(),
+            });
         }
         Ok(Galaxy {
             date: g.get("date")?,
@@ -219,6 +260,25 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
             dust_size: g.get("dust_size")?,
             dust_size_extra: g.get("dust_size_extra")?,
             notes: g.get("notes")?,
+            terra_incognita: match g.get::<Option<Table>>("terra_incognita")? {
+                Some(t) => {
+                    let size: usize = t.get::<Option<usize>>("size")?.unwrap_or(256);
+                    let runs: Vec<u32> = t.get::<Table>("runs")?.sequence_values::<u32>().collect::<mlua::Result<_>>()?;
+                    let systems: Vec<u32> = t.get::<Table>("systems")?.sequence_values::<u32>().collect::<mlua::Result<_>>()?;
+                    // run lengths, the first unknown, alternating (CTerraIncognitaMap)
+                    let mut bitmap = Vec::with_capacity(size * size);
+                    for (k, n) in runs.iter().enumerate() {
+                        let v = if k % 2 == 0 { 0u8 } else { 255u8 };
+                        bitmap.extend(std::iter::repeat_n(v, *n as usize));
+                    }
+                    bitmap.resize(size * size, 0);
+                    Some(TerraIncognita { size, bitmap, systems })
+                }
+                None => None,
+            },
+            core_radius: g.get::<Option<f32>>("core_radius")?.unwrap_or(0.0),
+            player: g.get::<Option<u32>>("player")?.unwrap_or(0),
+            communications: g.get::<Option<Table>>("communications")?.map(|t| t.sequence_values::<u32>().collect::<mlua::Result<Vec<_>>>()).transpose()?,
         })
     };
     read().map_err(|e| format!("render.galaxy: {e}"))

@@ -74,7 +74,9 @@ Machines: `10.5.0.24` (Linux, GT 730 with NVK, Mesa 26.0.8; game data in `/opt/s
   its bodies at -150, each scaled by CPlanet::CalcCurrentEntityScale), ship placement and facing
   match the real game's frames from the same commands; the galaxy with star billboards, dust,
   nebulae, borders, lanes and FTL trails, a system view with the game's meshes, and single models
-  (section 10). Not matched yet: the sky box, terra incognita, the border style, bloom.
+  (section 10). The post effects, sky, stars, planets, galaxy view and ships follow the game's
+  shaders and look close to its frames (section 11's table); not yet: animation, the lens flare,
+  the map's names. The next phase, the window's own controls: section 12.
 - **Headless, driven by commands** over TCP or from a script, one reply per command after it
   completes (section 9); the real game speaks the same protocol (`headless/view.sh`), so one
   script takes the same shots of both.
@@ -477,11 +479,13 @@ simplifications **[I]** (named).
   front faces), as the frames of both agree.
 - **The planets' atmosphere tint** (IS_PLANET) **[V]**: `toCamera = saturate(dot(N, -V) + width)`,
   `toSun = dot(N, L) x 0.5 + 0.5`, `a = lerp(toCamera, toCamera x toSun, 0.5)`, the colour mixed
-  toward `atmosphere_color` by `a² x intensity`.
+  toward `atmosphere_color` by `a² x AtmosphereColor.a x intensity`: on planets nothing, as the
+  game sets AtmosphereColor.a to 0 (section 11).
 - **Clouds** (PdxMeshClouds: the standard shader with IS_CLOUDS) **[V]**: clipped where
   `dot(N, V) < 0.27`, blended by the diffuse alpha.
 - **The atmosphere shell** (PixelPdxMeshAtmosphere, `RasterizerStateBack`, additive) **[V]**: the
-  colour x 0.15 plus the colour x the star's light x 0.13 x 2, times `(dot(N, -V) x 1.2)⁴`. With
+  colour x 0.15 plus the colour x (the star's light and back light, the specular of glossiness 1)
+  x 0.13 x 2, times `(dot(N, -V) x 1.2)⁴`. With
   outward normals only back faces give a non-zero `dot(N, -V)`: the shell is drawn on its back
   faces (front faces culled), brightest behind the planet, a halo around it.
 - **The star** (PixelPdxMeshStar) **[V]**: lava and stone textures over a noise, the colours from
@@ -505,15 +509,11 @@ simplifications **[I]** (named).
   alpha-blended states write RGB only. The planet atmosphere (`BlendStateAdditiveBlendNoAlpha`)
   returns alpha `1 + 2.9 dot(N, -V)`: SRC_ALPHA scales its colour by that (unclamped on the float
   target).
-- **Ships** (PixelPdxMeshShip): the system light plus the ship camera lights of `gfx/worldgfx`
-  (`cam_light_2_diffuse` hsv 0.55 0.4 0.45 from the right, `cam_light_3_diffuse` hsv 0.55 0.35 0.75
-  from above) and `rim_light_diffuse` (hsv 0.56 0.5 0.25) **[V]** the colours, **[I]** the
-  directions and the rim's range.
-- **The environment map** (`cubemap_intensity` 0.4 in worldgfx) **[V]**: drawn as a two-colour
-  sky (dark below, grey-blue above the camera), with Schlick's Fresnel and the glossiness **[I]**.
-- **Not drawn**: shadows, the tiled point lights, the lens flare, empire colours, city lights, the
-  dissolve and flow effects, animation, the gas giants' and asteroids' own shaders (drawn lit).
-  The post effects, the sky and the particles: section 11.
+- **Ships** (PixelPdxMeshShip), **the environment map**, **gas giants and molten planets** (the
+  flow map), **rings**, **asteroids**, **additive effects**: section 11.
+- **Not drawn**: shadows, the tiled point lights, the lens flare, city lights, the dissolve and
+  cloak effects, animation (planets' spin, ships' skeletons). The post effects, the sky and the
+  particles: section 11.
 
 ## 9. The command protocol (headless, TCP)
 
@@ -615,24 +615,20 @@ the fleets whose `movement_manager.coordinate.origin` is the system and their sh
 
 ### The galaxy in 3D
 
-Stars are billboards of their class's sprite, half size 1.5 x CGalaxyGraphics::CalcCurrentStarScale
-in the game's world (`galaxy_stars.shader`; the scale grows from 1 to 2.5 as the camera zooms out)
-**[V]**, x the class's icon scale **[I]**; the dust (`dust.dds`, coloured by `galaxycolor.dds`)
-billboards with a little height; `center.dds` at the centre; the nebulae (the save's top-level
-`nebula = { coordinate radius name }`, 9 in 2210.01.01) clouds of `nebula.dds` coloured by
-`nebulacolor.dds`; the territory the border texture on the plane; hyperlanes and the fleets' FTL
-trails lines in 3D. Fleets are discs in their owner's colour **[V]** (the owner: section 1); a
-fleet in an FTL state (`movement_manager.state` `move_wind_up`, `move_galaxy`, `move_jump_anim`,
-`move_wind_down`; the saves hold the first, the simulation all four) whose `path` leads to another
-system draws a trail to that system **[I]**. The stars' places match the game's frames.
+Drawn as the game draws it (stars, dust, nebulae, the core, terra incognita, borders, hyperlanes,
+star pins, the post effects): section 11, "The galaxy view". With the GUI on, fleets are discs in
+their owner's colour **[V]** (the owner: section 1); a fleet in an FTL state
+(`movement_manager.state` `move_wind_up`, `move_galaxy`, `move_jump_anim`, `move_wind_down`; the
+saves hold the first, the simulation all four) whose `path` leads to another system draws a trail
+to that system **[I]**. The stars' places match the game's frames.
 
 ### What matches and what does not (the reference shots of 2210.01.01)
 
 | | matches | does not |
 |---|---|---|
 | camera | field of view, orientation, handedness, distances: the stars and bodies at the same pixels | |
-| system | the bodies' places and sizes; the starbase's place, size and facing; the sky box, the exposure, the bloom and the colour grading (mean colour of the default view within 1/255 of the game's); the star's corona, flares and glow | the star's lava patches (a little purple where the game's are blue); the molten planets (the game's lava brighter and yellower); the ships' empire colours |
-| galaxy | the stars' places and icon size | terra incognita (the game shows only what the player knows: lanes and borders around the home, unknown stars dimmed; the renderer shows everything); the border style and extent (the game: a soft fill around the owned systems; the renderer: bolder, wider blobs); the player's colour (the game's border is beige, the renderer's green: the colour choice of section 1 is to be checked); the dust (the game's is grey, the renderer's tinted by `galaxycolor.dds`) |
+| system | the bodies' places and sizes; the starbase's place, size and facing; the sky box, the exposure, the bloom and the colour grading (mean colour of the default view within 1/255 of the game's); the star's corona, flares and glow; the molten planets, gas giants, rings, atmospheres, asteroid belts; the ships' empire colours, turrets and engine glows | the star's lava patches (a little purple where the game's are blue); the planets' spin and the ships' idle animations (section 11) |
+| galaxy | the stars' places and icon size; terra incognita; the player's border ring; the dust, the nebulae, the hyperlanes and star pins; the post effects and sky | the core's glow (half as bright in a wide view); the map's names and flags (section 11) |
 
 ### Frame times
 
@@ -652,16 +648,17 @@ the ships' sets). The simulation behind it: `load-sim` 7.7 s, a day 0.35 to 0.6 
 
 Each item is checked with one side-by-side at the game's default camera (system: pitch 50,
 distance 11,100 of the game's world; galaxy after a load: pitch 57.5, distance 200), the game's
-frame from `headless/view.sh` with the GUI off, the renderer's from the same command file.
+frame from `headless/view.sh` with the GUI off, the renderer's from the same command file
+(`H:\code_working\tmp_sym\render3d\parity\N_*.png`, the game left).
 
 | | item | state | what is missing |
 |---|---|---|---|
 | 1 | post effects: bloom, exposure, tone map, colour grading | done | the lens flare (ghosts and halo x `gfx/lensdirt.dds`); the exposure's adaptation over time (a still frame is adapted) |
-| 2 | system backdrop: the sky box | done | the galaxy view's sky (the galaxy draws no post effects yet) |
-| 3 | stars: surface, glow, corona particles, the star's light on planets | done for the A star of system 401 | the lava patches a little purple; the particles' motion (a still snapshot); the other star classes, black holes, neutron stars and pulsars are not checked |
-| 4 | planets: atmospheres, gas giants, rings, asteroid belts, black holes, special stars | partial | the planet atmosphere shell is the game's; the molten planets' lava is darker; gas giants' and asteroids' shaders, rings and belts not drawn |
-| 5 | galaxy: terra incognita, borders, hyperlanes, star icons, the core | not started | everything known is shown; the borders are the renderer's own; no HDR there |
-| 6 | ships and stations: empire colours, engine glows, turrets, idle animations | not started | all four |
+| 2 | system backdrop: the sky box | done | (the galaxy view uses the `default` world's sky and post effects: item 5) |
+| 3 | stars: surface, glow, corona particles, the star's light on planets | done for the A star of system 401 | the lava patches a little purple (cause not found); the particles' motion (a still snapshot); the other star classes, black holes, neutron stars and pulsars are not checked |
+| 4 | planets: atmospheres, gas giants, rings, asteroid belts, black holes, special stars | done for what the player knows (systems 401, 142, 238, 476) | the planets' spin (their idle animation: the bands and continents sit elsewhere); city lights; the gas giants' atmosphere halo a little brighter on the dark side; black holes, pulsars and neutron stars drawn from their entities but not checked (the player knows none) |
+| 5 | galaxy: terra incognita, borders, hyperlanes, star icons, the core, post effects | done at the default camera and a wide view | the core's glow half as bright as the game's in a wide view (its quad's size **[I]**); the map's country names, flags and system names (CBordersGraphics::UpdateMapNames); the dust's and nebulae's slow turning (GALAXY_DUST_ROTATION_SPEED); the nebulae's colour is `nebulacolor.dds`' mean, not sampled per pixel |
+| 6 | ships and stations: empire colours, engine glows, turrets, idle animations | partial | empire colours, the ship shader and lights, turrets and attached entities, additive engine glows: done; idle animations (skeletal .anim) and engine trails not drawn; ships a little small (SHIP_SCALE fitted) |
 
 **The post effects** (`sim/render/src/post.wgsl`, `render.rs`) **[V]**: the passes of
 CGameRendering::RenderPostEffects (4.5.2 Linux) with the shaders of `gfx/FX` and the world's
@@ -691,6 +688,57 @@ decoded, to linear (2.2), shifted by `galaxy_background_hsv_shift`, through
 `galaxy_background_lut`; drawn first at the far plane. The renderer's former dust sprites around a
 system are gone (the game has none; they hazed the whole frame through the bloom).
 
+**The mesh shaders** (`sim/render/src/mesh.wgsl`, `src/effects.rs`) **[V]**: a part's effect
+(its `shader`) is looked up in `gfx/FX/pdxmesh.shader` (Effect blocks: PixelShader, blend,
+rasterizer, Defines), and its defines drive the ports:
+
+- PixelPdxMeshStandard (`standard()`): IS_PLANET, EMISSIVE, NO_PLANET_EMISSIVE, USE_FLOWMAP and
+  EMISSIVE_FLOW (the molten planets and gas giants: no normal map, the diffuse at the flow map's
+  offset), IS_CLOUDS, IS_RING, ADD_COLOR; ImprovedBlinnPhong (the normalisation capped at 5), the
+  back light on planets, the environment map (`environment_map` of the world, its 10 pre-filtered
+  levels by glossiness, x `cubemap_intensity`), no ambient (`ambient` has value 0), the emissive
+  only on a planet's dark side (`dark x specular.r x NdotL`), x vBloomFactor (the entity's
+  `game_data` bloom_factor: the molten planets 1.4), alpha = diffuse alpha x emissive (the
+  bloom's mask). A planet's AtmosphereColor.a is 0 (SetPlanetEntityCustomData writes it so): no
+  surface tint and no emissive recolouring on planets; their atmosphere is the shell.
+- PixelPdxMeshShip (`ship()`): the emissive recoloured by the empire colour x the entity's
+  `emissive_recolor_crunch`, the specular map's red the empire colour mask (in gamma space), the
+  system light, the culture's three camera lights (`ship_lighting` of
+  common/graphical_culture: directions in camera space, left unnormalised as the game's code does;
+  the colours `cam_light_N_diffuse` of the world), the ambient and rim light (`ambient`,
+  `rim_light_diffuse`; the intensities by the camera's distance, `near_value`..`far_value`). The
+  empire colour (PrimaryColor) is the `ship` swatch (flags/colors.txt) of the first of the owner's
+  flag colours that has one (CEmpireFlag::GetEntityColor), when the culture has `ship_color`; a
+  fleet's owner is the country whose `fleets_manager.owned_fleets` lists it.
+- PixelPdxMeshAdditive (`additive()`, ANIMATE_UV at time 0): the diffuse x its alpha, the alpha x
+  vBloomFactor, added (engine glows, the black hole's rings and lens).
+- The light settings of the world (`system_back_light_diffuse`, `cam_light_*`, `ambient`,
+  `rim_light_diffuse`) are made linear twice by the game (^4.84), the lava colours, the planet's
+  atmosphere colour and the system light once (^2.2).
+
+**Bodies** (`sim/render/src/system.rs`) **[V]** (CGraphicalMap::SetupPlanetEntityInstance; the
+game's `state planet ID` agrees for system 401): a star turned half about y; a planet's z axis
+toward the system's centre, raised by PLANET_TILT_FROM_SUN (`z = normalize(-p.x/L, -p.y/L + 0.52,
+-p.z/L)`), x level, y = z x x, turned over (x, y negated) when a CCrudeRandom seeded with the
+planet's id draws an even number; a ring (binary_flags bit 8, `gas_giant_rings_01_entity`, the
+planet's look) the same with PLANET_RING_TILT_FROM_SUN -0.16, drawn on both faces, blended, its
+alpha added (BlendStateAlphaBlendWriteAlpha). An entity's `attach` entities are drawn at its
+locators. A system's world (post effects, sky, lights, star colours) is its star class's `class`
+(common/star_classes: sc_m_giant is `m_star`), a star body's lava colours that of the star class
+whose `planet` it is. The default camera: ENTER_SYSTEM_ZOOM_STEP 6, 3 x outer_radius, pitch 50.
+
+**Asteroid belts** **[V]** (CAsteroidGraphics::CalculateAsteroidFields): N = trunc(2 pi R 0.1
+density) asteroids (R the belt's inner_radius x 10), at even angles (i pi / (N/2)), the radius R +
+80 width t³ (t in [-1, 1)), the height -100 - 40 u, the size 1 + 4 u, a random axis, a slot retried
+while it overlaps the last one; the type's meshes (common/asteroid_belts) drawn with
+gfx/FX/asteroid.shader (the standard lighting, EMISSIVE for AsteroidEmissive), not their own
+shader. The game seeds the field from the clock; the renderer seeds CNoiseRandom with the system's
+id. Not done: the asteroid planets' boxes that remove slots, the spin (0.3035 rad/s).
+
+**Ships' turrets** **[V]**: a design section's `component` in a slot: the component template's
+`weapon_type_*` tag picks the slot template's entity (common/component_slot_templates `entities`,
+the culture's first), drawn at the slot's `locatorname` of the section's mesh.
+
 **Particles** (`sim/render/lua/render/particles.lua`, `src/particles.rs`): an entity state's
 `event = { particle = ... }` (the star's `a_class_star_particle`) to the `pdxparticle` of
 `gfx/particles/*.gfx`, its `particle` type of the `.asset` files: each subsystem's live particles
@@ -699,11 +747,100 @@ random age with the type's `animation` curves at that age (`size_grow` 1..3, `fa
 x 0.8 (PixelParticle), the colour made linear; billboards added with alpha written. Not drawn:
 velocity, forces, trails, child systems, rotation over time.
 
+**The galaxy view** (`sim/render/src/scene.rs` `galaxy_3d`, `src/galaxymap.rs`, `src/map.wgsl`;
+CGalaxyGraphics, CTerraIncognitaGraphics, CBordersGraphics, CBorderShapeCalculator and the
+`galaxy_*.shader`, `border.shader`, `hyperlane.shader` of 4.5.2) in map units (the game's world
+/ 2), every texture made linear, then the post effects and sky of the `default` world **[I]** (the
+galaxy has no star class; the frames agree):
+
+- **Terra incognita** **[V]**: the player's `country.terra_incognita = { size data systems }`, run
+  lengths over a 256² bitmap (the first run unknown), upscaled to 512² and blurred (bloom.shader's
+  `bloom_alpha`, sigma about 3 texels); a pixel's value `smoothstep(0.65, 0.75, ti)`
+  (terra_incognita.fxh). Outside the known space the stars and the core turn grey (luminance x 0.15),
+  the star pins too (x 0.15 x 4), the dust to 0.15 grey (+ 0.3 x a border's alpha); a hyperlane is
+  built only when an end is known (HIDE_HYPERLANES_OUTSIDE_TERRA_INCOGNITA) and fades to a grey of
+  alpha 0.05.
+- **Borders** **[V]**: metaballs per owner on a 2048 grid (35 per owned system, 30 unowned, 20 per
+  lane between two systems of one owner; the field `max(0, R²/d² - 1/1.88²)`, threshold 0.05), each
+  blob's signed distance (`(d + 15) / 30`) downsampled to 512 and blurred, the owner's colours as
+  edge and fill (galaxymap.rs). Only the player's systems and those of countries it has
+  communications with have an owner here; the others count as unowned
+  (CBorderShapeCalculator::CalculateOwnerIds: CCountry::ListCommunications plus the player; the
+  same choice colours the star pins). border.shader's BorderSDF (its edge band and fade by the
+  camera's distance) x the raw terra incognita is not drawn itself: the dust (x 0.8) and the nebulae
+  (x 0.5, colour x 2) read it under their pixel and take its colour, which is the ring the game
+  shows around the home system.
+- **Dust** (galaxy_dust.shader) **[V]** shader, **[I]** placement: a cloud of `dust.dds` at every
+  system and int(0.1 R) at random in the core's disc (R the save's `galaxy.core_radius` in the
+  game's world), half size GALAXY_DUST_SIZE + GALAXY_DUST_SIZE_EXTRA x r, up to 10 above or below the
+  plane, turned at random, tilted (y += (x + y) x size x 0.1), coloured by `galaxycolor.dds` over
+  the systems' bounding box (DustCloudUV), alpha blended.
+- **Nebulae** (galaxy_nebula.shader): the save's `nebula = { coordinate radius galactic_object }`: a
+  cloud of `nebula.dds` of the nebula's radius and one of 10 + 25 r at each of its systems, 4.5
+  below the plane, alpha x 6, in `nebulacolor.dds`' mean colour **[I]**.
+- **The core** (galaxy_center.shader): `center.dds` x 0.5 on a quad of half size 1.5 x
+  core_radius **[I]** at y -0.75, added (ONE, ONE), greyed by terra incognita.
+- **Stars** (galaxy_stars.shader), as section 10, added and greyed; **hyperlanes**
+  (hyperlane.shader) HYPERLANE_DEFAULT_COLOR about a pixel wide; **star pins** (border.shader
+  StarPin, CBordersGraphics::UpdatePins) a hexagon of radius 1 on the plane and a line up to the
+  star (the save's `visual_height` / 2), the shown owner's colour at alpha 0.2, else grey 0.5 at
+  alpha 0.1.
+
+## 12. Next: the window's own controls driving the simulation (handover)
+
+The goal: the date, speed, pause, camera and selection controllable from the window as in the
+game. What is there today:
+
+- **The command layer** (`src/engine.rs`, section 9): `load`, `load-sim`, `step DAYS`, `view`,
+  `focus`, `camera`, `orbit`/`zoom`/`pan`, `key`, `mouse`, `scroll`, `resize`, `gui`, `frame`,
+  `state` (JSON with the date). `pause` only replies ok. `step` runs synchronously. A save loaded
+  with `load` is a world only; the first `step` loads it again as a simulation (7.7 s).
+- **The app** (`src/app.rs`): the screens (menu, load, map) and views (galaxy 2D/3D, system,
+  model), the camera moves, `step(days)` (Map::step in main.rs: Simulation::run_days, then the
+  galaxy, borders and map textures read again), keys (W A S D pan, Q E turn, R F tilt, + - zoom, V
+  2D/3D, Escape back). A left click on a galaxy star opens its system. `act()` handles only the
+  front end's buttons (`exit`, `open_load`, `close_load`, `load:N`). `button_at` returns nothing on
+  the map screen, so the top bar's buttons take no clicks.
+- **The window** (`src/window.rs`, winit): Space steps a day and P runs a day per frame, both on
+  the UI thread (0.35 to 0.6 s a day, so the window stalls while it runs).
+- **The GUI** (`src/gui.rs`, `lua/render/gui.lua`, section 2): .gui windows laid out with
+  sprites, frames, hover and pressed states, and texts. `lua/render/topbar.lua` binds the top bar
+  (`interface/main.gui` `maingui`): the resource amounts and the date (`time_window/time`) from the
+  world. The speed controls are drawn in the paused state (`pause_bg`, `pause_glow` hidden).
+
+What is missing:
+
+1. **A clock and speeds.** The simulation runs off the UI thread (a worker that owns the Lua
+   runtime, which is not Send, and hands back the extracted galaxy and system data after each day),
+   paced by speed: 1 to 5 days per real time, with the length of a day at each speed to be read from
+   the engine (it is not in the defines). Pausing stops the worker between days.
+2. **The top bar's time controls.** `maingui/time_window`: `decrease_speed` and `increase_speed`
+   (shortcuts KP_MINUS, KP_PLUS), `start_stop_icons` and the `hitbox` (pause), `pause_bg` /
+   `pause_bg_stop` (`GFX_topbar_running` / `GFX_topbar_paused`), `pause_glow`, the speed strip
+   `strip_gamespeed` (`GFX_speed_indicator`, 6 frames), `time_description`. The work: clicks on the
+   map screen go to the GUI's buttons first (`button_at` on Screen::Map), `act()` maps these buttons
+   to pause, speed down and speed up, and the top bar shows the state (sprite frames, the strip's
+   frame = the speed, `time_description` text). The date already follows the world once the top
+   bar is built again after each day.
+3. **Keys as in the game.** Space pauses (now: a step); the keypad's + and - change the speed (now:
+   + and - zoom; the game zooms with the wheel and its zoom keys).
+4. **The camera.** The moves exist. Missing: the game's smoothing toward a target orientation
+   (CGameCamera +0x230), the zoom steps (ZOOM_STEPS_GALAXY, ZOOM_STEPS_SYSTEM_PERCENTAGES), edge
+   scrolling (SCROLL_SPEED), focus on a double click or an outliner entry, and leaving a system by
+   zooming out.
+5. **Selection.** Nothing is selected today. Needed: a selection in App (system, planet, fleet,
+   starbase); picking in the system view (bodies and ships projected and hit-tested, as `star_at`
+   does for the galaxy); the selection marker; the outliner and the planet and fleet windows laid
+   out by gui.lua with bound data (as topbar.lua does); right-click orders (move a fleet) passed to
+   the simulation's order functions.
+6. **Commands to test it.** `pause on|off`, `speed N` and `select KIND ID` in engine.rs (clicks
+   are `mouse X Y left down` and `up`), and the speed, pause and selection in `state`, so one
+   command file drives both the renderer and the game (`headless/view.sh` already serves `pause`).
+
 ## Open questions
 
-- The engine's own code for the map and the GUI is not read: which name fills
-  `gfx/map/star_classes/%s.dds`; how the border ID and SDF textures are filled (the influence
-  factor, lane thickness, ownerless borders); the star icon's size; how the dust clouds are placed;
+- The engine's own code for the 2D map and the GUI is not read (the 3D galaxy's borders, terra
+  incognita and star size are: section 11): which name fills `gfx/map/star_classes/%s.dds`;
   the GUI's anchor, margin, percent and `if_scaled_resolution` rules; button frame order; the top
   bar's number formatting and which groups show. In the GOG build these are next: the strings
   above lead to their users.
@@ -716,13 +853,13 @@ velocity, forces, trails, child systems, rotation over time.
   (`entity` + 1), the star class to `gfx/worldgfx` mapping, the texture lookup order, a repeated
   key's last value, and the lights' strengths. A ship's world transform from the game (`state
   ship ID`: CShipGraphics' entity) would settle the first.
-- **3D, to match the game** (sections 10, 11): terra incognita, the borders' style and extent and
-  the player's colour, the dust's colour, the post effects on the galaxy, the lens flare, the
-  star's lava tint (the RE says the lava, stone and noise textures are sRGB and the lava colours
-  linear, which gives a purple tint the game's frame does not show).
-- **3D, not drawn yet**: animation (skeletons and `.anim`), LOD selection, the attachments of
-  entities' `attach` (turrets, lights), the ships' empire colours and engine trails, planetary
-  rings, asteroid belts, gas giants' and black holes' own shaders, the `PdxMeshShipFlow` and
-  additive effect shaders, shadows, the system's hyperlane exits, fleets moving between their save
-  positions (they are drawn where the world puts them each day), and smooth transitions between
-  the galaxy and a system.
+- **3D, to match the game** (sections 10, 11): the lens flare; the star's lava tint (the RE says
+  the lava, stone and noise textures are sRGB and the lava colours linear, which gives a purple
+  tint the game's frame does not show); the galactic core's glow (its quad's size and the core
+  dust's placement are not read from the code); black holes, pulsars and neutron stars (drawn,
+  not checked: the player of the 2210 save knows none).
+- **3D, not drawn yet**: animation (skeletons and `.anim`: the ships' idle animations, the
+  planets' spin), engine trails, LOD selection, the `PdxMeshShipFlow` shader, city lights,
+  shadows, the map's names and flags, the system's hyperlane exits, fleets moving between their
+  save positions (they are drawn where the world puts them each day), and smooth transitions
+  between the galaxy and a system.

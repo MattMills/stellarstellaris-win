@@ -137,9 +137,14 @@ function models.load(game_dir)
                             end
                         end
                     end)
+                    -- game_data: the entity's shader constants (bloom_factor: vBloomFactor,
+                    -- uv_animation_speed, ...)
+                    local gd = get(e, "game_data")
                     db.entities[name] = {
                         name = name, pdxmesh = get(e, "pdxmesh"), clone = get(e, "clone"), scale = tonumber(get(e, "scale")) or 1,
                         settings = settings_of(e), attach = attach, source = f, particles = state_particles(e),
+                        bloom_factor = type(gd) == "table" and tonumber(get(gd, "bloom_factor")) or nil,
+                        recolor_crunch = type(gd) == "table" and tonumber(get(gd, "emissive_recolor_crunch")) or nil,
                     }
                 end
             end)
@@ -174,6 +179,8 @@ local function resolve(db, e, depth)
         settings = settings, attach = #(e.attach or {}) > 0 and e.attach or base.attach,
         source = e.source, clone = e.clone,
         particles = #(e.particles or {}) > 0 and e.particles or base.particles,
+        bloom_factor = e.bloom_factor or base.bloom_factor,
+        recolor_crunch = e.recolor_crunch or base.recolor_crunch,
     }
 end
 
@@ -199,6 +206,8 @@ function models.describe(db, name)
         out.scale = (e.scale or 1) * (m.scale or 1)
         out.attach = e.attach
         out.particles = e.particles or {}
+        out.bloom_factor = e.bloom_factor
+        out.recolor_crunch = e.recolor_crunch
     else
         m = db.meshes[name]
         if not m then
