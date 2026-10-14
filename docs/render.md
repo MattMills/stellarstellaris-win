@@ -921,8 +921,13 @@ home system at the same place and scale, the top bar's clock, the outliner.
   `fleet_map_icon` (at its .gui position (-65, 8) from the fleet's point): its flag, the bars
   (health, armor full; the shield for military fleets, hidden at 0 for the others **[I]**), the
   type icon (GFX_ship_class_small; the frame by what the fleet is, matched by eye: military 3,
-  starbase 8, science and research 9, mining 7, construction 2 **[I]**: CFleet::GetIconFrame not
-  read) and, when its military_power is above 0, its strength (MILITARY_POWER "£military_power£
+  starbase 8, science and research 9, mining 7, construction 2 **[I]**. The game's rule,
+  GetShipClassIconFrameFromSize (4.5.2 Linux 0x317e000): the ship size's `ship_class_icon_frame`
+  when set (>= 0); else class 7 frame 27, a mobile starbase 31; else a table by EShipClass,
+  (3, 2, 14, 1, 15, 7, 9, 1, 6, 13, 8, 28, 1, 62) for 0 to 13. The by-eye frames are this table's
+  if military 0, constructor 1, mining station 5, research station 6, colonizer 8, starbase 10;
+  the enum's order is not read (its names are runtime lexer tokens, GetShipClassNameFromEnum)) and,
+  when its military_power is above 0, its strength (MILITARY_POWER "£military_power£
   $VALUE|*0$": the text icon drawn inline, GFX_text_<name>) and its ship counters
   (`ship_counter_entry` per ship size, GFX_ship_counter_4 for corvettes ... 128 **[I]**, the count,
   tinted). Stations sort with the military in a stack (the frame's order). A planet with an
@@ -1010,7 +1015,8 @@ home system at the same place and scale, the top bar's clock, the outliner.
 
 - The galaxy star labels' own rules (CGalacticObjectMapIcon not read: owner flags, the capital
   plate, which names show, the fleets' presence icons, the empire's map name); the fleet type
-  icon's frame rule (by eye now); the capital label's flag and health bar positions.
+  icon's frame (the rule is read, the EShipClass order is not: by eye now); the capital label's
+  flag and health bar positions.
 - The arrows' text in the TrueType face (no TrueType rasteriser here), its colour constants
   (SNavigationTextConstants), the arrows' hover and click (to the neighbour).
 - Alerts: the other 60 conditions; the tradition and agenda costs' modifiers.
@@ -1018,7 +1024,9 @@ home system at the same place and scale, the top bar's clock, the outliner.
 - The outliner rows' icons (fleet status, leader level, planet portrait, starbase type, status
   lists), the military row's size line ("15/50 (15)"), the location's colour, the frontier
   sector, the tab buttons over Overview, the other tabs, collapsing groups.
-- The planet, fleet and starbase windows' contents (their lists and tabs).
+- The planet, fleet and starbase windows' contents (their lists and tabs): no game frame to
+  check them against (the headless game cannot open a window: no `select`), and the full
+  layouts overlap until each window's Update rules (which children show) are read.
 - Box selection, right-click orders; the camera's slide between systems, the system camera's
   near and far planes, the zoom on a focused object (CalcMinZoom).
 - The headless game has no `speed`, `wait` or `select` (headless/ is not changed here).
