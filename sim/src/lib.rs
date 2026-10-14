@@ -17,9 +17,11 @@
 //! - [`runtime`]: the Lua runtime the game runs in
 //! - [`scheduler`]: `HandleTurnTick`, `MicroUpdate`, `DailyUpdate`, `MonthlyUpdate`, `YearlyUpdate`
 //! - [`modcheck`]: the modifier model against a capture of the game's modifier nodes
+//! - [`frametime`]: the simulation inside a rendered game's frames, timed (docs/frame_timing.md)
 
 pub mod date;
 pub mod fixed;
+pub mod frametime;
 pub mod modcheck;
 pub mod rng;
 pub mod runtime;
@@ -35,4 +37,4 @@ pub use date::Date;
 pub use fixed::Fixed;
 pub use rng::NoiseRandom;
 pub use runtime::Runtime;
-pub use scheduler::{Command, Phase, Simulation};
+pub use scheduler::{Command, Phase, Simulation, Step, Unit};
