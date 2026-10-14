@@ -179,23 +179,8 @@ end
 -- CCountry::IsAllied(a, b, true) (0x716c80): not at war; one the other's overlord or both one
 -- overlord's subjects; the same federation (CalcFederationAllegiance: their own, or their
 -- overlord's); at war together (no wars modelled); or the relation cache's bit 2 (`friendly`)
-local function allegiance(id)
-    local f = op.federation(id)
-    if f then return f end
-    local ov = op.overlord(id)
-    return ov and op.federation(ov) or nil
-end
-local function allied(a, b)
-    if op.at_war(a, b) then return false end
-    if op.overlord(a) == b or op.overlord(b) == a then return true end
-    local oa, ob = op.overlord(a), op.overlord(b)
-    if oa and oa == ob then return true end
-    local fa, fb = allegiance(a), allegiance(b)
-    if fa and fa == fb then return true end
-    if oa and allegiance(oa) and allegiance(oa) == fb then return true end
-    if ob and allegiance(ob) and allegiance(ob) == fa then return true end
-    return op.rflag(op.relation(a, b), "friendly")
-end
+-- (engine.diplomacy.allied: the same port, shared with the fleets' access)
+local allied = require("engine.diplomacy").allied
 attitudes.allied = allied
 
 -- CDiplomacyCountryModule::HasCasusBelli(us, type, other): `casus_belli = { { type owner country } }`

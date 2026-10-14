@@ -174,41 +174,17 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- relations (the country's relations_manager: relation = { owner country flags ... })
 
-local rel_index = setmetatable({}, { __mode = "k" }) -- relations_manager block -> { n, [other] = rel }
-local function relations_of(id)
-    local rm = world.field(country(id), "relations_manager")
-    if type(rm) ~= "table" then
-        return nil, {}
-    end
-    local idx = rel_index[rm]
-    if idx == nil or idx.n ~= #rm then
-        idx = { n = #rm, list = {}, by = {} }
-        for _, r in ipairs(world.fields(rm, "relation")) do
-            if type(r) == "table" then
-                local c = tonumber(world.field(r, "country"))
-                if c then
-                    idx.list[#idx.list + 1] = r
-                    idx.by[c] = r
-                end
-            end
-        end
-        rel_index[rm] = idx
-    end
-    return idx.by, idx.list
-end
+-- (engine.diplomacy: one index of the relations for the script layer, the AI and the fleets)
+local diplo = require("engine.diplomacy")
+local relations_of = diplo.relations_of
 opinion.relations_of = relations_of
 
 -- the relation of a to b (a block), or nil
-local function relation(a, b)
-    local by = relations_of(a)
-    return by and by[b]
-end
+local relation = diplo.relation
 opinion.relation = relation
 
 -- a relation flag (ERelationFlags, saved as `key = yes`)
-local function rflag(rel, key)
-    return rel ~= nil and world.field(rel, key) == "yes"
-end
+local rflag = diplo.rflag
 opinion.rflag = rflag
 
 local function rnum(rel, key, default)
@@ -220,14 +196,7 @@ end
 local function diplomacy(id)
     return world.path(country(id), "modules", "standard_diplomacy_module")
 end
-local function rivals(id)
-    local m = diplomacy(id)
-    local out = {}
-    for _, v in ipairs(world.list(type(m) == "table" and world.field(m, "rivals") or nil)) do
-        out[#out + 1] = tonumber(v)
-    end
-    return out
-end
+local rivals = diplo.rivals
 opinion.rivals = rivals
 
 local function contains(list, x)
@@ -296,30 +265,8 @@ local function associate(a, b)
 end
 opinion.associate = associate
 
--- CCountry::IsAtWarWith: both in one war, on opposite sides (the `war` store)
-local function war_side(w, id)
-    for _, side in ipairs({ "attackers", "defenders" }) do
-        for _, p in ipairs(world.blocks(world.field(w, side))) do
-            if tonumber(world.field(p, "country")) == id then
-                return side
-            end
-        end
-    end
-    return nil
-end
-local function at_war(a, b)
-    for _, wid in ipairs(world.all("war")) do
-        local w = world.object("war", wid)
-        local sa = w and war_side(w, a)
-        if sa then
-            local sb = war_side(w, b)
-            if sb and sb ~= sa then
-                return true
-            end
-        end
-    end
-    return false
-end
+-- CCountry::IsAtWarWith (0x701b80): the relation's wars (engine.diplomacy)
+local at_war = diplo.at_war_with
 opinion.at_war = at_war
 
 -- CDiplomacyCountryModule::GetSharedThreatFactor(us, other): sum over our threats T of the
