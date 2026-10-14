@@ -925,13 +925,10 @@ local function details_block(map)
     return b
 end
 
--- the entry of `key` in obj (the statement)
+-- the entry of `key` in obj (the statement) and its position (engine.world.entry: by the key index
+-- with the world in the store)
 local function entry(obj, key)
-    for i, e in ipairs(obj) do
-        if e.op and e.key and e.key.text == key then
-            return e, i
-        end
-    end
+    return world.entry(obj, key)
 end
 
 -- obj's `key = value`: replaced in place, or inserted after the first of `after` that is there (at

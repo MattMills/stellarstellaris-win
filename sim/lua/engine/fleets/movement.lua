@@ -1075,7 +1075,9 @@ local function wrap(a)
 end
 
 local function set_entry(s, key, value, after)
-    for _, e in ipairs(entries(s, key)) do
+    -- the first `key` statement (engine.world.entry: by the key index with the world in the store)
+    local e = world.entry(s, key)
+    if e then
         world.set_entry(s, e, value)
         return
     end

@@ -406,6 +406,20 @@ function W.find_entry(obj, key)
     return k and find(bid_of(obj), k)
 end
 
+-- W.entry(obj, key) -> the first `key = value` statement of obj as an entry view (what h[i] and
+-- ipairs give) and its position, or nil (engine.world.entry): found by the key index, one view
+-- built, instead of a walk that builds a view of every entry before it
+function W.entry(obj, key)
+    if obj == nil then return nil end
+    local k = kid(key)
+    if not k then return nil end
+    local bid = bid_of(obj)
+    local i = find(bid, k)
+    if not i then return nil end
+    local p = i - B[bid].first + 1
+    return S.entry_table(i, bid, p), p
+end
+
 function W.remove(kind, id)
     local name = W.KINDS[kind] or kind
     local store, ids = W.stores[name], W.ids[name]
