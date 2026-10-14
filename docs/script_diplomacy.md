@@ -319,6 +319,52 @@ In the 180-day run, the pathfinder asked about access 51 times and closed 27. On
 
 At the 2210.01.01 load, 22 country pairs are closed at level 3. Examples: 16777217 and 16777223 (rivals, closed both ways), the fallen empires 16777226 and 11 to 16777218.
 
+## Gates (2026-10-14, against the branch point 5f77db5)
+
+**The 180-day diff.** `examples/diff autosave_2210.01.01 -> fleetorders/t1798`:
+
+| | equal | differ | draws (game 4,755,856) |
+|---|---:|---:|---:|
+| before | 723,380 | 13,251 | 4,725,089 |
+| after | 723,389 | 13,242 | 4,725,089 |
+
+Only two stores changed:
+
+- `country`: +6 equal (`hyperlane_systems`, `terra_incognita`, `fleets_manager`);
+- `pop_groups`: +3 equal; `ethics_attraction` went from 82 differing to 78.
+
+The ethics read the attitude triggers (`is_hostile_to`, `is_domineering_to`, `is_rival`), `is_neighbor_of`, `any_rival_country`, `years_of_peace` and `trigger:num_non_aggression_pacts`. Before, these evaluated false or 0.
+
+**Standard A**, sim against the game:
+
+| horizon | before: equal / differ | after: equal / differ | draws: sim / game |
+|---|---|---|---|
+| 1m | 733,836 / 5,318 | 733,842 / 5,312 | 778,614 / 782,863 |
+| 6m | 723,330 / 13,306 | 723,336 / 13,300 | 4,725,081 / 4,755,744 |
+| 1y | 708,696 / 22,129 | 708,723 / 22,106 | 9,509,359 / 9,577,199 (before 9,509,367) |
+
+**The other gates:**
+
+- `STELLAR_SCRIPT_CHECK=1`: 4,608,579 evaluations, 0 mismatches.
+- `STELLAR_MODIFIER_CHECK=1`: 0 differ.
+- `cargo test --release`: passes.
+
+**Keywords hit while running and not answered** (180 days): 78 keywords / 141,232 hits before, 66 / 138,800 after. Of this area only `relative_power` (6) is left. Unread save fields: 25 kinds before, 21 after (`country.is_at_war` and `country.is_galactic_community_member` are now answered).
+
+**Coverage** (`simscript.coverage`): vanilla trigger uses evaluated, before and after:
+
+| | keywords | uses |
+|---|---|---|
+| before | 1,846 of 2,536 | 174,015 of 203,154 (85.7%) |
+| after | 1,940 of 2,536 | 182,538 of 203,168 (89.8%) |
+
+The surface probe:
+
+| | documented triggers evaluated | scope links |
+|---|---|---|
+| before | 238 of 1,097 | 23 of 99 |
+| after | 336 of 1,097 | 26 of 99 |
+
 ## Left
 
 **Not done, needing engine state the simulation does not model:**
