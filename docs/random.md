@@ -21,16 +21,27 @@ position; uint32 seed }` **[V]**:
 
 | generator | field | save keys | on load |
 |---|---|---|---|
-| unsynced | `CAICore::_Random` | `random_seed` / `random_count` (in the country's AI block) | restarted at position = seed = the country id, unless `-loadrandomseed` |
+| unsynced | `CAICore::_Random` | `random_seed` / `random_count` (in the country's AI block) | restarted at position = seed = the country id; `-loadrandomseed` is read as restoring it, but see below |
 | synced | `CCountryAI::_SyncedRandom` | `synced_random_seed` / `synced_random_count` | always restored |
 
 The AI draws nothing from the synchronized generator **[V]**.
+
+The headless game runs with `-loadrandomseed`. Yet its AI tradition picks over 180 days from
+2210.01.01 are those of an unsynced generator restarted at the country id: 2 of 2 (country 49:
+commercial enterprise, 16777219: war games). The save's position gives 1 of 2. So the unsynced
+generator is not restored by `-loadrandomseed` after all, or is restarted after the load **[I]**.
+The simulation restarts it at the id.
+
+The read does restore it. `CCountryAI::ReadMember` writes the two saved values under
+`g_bUseSavedRandom` (`0xb763dc`, `0xb7641b`) onto `CAICore::_Random`'s position and seed (`+0x32c`,
+`+0x330`) **[V]**. So something resets it to the country id after the read: an `InitPostRead`, an
+AI re-initialization after the load, or the load path itself. That is not traced yet.
 
 ## Command-line options
 
 | option | effect |
 |---|---|
-| `-loadrandomseed` | keep the save's `random_seed` / `random_count` (read in `CGameState::ReadMember`) instead of reseeding at load; it sets `g_bUseSavedRandom` (read at `0x15092e`), which also restores each AI's unsynced generator **[V]** |
+| `-loadrandomseed` | keep the save's `random_seed` / `random_count` (read in `CGameState::ReadMember`) instead of reseeding at load; it sets `g_bUseSavedRandom` (read at `0x15092e`), read as also restoring each AI's unsynced generator, which the headless runs contradict (above) **[V]** |
 | `-rng_seed=N -rng_pos=N` | force the synchronized generator's seed and position (`CGameState::InitPostRead`; either one sets `g_bUseForcedSeed`, and the other then defaults to 0) **[V]**. `-rng_seed=64429129 -rng_pos=0` reproduces a real play session from its starting save (below). The value is read with `CString::GetInt` (`atoi`, which clamps on overflow), and the command line is split at every `-`. So a seed the save shows as negative can't be passed: its unsigned form becomes 2147483647. Only `-loadrandomseed` reuses such a seed **[V]** |
 | `-random=N` | the seed `CFrontEndIdler::SetAsCurrentIdler` uses instead of the clock **[V]** |
 | `-threads=N` | not an RNG option, but it matters for reproducibility. `InitTaskSystem(int)` (GOG `0x1b39aa0`, Linux `0x4294ea0`) clamps N to [4, the usable threads]; the default (-1) is the usable threads − 1. So `-threads=1` means 4 threads, not 1 **[V]**. With many threads the AIs' unsynced generators are drawn in a varying order and runs drift apart: 4 to 1,568 lines in 180 days with the default, 23 threads on the 24-thread test box **[V]** |

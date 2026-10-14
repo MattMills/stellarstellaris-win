@@ -1,0 +1,7 @@
+horizon	date	fields_equal	fields_differ	pct_equal	worst_stores	draws_sim	draws_game	sim_seconds
+1m	2210.02.01	743854	0	100.0	zones 0/392, strike_craft 0/0, starbases 0/1209, spy_networks 0/359, species_db 0/1339	-	14842523 vs the first's	0.0
+6m	2210.07.01	742020	0	100.0	zones 0/397, strike_craft 0/0, starbases 0/1242, spy_networks 0/358, species_db 0/1339	-	18815404 vs the first's	0.0
+1y	2211.01.01	736337	0	100.0	zones 0/399, strike_craft 0/0, starbases 0/1270, spy_networks 0/358, species_db 0/1339	-	23636859 vs the first's	0.0
+2y	2212.01.01	743848	0	100.0	zones 0/402, strike_craft 0/0, starbases 0/1357, spy_networks 0/362, species_db 0/1339	-	33372196 vs the first's	0.0
+5y	2215.01.01	767949	0	100.0	zones 0/411, strike_craft 0/0, starbases 0/1574, spy_networks 0/388, species_db 0/1367	-	63834237 vs the first's	0.0
+10y	2220.01.01	777504	41419	94.9	country 14257/238351, ship_design 7559/103861, ships 6866/134341, fleet 5897/89479, contacts 1387/8163	-	119065231 vs the first's	0.0

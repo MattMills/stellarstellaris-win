@@ -1,22 +1,29 @@
-// The galaxy map and the GUI: textured quads (in map units through the fitted view, or in screen
-// pixels), alpha-blended or added, and the hyperlanes as antialiased quads around their segment.
+// The galaxy map and the GUI: textured quads (on the galactic plane, facing the camera, or in
+// screen pixels), alpha-blended or added, and lines (hyperlanes, trails, orbits) as antialiased
+// quads around their segment, widened on the screen. World space: the galactic plane is y = 0, a
+// map coordinate (x, y) is the point (x, 0, y).
 
 struct View {
-    // map units -> clip space: ndc = p * world_to_ndc.xy + world_to_ndc.zw
-    world_to_ndc: vec4<f32>,
-    // pixels -> clip space: 2 / width, 2 / height
+    view_proj: mat4x4<f32>,
+    // the camera's right and up in world space (billboards)
+    right: vec4<f32>,
+    up: vec4<f32>,
+    eye: vec4<f32>,
+    // xyz: the light's direction toward the light (w = 0) or its position (w = 1)
+    light: vec4<f32>,
+    // pixels -> clip space: 2 / width, 2 / height; focal: pixels per unit at distance 1
     px_to_ndc: vec2<f32>,
+    focal: f32,
     // 1 when the target stores sRGB (colours are given in sRGB and converted to linear)
     srgb: u32,
-    pad: u32,
 };
 
 @group(0) @binding(0) var<uniform> view: View;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 
-fn to_ndc(p: vec2<f32>) -> vec2<f32> {
-    return p * view.world_to_ndc.xy + view.world_to_ndc.zw;
+fn to_clip(p: vec3<f32>) -> vec4<f32> {
+    return view.view_proj * vec4<f32>(p, 1.0);
 }
 
 fn corner(i: u32) -> vec2<f32> {
@@ -54,23 +61,37 @@ fn vs_quad(
     @location(0) rect: vec4<f32>,
     @location(1) uv: vec4<f32>,
     @location(2) colour: vec4<f32>,
-    @location(3) misc: vec4<f32>,   // rotation (radians), screen (1) or map (0)
+    // rotation (radians); kind: 0 on the plane, 1 screen pixels, 2 a billboard; height; the
+    // billboard's least half size in pixels
+    @location(3) misc: vec4<f32>,
 ) -> QuadOut {
     let t = corner(vi) * 0.5 + vec2<f32>(0.5);
     let centre = 0.5 * (rect.xy + rect.zw);
-    let half = 0.5 * (rect.zw - rect.xy);
-    let local = (t * 2.0 - vec2<f32>(1.0)) * half;
+    var half = 0.5 * (rect.zw - rect.xy);
+    let local = (t * 2.0 - vec2<f32>(1.0));
     let cs = cos(misc.x);
     let sn = sin(misc.x);
-    let p = centre + vec2<f32>(local.x * cs - local.y * sn, local.x * sn + local.y * cs);
-    var ndc: vec2<f32>;
-    if (misc.y > 0.5) {
-        ndc = vec2<f32>(p.x * view.px_to_ndc.x - 1.0, 1.0 - p.y * view.px_to_ndc.y);
+    var clip: vec4<f32>;
+    if (misc.y > 1.5) {
+        // a billboard: centred on (cx, height, cy), its half size in world units at least
+        // misc.w pixels
+        let c3 = vec3<f32>(centre.x, misc.z, centre.y);
+        let cc = to_clip(c3);
+        let ppu = view.focal / max(cc.w, 1e-4);
+        let least = misc.w / max(ppu, 1e-6);
+        let h = max(abs(half.x), least);
+        let l = vec2<f32>(local.x * cs - local.y * sn, local.x * sn + local.y * cs) * h;
+        clip = to_clip(c3 + view.right.xyz * l.x + view.up.xyz * l.y);
+    } else if (misc.y > 0.5) {
+        let p = centre + vec2<f32>(local.x * half.x * cs - local.y * half.y * sn, local.x * half.x * sn + local.y * half.y * cs);
+        clip = vec4<f32>(p.x * view.px_to_ndc.x - 1.0, 1.0 - p.y * view.px_to_ndc.y, 0.0, 1.0);
     } else {
-        ndc = to_ndc(p);
+        let lr = vec2<f32>(local.x * half.x, local.y * half.y);
+        let p = centre + vec2<f32>(lr.x * cs - lr.y * sn, lr.x * sn + lr.y * cs);
+        clip = to_clip(vec3<f32>(p.x, misc.z, p.y));
     }
     var o: QuadOut;
-    o.pos = vec4<f32>(ndc, 0.0, 1.0);
+    o.pos = clip;
     o.uv = mix(uv.xy, uv.zw, t);
     o.colour = colour;
     return o;
@@ -82,7 +103,7 @@ fn fs_quad(i: QuadOut) -> @location(0) vec4<f32> {
     return output(c.rgb, c.a);
 }
 
-// ---- hyperlanes
+// ---- lines
 
 struct LaneOut {
     @builtin(position) pos: vec4<f32>,
@@ -94,14 +115,25 @@ struct LaneOut {
 @vertex
 fn vs_lane(
     @builtin(vertex_index) vi: u32,
-    @location(0) a: vec2<f32>,
-    @location(1) b: vec2<f32>,
+    @location(0) a: vec4<f32>,     // xyz: the start (world), w: width in pixels
+    @location(1) b: vec4<f32>,     // xyz: the end
     @location(2) colour: vec4<f32>,
-    @location(3) width: f32,
 ) -> LaneOut {
     let c = corner(vi);
-    let pa = to_ndc(a) / view.px_to_ndc;
-    let pb = to_ndc(b) / view.px_to_ndc;
+    let ca = to_clip(a.xyz);
+    let cb = to_clip(b.xyz);
+    var o: LaneOut;
+    o.colour = colour;
+    o.half = a.w * 0.5;
+    if (ca.w <= 1e-4 || cb.w <= 1e-4) {
+        // behind the camera: not drawn
+        o.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        o.across = 1e6;
+        return o;
+    }
+    // the segment in pixels
+    let pa = (ca.xy / ca.w) / view.px_to_ndc;
+    let pb = (cb.xy / cb.w) / view.px_to_ndc;
     var dir = pb - pa;
     let len = length(dir);
     if (len > 0.0) {
@@ -110,14 +142,11 @@ fn vs_lane(
         dir = vec2<f32>(1.0, 0.0);
     }
     let normal = vec2<f32>(-dir.y, dir.x);
-    let half = width * 0.5;
-    let reach = half + 1.0;
+    let reach = o.half + 1.0;
+    let end = select(ca, cb, c.x > 0.0);
     let p = select(pa, pb, c.x > 0.0) + normal * c.y * reach;
-    var o: LaneOut;
-    o.pos = vec4<f32>(p * view.px_to_ndc, 0.0, 1.0);
+    o.pos = vec4<f32>(p * view.px_to_ndc * end.w, end.z, end.w);
     o.across = c.y * reach;
-    o.half = half;
-    o.colour = colour;
     return o;
 }
 

@@ -1,0 +1,3 @@
+horizon	date	fields_equal	fields_differ	pct_equal	worst_stores	draws_sim	draws_game	sim_seconds
+1m	2210.02.01	743854	0	100.0	zones 0/392, strike_craft 0/0, starbases 0/1209, spy_networks 0/359, species_db 0/1339	-	14842523 vs the first's	0.0
+10y	2220.01.01	819045	0	100.0	zones 0/443, strike_craft 0/0, starbases 0/1955, spy_networks 0/492, species_db 0/1419	-	119309260 vs the first's	0.0

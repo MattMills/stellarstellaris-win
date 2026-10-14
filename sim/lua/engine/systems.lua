@@ -191,6 +191,10 @@ end
 P["daily.countries_parallel"] = function(host, date)
     each_object({ "country" }, count_down_modifiers)
     call_optional("engine.ethics", "countries_daily", host, date)
+    -- lambda_26 to lambda_28 of the day (visited systems, sensor coverage and intel levels, known
+    -- hyperlanes, the shared intel, terra incognita, the fleets in sensor range: engine.exploration;
+    -- its first call also runs the load's own pass, CGameState::RecalculateCachedData)
+    call_optional("engine.exploration", "countries_daily", host, date)
 end
 -- NColonyUpdate::DailyParallelUpdate: the timed modifiers; the colonies' own day (engine.colonies,
 -- once it is there: stability, amenities, happiness, crime, ...)
@@ -212,6 +216,9 @@ P["daily.countries_serial"] = function(host, date)
         -- CCountry::UpdateContacts -> CFirstContactsData::DailyUpdate: the country's first
         -- contacts (engine.first_contact), before its events
         call_optional("engine.first_contact", "country_daily", host, date, id)
+        -- then the deposit holders the day's shared intel surveyed or unsurveyed (_NewSurveyed,
+        -- _NewUnsurveyed: AddSurveyedDepositHolder, RemoveSurveyedDepositHolder; engine.exploration)
+        call_optional("engine.exploration", "country_serial", host, date, id)
         host.scope_daily_events("country", id)
     end)
     require("engine.research").daily(host, date)
@@ -293,12 +300,21 @@ P["daily.pop_groups"] = function(host, date)
         systems.not_modelled["daily.pop_groups"] = (systems.not_modelled["daily.pop_groups"] or 0) + 1
     end
 end
--- CGameState::MicroUpdate, every tick: movement and combat are not modelled, but the ship pool is
--- drawn as the game draws it (UpdateShipParallel: CRandom::GetIntegersForMacro of one value per
--- live ship, every entry of the ships store, after the fleet phase), so the stream's position
--- stays the game's. Its values seed only the ships whose fleet is in combat (headless/README.md,
--- "The random pools, traced"): with no combat modelled, the draws are skipped, not made.
-P["micro.update"] = function()
+-- the fleets' part of the ships, fleets and armies phase: CFleet::DailyUpdateSerial ->
+-- CFleet::HandleOrders, fleet by fleet (engine.fleets.orders: the current orders ticked and
+-- finished, the next ones started; docs/fleet_orders.md)
+P["daily.ships_fleets_armies"] = function(host, date)
+    call_optional("engine.fleets.orders", "daily", host, date)
+end
+-- CGameState::MicroUpdate, every tick: first the fleet phase's movement (engine.fleets.movement:
+-- CFleetMovementManager::MicroUpdate, its draws for the systems left and entered; combat is not
+-- modelled), then the ship pool drawn as the game draws it (UpdateShipParallel:
+-- CRandom::GetIntegersForMacro of one value per live ship, every entry of the ships store, after
+-- the fleet phase), so the stream's position stays the game's. Its values seed only the ships
+-- whose fleet is in combat (headless/README.md, "The random pools, traced"): with no combat
+-- modelled, the draws are skipped, not made.
+P["micro.update"] = function(host, date)
+    call_optional("engine.fleets.movement", "tick", host, date)
     RUST.skip(#world.all("ship"))
 end
 -- CGameState::ProcessAI: the AI's decisions (engine.ai, once it is there; docs/ai.md)

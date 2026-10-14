@@ -26,7 +26,13 @@
 
 mod app;
 mod border;
+mod camera;
 mod dds;
+mod engine;
+mod math;
+mod models;
+mod pdxmesh;
+mod system;
 mod font;
 mod galaxy;
 mod gui;
@@ -40,7 +46,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use stellar_sim::{save, Runtime};
+use stellar_sim::{save, Runtime, Simulation};
 
 use crate::border::Borders;
 use crate::dds::{Cache, Image};
@@ -49,10 +55,18 @@ use crate::galaxy::Galaxy;
 use crate::gui::Topbar;
 use crate::scene::{Scene, Textures, ALL, LAYERS};
 
-/// The map of a save: the world in its runtime, the galaxy read from it, the borders, and the
-/// game's textures and fonts as they are loaded.
+/// Where a map's world lives: a runtime with only the save's world, or a running simulation
+/// (the engine's definitions, script and systems loaded: it can step days).
+pub enum Source {
+    World(Runtime),
+    Sim(Box<Simulation>),
+}
+
+/// The map of a save: the world (or the simulation) in its runtime, the galaxy read from it, the
+/// borders, and the game's textures, fonts and models as they are loaded.
 pub struct Map {
-    pub runtime: Runtime,
+    pub source: Source,
+    pub save_path: String,
     pub game_dir: String,
     pub galaxy: Galaxy,
     pub borders: Borders,
@@ -60,6 +74,7 @@ pub struct Map {
     pub textures: Textures,
     pub borders_texture: usize,
     pub fonts: Option<HashMap<String, Font>>,
+    pub models: models::Library,
 }
 
 /// One frame's content for a target size.
@@ -69,9 +84,12 @@ pub struct Frame {
 }
 
 impl Map {
-    pub fn load(game_dir: &str, save_path: &str) -> Result<Map, String> {
-        let runtime = galaxy::runtime(save_path)?;
-        let galaxy = galaxy::extract(&runtime, game_dir)?;
+    fn with(source: Source, game_dir: &str, save_path: &str) -> Result<Map, String> {
+        let rt = match &source {
+            Source::World(r) => r,
+            Source::Sim(s) => &s.runtime,
+        };
+        let galaxy = galaxy::extract(rt, game_dir)?;
         let t0 = std::time::Instant::now();
         let borders = border::compute(&galaxy);
         eprintln!("borders: {}x{} texels of {:.2} map units in {:.2} s", borders.width, borders.height, borders.texel, t0.elapsed().as_secs_f64());
@@ -79,7 +97,8 @@ impl Map {
         let img = Image { width: borders.width, height: borders.height, rgba: borders.rgba.clone(), format: "generated".into() };
         let borders_texture = textures.add("@borders", Arc::new(img));
         Ok(Map {
-            runtime,
+            source,
+            save_path: save_path.to_string(),
             game_dir: game_dir.to_string(),
             galaxy,
             borders,
@@ -87,15 +106,76 @@ impl Map {
             textures,
             borders_texture,
             fonts: None,
+            models: models::Library::default(),
         })
     }
 
-    /// The scene for a target of `width` x `height` (the top bar is laid out for that screen).
-    pub fn frame(&mut self, width: u32, height: u32) -> Result<Frame, String> {
-        let topbar = gui::topbar(&self.runtime, &self.game_dir, &self.cache, width, height)?;
+    /// The save's world only (fast: no definitions, no script).
+    pub fn load(game_dir: &str, save_path: &str) -> Result<Map, String> {
+        let runtime = galaxy::runtime(save_path)?;
+        Map::with(Source::World(runtime), game_dir, save_path)
+    }
+
+    /// The save in a running simulation (the definitions and the script layer loaded too).
+    pub fn load_sim(game_dir: &str, save_path: &str) -> Result<Map, String> {
+        let runtime = galaxy::sim_runtime(game_dir, save_path)?;
+        Map::with(Source::Sim(Box::new(Simulation::new(runtime))), game_dir, save_path)
+    }
+
+    pub fn rt(&self) -> &Runtime {
+        match &self.source {
+            Source::World(r) => r,
+            Source::Sim(s) => &s.runtime,
+        }
+    }
+
+    /// The world's date.
+    pub fn date(&self) -> String {
+        match &self.source {
+            Source::Sim(s) => format!("{:?}", s.date()),
+            Source::World(_) => self.galaxy.date.clone(),
+        }
+    }
+
+    /// Steps the simulation `days` days (a map of the world alone is loaded again as a
+    /// simulation first), then reads the galaxy again. Returns what happened.
+    pub fn step(&mut self, days: u64) -> Result<String, String> {
+        let mut note = String::new();
+        if let Source::World(_) = self.source {
+            let t0 = std::time::Instant::now();
+            let runtime = galaxy::sim_runtime(&self.game_dir, &self.save_path)?;
+            self.source = Source::Sim(Box::new(Simulation::new(runtime)));
+            note = format!("the save loaded as a simulation in {:.1} s; ", t0.elapsed().as_secs_f64());
+        }
+        let Source::Sim(sim) = &mut self.source else { unreachable!() };
+        let t0 = std::time::Instant::now();
+        sim.run_days(days);
+        let ran = t0.elapsed().as_secs_f64();
+        let errors = sim.errors.len();
+        let date = format!("{:?}", sim.date());
+        self.refresh()?;
+        Ok(format!("{note}{days} days in {ran:.1} s to {date}; {errors} errors so far"))
+    }
+
+    /// Reads the galaxy again from the world (after the simulation stepped) and redraws the
+    /// borders.
+    pub fn refresh(&mut self) -> Result<(), String> {
+        // the owners the world keeps indexed: built again from the objects' fields
+        let _ = self.rt().eval::<()>("local w = require('engine.world') if w.index then w.index() end");
+        self.galaxy = galaxy::extract(self.rt(), &self.game_dir)?;
+        self.borders = border::compute(&self.galaxy);
+        let img = Image { width: self.borders.width, height: self.borders.height, rgba: self.borders.rgba.clone(), format: "generated".into() };
+        self.borders_texture = self.textures.add("@borders", Arc::new(img));
+        Ok(())
+    }
+
+    /// The scene for a target of `width` x `height` (the top bar is laid out for that screen):
+    /// the 2D map, or the galaxy in 3D from `camera`.
+    pub fn frame(&mut self, width: u32, height: u32, camera: Option<&camera::OrbitCamera>) -> Result<Frame, String> {
+        let topbar = gui::topbar(self.rt(), &self.game_dir, &self.cache, width, height)?;
         if self.fonts.is_none() {
             let mut fonts = HashMap::new();
-            gui::fonts(&self.runtime, &self.game_dir, &topbar.items, &mut fonts)?;
+            gui::fonts(self.rt(), &self.game_dir, &topbar.items, &mut fonts)?;
             self.fonts = Some(fonts);
         }
         let inputs = scene::Inputs {
@@ -106,7 +186,7 @@ impl Map {
             fonts: self.fonts.as_ref().unwrap(),
             game_dir: &self.game_dir,
         };
-        let scene = scene::build(&inputs, &mut self.textures, &mut self.cache.borrow_mut(), width, height);
+        let scene = scene::build(&inputs, &mut self.textures, &mut self.cache.borrow_mut(), width, height, camera);
         Ok(Frame { scene, topbar })
     }
 }
@@ -122,13 +202,17 @@ struct Args {
     adapter: Option<String>,
     backend: render::Backend,
     frames: Option<u32>,
+    listen: Option<String>,
+    script: Option<String>,
+    sim: bool,
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: stellar-render [--map] [--png OUT.png] [--menu-png OUT.png [--click X,Y]...] [--size WxH] \
+        "usage: stellar-render [--map] [--sim] [--png OUT.png] [--menu-png OUT.png [--click X,Y]...] [--size WxH] \
          [--save SAVE.sav] [--game STELLARIS_DIR] [--backend vulkan|dx12] [--adapter NAME] [--frames N] \
-         | --dds OUT_DIR FILE.dds... | --dds-check DIR..."
+         | --listen [ADDR:]PORT | --script FILE | --dds OUT_DIR FILE.dds... | --dds-check DIR... \
+         | --mesh-census DIR... | --mesh-info FILE.mesh... | --model-census [STELLARIS_DIR]"
     );
     std::process::exit(2)
 }
@@ -145,6 +229,10 @@ fn parse_args() -> Args {
         adapter: None,
         backend: render::Backend::platform_default(),
         frames: None,
+        // a port alone listens on localhost
+        listen: std::env::var("STELLAR_RENDER_LISTEN").ok().filter(|v| !v.is_empty()).map(|v| if v.contains(':') { v } else { format!("127.0.0.1:{v}") }),
+        script: None,
+        sim: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -152,8 +240,18 @@ fn parse_args() -> Args {
             a.map = true;
             continue;
         }
+        if arg == "--sim" {
+            a.sim = true;
+            continue;
+        }
         let mut value = || it.next().unwrap_or_else(|| usage());
         match arg.as_str() {
+            "--listen" => {
+                let v = value();
+                // a port alone listens on localhost
+                a.listen = Some(if v.contains(':') { v } else { format!("127.0.0.1:{v}") });
+            }
+            "--script" => a.script = Some(value()),
             "--menu-png" => a.menu_png = Some(value()),
             "--click" => {
                 let v = value();
@@ -238,6 +336,75 @@ fn dds_check(dirs: &[String]) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--model-census") {
+        let game = args.get(2).cloned().or_else(save::game_dir).unwrap_or_else(|| usage());
+        match models::census(&game) {
+            Ok(s) => print!("{s}"),
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if args.get(1).map(String::as_str) == Some("--mesh-census") {
+        print!("{}", pdxmesh::census(&args[2..]));
+        return;
+    }
+    if args.get(1).map(String::as_str) == Some("--mesh-info") {
+        for f in &args[2..] {
+            match pdxmesh::load(f) {
+                Ok(m) => {
+                    println!("{f}: version {:?}, {} shapes, {} locators", m.version, m.shapes.len(), m.locators.len());
+                    for s in &m.shapes {
+                        for sm in &s.meshes {
+                            println!(
+                                "  {:<40} {:>6} vertices {:>6} triangles, shader {} diff {} n {} spec {}, skin {}, aabb {:?}",
+                                s.name,
+                                sm.positions.len(),
+                                sm.indices.len() / 3,
+                                sm.material.shader,
+                                sm.material.diffuse,
+                                sm.material.normal,
+                                sm.material.specular,
+                                sm.skin.as_ref().map_or("no".to_string(), |k| format!("{} bones/vertex", k.bones)),
+                                sm.aabb
+                            );
+                            // the normals and the windings against the direction from the
+                            // bounds' centre (for closed, roughly convex shapes: spheres)
+                            let c: Vec<f32> = (0..3).map(|k| 0.5 * (sm.aabb.0[k] + sm.aabb.1[k])).collect();
+                            let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+                            let out = |p: [f32; 3]| [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+                            let n_out = sm.positions.iter().zip(&sm.normals).filter(|(p, n)| dot(out(**p), **n) > 0.0).count();
+                            let mut ccw = 0;
+                            for t in sm.indices.chunks(3) {
+                                let (a, b, d) = (sm.positions[t[0] as usize], sm.positions[t[1] as usize], sm.positions[t[2] as usize]);
+                                let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [d[0] - a[0], d[1] - a[1], d[2] - a[2]]);
+                                let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                                if dot(n, out([(a[0] + b[0] + d[0]) / 3.0, (a[1] + b[1] + d[1]) / 3.0, (a[2] + b[2] + d[2]) / 3.0])) > 0.0 {
+                                    ccw += 1;
+                                }
+                            }
+                            println!(
+                                "  {:<40} normals outward {:.0}%, triangles counter-clockwise seen from outside {:.0}%",
+                                "",
+                                100.0 * n_out as f32 / sm.positions.len().max(1) as f32,
+                                100.0 * ccw as f32 / (sm.indices.len() / 3).max(1) as f32
+                            );
+                        }
+                        if !s.skeleton.is_empty() {
+                            println!("  {:<40} skeleton: {}", s.name, s.skeleton.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join(" "));
+                        }
+                    }
+                    for l in &m.locators {
+                        println!("  locator {:<30} p {:?} q {:?} parent {:?}", l.name, l.p, l.q, l.parent);
+                    }
+                }
+                Err(e) => println!("{e}"),
+            }
+        }
+        return;
+    }
     if args.get(1).map(String::as_str) == Some("--dds-check") {
         dds_check(&args[2..]);
         return;
@@ -274,12 +441,27 @@ fn run() -> Result<(), String> {
     if let Some(png) = args.menu_png.clone() {
         return menu_png(&args, &game, &png);
     }
+    if args.listen.is_some() || args.script.is_some() {
+        // headless, driven by commands
+        let mut engine = engine::Engine::new(&game, args.backend, args.adapter.as_deref(), args.size.unwrap_or((1600, 900)))?;
+        for l in engine.app.log.drain(..) {
+            eprintln!("{l}");
+        }
+        if let Some(s) = &args.script {
+            engine::run_script(&mut engine, s)?;
+        }
+        if let Some(addr) = &args.listen {
+            engine::serve(&mut engine, addr)?;
+        }
+        return Ok(());
+    }
     let save = args.save.clone().or_else(save::default_save).ok_or("no save: give --save or set STELLAR_SAVE")?;
     let Some(png) = args.png.clone() else {
-        // the window: the main menu, or the map of the save with --map
+        // the window: the main menu, or the map of the save with --map (--sim: as a running
+        // simulation; Space steps a day, P runs)
         let mut app = app::App::new(&game, args.size.unwrap_or((1600, 900)))?;
-        if args.map {
-            app.load(&save)?;
+        if args.map || args.sim {
+            app.load_as(&save, args.sim)?;
         }
         for l in app.log.drain(..) {
             println!("{l}");
@@ -412,7 +594,7 @@ fn map_png(map: &mut Map, w: u32, h: u32, args: &Args, png: &str) -> Result<(), 
     println!("galaxy {}: {} systems, {} hyperlanes, {} owners of {} systems", g.date, g.systems.len(), g.lanes.len(), g.countries.len(), owned);
     println!("lua: {}", g.notes);
     let t0 = std::time::Instant::now();
-    let frame = map.frame(w, h)?;
+    let frame = map.frame(w, h, None)?;
     println!("scene built in {:.2} s", t0.elapsed().as_secs_f64());
     println!("gfx: {}", frame.topbar.gfx_summary);
     let mut off = render::Offscreen::new(args.backend, args.adapter.as_deref())?;
@@ -470,7 +652,7 @@ fn map_png(map: &mut Map, w: u32, h: u32, args: &Args, png: &str) -> Result<(), 
     println!("  borders, per owner: territory pixels changed; in the fill, pixels where the border shows that changed and");
     println!("  the mean error against the predicted colour (0..255); the edge band's mean colour vs its first colour x 0.9:");
     let g = &map.galaxy;
-    let mut owners: Vec<&verify::OwnerCheck> = c.owners.iter().collect();
+    let mut owners: Vec<&verify::OwnerCheck> = c.owners.iter().filter(|o| o.pixels > 0).collect();
     owners.sort_by_key(|o| std::cmp::Reverse(o.pixels));
     for o in owners {
         let k = &g.countries[o.country];

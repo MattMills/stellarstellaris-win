@@ -1,0 +1,4 @@
+2210.07.01  country 54 gone: crystal_faction ?
+2210.08.01  country 53 gone: drone_faction ?
+2220.01.01  country 16777269 appears: drone_faction ?
+2220.01.01  country 16777270 appears: crystal_faction ?

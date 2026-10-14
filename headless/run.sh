@@ -38,6 +38,16 @@ USERDIR="$WORK/home/.local/share/Paradox Interactive/Stellaris"
 mkdir -p "$USERDIR/save games/headless"
 cp "$SAVE" "$USERDIR/save games/headless/in.sav"
 [ -f "$HERE/settings.txt" ] && cp "$HERE/settings.txt" "$USERDIR/settings.txt"
+# HEADLESS_AUTOSAVE=<level>: the game's own autosaves (2 monthly, 3 quarterly, 4 half-yearly, 5
+# yearly), all kept; HEADLESS_SAVES_OUT=<dir> receives them.
+if [ -n "${HEADLESS_AUTOSAVE:-}" ]; then
+	printf 'language="l_english"\nautosave=%s\n' "$HEADLESS_AUTOSAVE" >"$USERDIR/settings.txt"
+	export HEADLESS_AUTOSAVE
+	if [ -n "${HEADLESS_SAVES_OUT:-}" ]; then
+		mkdir -p "$HEADLESS_SAVES_OUT"
+		export HEADLESS_AUTOSAVE_DIR=$(readlink -f "$HEADLESS_SAVES_OUT")
+	fi
+fi
 
 if [ -z "${HEADLESS_DLCS:-}" ]; then
 	HEADLESS_DLCS=$(unzip -p "$SAVE" meta | tr -d '\r' |
@@ -67,17 +77,25 @@ if [ "${HEADLESS_RNG_POS:-}" = save ]; then
 	export HEADLESS_RNG_POS
 fi
 
+# HEADLESS_NO_ASLR=1: the game runs with address-space randomization off (setarch -R).
+LAUNCH=""
+[ "${HEADLESS_NO_ASLR:-0}" = 1 ] && LAUNCH="setarch $(uname -m) -R"
+
 start=$(date +%s.%N)
 cd "$ROOT/game" || exit 2
 # The kill timeout is on the game itself (not on xvfb-run, which would leave the game running).
 xvfb-run -a -n $((100 + $$ % 800)) -s "-screen 0 1920x1080x24 +extension GLX -nolisten tcp" \
-	timeout -s KILL $((TIMEOUT + 60)) env LD_PRELOAD="$SO" ./stellaris $GAME_ARGS >"$WORK/game.log" 2>&1
+	timeout -s KILL $((TIMEOUT + 60)) $LAUNCH env LD_PRELOAD="$SO" ./stellaris $GAME_ARGS >"$WORK/game.log" 2>&1
 rc=$?
 end=$(date +%s.%N)
 
 grep -v '] DLC o' "$WORK/headless.log" 2>/dev/null
 if [ $rc -eq 0 ] && [ -f "$USERDIR/out.gamestate" ]; then
 	tr -d '\r' <"$USERDIR/out.gamestate" >"$OUT"
+	if [ -n "${HEADLESS_SAVES_OUT:-}" ]; then
+		mkdir -p "$HEADLESS_SAVES_OUT"
+		find "$USERDIR/save games" -name '*.sav' ! -name in.sav -exec cp -p {} "$HEADLESS_SAVES_OUT/" \;
+	fi
 	printf 'ok: %s (%d ticks) -> %s in %.1f s\n' "$1" "$TICKS" "$OUT" "$(echo "$end - $start" | bc)"
 	[ "${HEADLESS_KEEP:-0}" = 1 ] || rm -rf "$WORK"
 	exit 0

@@ -55,8 +55,35 @@ pub struct Galaxy {
     pub border_texture_size: u32,
     pub dust_size: f32,
     pub dust_size_extra: f32,
+    pub fleets: Vec<Fleet>,
+    pub nebulae: Vec<Nebula>,
     /// What the Lua query read (counts and timing).
     pub notes: String,
+}
+
+/// A fleet on the map: its position (its system's, or the galaxy coordinate between systems),
+/// owner, movement state, and where an FTL jump takes it.
+#[derive(Clone, Debug)]
+pub struct Fleet {
+    pub id: u32,
+    pub owner: Option<usize>,
+    pub x: f32,
+    pub y: f32,
+    pub state: String,
+    pub station: bool,
+    pub ships: u32,
+    pub military: bool,
+    pub from: Option<(f32, f32)>,
+    pub to: Option<(f32, f32)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Nebula {
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+    #[allow(dead_code)]
+    pub name: String,
 }
 
 /// The renderer's Lua directory (`sim/render/lua`), for `package.path`.
@@ -79,6 +106,24 @@ pub fn runtime(save_path: &str) -> Result<Runtime, String> {
     let old: String = package.get("path").map_err(|e| e.to_string())?;
     package.set("path", format!("{path};{old}")).map_err(|e| e.to_string())?;
     eprintln!("world loaded in {:.1} s", t0.elapsed().as_secs_f64());
+    Ok(runtime)
+}
+
+/// A runtime with the game's files and the save loaded for a simulation (the definitions, the
+/// script layer, the world), and the renderer's Lua modules on the path.
+pub fn sim_runtime(game_dir: &str, save_path: &str) -> Result<Runtime, String> {
+    let t0 = std::time::Instant::now();
+    let gamestate = save::read_gamestate(save_path)?;
+    let date = save::date_of(&gamestate).ok_or("the save has no date")?;
+    let runtime = Runtime::new(date, 0).map_err(|e| format!("the Lua runtime: {e}"))?;
+    let loaded = runtime.load(game_dir, Some(&gamestate), None).map_err(|e| format!("load: {e}"))?;
+    drop(gamestate);
+    eprintln!("{loaded}");
+    let path = format!("{}/?.lua", lua_dir());
+    let package: Table = runtime.lua.globals().get("package").map_err(|e| e.to_string())?;
+    let old: String = package.get("path").map_err(|e| e.to_string())?;
+    package.set("path", format!("{path};{old}")).map_err(|e| e.to_string())?;
+    eprintln!("simulation loaded in {:.1} s", t0.elapsed().as_secs_f64());
     Ok(runtime)
 }
 
@@ -131,11 +176,41 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
             lanes.push((l.get::<u32>(1)? - 1, l.get::<u32>(2)? - 1));
         }
         let hc: Table = g.get("hyperlane_colour")?;
+        let mut fleets = Vec::new();
+        for f in g.get::<Table>("fleets")?.sequence_values::<Table>() {
+            let f = f?;
+            let owner_id: i64 = f.get("owner")?;
+            let pair = |a: &str, b: &str| -> mlua::Result<Option<(f32, f32)>> {
+                Ok(match (f.get::<Option<f32>>(a)?, f.get::<Option<f32>>(b)?) {
+                    (Some(x), Some(y)) => Some((x, y)),
+                    _ => None,
+                })
+            };
+            fleets.push(Fleet {
+                id: f.get("id")?,
+                owner: if owner_id >= 0 { countries.iter().position(|c| c.id as i64 == owner_id) } else { None },
+                x: f.get("x")?,
+                y: f.get("y")?,
+                state: f.get("state")?,
+                station: f.get("station")?,
+                ships: f.get("ships")?,
+                military: f.get("military")?,
+                from: pair("from_x", "from_y")?,
+                to: pair("to_x", "to_y")?,
+            });
+        }
+        let mut nebulae = Vec::new();
+        for n in g.get::<Table>("nebulae")?.sequence_values::<Table>() {
+            let n = n?;
+            nebulae.push(Nebula { x: n.get("x")?, y: n.get("y")?, radius: n.get("radius")?, name: n.get("name")? });
+        }
         Ok(Galaxy {
             date: g.get("date")?,
             systems,
             lanes,
             countries,
+            fleets,
+            nebulae,
             hyperlane_colour: [hc.get(1)?, hc.get(2)?, hc.get(3)?, hc.get(4)?],
             star_icon_scale: g.get("star_icon_scale")?,
             border_system_radius: g.get("border_system_radius")?,

@@ -1,0 +1,7 @@
+horizon	date	fields_equal	fields_differ	pct_equal	worst_stores	draws_sim	draws_game	sim_seconds
+1m	2210.02.01	743463	418	99.9	contacts 118/3507, ships 81/110930, pop_groups 71/6357, colony 56/6484, country 27/232818	-	782966 vs the first's	0.0
+6m	2210.07.01	738477	4012	99.5	country 1010/227261, ship_design 828/105690, ships 753/112244, fleet 499/60606, pop_groups 316/6314	-	4755283 vs the first's	0.0
+1y	2211.01.01	729962	5668	99.2	country 1445/227563, ships 1365/113090, ship_design 906/96415, fleet 681/61557, pop_groups 576/6138	-	9576224 vs the first's	0.0
+2y	2212.01.01	729209	14630	98.0	country 3952/227874, ship_design 3016/97362, ships 2261/114936, fleet 1823/63914, pop_groups 1334/7170	-	19308848 vs the first's	0.0
+5y	2215.01.01	726090	37168	95.1	country 13353/229734, ships 8444/122395, fleet 5920/72260, ship_design 1789/95316, pop_groups 1624/6446	-	49663930 vs the first's	0.0
+10y	2220.01.01	735905	73040	91.0	country 24319/239788, ships 17443/132935, fleet 9912/83649, ship_design 7779/101099, contacts 2684/7967	-	104533853 vs the first's	0.0

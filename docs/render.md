@@ -1,11 +1,12 @@
-# The renderer (4.5.2): the galaxy map, the front end, localisation, fonts, the GPU backends
+# The renderer (4.5.2): the galaxy map, the front end, localisation, fonts, the GPU backends, 3D
 
 What the renderer (`sim/render/`, package `stellar-render`) needed to learn about the game's data
 to draw the galaxy map of a save, the main screen's top bar, the main menu and the load game window,
-and what was learned about the GPU backends on the machines it runs on. The code: `sim/render/src`
-(Rust: textures, fonts, borders, the GPU, the checks), `sim/render/lua/render` (Lua: what is read
-from the game's files and the save, and the GUI layout), `sim/lua/engine/localisation.lua` (the
-texts, shared with the engine).
+the galaxy in 3D, a system with the game's models, and what was learned about the GPU backends on
+the machines it runs on. The code: `sim/render/src` (Rust: textures, fonts, borders, meshes, the
+camera, the GPU, the checks, the command protocol), `sim/render/lua/render` (Lua: what is read from
+the game's files and the save, the GUI layout, the model definitions, a system's contents),
+`sim/lua/engine/localisation.lua` (the texts, shared with the engine).
 
 **Sources and marks.** No disassembly was used for this work: everything here was read in the
 game's data files (`common/`, `interface/`, `gfx/`, `flags/`, `localisation/`, the shaders in
@@ -54,6 +55,22 @@ Machines: `10.5.0.24` (Linux, GT 730 with NVK, Mesa 26.0.8; game data in `/opt/s
 - **Backends:** Vulkan on Linux (NVK on the GT 730 renders correctly); DX12 on Windows by default,
   because the laptop's 2018 AMD Vulkan driver (`amdvlk64.dll` 9.2.10.20) crashes when presenting
   and draws no hyperlanes, and its Intel Vulkan driver dies at start **[V]** (measured).
+- **Meshes** (`gfx/models/**/*.mesh`) are a binary tree of objects and typed properties (`@@b@`,
+  section 7) **[V]**: all 2,968 files read, 15 million vertices, skins of up to 4 bones per vertex,
+  LODs in 5 files. **Entities** (`.asset`) name pdxmeshes (`.gfx`) with per-shape textures and
+  shaders, attach entities at locators and clone others; 6,347 of 7,953 load as models, and 18,593
+  of their 18,596 textures are found **[V]**.
+- **The game's mesh shaders are in `gfx/FX`** **[V]**: the normal maps keep x in green and y in
+  alpha (blue: emissive), the specular maps specular, metalness and glossiness in green, blue and
+  alpha; the atmospheres are drawn on the back faces of a larger sphere; the stars are lava over
+  noise with colours from `gfx/worldgfx` (section 8). The renderer ports these, without shadows,
+  bloom or tone mapping.
+- **3D**: an orbit camera over the galaxy (stars as billboards, dust above and below the plane,
+  nebulae, borders on the plane, lanes and FTL trails in 3D), a system view (its bodies with the
+  game's meshes at their save coordinates, orbit rings, ships and stations built from frame and
+  section entities) and single models; sizes in the system are the renderer's **[I]** (section 10).
+- **Headless, driven by commands** over TCP or from a script, one reply per command after it
+  completes (section 9).
 
 ## 1. The galaxy map from a save
 
@@ -285,6 +302,258 @@ or the localised text. In the window, real input was driven under Xvfb with xdot
 click Load Game, a save, Escape, Exit), and on the laptop the window was captured with
 `PrintWindow` and `CopyFromScreen`.
 
+For the 3D work: `--mesh-census DIR...` reads every mesh and checks every index and skin
+reference; `--mesh-info FILE...` prints a mesh's shapes, materials, skins, locators, and the share
+of outward normals and counter-clockwise triangles; `--model-census` resolves every entity to its
+mesh and textures (section 7); the scripted example of section 9 renders the galaxy from three
+angles, a system and the models, with frame times. These are looked at, not compared with the
+game's pixels (no reference shots yet).
+
+## 7. Meshes and entities (`gfx/models`)
+
+### The binary mesh format **[V]**
+
+Read in `sim/render/src/pdxmesh.rs`. All 2,968 `.mesh` files of `gfx/models` (portraits
+included) read without an error in 2.0 s: 9,877 sub-meshes, 15,058,743 vertices, 16,466,552
+triangles; every index is below its sub-mesh's vertex count and every skin's bone index below its
+skeleton's size (`--mesh-census /opt/stellaris/gfx/models`). The format is a tree of objects with
+typed properties, little-endian:
+
+- **header**: the 4 bytes `@@b@`;
+- **an object**: `[` repeated *depth* times (1 for the top level), its name, a NUL. It holds the
+  properties and objects that follow, until an object of the same or a lower depth;
+- **a property** of the last object: `!`, the name's length (1 byte), the name (no NUL), the type
+  (`i` int32, `f` float32, `s` strings), a u32 count, the values (a string: a u32 length, then
+  its bytes with the NUL).
+
+The start of `gfx/models/planets/base_star.mesh`:
+
+| offset | bytes | meaning |
+|---|---|---|
+| 0x00 | `40 40 62 40` | `@@b@` |
+| 0x04 | `21 08` `pdxasset` `69` `02 00 00 00` `01 00 00 00` `00 00 00 00` | `!pdxasset`, `i`, 2 values: 1, 0 (the version) |
+| 0x1B | `5b` `object` `00` | `[object` |
+| 0x23 | `5b 5b` `atmosphere_geosphereShape` `00` | `[[` a shape |
+| 0x3F | `5b 5b 5b` `mesh` `00` | `[[[mesh` a sub-mesh |
+| 0x47 | `21 01` `p` `66` `08 0a 00 00` | `!p`, `f`, 2,568 floats (856 vertices x 3), from 0x4F |
+
+The tree, with the number of files and occurrences in 4.5.2:
+
+| path | type | what | files / occurrences |
+|---|---|---|---|
+| `!pdxasset` | i[2] | version, always 1, 0 | 2968 |
+| `[object` / `[[<shape>` | | the shapes, Maya's shape names (`planet_geosphereShape`) | 2927 / 9555 |
+| `[[<shape>!lod` | i[1] | the shape's level of detail | 5 / 16 |
+| `[object!loddist` | f[3..4] | the LOD switch distances **[I]** | 5 |
+| `[[[mesh` | | a sub-mesh of the shape | 2667 / 9877 |
+| `mesh!p`, `!n` | f, 3 per vertex | positions, normals | 9877, 8510 |
+| `mesh!ta` | f, 4 per vertex | tangent xyz and the bitangent's sign | 8508 |
+| `mesh!u0`, `!u1` | f, 2 per vertex | uv sets (0 sets: 1369 sub-meshes, 1: 8429, 2: 79) | 8508, 79 |
+| `mesh!tri` | i, 3 per triangle | indices | 9877 |
+| `mesh!boundingsphere` | f[4] | centre and radius **[I]** | 1070 |
+| `mesh!sfs` | f | not known | 1707 |
+| `[[[[aabb` `!min` `!max` | f[3] | the sub-mesh's bounds | 9877 |
+| `[[[[material` | | `!shader`, `!diff`, `!n`, `!spec` (s): the shader and the texture names | 9877 |
+| `[[[[skin` | | `!bones` i[1] (influences used, at most 4), `!ix` i and `!w` f (4 per vertex) | 5729 |
+| `[[[skeleton` / `[[[[<bone>` | | `!ix` i, `!pa` i (the parent, absent for a root), `!tx` f[12] (3x4) | 1012 / 171,974 |
+| `[locator` / `[[<name>` | | `!p` f[3], `!q` f[4], `!pa` s (a parent bone), `!tx` f[16] (newer exporter) | 2024 / 17,333 |
+
+- **Quaternions are x, y, z, w** **[V]**: the explosion locators of
+  `mammalian_01_science.mesh` all carry `0 0 -0 -1`, the identity in that order.
+- **Normals point out and triangles wind counter-clockwise seen from outside** **[V]**: 100% of
+  the vertices and triangles of the spheres of `planet_clouded.mesh` and `base_star.mesh`
+  (`--mesh-info` reports both for every sub-mesh).
+- **Ships face -z** **[V]**: the engine and exhaust locators of the science ship are at z = +2.2 to
+  +2.6, the hull spans z = -3.2 to +2.9.
+- **What the renderer covers**: positions, normals, tangents, uv set 0, indices, materials,
+  locators (for attachments). **Skinning** is read (bones per vertex, indices, weights, the
+  skeleton) but meshes are drawn in their bind pose: the animations (`.anim`) are not read.
+  **LODs**: the 16 LOD shapes (5 files) are read but not chosen between; all shapes are drawn.
+  `u1`, `boundingsphere`, `sfs` and the locators' `tx` are read and unused.
+
+### Entities and pdxmeshes **[V]**
+
+`sim/render/lua/render/models.lua` indexes the definitions in place: 7,953 entities and 2,821
+pdxmeshes in 531 files (257 `.gfx`, 274 `.asset`, `gfx/models/portraits` left out) in 0.7 s.
+
+- **a pdxmesh** (`.gfx`): `objectTypes = { pdxmesh = { name file scale meshsettings = { name index
+  texture_diffuse texture_normal texture_specular shader } animation = { id type } } }`. The
+  `meshsettings` `name` is the shape it applies to; it may be a Maya path (`a|g_body|g_bodyShape`:
+  the last part is the shape) or absent (all shapes) **[I]**. `index` is not used **[I]**.
+- **an entity** (`.asset`): `entity = { name pdxmesh scale meshsettings attach = { <locator> =
+  "<entity>" } state = { ... } locator = { name position rotation } clone = "<entity>" }`. 1,036
+  entities attach others; `clone` copies another entity (its mesh and settings, its own settings
+  over them **[I]**).
+- **the census** (`--model-census`): 6,347 entities load as a model; 1,606 have no pdxmesh (locator
+  dummies such as `crystal_ship_small_section_entity`, weapon and hit effects); 1,821 of the loaded
+  have no part to draw (frames made of locators, effects). The shaders of the drawn parts:
+  PdxMeshShip 4772, PdxMeshShipDiffuseEmissive 692, PdxMeshTerra 327, PdxMeshClouds 283,
+  PdxMeshAtmosphere 123, PdxMeshPlanet 84, PdxMeshStar 15, PdxMeshAtmosphereStar 16, others; not
+  drawn: Collision 2813 shapes, the additive, flow and alpha-blended effect shaders.
+- **Texture names** are file names. They are found **[I]**, in order: beside the file that
+  defined the entity, beside the pdxmesh's file, beside the mesh, then anywhere in `gfx/models`
+  by name (`nonormal.dds` and `nospec.dds` are in `gfx/models/`; the starbases' meshes in
+  `ships/starbases/` name their culture's textures in `ships/<culture>/`); a `.tga` name is read
+  as the `.dds` (11 ship textures name a `.tga`; only the `.dds` ships). Of 18,596 texture names of
+  drawn parts 18,593 are found (the 3 others: `toxoid_01_starbase_modules_*`, missing in 4.5.2).
+
+### Which entity draws what **[V]** (the chain), **[I]** (the details)
+
+- **A planet or a star**: its class (`common/planet_classes`) has `entity` (`desert_planet`,
+  `g_star_class_star_entity`), `entity_scale` (`@planet_standard_scale` = 11; stars 20),
+  `atmosphere_color`, `atmosphere_intensity`, `atmosphere_width`. A planet's `entity` field in the
+  save picks the variant: `desert_planet_0<N+1>_entity` **[I]** (else `_01_entity`). Planets are
+  `planet_clouded.mesh` (shapes `planet_geosphereShape` PdxMeshPlanet, `clouds_geosphereShape`
+  and `clouds_shadow_geosphereShape` and `polesShape` PdxMeshClouds, `atmosphere_geosphereShape`
+  PdxMeshAtmosphere, `pCubeShape1` Collision; 1 bone per vertex on the skeleton `root
+  planet_rotation planet clouds end`); stars `base_star.mesh` (PdxMeshStar, PdxMeshAtmosphereStar).
+- **A ship**: `ship_design_implementation.design` -> the design's first `growth_stages` -> its
+  `ship_size` and `section`s (`template`, `slot`). The frame is `<graphical_culture>_<size>_entity`
+  (`molluscoid_01_corvette_entity`, a mesh of locators); each section's template
+  (`common/section_templates`: `ship_section_template = { key entity }`) gives an entity, prefixed
+  with the culture (`molluscoid_01_corvette_S3_entity`), placed at the locator that
+  `common/ship_sizes`' `section_slots = { "<slot>" = { locator = "part1" } }` names for the slot.
+  Starbases, mining and research stations are ships of the same form (`starbase_starport`,
+  `mining_station`). In system 401 of the 2210.01.01 save all 11 ships resolve to models.
+
+## 8. The mesh shaders, matched (`gfx/FX`)
+
+`sim/render/src/mesh.wgsl` ports the parts of the game's pixel shaders that make the look; the
+game's code was read in `gfx/FX/pdxmesh.shader`, `standardfuncsgfx.fxh`, `standard_vertex.fxh`,
+`pdxmesh_samplers.fxh` and `gfx/worldgfx/*.txt` **[V]** (the formulas), with the renderer's own
+simplifications **[I]** (named).
+
+- **The normal map** (`UnpackRRxGNormal`, standardfuncsgfx.fxh:542) **[V]**: x = green x 2 - 1,
+  y = -(alpha x 2 - 1), z = sqrt(1 - x² - y²); the tangent frame rows tangent, bitangent, normal,
+  the bitangent `cross(normal, tangent) x tangent.w` (standard_vertex.fxh:27). The maps agree:
+  `desert_01_normal.dds` has red ≈ green ≈ 128, blue 0, alpha ≈ 127 on average.
+- **The specular map** (PixelPdxMeshStandard, pdxmesh.shader:526) **[V]**: green the specular
+  (`g² x 0.4`), blue the metalness (`1 - (1 - b)²`; the diffuse x (1 - metalness), the specular
+  colour mixed toward the diffuse by it), alpha the glossiness, red the empire colour / city
+  lights mask. **The normal map's blue is the emissive** (`EMISSIVE`: PdxMeshTerra,
+  PdxMeshPlanet): `colour = mix(lit, diffuse, emissive)` (a ship's windows); on planets only on
+  the night side with city lights, not drawn here.
+- **The planets' atmosphere tint** (IS_PLANET) **[V]**: `toCamera = saturate(dot(N, -V) + width)`,
+  `toSun = dot(N, L) x 0.5 + 0.5`, `a = lerp(toCamera, toCamera x toSun, 0.5)`, the colour mixed
+  toward `atmosphere_color` by `a² x intensity`.
+- **Clouds** (PdxMeshClouds: the standard shader with IS_CLOUDS) **[V]**: clipped where
+  `dot(N, V) < 0.27`, blended by the diffuse alpha.
+- **The atmosphere shell** (PixelPdxMeshAtmosphere, `RasterizerStateBack`, additive) **[V]**: the
+  colour x 0.15 plus the colour x the star's light x 0.13 x 2, times `(dot(N, -V) x 1.2)⁴`. With
+  outward normals only back faces give a non-zero `dot(N, -V)`: the shell is drawn on its back
+  faces (front faces culled), brightest behind the planet, a halo around it.
+- **The star** (PixelPdxMeshStar) **[V]**: lava and stone textures over a noise, the colours from
+  the star class's `gfx/worldgfx/star_<x>_class.txt` (`lava_bright_color`,
+  `lava_hot_stone_color`, `lava_cold_stone_color`, each x its `_intensity`; `tex_lava_diffuse` =
+  `gfx/worldgfx/lava_d.dds`, `tex_stone_diffuse` = `stone_d.dds`, `tex_lava_noise` a cube map),
+  then the class's atmosphere colour toward the limb, a rim x 3.5, x 2. The class `pc_g_star` uses
+  the world `g_star` **[I]**. The game samples the noise cube at the direction, x 4 and x 8: the
+  same direction, so the same texel three times **[V]** (the code); the renderer uses a value noise
+  of the direction instead, and time 0 **[I]**.
+- **The star's glow** (PixelPdxMeshAtmosphereStar, additive) **[V]**: the colour x `dot(N, -V)³`,
+  alpha `dot(N, -V)⁴`, on the back faces.
+- **Ships** (PixelPdxMeshShip): the system light plus the ship camera lights of `gfx/worldgfx`
+  (`cam_light_2_diffuse` hsv 0.55 0.4 0.45 from the right, `cam_light_3_diffuse` hsv 0.55 0.35 0.75
+  from above) and `rim_light_diffuse` (hsv 0.56 0.5 0.25) **[V]** the colours, **[I]** the
+  directions and the rim's range.
+- **The environment map** (`cubemap_intensity` 0.4 in worldgfx) **[V]**: drawn as a two-colour
+  sky (dark below, grey-blue above the camera), with Schlick's Fresnel and the glossiness **[I]**.
+- **Not drawn**: shadows, the tiled point lights, bloom, HDR and tone mapping
+  (`tonemap_middlegrey`, `hdr_*`), the colour correction LUTs (`colorcorrection_*.tga`), empire
+  colours, city lights, the dissolve and flow effects, animation, the gas giants' and asteroids'
+  own shaders (drawn lit).
+
+## 9. The command protocol (headless, TCP)
+
+`stellar-render --listen [ADDR:]PORT` (or `STELLAR_RENDER_LISTEN`; a port alone listens on
+127.0.0.1) serves one client at a time; `--script FILE` runs the same commands from a file. One
+command per line, one reply per command, sent when the command is complete (a frame is rendered
+and written before its reply), so a client scripts exact sequences. Replies: `ok ...` or `error
+...`. `sim/render/src/engine.rs`.
+
+| command | reply / effect |
+|---|---|
+| `load PATH`, `load-sim PATH` | the save's world (fast), or the save as a running simulation |
+| `step DAYS` | runs the simulation (a world-only map is loaded again as a simulation first) |
+| `view galaxy` / `3d` / `2d` / `system ID` / `model NAME` / `menu` | what the map screen shows |
+| `focus system ID`, `focus fleet ID` | the galaxy camera over it |
+| `camera X Y Z YAW PITCH DISTANCE` | the camera's target (map x = X, map y = Z), angles in degrees |
+| `orbit DYAW DPITCH`, `zoom FACTOR`, `pan DX DY` | relative moves (pan in fractions of the distance) |
+| `resize W H`, `key NAME down\|up`, `mouse X Y [left\|right down\|up]`, `scroll DY` | input |
+| `frame PATH.png` | `ok frame PATH W H MS` (MS: scene, upload, GPU and read-back) |
+| `frame -` | `ok frame - W H MS BYTES`, then the PNG's bytes |
+| `state` | JSON: screen, view, camera, date, systems, fleets by movement state, FTL trails, size |
+| `quit` | ends the server |
+
+The client `sim/render/tools/ctl.py` (standard library only) sends commands, files of commands, or
+`--get OUT.png`; `ctl.py example SAVE OUT_DIR [SYSTEM]` loads the save, takes three galaxy shots
+from different angles, focuses a home system, takes a system shot, and lists the PNGs with their
+frame times. Run on 10.5.0.24 with the 2210.01.01 save:
+
+```
+stellar-render --game /opt/stellaris --listen 7878 &
+python3 sim/render/tools/ctl.py example /opt/stellaris-saves/autosave_2210.01.01.sav OUT 401
+  OUT/example_galaxy_1.png  1600x900  295 ms   (first frame: the map's textures load)
+  OUT/example_galaxy_2.png  1600x900  48 ms
+  OUT/example_galaxy_3.png  1600x900  95 ms
+  OUT/example_focus.png     1600x900  113 ms
+  OUT/example_system.png    1600x900  2743 ms  (first system frame: ~40 textures load)
+```
+
+## 10. The 3D views
+
+### The camera **[I]**
+
+- **World space**: the galactic plane is y = 0; a map position (x, y) is the point (x, 0, y); a
+  system's own space (its planets' and ships' `coordinate` with `origin` the system) the same way.
+  Right-handed, depth 0..1. The orbit camera (`sim/render/src/camera.rs`) looks at a target on the
+  plane from `distance` at `yaw` (0: from the south, -z) and `pitch` above the plane; at yaw 0
+  screen-right is map -x, the same mirror as the 2D map (section 1).
+- **Galaxy**: field of view 45° vertical, pitch 60° (30..89°), the distance fitting the galaxy's
+  radius (20 to 3x that); near = 1% of the distance, far = 4x + 2000. **A system**: pitch 40°
+  (5..89°), the distance 0.62x the fit of its outermost orbit. **A model**: pitch 25°, yaw 35°.
+- **Window**: right-drag orbits, left-drag pans, the wheel zooms; W A S D / arrows pan, Q E turn,
+  R F tilt, + - zoom, V switches the 2D map and 3D, a click on a star opens its system, Escape
+  goes back; Space steps a day, P runs a day per frame.
+
+### The galaxy in 3D **[I]** (the placement), **[V]** (the art, section 1)
+
+Stars are billboards of their class's sprite (at least 5 px); the dust (`dust.dds`, coloured by
+`galaxycolor.dds`) billboards with a little height above and below the plane; `center.dds` a
+billboard at the centre; the nebulae (the save's top-level `nebula = { coordinate radius name }`,
+9 in 2210.01.01) clouds of `nebula.dds` on the plane coloured by `nebulacolor.dds`; the territory
+the border texture on the plane; hyperlanes and the fleets' FTL trails lines in 3D. Fleets are
+discs in their owner's colour (a fleet's owner is the country whose `owned_fleets` lists it)
+**[V]**; a fleet in an FTL state (`movement_manager.state` `move_wind_up`, `move_galaxy`,
+`move_jump_anim`, `move_wind_down`; the saves hold the first, the simulation all four) whose
+`path` leads to another system draws a trail from where it is to that system **[I]**. On the
+running simulation the map is read again after each `step` (2210.01.01 + 6 days: 1 fleet in
+`move_galaxy`, 7 winding up, 8 trails).
+
+### The system view
+
+Built from the world on every frame (`sim/render/lua/render/system.lua`, `src/system.rs`), so it
+follows the simulation. **[V]** the data: the system's `planet` list (stars are planets whose
+class says `star = yes`), each planet's `coordinate`, `planet_size`, `moon_of`, `entity`, class;
+the fleets whose `movement_manager.coordinate.origin` is the system and their ships'
+`coordinate` and `forward_x`/`forward_y`. **[I]** the drawing: a planet's radius 0.3 x
+`planet_size`, a star's 0.45 x (the game's `entity_scale` is read, its use not found); ships and
+stations at 0.25 of their model, turned to `atan2(-forward_x, -forward_y)`; the light a point
+at the first star; orbit rings around the system's centre (moons: around their planet); the
+star's map sprite as a faint halo; a few dust clouds below.
+
+### Frame times
+
+The time of `frame` (scene, upload, the GPU's frame and the read-back; not the PNG's encoding):
+
+| machine | galaxy 1600x900 | system 1600x900 | planet 1024² | ship 1024² |
+|---|---|---|---|---|
+| 10.5.0.24, GT 730 (NVK, Vulkan) | 295 ms first, 48 to 113 ms | 2.7 s first, 48 ms | 0.75 s first, 37 ms (star) | 24 ms |
+| laptop, Radeon RX Vega M GL (DX12) | 519 ms first, 10 to 15 ms | 4.8 s first, 8 ms | 1.3 s first | 24 ms |
+
+The first frames are the textures' loading and decoding on the CPU (the planets' 2048x1024 maps,
+the ships' sets). The simulation behind it: `load-sim` 7.7 s, a day 0.35 to 0.6 s.
+
 ## Open questions
 
 - The engine's own code for the map and the GUI is not read: which name fills
@@ -299,3 +568,15 @@ click Load Game, a save, Escape, Exit), and on the laptop the window was capture
 - Why AMD's 2018 Windows Vulkan driver draws no lanes (the lane pipeline: an instanced quad with
   `select()` in the vertex shader; replacing `select` with `mix`, a vec4 width attribute, and
   rebinding group 0 did not help).
+- **3D, not checked against the game**: no screenshot of the game was compared yet. The game's
+  camera (field of view, pitch, zoom limits), the scale of planets, stars and ships in a system
+  (how `entity_scale` and `planet_size` combine), ship facing from `forward_x`/`forward_y` and
+  `rotation`, the planet entity variant (`entity` + 1), the star class to `gfx/worldgfx` mapping,
+  and the texture lookup order are **[I]**. Reference shots from the real game driven by the same
+  commands would settle them.
+- **3D, not drawn yet**: animation (skeletons and `.anim`), LOD selection, the attachments of
+  entities' `attach` (turrets, lights), the ships' empire colours and engine trails, planetary
+  rings, asteroid belts, gas giants' and black holes' own shaders, the `PdxMeshShipFlow` and
+  additive effect shaders, shadows, bloom, tone mapping and colour correction, the sky box, the
+  system's hyperlane exits, fleets moving between their save positions (they are drawn where the
+  world puts them each day), and smooth transitions between the galaxy and a system.

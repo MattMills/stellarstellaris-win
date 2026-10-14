@@ -1549,6 +1549,70 @@ function M.property(lk)
     return nil
 end
 
+-- fleets: orders
+-- is_surveyed = { who = <country> status = yes/no } (CIsSurveyedTrigger): the country surveyed the
+-- planet (CCountry::HasSurveyedDepositHolder: auto-surveyed or in its surveyed_deposit_holders),
+-- or every planet of the system (E.is_surveyed, engine.fleets.survey)
+TRIG["is_surveyed"] = function(e, ctx)
+    local sc = ctx.this
+    if sc == NONE or e.value.text ~= nil or not E.is_surveyed then return false end
+    local who, status = nil, true
+    for _, x in ipairs(e.value) do
+        if x.op and x.key then
+            local k = x.key.text:lower()
+            if k == "who" and x.value.text then
+                local f, s = M.resolve(x.value.text, ctx, x)
+                if f then who = s end
+            elseif k == "status" then
+                status = x.value.text ~= "no"
+            end
+        end
+    end
+    if not who or who == NONE or who.kind ~= "country" then return false end
+    sync()
+    return (E.is_surveyed(sc.kind, sc.id, who.id) == true) == status
+end
+-- has_anomaly = yes/no (CHasAnomalyTrigger): the planet has an anomaly (E.has_anomaly)
+TRIG["has_anomaly"] = function(e, ctx)
+    local sc = ctx.this
+    if sc == NONE or not E.has_anomaly then return false end
+    sync()
+    return (E.has_anomaly(sc.kind, sc.id) == true) == yes(e)
+end
+
+-- exploration
+-- is_inside_nebula = yes/no: the scope's system is in a nebula (E.is_inside_nebula; the game
+-- rule system_blocks_sensors reads it)
+TRIG["is_inside_nebula"] = function(e, ctx)
+    local sc = ctx.this
+    if sc == NONE or not E.is_inside_nebula then return false end
+    sync()
+    return (E.is_inside_nebula(sc.kind, sc.id) == true) == yes(e)
+end
+
+-- shipbuilding
+-- used_naval_capacity_percent <op> x: the country's naval capacity used, as a share of its naval
+-- capacity (E.used_naval_capacity_percent; the AI budget's ships and starbases entries read it)
+TRIG["used_naval_capacity_percent"] = function(e, ctx)
+    local sc = ctx.this
+    if sc == NONE or not E.used_naval_capacity_percent then return false end
+    sync()
+    local v = E.used_naval_capacity_percent(sc.kind, sc.id)
+    if v == nil then return false end
+    return compare(v, e.op, M.value(e.value, ctx, e))
+end
+
+-- stations
+-- exploitable_planets <op> n (CExploitablePlanets): the planets of the country's systems with
+-- orbital resources and no station, colonies left out (E.exploitable_planets; the AI budget's
+-- minerals_expenditure_stations_expand reads it)
+TRIG["exploitable_planets"] = function(e, ctx)
+    local sc = ctx.this
+    if sc == NONE or sc.kind ~= "country" or not E.exploitable_planets then return false end
+    sync()
+    return compare(E.exploitable_planets(sc.id), e.op, M.value(e.value, ctx, e))
+end
+
 -- ---------------------------------------------------------------------------------------------
 -- effects
 

@@ -55,8 +55,9 @@ local T = {
 }
 strategy.TYPES = T
 
--- the lists this module builds (the others of CreateColonizeData's are kept)
-local PORTED = { [T.EXPLORE] = true, [T.TERRAFORM] = true }
+-- the lists this module builds (the others of CreateColonizeData's are kept); the stations (3) and
+-- the expansion (19) with engine.fleets.stations (CDepositHolder::CanBuildStation)
+local PORTED = { [T.EXPLORE] = true, [T.TERRAFORM] = true, [T.BUILD_ORBITAL_STATION] = true, [T.EXPAND_BORDERS] = true }
 strategy.PORTED = PORTED
 
 -- ---------------------------------------------------------------------------------------------
@@ -73,6 +74,15 @@ local function defines()
             AI_MAX_DISTANCE = v("NAI", "AI_MAX_DISTANCE", 200),
             AI_BUDGETING_START_YEARS = v("NAI", "AI_BUDGETING_START_YEARS", 15),
             START_YEAR = v("NGameplay", "START_YEAR", 2200),
+            -- the expansion (list 19)
+            MAX_EXPANSION_DISTANCE = v("NAI", "MAX_EXPANSION_DISTANCE", 2),
+            MAX_EXPANSION_DISTANCE_SUBJECT = v("NAI", "MAX_EXPANSION_DISTANCE_SUBJECT", 2),
+            EXPANSION_OWN_PRIORITY = v("NAI", "EXPANSION_OWN_PRIORITY", 1000),
+            EXPANSION_CUT_OFF_SYSTEM_PRIORITY = v("NAI", "EXPANSION_CUT_OFF_SYSTEM_PRIORITY", 10),
+            EXPANSION_BORDERING_PRIORITY = v("NAI", "EXPANSION_BORDERING_PRIORITY", 500),
+            EXPANSION_RESOURCE_PRIORITY = v("NAI", "EXPANSION_RESOURCE_PRIORITY", 2),
+            EXPANSION_COLONY_PRIORITY = v("NAI", "EXPANSION_COLONY_PRIORITY", 400),
+            EXPANSION_BYPASS_PRIORITY = v("NAI", "EXPANSION_BYPASS_PRIORITY", 10),
         }
     end
     return D
@@ -360,6 +370,81 @@ local function only_ours(id, sid)
 end
 
 -- ---------------------------------------------------------------------------------------------
+-- the stations (list 3) and the expansion (list 19): docs/stations.md
+
+local function stations()
+    return require("engine.fleets.stations")
+end
+
+-- CGalacticObject::HasColonizablePlanet(country, true) (0x86f920) [I]: an unowned planet of a
+-- colonizable class
+local function has_colonizable_planet(sid)
+    local st = stations()
+    for _, pid in ipairs(galaxy().planets_of[sid] or {}) do
+        if st.colonizable(pid) then
+            return true
+        end
+    end
+    return false
+end
+
+-- NAIUtil::CalcResourceSum (0xba5520): the known orbital resources of the system's planets,
+-- every resource summed
+local function resource_sum(id, sid)
+    local st = stations()
+    local s = 0
+    for _, pid in ipairs(galaxy().planets_of[sid] or {}) do
+        for _, v in pairs(st.known_orbital_resources(pid, id)) do
+            s = s + v
+        end
+    end
+    return s
+end
+
+-- NAIUtil::CalcExpansionValue (0xba5390): resources * EXPANSION_RESOURCE_PRIORITY, +
+-- EXPANSION_COLONY_PRIORITY with a colonizable planet, + EXPANSION_BYPASS_PRIORITY with a bypass,
+-- + EXPANSION_CUT_OFF_SYSTEM_PRIORITY when every neighbour is ours, else
+-- EXPANSION_BORDERING_PRIORITY when it borders us
+function strategy.expansion_value(id, sid, usable)
+    local d = defines()
+    local v = resource_sum(id, sid) * d.EXPANSION_RESOURCE_PRIORITY
+    if has_colonizable_planet(sid) then
+        v = v + d.EXPANSION_COLONY_PRIORITY
+    end
+    if #(galaxy().bypasses_of[sid] or {}) > 0 then
+        v = v + d.EXPANSION_BYPASS_PRIORITY
+    end
+    if borders(id, sid, usable or usable_bypasses(country(id))) then
+        v = v + (only_ours(id, sid) and d.EXPANSION_CUT_OFF_SYSTEM_PRIORITY or d.EXPANSION_BORDERING_PRIORITY)
+    end
+    return v
+end
+
+-- CCountryBorderManager::CalcNumJumpsFromBorder (0xa0f2d0): the fewest jumps (GetJumps) from one
+-- of our systems
+local function jumps_from_border(sid, own)
+    local best = 2147483647
+    for _, s in ipairs(own) do
+        local j = (s == sid) and 0 or jumps_from(s)[sid]
+        if j and j < best then
+            best = j
+        end
+    end
+    return best
+end
+
+-- NAIUtil::ShouldBuildStarbase(country, system, false) (0xba4fa0): within MAX_EXPANSION_DISTANCE
+-- jumps of the border (a subject: MAX_EXPANSION_DISTANCE_SUBJECT); [not modelled: the systems that
+-- would anger a fallen empire, CGameRules::WillAngerFallenEmpire]
+local function should_build_starbase(c, sid, own)
+    local d = defines()
+    local overlord = tonumber(world.field(c, "overlord"))
+    local max = (overlord and overlord ~= NO_ID) and d.MAX_EXPANSION_DISTANCE_SUBJECT or d.MAX_EXPANSION_DISTANCE
+    return jumps_from_border(sid, own) <= max
+end
+strategy.should_build_starbase = should_build_starbase
+
+-- ---------------------------------------------------------------------------------------------
 -- CCountryAI::CreateColonizeData (0xb6f280), the ported lists
 
 function strategy.compute(id)
@@ -377,6 +462,11 @@ function strategy.compute(id)
     local cap = capital_system(c)
     local cap_jumps = cap and jumps_from(cap)
     local usable = usable_bypasses(c)
+    local st = stations()
+    local own = {}
+    for _, sid in ipairs(g.systems) do
+        if world.system_owner[sid] == id then own[#own + 1] = sid end
+    end
     for _, sid in ipairs(g.systems) do
         local owner = world.system_owner[sid]
         -- the system's owner: nobody, or us (an enemy's, one without access, another's: skipped)
@@ -386,15 +476,45 @@ function strategy.compute(id)
                 for _, pid in ipairs(g.planets_of[sid]) do
                     if A and not A[pid] then
                         unsurveyed = true
-                    elseif not colonizer then
-                        if terraform then
-                            add(T.TERRAFORM, pid, 0, 1)
+                    else
+                        if not colonizer then
+                            if terraform then
+                                add(T.TERRAFORM, pid, 0, 1)
+                            end
+                        end
+                        -- a colonizer: the terraform rule (should_colonize_use_terraform),
+                        -- CPlanet::CanColonize, NAIUtil::ShouldColonizePlanet, AddColonyData (1)
+                        -- and type 23 for what it cannot colonize: not ported (no colonizer has
+                        -- build_terraform_station in the 2210-2212 saves); a planet that becomes a
+                        -- colony target gets no station check, but a colonizable planet has none
+                        -- to pass anyway (the deposit's class needs a planet nobody can colonize)
+                        -- the station check, own systems only: an observation post
+                        -- (CanBuildStation(P, 9): never here), else the orbital deposit's class
+                        if owner == id then
+                            local cls = st.orbital_class(pid)
+                            if (cls == st.CLASS.shipclass_mining_station or cls == st.CLASS.shipclass_research_station)
+                                and st.can_build_station(id, pid, cls) then
+                                add(T.BUILD_ORBITAL_STATION, pid, cls, 1)
+                            end
                         end
                     end
-                    -- a colonizer: the terraform rule (should_colonize_use_terraform),
-                    -- CPlanet::CanColonize, NAIUtil::ShouldColonizePlanet, AddColonyData (1) and
-                    -- type 23 for what it cannot colonize: not ported (no colonizer has
-                    -- build_terraform_station in the 2210-2212 saves); the stations (3): not ported
+                end
+            end
+            -- the expansion: a colonizer, a star, every planet surveyed, a system nobody owns (or
+            -- one of ours without a primary starbase: EXPANSION_OWN_PRIORITY);
+            -- CanBuildStation(star, starbase) and ShouldExpand
+            local star = g.star[sid]
+            if colonizer and star and not unsurveyed and (owner == nil or (owner == id and not st.primary_starbase(sid)))
+                and st.can_build_station(id, star, st.CLASS.shipclass_starbase) then
+                local v
+                if owner == id then
+                    v = d.EXPANSION_OWN_PRIORITY
+                elseif should_build_starbase(c, sid, own) then
+                    v = strategy.expansion_value(id, sid, usable)
+                end
+                v = v and floor(v) or 0
+                if v > 0 then
+                    add(T.EXPAND_BORDERS, star, 0, v)
                 end
             end
             if unsurveyed and colonizer then
@@ -483,6 +603,10 @@ local function write(ai, fresh, rebuilt)
     for _, e in ipairs(entries) do new[#new + 1] = e end
     for i = pos, #out do new[#new + 1] = out[i] end
     for i = 1, math.max(#ai, #new) do ai[i] = new[i] end
+    -- the block's entries replaced directly: its field index dropped, and the lists' version
+    -- moved on (the readers' lookup caches, e.g. engine.ai.shipbuilding's, rebuild)
+    world.reindex(ai)
+    strategy.version = (strategy.version or 0) + 1
     strategy.stats.kept = strategy.stats.kept + #kept
     return #all
 end
@@ -516,6 +640,29 @@ local function colonize_due(id, c, ai, date)
     return world.field(ai, "dirty_expand_strategy") == "yes"
 end
 
+-- strategy.entries(country, type) -> { { id, target, value } } in the order the AI walks them: the
+-- order CreateColonizeData made them in since the last rebuild here, else (after a load) the
+-- save's, which is the order CCountryAI::ReadMember added them
+strategy.made = {}
+function strategy.entries(id, t)
+    local made = strategy.made[id]
+    if made then
+        return made[t] or {}
+    end
+    local out = {}
+    local c = country(id)
+    local ai = c and world.field(c, "ai")
+    for _, e in ipairs(type(ai) == "table" and ai or {}) do
+        if e.op and e.key and e.key.text == "strategy" and e.value.text == nil then
+            local s = entry_of(e)
+            if s.type == t then
+                out[#out + 1] = { id = s.id, target = s.target, value = s.value }
+            end
+        end
+    end
+    return out
+end
+
 -- CCountry::MonthlyUpdateStrategy -> CCountryAI::CreateStrategicData, for every country with an AI
 function strategy.monthly(host, date)
     -- STELLAR_AI_STRATEGY=off: the lists kept as loaded (an A/B switch for the checks)
@@ -535,6 +682,18 @@ function strategy.monthly(host, date)
             if type_flag(c, "relations") and colonize_due(id, c, ai, date) then
                 strategy.stats.colonize = strategy.stats.colonize + 1
                 local fresh = strategy.compute(id)
+                -- the lists in memory keep the order they were made in (AddStrategy appends);
+                -- the save writes them sorted (strategy.entries)
+                local made = {}
+                for _, s in ipairs(fresh) do
+                    local l = made[s.type]
+                    if not l then
+                        l = {}
+                        made[s.type] = l
+                    end
+                    l[#l + 1] = { id = s.id, target = s.target, value = s.value }
+                end
+                strategy.made[id] = made
                 strategy.stats.entries = strategy.stats.entries + write(ai, fresh, PORTED)
                 -- HasCreatedColonizeData set, DirtyExpandStrategy cleared
                 world.set(ai, "colonize", "yes")

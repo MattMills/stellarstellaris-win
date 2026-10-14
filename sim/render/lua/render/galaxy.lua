@@ -217,8 +217,7 @@ function galaxy.extract(game_dir)
     end
 
     local countries, owners = {}, {}
-    for _, s in ipairs(systems) do
-        local o = s.owner
+    local function add_country(o)
         if o >= 0 and not owners[o] then
             owners[o] = true
             local c = world.object("country", o)
@@ -233,6 +232,68 @@ function galaxy.extract(game_dir)
             }
         end
     end
+    for _, s in ipairs(systems) do
+        add_country(s.owner)
+    end
+
+    -- fleets: where they are on the map (a fleet's coordinate is in its system's own space,
+    -- `origin` the system; between systems the origin is none and the coordinate the galaxy's),
+    -- their owner, and where an FTL jump takes them (the path's first node in another system)
+    local NONE = 4294967295
+    local function system_xy(sid)
+        local i = index[sid]
+        if i then
+            return systems[i].x, systems[i].y
+        end
+        return nil
+    end
+    local fleets = {}
+    local fleet_owner = world.fleet_owner or {}
+    for _, fid in ipairs(world.all("fleet")) do
+        local f = world.object("fleet", fid)
+        local mm = world.field(f, "movement_manager")
+        if type(mm) == "table" then
+            local c = world.field(mm, "coordinate")
+            local origin = tonumber(world.field(c, "origin")) or NONE
+            local x, y = system_xy(origin)
+            if not x then
+                x, y = tonumber(world.field(c, "x")) or 0, tonumber(world.field(c, "y")) or 0
+            end
+            local state = tostring(world.field(mm, "state") or "move_idle")
+            local owner = fleet_owner[fid] or -1
+            add_country(owner)
+            local fl = {
+                id = fid, owner = owner, x = x, y = y, state = state,
+                station = world.path(f, "properties", "station") == "yes",
+                ships = #world.list(world.field(f, "ships")),
+                military = (tonumber(world.field(f, "military_power")) or 0) > 0,
+            }
+            if state == "move_galaxy" or state == "move_jump_anim" or state == "move_wind_up" or state == "move_wind_down" then
+                for _, n in ipairs(world.fields(world.field(mm, "path") or {}, "node")) do
+                    local o = tonumber(world.path(n, "coordinate", "origin"))
+                    if o and o ~= origin and system_xy(o) then
+                        fl.from_x, fl.from_y = x, y
+                        fl.to_x, fl.to_y = system_xy(o)
+                        break
+                    end
+                end
+            end
+            fleets[#fleets + 1] = fl
+        end
+    end
+
+    -- nebulae: the save's top-level `nebula = { coordinate name radius galactic_object ... }`
+    local nebulae = {}
+    for _, e in ipairs(world.tree or {}) do
+        if e.op and e.key and e.key.text == "nebula" and type(e.value) == "table" then
+            local c = world.field(e.value, "coordinate")
+            nebulae[#nebulae + 1] = {
+                x = tonumber(world.field(c, "x")) or 0, y = tonumber(world.field(c, "y")) or 0,
+                radius = tonumber(world.field(e.value, "radius")) or 30,
+                name = tostring(world.path(e.value, "name", "key") or ""),
+            }
+        end
+    end
 
     local hl = numbers(ng.HYPERLANE_DEFAULT_COLOR)
     local classes_used = 0
@@ -241,7 +302,7 @@ function galaxy.extract(game_dir)
     end
     local out = {
         date = (tostring(world.meta.date or ""):gsub('"', "")),
-        systems = systems, lanes = lanes, countries = countries,
+        systems = systems, lanes = lanes, countries = countries, fleets = fleets, nebulae = nebulae,
         hyperlane_colour = #hl >= 4 and hl or { 0, 1, 1, 0.2 },
         star_icon_scale = tonumber(ng.GALAXY_STAR_ICON_SCALE) or 1.5,
         border_system_radius = tonumber(ng.BORDER_SYSTEM_RADIUS) or 35,
@@ -251,10 +312,11 @@ function galaxy.extract(game_dir)
         dust_size_extra = tonumber(ng.GALAXY_DUST_SIZE_EXTRA) or 35,
     }
     out.notes = string.format(
+        "%d fleets, %d nebulae; " ..
         "%d systems, %d hyperlanes, %d owners; %d star classes used (no texture for: %s); " ..
         "HYPERLANE_DEFAULT_COLOR {%s}, GALAXY_STAR_ICON_SCALE %s, BORDER_SYSTEM_RADIUS %s, " ..
         "BORDER_HYPERLANE_THICKNESS %s; read in %.2f s",
-        #systems, #lanes, #countries, classes_used, table.concat(missing_textures, " "),
+        #fleets, #nebulae, #systems, #lanes, #countries, classes_used, table.concat(missing_textures, " "),
         table.concat(out.hyperlane_colour, " "), out.star_icon_scale, out.border_system_radius,
         out.border_hyperlane_thickness, RUST.clock() - t0)
     return out

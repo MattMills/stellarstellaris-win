@@ -134,10 +134,38 @@ function world.parse_stores(text)
     return stores
 end
 
--- the fields of an object, indexed once: key -> { values } (tokens' text, or blocks)
+-- the fields of an object, indexed once: key -> { entries }. The entries themselves are kept (a
+-- value read through them is the value now, whether a token changed in place or an entry given a
+-- new value), and the object's length when indexed: an object grown or shrunk by code that edits
+-- its entries directly is indexed again on its next read. (world.set / child / append keep the
+-- index and the length current themselves; world.reindex for a same-length rewrite.)
+--
+-- The length check costs about 15% of the run, so it is on only with STELLAR_WORLD_CHECK=1: then
+-- every read of an index made stale by a direct edit is counted with its traceback
+-- (world.stale_report()), to find the code that must call world.reindex; without it, an index is
+-- trusted until world.reindex / insert / remove_entry drops it.
 local fields_of = setmetatable({}, { __mode = "k" })
+local length_of = setmetatable({}, { __mode = "k" })
+local check = os.getenv("STELLAR_WORLD_CHECK") == "1"
+local stale = {}
+function world.stale_report()
+    local list = {}
+    for where, n in pairs(stale) do list[#list + 1] = { where, n } end
+    table.sort(list, function(a, b) return a[2] > b[2] end)
+    local out = { string.format("world: %d places read a stale field index", #list) }
+    for i = 1, math.min(#list, 30) do
+        out[#out + 1] = string.format("%8d  %s", list[i][2], list[i][1])
+    end
+    return table.concat(out, "\n")
+end
 local function fields(obj)
     local f = fields_of[obj]
+    local n = check and #obj or 0
+    if f ~= nil and check and length_of[obj] ~= n then
+        local where = debug.traceback("", 3):gsub("\n%s*", " | "):sub(1, 400)
+        stale[where] = (stale[where] or 0) + 1
+        f = nil
+    end
     if f == nil then
         f = {}
         for _, e in ipairs(obj) do
@@ -147,14 +175,19 @@ local function fields(obj)
                     list = {}
                     f[e.key.text] = list
                 end
-                -- the value itself (a token or a block), so that a token changed in place (a
-                -- countdown, a progress) reads back as it is now
-                list[#list + 1] = e.value
+                list[#list + 1] = e
             end
         end
         fields_of[obj] = f
+        length_of[obj] = n
     end
     return f
+end
+
+-- world.reindex(obj): the index of obj dropped, for code that rewrote obj's entries directly
+-- without changing its length
+function world.reindex(obj)
+    fields_of[obj] = nil
 end
 
 -- world.field(obj, key) -> the first value of key: a number when it is one, else the text or the
@@ -164,7 +197,7 @@ function world.field(obj, key)
         return nil
     end
     local l = fields(obj)[key]
-    local v = l and l[1]
+    local v = l and l[1] and l[1].value
     if v and v.text then
         return tonumber(v.text) or v.text
     end
@@ -172,7 +205,8 @@ function world.field(obj, key)
 end
 function world.fields(obj, key)
     local out = {}
-    for i, v in ipairs(obj and fields(obj)[key] or {}) do
+    for i, e in ipairs(obj and fields(obj)[key] or {}) do
+        local v = e.value
         out[i] = v.text or v
     end
     return out
@@ -215,17 +249,39 @@ local function number_text(v)
 end
 world.number_text = number_text
 
+-- an entry just appended at the end of obj: an index that was current before it gets the entry at
+-- the end of the key's list, as a rebuild would put it; one that was not is dropped
+local function appended(obj, key, entry)
+    local f = fields_of[obj]
+    if f == nil then
+        return
+    end
+    local n = check and #obj or 0
+    if check and length_of[obj] ~= n - 1 then
+        fields_of[obj] = nil
+        return
+    end
+    local list = f[key]
+    if not list then
+        list = {}
+        f[key] = list
+    end
+    list[#list + 1] = entry
+    length_of[obj] = n
+end
+
 -- world.set(obj, key, value): the first `key = <token>` of obj changed, or added
 function world.set(obj, key, value)
     local text = type(value) == "number" and number_text(value) or tostring(value)
-    fields_of[obj] = nil
-    for _, e in ipairs(obj) do
-        if e.op and e.key and e.key.text == key and e.value.text ~= nil then
+    for _, e in ipairs(fields(obj)[key] or {}) do
+        if e.value.text ~= nil then
             e.value.text = text
             return
         end
     end
-    obj[#obj + 1] = { key = { text = key }, op = "=", value = { text = text } }
+    local e = { key = { text = key }, op = "=", value = { text = text } }
+    obj[#obj + 1] = e
+    appended(obj, key, e)
 end
 
 -- world.child(obj, key) -> the block of `key = { }` in obj, made if it is not there
@@ -235,8 +291,9 @@ function world.child(obj, key)
         return v
     end
     local block = {}
-    obj[#obj + 1] = { key = { text = key }, op = "=", value = block }
-    fields_of[obj] = nil
+    local e = { key = { text = key }, op = "=", value = block }
+    obj[#obj + 1] = e
+    appended(obj, key, e)
     return block
 end
 
@@ -244,8 +301,9 @@ end
 function world.append(obj, key, value, quoted)
     local v = type(value) == "table" and value
         or { text = type(value) == "number" and number_text(value) or tostring(value), quoted = quoted or nil }
-    obj[#obj + 1] = { key = { text = key }, op = "=", value = v }
-    fields_of[obj] = nil
+    local e = { key = { text = key }, op = "=", value = v }
+    obj[#obj + 1] = e
+    appended(obj, key, e)
 end
 
 -- world.insert(obj, pos, key, value[, quoted]): `key = value` at position pos of obj (the save's

@@ -25,6 +25,8 @@ pub mod rng;
 pub mod runtime;
 pub mod save;
 pub mod scheduler;
+pub mod store;
+pub mod workers;
 
 /// The Lua binding, for callers that pass tables to and from the runtime.
 pub use mlua;

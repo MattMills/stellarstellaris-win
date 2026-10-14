@@ -24,7 +24,12 @@
 //                     save's random_count, to undo the draws the load makes)
 //   HEADLESS_PROFILE  call-site table (dev/callsites.py): count the generator's draws per site
 //   HEADLESS_PROFILE_OUT  where the per-site table is written at the end
+//   HEADLESS_AUTOSAVE     1: serve the game's own autosave requests (the interval is the settings'
+//                     `autosave`); HEADLESS_AUTOSAVE_DIR: move each autosave there when written
+//   HEADLESS_NO_TASK_THREADS  1: the game's parallel-fors run inline on the main thread
+//   (the profiler's other options are described at the profiler below)
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <dlfcn.h>
 #include <elf.h>
 #include <fcntl.h>
@@ -159,6 +164,10 @@ static uintptr_t a_InGameRenderInternal;   // CInGameIdler::RenderInternal(bool)
 static uintptr_t a_Random;                  // CRandom::_Random: CNoiseRandom { uint32 position; uint32 seed }
 static uintptr_t a_nRandomCount;            // CSystem::_nRandomCount (the position CSetRandomSeed syncs from)
 static uintptr_t a_EnableTaskThreads;       // NPdxThreadUtilDetail::g_bEnableTaskThreads
+static uintptr_t a_g_CurrentInGameIdler;    // CInGameIdler*
+static uintptr_t a_PostRenderUpdate;        // CInGameIdler::PostRenderUpdate()
+static uintptr_t a_SaveTaskUpdate;          // CSaveGameTaskManager::Update(bool)
+static uintptr_t a_DeleteSaveGameFile;      // DeleteSaveGameFile(SSaveGameFile const&)
 
 static struct symreq g_syms[] = {
 	{"_ZN11CDLCManager21VerifyAllDLCOwnershipEb", &a_VerifyAllDLCOwnership},
@@ -185,6 +194,10 @@ static struct symreq g_syms[] = {
 	{"_ZN7CRandom7_RandomE", &a_Random},
 	{"_ZN7CSystem13_nRandomCountE", &a_nRandomCount},
 	{"_ZN20NPdxThreadUtilDetail20g_bEnableTaskThreadsE", &a_EnableTaskThreads},
+	{"g_CurrentInGameIdler", &a_g_CurrentInGameIdler},
+	{"_ZN12CInGameIdler16PostRenderUpdateEv", &a_PostRenderUpdate},
+	{"_ZN20CSaveGameTaskManager6UpdateEb", &a_SaveTaskUpdate},
+	{"_Z18DeleteSaveGameFileRK13SSaveGameFile", &a_DeleteSaveGameFile},
 	{NULL, NULL},
 };
 
@@ -827,6 +840,84 @@ static int per_turn(void) {
 	return n;
 }
 
+// ---------------------------------------------------------------- the game's autosaves
+//
+// HEADLESS_AUTOSAVE=1: the game's own autosaves, at the interval its settings give (run.sh writes
+// `autosave=<level>` to settings.txt: 2 monthly, 3 quarterly, 4 half-yearly, 5 yearly).
+// HandleTurnTick posts a CAutosave command when the day's date change reaches the level;
+// CAutosave::Execute only raises the in-game idler's request flag (+0xab0), which the main loop
+// serves after the frame: CInGameIdler::PostRenderUpdate -> AutoSave() (names the file
+// autosave_<date>, deletes the oldest autosaves past the limit, starts the save task), and at the
+// next frame CSaveGameTaskManager::Update(true) (CInGameIdler::PrepareUpdateInternal) does the
+// save. Our loop never returns to the main loop, so after each session update it does the same two
+// calls, with task threads off so that Update saves on this thread (CreateMemoryFiles,
+// ZipAndWrite) and the file is complete when it returns. DeleteSaveGameFile is replaced by a no-op
+// so that every autosave is kept.
+static int g_autosave, g_autosaves;
+static const char *g_autosave_dir; // HEADLESS_AUTOSAVE_DIR
+
+static void no_delete(void *file) { (void)file; }
+
+// The save task refuses to write once a save folder holds 100 saves (CountSaveGames in
+// StartSaveToPath), so each autosave is moved to HEADLESS_AUTOSAVE_DIR as soon as it is written.
+static void move_file(const char *src, const char *dst) {
+	if (rename(src, dst) == 0) return;
+	FILE *in = fopen(src, "rb"), *out = in ? fopen(dst, "wb") : NULL;
+	char buf[65536];
+	size_t n;
+	if (in && out) {
+		while ((n = fread(buf, 1, sizeof buf, in)) > 0) fwrite(buf, 1, n, out);
+		fclose(out);
+		fclose(in);
+		unlink(src);
+	} else {
+		if (in) fclose(in);
+		hlog("cannot move %s to %s", src, dst);
+	}
+}
+
+static void move_autosaves(void) {
+	const char *home = getenv("HOME");
+	char base[1024], sub[2048], src[3072], dst[3072];
+	snprintf(base, sizeof base, "%s/.local/share/Paradox Interactive/Stellaris/save games", home ? home : ".");
+	DIR *d = opendir(base);
+	if (!d) return;
+	for (struct dirent *e; (e = readdir(d));) {
+		if (e->d_name[0] == '.') continue;
+		snprintf(sub, sizeof sub, "%s/%s", base, e->d_name);
+		DIR *s = opendir(sub);
+		if (!s) continue;
+		for (struct dirent *f; (f = readdir(s));) {
+			size_t n = strlen(f->d_name);
+			if (strncmp(f->d_name, "autosave_", 9) || n < 4 || strcmp(f->d_name + n - 4, ".sav")) continue;
+			snprintf(src, sizeof src, "%s/%s", sub, f->d_name);
+			snprintf(dst, sizeof dst, "%s/%s", g_autosave_dir, f->d_name);
+			move_file(src, dst);
+		}
+		closedir(s);
+	}
+	closedir(d);
+}
+
+static void handle_autosave(void *gs) {
+	void *idler = *(void **)a_g_CurrentInGameIdler;
+	if (!idler || !U8((char *)idler + 0xab0)) return;
+	uint32_t pos = rng_pos();
+	double t = now();
+	uint8_t s_ggs = U8(a_g_AllowGlobalGameStateAccess);
+	((void (*)(void *))a_PostRenderUpdate)(idler);
+	void *mgr = *(void **)((char *)idler + 0xf90);
+	uint8_t s_tt = U8(a_EnableTaskThreads);
+	U8(a_EnableTaskThreads) = 0;
+	((void (*)(void *, int))a_SaveTaskUpdate)(mgr, 1);
+	U8(a_EnableTaskThreads) = s_tt;
+	U8(a_g_AllowGlobalGameStateAccess) = s_ggs;
+	if (g_autosave_dir) move_autosaves();
+	g_autosaves++;
+	hlog("autosave %d: tick=%d days=%d total=%d, %.3f s%s", g_autosaves, I32((char *)gs + 8), I32((char *)gs + 0xc4),
+	     total_ticks(gs), now() - t, rng_pos() != pos ? " (the save drew random values!)" : "");
+}
+
 static void write_gamestate_and_exit(void *gs) {
 	double t_ticks = now() - g_run_t0;
 	int done = total_ticks(gs) - g_start_total;
@@ -859,6 +950,7 @@ static void write_gamestate_and_exit(void *gs) {
 	int ok = ((int (*)(void *))a_SaveGameCheckMakeSave)(path) & 1;
 	hlog("SaveGameCheckMakeSave(\"%s\") -> %d in %.3f s", g_out, ok, now() - t1);
 	hlog("total %.3f s (boot+load %.3f s)", now() - g_t0, g_boot_done);
+	if (g_autosave) hlog("%d autosaves", g_autosaves);
 	fflush(NULL);
 	_exit(ok ? 0 : 1);
 }
@@ -882,6 +974,11 @@ static void start_run(void *gs) {
 	     g_boot_done, I32((char *)gs + 8), I32((char *)gs + 0xc4), I32((char *)gs + 0xc0), g_start_total,
 	     g_ticks, g_frame_mode ? "frame" : "loop", per_turn());
 	U8(a_g_bFrameSmoothing) = 0; // no frames rendered from inside the tick
+	if (getenv("HEADLESS_NO_TASK_THREADS") && *getenv("HEADLESS_NO_TASK_THREADS") == '1') {
+		// every parallel-for of the game runs inline, on this thread, in index order
+		U8(a_EnableTaskThreads) = 0;
+		hlog("task threads off");
+	}
 	hlog("random after load: seed %d position %u", (int)rng_seed(), rng_pos());
 	if (g_rng_pos_set >= 0) {
 		// The load itself draws (112 for the 2210 saves): put the position back where the save
@@ -939,6 +1036,7 @@ static _Bool my_CheckTick(void *idler, float dt) {
 			app_update();
 			if (g_trace_turn) fprintf(g_trace, "%d\t%u\t-\t-\tturn ends\t\n", total_ticks(gs), rng_pos());
 			g_trace_turn = 0;
+			if (g_autosave) handle_autosave(gs);
 			progress(gs);
 			if (total_ticks(gs) == before && ++stalls > 100) die(4, "ticks do not advance");
 		}
@@ -1011,6 +1109,12 @@ __attribute__((constructor)) static void headless_init(void) {
 	detour(a_CheckTick, (void *)my_CheckTick);
 	detour(a_FrontendDlcViewUpdate, (void *)my_FrontendDlcViewUpdate);
 	if ((e = getenv("HEADLESS_PROFILE")) && *e) profile_install(e);
+	if ((e = getenv("HEADLESS_AUTOSAVE")) && atoi(e) > 0) {
+		g_autosave = 1;
+		if ((e = getenv("HEADLESS_AUTOSAVE_DIR")) && *e) g_autosave_dir = e;
+		detour(a_DeleteSaveGameFile, (void *)no_delete);
+		hlog("autosaves on, none deleted");
+	}
 
 	pthread_t t;
 	pthread_create(&t, NULL, watchdog, NULL);
