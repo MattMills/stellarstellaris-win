@@ -37,7 +37,7 @@ local function forbidden(name)
 end
 
 -- the copy attached again when the main state's sync moved, added or removed an object
-local indexes_seen
+local indexes_seen, values_seen
 local function current()
     local g = S.H.roots[5]
     if g ~= generation_seen then
@@ -72,6 +72,34 @@ local function current()
                 end
             end
             SW[name] = t
+        end
+    end
+    -- the main state's module values (engine.store.full's root 10): each set on the module here
+    local nv = S.H.roots[11]
+    if nv ~= values_seen and S.H.roots[10] ~= 0 then
+        values_seen = nv
+        local function get(bid)
+            local out = {}
+            local b = S.B[bid]
+            for i = b.first, b.first + b.count - 1 do
+                local e = S.E[i]
+                local key = S.str(e.key)
+                local k = key:sub(1, 1) == "#" and tonumber(key:sub(2)) or key
+                if e.kind == S.BLOCK then
+                    out[k] = get(e.v.u.a)
+                elseif e.kind == S.NUMBER then
+                    out[k] = e.v.num
+                else
+                    out[k] = S.str(e.v.u.a)
+                end
+            end
+            return out
+        end
+        local b = S.B[S.H.roots[10]]
+        for i = b.first, b.first + b.count - 1 do
+            local e = S.E[i]
+            local module, field = S.str(e.key):match("^(.*)%.([^.]+)$")
+            require(module)[field] = get(e.v.u.a)
         end
     end
 end
@@ -169,11 +197,12 @@ function W.profile(arg)
     return table.concat(out, "\n")
 end
 
--- the main state's date for the next jobs ("YYYY.MM.DD")
+-- the main state's date for the next jobs ("YYYY.MM.DD <RUST.date()>": the save's text, and the
+-- game's date as RUST.date gives it in the main state)
 function W.date(arg)
-    local y, m, d = arg:match("^(%d+)%.(%d+)%.(%d+)$")
-    job.date = { year = tonumber(y), month = tonumber(m), day = tonumber(d) }
-    SW.meta.date = arg
+    local text, ticks = arg:match("^(%S+)%s*(%S*)$")
+    job.date = tonumber(ticks)
+    SW.meta.date = text
     return "ok"
 end
 
@@ -247,8 +276,33 @@ end
 -- (internal) is executed here. Per country the records "C" ("<country> <seed> <position>"), "O"
 -- (the ai block's text, when it changed), "E" (an error), then "K" for each command
 -- (engine.ai.commands' line), in order.
+local ai_prof, ai_times
+local function prof_start()
+    if ai_prof or not os.getenv("STELLAR_WORKER_PROF") then return end
+    local profile = require("jit.profile")
+    ai_prof, ai_times = { fn = {}, n = 0 }, { hold = 0, decide = 0, serialize = 0, release = 0, jobs = 0 }
+    profile.start("fi1", function(thread, samples)
+        ai_prof.n = ai_prof.n + samples
+        local top = profile.dumpstack(thread, "pl", 1)
+        ai_prof.fn[top] = (ai_prof.fn[top] or 0) + samples
+    end)
+end
+local function prof_write()
+    if not ai_prof then return end
+    local list = {}
+    for k, v in pairs(ai_prof.fn) do list[#list + 1] = { k, v } end
+    table.sort(list, function(a, b) return a[2] > b[2] end)
+    local f = io.open(os.getenv("STELLAR_WORKER_PROF") .. "." .. RUST.worker_index, "w")
+    f:write(string.format("%d samples; %d jobs: hold %.2f s, decide %.2f s, serialize %.2f s, release %.2f s\n", ai_prof.n,
+        ai_times.jobs, ai_times.hold, ai_times.decide, ai_times.serialize, ai_times.release))
+    for i = 1, math.min(40, #list) do f:write(string.format("%6d %s\n", list[i][2], list[i][1])) end
+    f:close()
+end
+
 function W.ai(arg)
     current()
+    prof_start()
+    local clock = RUST.clock
     local ai = require("engine.ai")
     local rng = require("engine.ai.rng")
     local cmds = require("engine.ai.commands")
@@ -261,9 +315,12 @@ function W.ai(arg)
         if c % n == mod then
             rng.set_state(c, tonumber(seed), tonumber(pos))
             local commands = {}
+            local t0 = clock()
             local bid, t, before = hold_ai(c)
+            local t1 = clock()
             local ok, err = pcall(ai.decide, c, today, { week = w == "1" or nil, month = m == "1" or nil,
                 year = y == "1" or nil }, commands, host)
+            local t2 = clock()
             local lines = {}
             if ok then
                 local paths = t and cmds.paths(t)
@@ -280,13 +337,24 @@ function W.ai(arg)
                     end
                 end
             end
+            local t3 = clock()
             local changed = bid and release_ai(bid, t, before)
+            if ai_times then
+                ai_times.hold = ai_times.hold + (t1 - t0)
+                ai_times.decide = ai_times.decide + (t2 - t1)
+                ai_times.serialize = ai_times.serialize + (t3 - t2)
+                ai_times.release = ai_times.release + (clock() - t3)
+            end
             local s, p = rng.state(c)
             record(out, "C", string.format("%d %d %d", c, s, p))
             if changed then record(out, "O", changed) end
             if not ok then record(out, "E", tostring(err)) end
             for _, line in ipairs(lines) do record(out, "K", line) end
         end
+    end
+    if ai_times then
+        ai_times.jobs = ai_times.jobs + 1
+        if ai_times.jobs % 30 == 0 then prof_write() end
     end
     return table.concat(out)
 end

@@ -123,6 +123,24 @@ local function mapped(t)
     return t
 end
 
+-- F.ai_version[country]: moves when the main state writes the country's `ai` block (or a block in
+-- it), or the whole country, other than by engine.ai's merge of a worker's decisions (F.merging):
+-- a worker keeps the country's ai block as Lua tables from one day to the next while it has not
+-- moved (engine.store.worker)
+F.ai_version, F.merging = {}, false
+local function ai_written(id, block)
+    if F.merging then return end
+    if block ~= nil then
+        local c = world.stores.country and world.stores.country[id]
+        local ai = type(c) == "table" and world.field(c, "ai")
+        if type(ai) ~= "table" then return end
+        local b = block
+        while b ~= nil and b ~= ai do b = world.parent(b) end
+        if b == nil then return end
+    end
+    F.ai_version[id] = (F.ai_version[id] or 0) + 1
+end
+
 -- F.build(): the copy made from the table world, marks taken from now on
 function F.build()
     if F.root then return F.root end
@@ -134,6 +152,7 @@ function F.build()
     live.consumer("full")
     world.track_owners()
     world.on_write = function(name, id, block, how, key)
+        if name == "country" then ai_written(id, block) end
         if block == nil then
             local m = object_marks[name]
             if not m then
@@ -259,6 +278,55 @@ local function export_indexes()
 end
 F.export_indexes = export_indexes
 
+-- module values of the main state the workers read (a field of a loaded module, e.g. the economy's
+-- last month), copied into the store when the field holds another table than at the last copy:
+-- root 10 a block of `"<module>.<field>" = { ... }`, a table as a block (a number key written
+-- "#<n>"), a number as a NUMBER entry, a text as a token, a boolean as yes / no; root 11 counts the
+-- copies. Copied whole when the field holds another table, or when the module's version field (the
+-- third, for a table changed in place) moved.
+F.VALUES = { { "engine.economy", "last_month" }, { "engine.ai.strategy", "made", "version" } }
+local values_root, values_seen, versions_seen = nil, {}, {}
+local function put(bid, t)
+    for k, v in pairs(t) do
+        local key = type(k) == "number" and ("#" .. string.format("%.17g", k)) or tostring(k)
+        local tv = type(v)
+        if tv == "table" then
+            put((S.append_block(bid, key)), v)
+        elseif tv == "number" then
+            local e = S.E[S.append(bid, key, 0)]
+            e.kind = S.NUMBER
+            e.v.num = v
+        elseif tv == "boolean" then
+            S.append(bid, key, v and "yes" or "no")
+        elseif tv == "string" then
+            S.append(bid, key, v)
+        end
+    end
+end
+local function export_values()
+    local changed = false
+    for _, spec in ipairs(F.VALUES) do
+        local m = package.loaded[spec[1]]
+        local v = type(m) == "table" and m[spec[2]] or nil
+        local name = spec[1] .. "." .. spec[2]
+        local ver = spec[3] and type(m) == "table" and m[spec[3]] or nil
+        if v ~= values_seen[name] or ver ~= versions_seen[name] then
+            values_seen[name], versions_seen[name] = v, ver
+            changed = true
+        end
+    end
+    if not changed then return end
+    values_root = S.new_block(0)
+    for _, spec in ipairs(F.VALUES) do
+        local name = spec[1] .. "." .. spec[2]
+        local v = values_seen[name]
+        if type(v) == "table" then put((S.append_block(values_root, name)), v) end
+    end
+    S.H.roots[10] = values_root
+    S.H.roots[11] = S.H.roots[11] + 1
+end
+F.export_values = export_values
+
 -- F.sync(): the marked objects and blocks brought into the copy
 function F.sync()
     if not F.root then return end
@@ -270,6 +338,9 @@ function F.sync()
     object_marks = {}
     for name, ids in pairs(live.take("full")) do
         if ids == true then ids = every_id(name) end
+        if name == "country" then
+            for id in pairs(ids) do ai_written(id) end
+        end
         local m = objects[name]
         if not m then
             m = {}
@@ -345,6 +416,7 @@ function F.sync()
         end
     end
     export_indexes()
+    export_values()
     F.stats.t_blocks = (F.stats.t_blocks or 0) + (RUST.clock() - t1)
     if index_changed then
         index_changed = false

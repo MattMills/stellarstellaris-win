@@ -23,7 +23,7 @@ function D.build(defs, folders)
     local t0 = RUST.clock()
     local tree = {}
     for _, folder in ipairs(folders or defs.order) do
-        local d = defs.folders[folder] or {}
+        local d = defs.folder(folder)
         local names = {}
         for name, def in pairs(d) do
             if def.block then names[#names + 1] = name end

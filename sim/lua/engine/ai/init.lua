@@ -209,6 +209,7 @@ local function decide_on_workers(list, today, commands)
         lines[i] = string.format("%d %d %d %d %d %d", c, due.week and 1 or 0, due.month and 1 or 0,
             due.year and 1 or 0, seed, pos)
     end
+    local t0 = RUST.clock()
     local res = {}
     for w, text in ipairs(parallel.run("ai", today .. "\n" .. table.concat(lines, "\n"))) do
         local at, cur = 1, nil
@@ -230,6 +231,8 @@ local function decide_on_workers(list, today, commands)
             end
         end
     end
+    local t1 = RUST.clock()
+    ai.stats.run_seconds = (ai.stats.run_seconds or 0) + (t1 - t0)
     local pdx = require("pdxscript")
     local env = { B = require("engine.store.full").table_of, M = require }
     for _, c in ipairs(list) do
@@ -271,6 +274,7 @@ function ai.process(host, date)
             list[#list + 1] = country
         end
     end
+    local t0 = RUST.clock()
     if #list > 0 and require("engine.store.parallel").enabled("ai") then
         decide_on_workers(list, today, commands)
     else
@@ -278,12 +282,30 @@ function ai.process(host, date)
             ai.decide(country, today, tick_counters(country), commands, host)
         end
     end
+    ai.stats.decide_seconds = (ai.stats.decide_seconds or 0) + (RUST.clock() - t0)
     -- STELLAR_AI_LOG=<file>: the day's commands, in order (serial and parallel runs compared)
     local log = os.getenv("STELLAR_AI_LOG")
     if log then
         local f = io.open(log, "a")
+        local function flat(t, depth)
+            local ks = {}
+            for k, v in pairs(t) do
+                if type(v) ~= "function" then ks[#ks + 1] = k end
+            end
+            table.sort(ks, function(a, b) return tostring(a) < tostring(b) end)
+            local out = {}
+            for _, k in ipairs(ks) do
+                local v = t[k]
+                if type(v) == "table" then
+                    out[#out + 1] = tostring(k) .. "={" .. (depth < 3 and flat(v, depth + 1) or "...") .. "}"
+                else
+                    out[#out + 1] = tostring(k) .. "=" .. tostring(v)
+                end
+            end
+            return table.concat(out, " ")
+        end
         for _, cmd in ipairs(commands) do
-            f:write(today, " ", tostring(cmd.country), " ", tostring(cmd.kind), " ", tostring(cmd.tech or cmd.name or ""), "\n")
+            f:write(today, " ", tostring(cmd.country), " ", tostring(cmd.kind), " ", flat(cmd, 1), "\n")
         end
         local rng = require("engine.ai.rng")
         for _, c in ipairs(list) do
@@ -304,6 +326,11 @@ function ai.report()
     local r = require("engine.ai.research").stats
     local text = string.format("ai: %d days, %d country-days; research: %d draws, %d picks; %d commands, %d executed",
         s.days, s.countries, r.draws, r.picks, s.commands, s.executed)
+    text = text .. string.format("; deciding %.2f s", s.decide_seconds or 0)
+    if s.run_seconds then
+        local p = require("engine.store.parallel").stats
+        text = text .. string.format(" (on the workers: the run %.2f s, of which the copy's syncs %.2f s, the jobs %.2f s)", s.run_seconds, p.sync_seconds or 0, p.seconds - (p.sync_seconds or 0))
+    end
     if s.errors then
         text = text .. string.format("; %d decisions failed on the workers (first: %s)", s.errors, s.first_error)
     end
