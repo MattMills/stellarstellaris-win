@@ -129,15 +129,15 @@ local function save_page(country, page)
     for _, pair in ipairs({ { "income", "income" }, { "expenses", "expenses" }, { "trade_income", "income" },
         { "trade_expenses", "expenses" } }) do
         local s = world.field(p, pair[1])
-        for _, e in ipairs(type(s) == "table" and s or {}) do
-            if e.op and e.key and e.value.text == nil then
-                local t = out[pair[2]][e.key.text] or {}
-                for _, x in ipairs(e.value) do
-                    if x.op and x.key then
-                        t[x.key.text] = (t[x.key.text] or 0) + (tonumber(x.value.text) or 0)
+        if type(s) == "table" then
+            for cat, v in world.statements(s) do
+                if type(v) == "table" then
+                    local t = out[pair[2]][cat] or {}
+                    for res, x in world.statements(v) do
+                        t[res] = (t[res] or 0) + (type(x) ~= "table" and tonumber(x) or 0)
                     end
+                    out[pair[2]][cat] = t
                 end
-                out[pair[2]][e.key.text] = t
             end
         end
     end

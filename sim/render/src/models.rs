@@ -23,6 +23,8 @@ pub struct Part {
     pub mesh: Arc<MeshData>,
     pub textures: [String; 3],
     pub shading: Shading,
+    /// the defines of its effect (gfx/FX/pdxmesh.shader: effects.rs bits)
+    pub flags: u32,
 }
 
 #[derive(Clone)]
@@ -38,6 +40,12 @@ pub struct Model {
     pub attach: Vec<(String, String)>,
     /// shapes skipped (collision, effects) and why
     pub skipped: Vec<String>,
+    /// the particle effects its default state starts (the entity's `state` events)
+    pub particles: Vec<String>,
+    /// the entity's game_data bloom_factor (vBloomFactor: the lit colour times it), 1 if none
+    pub bloom_factor: f32,
+    /// game_data emissive_recolor_crunch (a ship's ShipVars.r), 1 if none
+    pub recolor_crunch: f32,
 }
 
 impl Model {
@@ -55,11 +63,15 @@ impl Model {
     }
 }
 
-/// How a shader of the game's is drawn here (None: not drawn: collision volumes, effects).
-pub fn shading_of(shader: &str) -> Option<Shading> {
+/// How a shader of the game's is drawn here (None: not drawn: collision volumes, effects not
+/// ported). Effects of PixelPdxMeshAdditive (gfx/FX/pdxmesh.shader) are drawn as Additive.
+pub fn shading_of(game_dir: &str, shader: &str) -> Option<Shading> {
     let s = shader.to_ascii_lowercase();
     if s.is_empty() || s.contains("collision") {
         return None;
+    }
+    if crate::effects::effect(game_dir, shader).is_some_and(|e| e.pixel_shader == "PixelPdxMeshAdditive") {
+        return Some(Shading::Additive);
     }
     if s.contains("atmospherestar") {
         return Some(Shading::StarAtmosphere);
@@ -69,6 +81,12 @@ pub fn shading_of(shader: &str) -> Option<Shading> {
     }
     if s.contains("clouds") {
         return Some(Shading::Clouds);
+    }
+    if s.contains("planetrings") {
+        return Some(Shading::Ring);
+    }
+    if s == "pdxmeshnavigationbutton" {
+        return Some(Shading::Button);
     }
     if s == "pdxmeshstar" {
         return Some(Shading::Star);
@@ -237,8 +255,14 @@ impl Library {
             // the shape's settings, else settings naming no shape (all shapes) [I]
             let over = settings.iter().find(|s| s.0 == shape.name).or_else(|| settings.iter().find(|s| s.0.is_empty()));
             for (k, sm) in shape.meshes.iter().enumerate() {
+                // a collision volume stays one whatever the settings say: a meshsettings naming no
+                // shape (`shader = "PdxMeshShip"` in mammalian_01_science_mesh) does not draw it
+                if sm.material.shader.to_ascii_lowercase().contains("collision") {
+                    skipped.push(format!("{} ({})", shape.name, sm.material.shader));
+                    continue;
+                }
                 let shader = over.and_then(|o| o.4.clone()).unwrap_or_else(|| sm.material.shader.clone());
-                let Some(shading) = shading_of(&shader) else {
+                let Some(shading) = shading_of(game_dir, &shader) else {
                     skipped.push(format!("{} ({shader})", shape.name));
                     continue;
                 };
@@ -260,17 +284,26 @@ impl Library {
                 let key = format!("{file}#{}#{k}", shape.name);
                 parts.push(Part {
                     shape: shape.name.clone(),
-                    shader,
                     mesh: Arc::new(MeshData { key, vertices, indices: sm.indices.clone() }),
                     textures,
                     shading,
+                    flags: crate::effects::effect(game_dir, &shader).map_or(0, |e| e.flags()),
+                    shader,
                 });
             }
         }
         if parts.is_empty() {
             (lo, hi) = ([0.0; 3], [0.0; 3]);
         }
-        Ok(Model { name: name.to_string(), file, scale, parts, locators: mesh.locators.clone(), aabb: (lo, hi), attach, skipped })
+        let particles: Vec<String> = t
+            .get::<Option<Table>>("particles")
+            .ok()
+            .flatten()
+            .map(|p| p.sequence_values::<Table>().filter_map(|x| x.ok()?.get::<String>("particle").ok()).collect())
+            .unwrap_or_default();
+        let bloom_factor = t.get::<Option<f32>>("bloom_factor").ok().flatten().unwrap_or(1.0);
+        let recolor_crunch = t.get::<Option<f32>>("recolor_crunch").ok().flatten().unwrap_or(1.0);
+        Ok(Model { name: name.to_string(), file, scale, parts, locators: mesh.locators.clone(), aabb: (lo, hi), attach, skipped, particles, bloom_factor, recolor_crunch })
     }
 }
 
@@ -290,12 +323,18 @@ fn part_texture(tex: &mut Textures, cache: &mut Cache, game_dir: &str, path: &st
 /// The star textures of gfx/worldgfx (tex_lava_diffuse, tex_stone_diffuse: the same in every
 /// star class's file).
 pub const LAVA_TEXTURES: [&str; 2] = ["gfx/worldgfx/lava_d.dds", "gfx/worldgfx/stone_d.dds"];
+/// The star classes' lava noise (tex_lava_noise in every star class's file): a cube map.
+pub const LAVA_NOISE: &str = "gfx/worldgfx/lava_noise.dds";
 
 /// What a part of the game's shader is lit as here: 1 a planet (IS_PLANET: PdxMeshPlanet,
-/// PdxMeshClouds), 2 a ship (PdxMeshShip and the ships' PdxMeshTerra), 0 else.
+/// PdxMeshClouds, PdxMeshGasGiant), 3 a planet whose emissive glows everywhere (NO_PLANET_EMISSIVE:
+/// PdxMeshPlanetEmissive, PdxMeshMoltenPlanet and their skinned forms), 2 a ship (PdxMeshShip and
+/// the ships' PdxMeshTerra), 0 else.
 fn part_kind(shader: &str) -> f32 {
     let s = shader.to_ascii_lowercase();
-    if s.contains("planet") || s.contains("clouds") {
+    if (s.contains("planetemissive") && !s.contains("withlights")) || s.contains("moltenplanet") {
+        3.0
+    } else if s.contains("planet") || s.contains("clouds") || s.contains("gasgiant") {
         1.0
     } else if s.contains("ship") || s.contains("terra") {
         2.0
@@ -327,9 +366,16 @@ pub fn draws(model: &Model, transform: M4, tint: [f32; 4], look: &Look, tex: &mu
             let mut d = MeshDraw::new(p.mesh.clone(), m, t, p.shading, tint);
             d.look = *look;
             d.look.kind = part_kind(&p.shader);
-            if d.look.kind == 1.0 {
-                d.params[3] = 0.04;
+            if p.shading == Shading::Star {
+                // the lava noise (gfx/worldgfx: tex_lava_noise, a cube map)
+                d.cube = tex.game_cube(cache, game_dir, LAVA_NOISE);
             }
+            if d.look.kind == 1.0 || d.look.kind == 3.0 {
+                d.params[3] = 0.08;
+            }
+            // PixelPdxMeshStandard's: the defines, vBloomFactor, (CubemapIntensity: the
+            // scene's), AtmosphereColor.a (a class with an atmosphere colour)
+            d.std = [p.flags as f32, model.bloom_factor, 0.0, look.colour_alpha];
             d
         })
         .collect()

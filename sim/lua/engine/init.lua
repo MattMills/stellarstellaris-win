@@ -13,6 +13,11 @@
 -- engine.command(kind, ...), engine.report().
 
 local engine = {}
+-- STELLAR_WORLD=store: the world lives in the shared store, the one copy every state reads and
+-- writes (engine.store.engine_world); else as Lua tables (engine.world)
+if os.getenv("STELLAR_WORLD") == "store" then
+    require("engine.store.engine_world").install()
+end
 engine.defs = require("engine.defs")
 engine.world = require("engine.world")
 require("engine.interface")
@@ -149,7 +154,7 @@ function engine.report()
     if engine.modifier_source then
         lines[#lines + 1] = engine.modifier_source.report()
     end
-    for _, m in ipairs({ "engine.research", "engine.leaders", "engine.construction", "engine.traditions", "engine.ai", "engine.ai.attitudes", "engine.ai.strategy", "engine.ai.traditions", "engine.pops", "engine.colonies", "engine.ethics", "engine.situations", "engine.first_contact" }) do
+    for _, m in ipairs({ "engine.research", "engine.leaders", "engine.construction", "engine.traditions", "engine.ai", "engine.ai.attitudes", "engine.ai.strategy", "engine.ai.traditions", "engine.pops", "engine.colonies", "engine.ethics", "engine.situations", "engine.first_contact", "engine.script.creation" }) do
         local mod = package.loaded[m]
         if type(mod) == "table" and mod.report then
             lines[#lines + 1] = mod.report()

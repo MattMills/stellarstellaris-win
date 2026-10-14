@@ -33,6 +33,7 @@
 local world = require("engine.world")
 local defs = require("engine.defs")
 local path = require("engine.fleets.path")
+local live = require("engine.store.live")   -- the store's copy of the fleet (docs/data_layer.md)
 
 local FP, NO_ID = path.FP, path.NO_ID
 local raw, text = path.raw, path.text
@@ -232,7 +233,7 @@ local function write_state(st)
     if type(formation) == "table" then
         for _, e in ipairs(formation) do
             if e.op and e.key and e.key.text == "angle" then
-                e.value.text = text(st.angle or 0)
+                world.set_entry(formation, e, text(st.angle or 0))
             end
         end
         touched(formation)
@@ -283,13 +284,9 @@ local function write_state(st)
             out[#out + 1] = e
         end
     end
-    for i = #mm, 1, -1 do
-        mm[i] = nil
-    end
-    for i, e in ipairs(out) do
-        mm[i] = e
-    end
+    world.replace(mm, out)
     touched(mm)
+    live.touch("fleet", st.fid)
     S.writes = S.writes + 1
 end
 
@@ -1078,8 +1075,10 @@ local function wrap(a)
 end
 
 local function set_entry(s, key, value, after)
-    for _, e in ipairs(entries(s, key)) do
-        e.value = type(value) == "table" and value or { text = value }
+    -- the first `key` statement (engine.world.entry: by the key index with the world in the store)
+    local e = world.entry(s, key)
+    if e then
+        world.set_entry(s, e, value)
         return
     end
     local pos = #s + 1
@@ -1190,6 +1189,7 @@ local function repair(fid, f)
     world.set(lj, "bypass_from", NO_ID)
     world.set(lj, "bypass_to", NO_ID)
     cache[mm] = nil
+    live.touch("fleet", fid)
     S.repaired = (S.repaired or 0) + 1
 end
 

@@ -79,14 +79,18 @@ pub struct Quad {
     pub kind: QuadKind,
     pub height: f32,
     pub least_px: f32,
+    /// the galaxy view's shading (map.wgsl fs_quad): mode, terra incognita brightness, tilt; the
+    /// dust colour map's rectangle
+    pub fx: [f32; 4],
+    pub fx2: [f32; 4],
 }
 
 impl Quad {
     pub fn plane(rect: [f32; 4], colour: [f32; 4], rot: f32) -> Quad {
-        Quad { rect, uv: [0.0, 0.0, 1.0, 1.0], colour, rot, kind: QuadKind::Plane, height: 0.0, least_px: 0.0 }
+        Quad { rect, uv: [0.0, 0.0, 1.0, 1.0], colour, rot, kind: QuadKind::Plane, height: 0.0, least_px: 0.0, fx: [0.0; 4], fx2: [0.0; 4] }
     }
     pub fn billboard(x: f32, y: f32, height: f32, half: f32, colour: [f32; 4], rot: f32, least_px: f32) -> Quad {
-        Quad { rect: [x - half, y - half, x + half, y + half], uv: [0.0, 0.0, 1.0, 1.0], colour, rot, kind: QuadKind::Billboard, height, least_px }
+        Quad { rect: [x - half, y - half, x + half, y + half], uv: [0.0, 0.0, 1.0, 1.0], colour, rot, kind: QuadKind::Billboard, height, least_px, fx: [0.0; 4], fx2: [0.0; 4] }
     }
 }
 
@@ -104,6 +108,8 @@ pub struct Line {
     pub b: V3,
     pub colour: [f32; 4],
     pub width: f32,
+    /// 1: a hyperlane of the galaxy view (map.wgsl: greyed and faded outside the known space)
+    pub mode: f32,
 }
 
 /// A mesh's vertex on the GPU.
@@ -137,6 +143,15 @@ pub enum Shading {
     Star,
     /// a star's glow: its back faces, added (PixelPdxMeshAtmosphereStar)
     StarAtmosphere,
+    /// a planet's ring: both faces, blended, its alpha added to the bloom's mask
+    /// (PdxMeshPlanetRings: BlendStateAlphaBlendWriteAlpha, RasterizerStateNoCulling)
+    Ring,
+    /// an additive effect (PixelPdxMeshAdditive: BlendStateAdditiveBlend, no depth write): the
+    /// diffuse x its alpha, alpha x vBloomFactor
+    Additive,
+    /// a hyperlane exit's arrow (PixelPdxMeshNavigationButton: BlendStateAlphaBlend, no depth
+    /// write): the texture's first of five frames, unlit
+    Button,
 }
 
 impl Shading {
@@ -148,6 +163,9 @@ impl Shading {
             Shading::Clouds => 3.0,
             Shading::Star => 4.0,
             Shading::StarAtmosphere => 5.0,
+            Shading::Ring => 6.0,
+            Shading::Additive => 7.0,
+            Shading::Button => 8.0,
         }
     }
 }
@@ -163,11 +181,13 @@ pub struct Look {
     pub kind: f32,
     /// a star's LavaBrightColor, LavaHotStoneColor, LavaColdStoneColor (gfx/worldgfx)
     pub lava: [[f32; 3]; 3],
+    /// AtmosphereColor.a (0 for planets: SetPlanetEntityCustomData)
+    pub colour_alpha: f32,
 }
 
 impl Default for Look {
     fn default() -> Look {
-        Look { atmosphere: [0.55, 0.7, 1.0, 1.0], width: 0.5, kind: 0.0, lava: [[0.5, 0.55, 0.5], [1.0, 0.75, 0.3], [0.9, 0.4, 0.13]] }
+        Look { atmosphere: [0.55, 0.7, 1.0, 1.0], width: 0.5, kind: 0.0, lava: [[0.5, 0.55, 0.5], [1.0, 0.75, 0.3], [0.9, 0.4, 0.13]], colour_alpha: 0.0 }
     }
 }
 
@@ -182,11 +202,20 @@ pub struct MeshDraw {
     /// w: ambient
     pub params: [f32; 4],
     pub look: Look,
+    /// a cube map (an index into the scene's textures): the stars' lava noise
+    pub cube: Option<usize>,
+    /// PixelPdxMeshStandard's constants: the effect's defines (effects.rs bits), vBloomFactor,
+    /// - (the scene's CubemapIntensity), AtmosphereColor.a
+    pub std: [f32; 4],
+    /// a ship part's PixelPdxMeshShip constants: the three camera lights' directions (camera
+    /// space) with w the lights' intensity, w of the second the rim's start and of the third its
+    /// stop; the fourth: the ambient intensity, -, EmissiveRecolorCrunch, -
+    pub ship: [[f32; 4]; 4],
 }
 
 impl MeshDraw {
     pub fn new(mesh: Arc<MeshData>, model: M4, textures: [usize; 3], shading: Shading, tint: [f32; 4]) -> MeshDraw {
-        MeshDraw { mesh, model, textures, shading, tint, params: [shading.number(), 1.6, 1.0, 0.12], look: Look::default() }
+        MeshDraw { mesh, model, textures, shading, tint, params: [shading.number(), 1.6, 1.0, 0.12], look: Look::default(), cube: None, std: [0.0, 1.0, 0.0, 1.0], ship: [[0.0; 4]; 4] }
     }
 }
 
@@ -196,8 +225,8 @@ pub struct Layout {
     pub width: u32,
     pub height: u32,
     /// map units -> clip space: ndc = p * xy + zw. The save's x is drawn growing to the left
-    /// (mirrored, the convention of save viewers such as Stellaris Dashboard; not yet checked
-    /// against the game's own map); y grows up.
+    /// and y downwards: the game's galaxy seen from above at yaw 0 (its camera, docs/render.md
+    /// section 10).
     pub world_to_ndc: [f32; 4],
     /// pixels per map unit
     pub scale: f32,
@@ -225,7 +254,7 @@ impl Layout {
         let (sx, sy) = (scale * 2.0 / w, scale * 2.0 / h);
         // the galaxy's centre at the middle of the area under the bar
         let ny = -(top / h);
-        Layout { width, height, world_to_ndc: [-sx, sy, cx * sx, -cy * sy + ny], scale, lane_width: (scale * 0.6).clamp(1.0, 2.5) }
+        Layout { width, height, world_to_ndc: [-sx, -sy, cx * sx, cy * sy + ny], scale, lane_width: (scale * 0.6).clamp(1.0, 2.5) }
     }
 
     /// A map position -> pixels from the top left.
@@ -271,6 +300,32 @@ impl Textures {
             Ok(img) => {
                 let img = Arc::new(img.clone());
                 Some(self.add(path, img))
+            }
+            Err(e) => {
+                if !self.missing.contains(&e) {
+                    self.missing.push(e);
+                }
+                None
+            }
+        }
+    }
+
+    /// A cube map from the game's files (dds::load_cube), its first level, under the name
+    /// `cube:<path>`.
+    pub fn game_cube(&mut self, cache: &mut Cache, game_dir: &str, path: &str) -> Option<usize> {
+        self.game_cube_levels(cache, game_dir, path, 1)
+    }
+
+    /// A cube map with up to `levels` of its file's mip levels (a pre-filtered environment map).
+    pub fn game_cube_levels(&mut self, cache: &mut Cache, game_dir: &str, path: &str, levels: u32) -> Option<usize> {
+        let name = if levels <= 1 { format!("cube:{path}") } else { format!("cube{levels}:{path}") };
+        if let Some(&i) = self.index.get(&name) {
+            return Some(i);
+        }
+        match cache.get_cube(game_dir, path, levels) {
+            Ok(img) => {
+                let img = Arc::new(img.clone());
+                Some(self.add(&name, img))
             }
             Err(e) => {
                 if !self.missing.contains(&e) {
@@ -332,6 +387,156 @@ pub struct PlacedStar {
     pub rect: [f32; 4],
 }
 
+/// Something on the map a click can select.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pickable {
+    /// a system (its index in the galaxy's systems)
+    System(usize),
+    /// a fleet (its save id)
+    Fleet(u32),
+    /// a planet, moon or star of a system (its save id)
+    Body(u32),
+    /// a ship in a system (its save id)
+    Ship(u32),
+}
+
+/// Where a pickable thing is on the screen: its centre and radius in pixels.
+#[derive(Clone, Copy, Debug)]
+pub struct Pick {
+    pub what: Pickable,
+    pub centre: (f32, f32),
+    pub radius: f32,
+}
+
+/// What the window adds over a view: the selection (marked), and GUI windows over the view
+/// (the outliner, an info window) with their own buttons.
+#[derive(Clone, Debug, Default)]
+pub struct Overlay {
+    pub selected: Option<Pickable>,
+    pub items: Vec<GuiItem>,
+    /// map labels (mapicons.gui): GUI laid out at the screen's origin, drawn where their world
+    /// point is
+    pub labels: Vec<Label>,
+}
+
+/// A map label (CMapIcon): GUI items laid out about (0, 0), moved to the screen point of
+/// `anchor` (less `drop` world units along the camera's up: a planet's label under it,
+/// CPlanetMapIcon::Update3DPosition); its buttons carry their actions (a click selects its
+/// object). `bounds`: the rectangle (relative to that point, pixels) it takes in a stack of
+/// labels, and `sort` its place there (UpdateIconStacks: the highest first); None, never stacked.
+#[derive(Clone, Debug)]
+pub struct Label {
+    pub anchor: V3,
+    pub drop: f32,
+    pub items: Vec<GuiItem>,
+    pub bounds: Option<[f32; 4]>,
+    pub sort: i64,
+}
+
+/// The labels at their places (projected; behind the camera or far off the screen left out),
+/// stacked where they overlap as the game does (CMapIconManager::UpdateIconStacks: each joins
+/// the first stack it touches, a stack is centred on its members' mean centre with their heights
+/// summed, overlapping stacks merge; inside, the highest sort first, each at the stack's centre
+/// line), drawn under the windows.
+#[allow(clippy::too_many_arguments)]
+pub fn add_labels(
+    batches: &mut Vec<Batch>,
+    gui: &mut Gui,
+    labels: &[Label],
+    view: &ViewParams,
+    fonts: &HashMap<String, Font>,
+    tex: &mut Textures,
+    cache: &mut Cache,
+    game_dir: &str,
+    states: &HashMap<String, ButtonState>,
+) {
+    let (w, h) = (view.width as f32, view.height as f32);
+    // each label's point on the screen
+    let mut points: Vec<Option<(f32, f32)>> = Vec::with_capacity(labels.len());
+    for l in labels {
+        let at = l.anchor.sub(view.up.scale(l.drop));
+        let p = view.project(at).filter(|&(px, py, z)| (0.0..=1.0).contains(&z) && px > -200.0 && py > -200.0 && px < w + 200.0 && py < h + 200.0);
+        points.push(p.map(|(x, y, _)| (x.trunc(), y.trunc())));
+    }
+    // the stacks: (rectangle, members)
+    let mut stacks: Vec<([f32; 4], Vec<usize>)> = Vec::new();
+    let overlap = |a: &[f32; 4], b: &[f32; 4]| a[0] <= b[0] + b[2] && b[0] <= a[0] + a[2] && a[1] <= b[1] + b[3] && b[1] <= a[1] + a[3];
+    let rect_of = |members: &[usize], points: &[Option<(f32, f32)>]| -> [f32; 4] {
+        let (mut cx, mut cy, mut mw, mut sh) = (0.0, 0.0, 0.0f32, 0.0);
+        for &i in members {
+            let (px, py) = points[i].unwrap();
+            let b = labels[i].bounds.unwrap();
+            cx += px + b[0] + b[2] / 2.0;
+            cy += py + b[1] + b[3] / 2.0;
+            mw = mw.max(b[2]);
+            sh += b[3];
+        }
+        let n = members.len() as f32;
+        [cx / n - mw / 2.0, cy / n - sh / 2.0, mw, sh]
+    };
+    for (i, l) in labels.iter().enumerate() {
+        let (Some((px, py)), Some(b)) = (points[i], l.bounds) else { continue };
+        let r = [px + b[0], py + b[1], b[2], b[3]];
+        match stacks.iter_mut().find(|s| s.1.len() < 32 && overlap(&s.0, &r)) {
+            Some(s) => {
+                s.1.push(i);
+                s.0 = rect_of(&s.1, &points);
+            }
+            None => stacks.push((r, vec![i])),
+        }
+    }
+    // overlapping stacks merge (the later into the earlier) until none do
+    loop {
+        let mut merged = false;
+        'outer: for a in 0..stacks.len() {
+            for b in (a + 1..stacks.len()).rev() {
+                if overlap(&stacks[a].0, &stacks[b].0) {
+                    let m = stacks.remove(b).1;
+                    stacks[a].1.extend(m);
+                    stacks[a].0 = rect_of(&stacks[a].1, &points);
+                    merged = true;
+                    break 'outer;
+                }
+            }
+        }
+        if !merged {
+            break;
+        }
+    }
+    // a stacked label's point: its slot on the stack's centre line
+    let mut slot: Vec<Option<(f32, f32)>> = points.clone();
+    for (r, members) in &mut stacks {
+        if members.len() < 2 {
+            continue;
+        }
+        members.sort_by(|&a, &b| labels[b].sort.cmp(&labels[a].sort));
+        let mut y = r[1];
+        for &i in members.iter() {
+            // the label's origin at its slot's top centre (its window then at that + its .gui position)
+            slot[i] = Some((r[0] + r[2] / 2.0, y));
+            y += labels[i].bounds.unwrap()[3];
+        }
+    }
+    for (i, l) in labels.iter().enumerate() {
+        let Some((dx, dy)) = slot[i] else { continue };
+        let moved: Vec<GuiItem> = l
+            .items
+            .iter()
+            .map(|it| {
+                let mut it = it.clone();
+                match &mut it {
+                    GuiItem::Sprite { x, y, .. } | GuiItem::Text { x, y, .. } => {
+                        *x += dx.round();
+                        *y += dy.round();
+                    }
+                }
+                it
+            })
+            .collect();
+        add_gui(batches, gui, &moved, fonts, tex, cache, game_dir, states);
+    }
+}
+
 /// A GUI sprite drawn: its element, sprite, rectangle on screen, and whether its frame has any
 /// visible texel.
 pub struct PlacedSprite {
@@ -353,19 +558,62 @@ pub struct PlacedText {
     pub order: usize,
 }
 
+/// The sky behind a 3D view (sky.wgsl): a cube map, its YCoCg flag, the hue / saturation / value
+/// shift and the colour cube (gfx/worldgfx `galaxy_background*`).
+#[derive(Clone, Debug)]
+pub struct SkyDraw {
+    pub cube: usize,
+    pub ycocg: bool,
+    pub hsv_shift: [f32; 3],
+    pub lut: Option<usize>,
+}
+
+/// The post effects of a world (gfx/worldgfx: worldgfx.rs; the shaders: post.wgsl).
+#[derive(Clone, Debug)]
+pub struct Post {
+    pub bright_threshold: f32,
+    pub bloom_width: f32,
+    pub bloom_scale: f32,
+    pub bloom_iterations: u32,
+    pub emissive_bloom: f32,
+    pub hdr_min: f32,
+    pub hdr_max: f32,
+    pub middle_grey: f32,
+    /// the colour cube (an index into the scene's textures)
+    pub lut: Option<usize>,
+}
+
 pub struct Scene {
     pub layout: Layout,
     pub view: ViewParams,
     /// xyz: toward the light (w = 0) or the light's position (w = 1)
     pub light: [f32; 4],
+    /// the light's colour x intensity (linear); the planets' back light (gamma space)
+    pub light_colour: [f32; 4],
+    pub back_light: [f32; 4],
+    /// the ships' lights (gfx/worldgfx, linear): cam_light_1..3_diffuse, rim_light_diffuse, ambient
+    pub cam_lights: [[f32; 4]; 5],
     pub batches: Vec<Batch>,
     pub lines: Vec<Line>,
     pub meshes: Vec<MeshDraw>,
     pub clear: [f32; 3],
     pub stars: Vec<PlacedStar>,
+    /// what a click can select, where it is drawn (the topmost last)
+    pub picks: Vec<Pick>,
     pub sprites: Vec<PlacedSprite>,
     pub texts: Vec<PlacedText>,
     pub buttons: Vec<PlacedButton>,
+    /// the game's post effects (HDR, bloom, exposure, tone mapping, the colour cube), for the 3D
+    /// views; None: drawn straight to the target (the 2D map, the front end)
+    pub post: Option<Post>,
+    /// the sky drawn behind everything (with the post effects only)
+    pub sky: Option<SkyDraw>,
+    /// the world's environment map (a cube with its mip levels: an index into the textures) and
+    /// cubemap_intensity, for the meshes' reflections
+    pub env: Option<(usize, f32)>,
+    /// the galaxy view's map textures (galaxymap.rs; indices into the textures): terra incognita,
+    /// the borders' distance, edge and fill colours, the dust's colour map
+    pub maps: Option<[usize; 5]>,
 }
 
 impl Scene {
@@ -386,6 +634,39 @@ impl Scene {
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(s, _)| s)
     }
+
+    /// The pickable thing under a point, as the game picks (CGameState::DoSelection): fleets
+    /// (on the galaxy, GUI icons that take the click first) and, in a system, ships and bodies,
+    /// the nearest whose radius (at least `least` pixels) takes it (GetSelectableAt: the nearest
+    /// along the ray); else the first system, in the galaxy's order, within its cone
+    /// (FindGalacticObjectUnderMouse).
+    pub fn pick_at(&self, x: f32, y: f32, least: f32) -> Option<Pickable> {
+        let dist = |p: &Pick| ((p.centre.0 - x).powi(2) + (p.centre.1 - y).powi(2)).sqrt();
+        let near = self
+            .picks
+            .iter()
+            .filter(|p| !matches!(p.what, Pickable::System(_)))
+            .filter_map(|p| {
+                let r = p.radius.max(least);
+                let d = dist(p);
+                (d <= r).then_some((p.what, d / r))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(w, _)| w);
+        near.or_else(|| self.picks.iter().find(|p| matches!(p.what, Pickable::System(_)) && dist(p) <= p.radius).map(|p| p.what))
+    }
+}
+
+/// A galaxy star's billboard half size in map units for a camera `distance` (map units) away: the
+/// game's CGalaxyGraphics::CalcCurrentStarScale, clamp(1 + (zoom - ZOOM_STEPS_GALAXY[0]) /
+/// (ZOOM_STEPS_GALAXY[last] - [0]) x GALAXY_SPACE_SCALE_MULT x GALAXY_STAR_ICON_MAX_SCALE, 1,
+/// GALAXY_SPACE_SCALE_MULT x GALAXY_STAR_ICON_MAX_SCALE), the zoom being the camera's distance in
+/// the game's world (map x 2); times 1.5 (galaxy_stars.shader), over 2 back to map units.
+pub fn star_half_size(distance: f32) -> f32 {
+    let zoom = distance * 2.0;
+    let max = 2.0 * 1.25;
+    let scale = (1.0 + (zoom - 100.0) / (3000.0 - 100.0) * max).clamp(1.0, max);
+    scale * 1.5 / 2.0
 }
 
 /// A small deterministic generator for the dust's placement.
@@ -416,9 +697,177 @@ pub struct Inputs<'a> {
     pub galaxy: &'a Galaxy,
     pub borders: &'a Borders,
     pub borders_texture: usize,
+    /// the galaxy view's map textures (terra incognita, the borders' distance, edge and fill):
+    /// with them the 3D galaxy is drawn as the game's (galaxy_3d)
+    pub maps: Option<[usize; 4]>,
     pub topbar: &'a Topbar,
     pub fonts: &'a HashMap<String, Font>,
+    pub gui: bool,
     pub game_dir: &'a str,
+    /// the GUI's buttons under the mouse
+    pub states: &'a HashMap<String, ButtonState>,
+    /// the selection and the windows over the view
+    pub overlay: &'a Overlay,
+}
+
+/// The galaxy view in 3D as the game draws it (CGalaxyGraphics and gfx/FX galaxy_*.shader,
+/// hyperlane.shader, border.shader; docs/render.md section 11), in map units (the game's world
+/// / 2): the nebulae's clouds, a dust cloud at every system and in the core, the core's glow,
+/// the stars, the hyperlanes; the borders are not drawn themselves but tint the dust and the
+/// nebulae (border.shader's target is read by them only); everything greyed outside the
+/// player's terra incognita. Returns the scene's map textures.
+#[allow(clippy::too_many_arguments)]
+fn galaxy_3d(
+    inp: &Inputs,
+    maps: [usize; 4],
+    tex: &mut Textures,
+    cache: &mut Cache,
+    camera: &OrbitCamera,
+    view: &ViewParams,
+    batches: &mut Vec<Batch>,
+    lines: &mut Vec<Line>,
+    stars: &mut Vec<PlacedStar>,
+) -> Option<[usize; 5]> {
+    let g = inp.galaxy;
+    // the dust's colour map, stretched over the systems' bounding box with the origin
+    let (mut x0, mut y0, mut x1, mut y1) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    for s in &g.systems {
+        (x0, y0, x1, y1) = (x0.min(s.x), y0.min(s.y), x1.max(s.x), y1.max(s.y));
+    }
+    let rect = [x0, y0, 1.0 / (x1 - x0).max(1.0), 1.0 / (y1 - y0).max(1.0)];
+    let colour_map = tex.game(cache, inp.game_dir, "gfx/map/galaxycolor.dds")?;
+    let index: HashMap<u32, usize> = g.systems.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
+    let height = |s: &crate::galaxy::System| s.height * 0.5;
+
+    // the nebulae (galaxy_nebula.shader, CGalaxyGraphics::InitNebulas): a cloud of the nebula's
+    // radius at its place, one of (10 + 25 r) at each of its systems, 9 below the plane (the
+    // game's world), turned by 2 pi r
+    if let Some(nebula) = tex.game(cache, inp.game_dir, "gfx/map/nebula.dds") {
+        let mean = tex.game(cache, inp.game_dir, "gfx/map/nebulacolor.dds").map(|i| {
+            let img = &tex.images[i];
+            let n = (img.width * img.height) as f32;
+            let mut acc = [0f32; 4];
+            for p in img.rgba.chunks_exact(4) {
+                for c in 0..4 {
+                    acc[c] += p[c] as f32 / 255.0;
+                }
+            }
+            acc.map(|v| v / n)
+        });
+        let colour = mean.unwrap_or([1.0; 4]);
+        let mut rng = Rng(0x0eb1_a5ed);
+        for n in &g.nebulae {
+            let mut clouds = vec![(n.x, n.y, n.radius)];
+            for sid in &n.systems {
+                if let Some(&i) = index.get(sid) {
+                    clouds.push((g.systems[i].x, g.systems[i].y, 10.0 + 25.0 * rng.next()));
+                }
+            }
+            for (x, y, half) in clouds {
+                let mut q = Quad::plane([x - half, y - half, x + half, y + half], colour, rng.next() * std::f32::consts::TAU);
+                q.height = -4.5;
+                q.fx = [3.0, 1.0, 5.0 / half.max(1e-3) * 0.5, 0.0];
+                push(batches, Layer::Background, Blend::Alpha, nebula, q);
+            }
+        }
+    }
+
+    // the dust (galaxy_dust.shader, CGalaxyGraphics::Init): a cloud at every system and
+    // int(0.1 R) in the core's disc (R its radius in the game's world), of half size
+    // GALAXY_DUST_SIZE + GALAXY_DUST_SIZE_EXTRA x r, 20 above or below the plane at most, turned
+    // by +-2 pi r, tilted (y += (corner x + corner y) x size x 0.1)
+    if let Some(dust) = tex.game(cache, inp.game_dir, "gfx/map/dust.dds") {
+        let mut points: Vec<(f32, f32)> = g.systems.iter().map(|s| (s.x, s.y)).collect();
+        let r_core = g.core_radius;
+        let mut rng = Rng(0x5eed_1234);
+        for _ in 0..(0.1 * r_core * 2.0) as usize {
+            let (r, a) = (r_core * rng.next().sqrt(), rng.next() * std::f32::consts::TAU);
+            points.push((r * a.cos(), r * a.sin()));
+        }
+        for (x, y) in points {
+            let mut prng = Rng((x * 1000.0) as i32 as u32 ^ ((y * 1000.0) as i32 as u32).rotate_left(16) ^ 0x9e37_79b9);
+            let half = g.dust_size + g.dust_size_extra * prng.next();
+            let h = (prng.next() * 2.0 - 1.0) * 10.0;
+            let rot = (prng.next() * 2.0 - 1.0) * std::f32::consts::TAU;
+            let mut q = Quad::plane([x - half, y - half, x + half, y + half], [1.0; 4], rot);
+            q.height = h;
+            q.fx = [2.0, 1.0, 0.1, 0.0];
+            q.fx2 = rect;
+            push(batches, Layer::Background, Blend::Alpha, dust, q);
+        }
+    }
+
+    // the core's glow (galaxy_center.shader): center.dds x 0.5 on the plane, its quad x 1.5, added
+    // by ONE, ONE, greyed outside the known space; the quad's half size taken as core_radius of
+    // the game's world [I] (twice that reaches beyond what the game's frames show)
+    if let Some(center) = tex.game(cache, inp.game_dir, "gfx/map/center.dds") {
+        let half = 1.5 * g.core_radius;
+        if half > 0.0 {
+            let mut q = Quad::plane([-half, -half, half, half], [0.5, 0.5, 0.5, 1.0], 0.0);
+            q.height = -0.75;
+            q.fx = [1.0, 1.0, 0.0, 1.0];
+            push(batches, Layer::Background, Blend::Add, center, q);
+        }
+    }
+
+    // the hyperlanes (hyperlane.shader): HYPERLANE_DEFAULT_COLOR (alpha 0.2 at the default
+    // opacity), about a pixel wide, faded outside the known space
+    // (built only when an end lies in the known space: HIDE_HYPERLANES_OUTSIDE_TERRA_INCOGNITA)
+    let known = |s: &crate::galaxy::System| -> bool {
+        let Some(ti) = &g.terra_incognita else { return true };
+        let n = ti.size as f32;
+        let (col, row) = ((s.x * n / 1000.0 + n / 2.0).floor(), (s.y * n / 1000.0 + n / 2.0).floor());
+        col >= 0.0 && row >= 0.0 && col < n && row < n && ti.bitmap[row as usize * ti.size + col as usize] > 127
+    };
+    let lane_colour = g.hyperlane_colour;
+    for &(a, b) in &g.lanes {
+        let (sa, sb) = (&g.systems[a as usize], &g.systems[b as usize]);
+        if known(sa) || known(sb) {
+            lines.push(Line { a: V3(sa.x, height(sa), sa.y), b: V3(sb.x, height(sb), sb.y), colour: lane_colour, width: 1.0, mode: 1.0 });
+        }
+    }
+
+    // the star pins (border.shader StarPin, CBordersGraphics::UpdatePins): a hexagon of radius 2
+    // (the game's world) on the plane and a line up to the star, the owner's border colour (the
+    // player's own and those it has communications with; otherwise the neutral grey 0.5, alpha
+    // 0.5), alpha x 0.2
+    for s in &g.systems {
+        let c = match g.shown_owner(s) {
+            Some(o) => {
+                let k = g.countries[o].primary;
+                [k[0], k[1], k[2], 0.2]
+            }
+            None => [0.5, 0.5, 0.5, 0.5 * 0.2],
+        };
+        let r = 1.0;
+        for k in 0..6 {
+            let (a0, a1) = (k as f32 * std::f32::consts::TAU / 6.0, (k + 1) as f32 * std::f32::consts::TAU / 6.0);
+            lines.push(Line { a: V3(s.x + r * a0.cos(), 0.0, s.y + r * a0.sin()), b: V3(s.x + r * a1.cos(), 0.0, s.y + r * a1.sin()), colour: c, width: 1.2, mode: 2.0 });
+        }
+        lines.push(Line { a: V3(s.x, 0.0, s.y), b: V3(s.x, height(s), s.y), colour: c, width: 1.2, mode: 2.0 });
+    }
+
+    // the stars (galaxy_stars.shader): the class's sprite, a billboard of half size 1.5 x Scale
+    // of the game's world, Scale = icon_scale x CalcCurrentStarScale x 1.5, the zoom's scale
+    // clamp(1 + 2.5 (zoom - 100) / 2900, 1, 2.5); added, greyed outside the known space
+    let zoom = camera.distance * 2.0;
+    let s_zoom = (1.0 + 2.5 * (zoom - 100.0) / 2900.0).clamp(1.0, 2.5);
+    let mut order: Vec<usize> = (0..g.systems.len()).collect();
+    order.sort_by(|&a, &b| g.systems[a].texture.cmp(&g.systems[b].texture));
+    for i in order {
+        let s = &g.systems[i];
+        let Some(t) = (if s.texture.is_empty() { None } else { tex.game(cache, inp.game_dir, &s.texture) }) else { continue };
+        let half = 1.5 * s.icon_scale * s_zoom * 1.5 * 0.5;
+        let mut q = Quad::billboard(s.x, s.y, height(s), half, [1.0; 4], 0.0, 0.0);
+        q.fx = [1.0, 1.0, 0.0, 0.0];
+        push(batches, Layer::Stars, Blend::Add, t, q);
+        let p3 = V3(s.x, height(s), s.y);
+        if let Some((px, py, _)) = view.project(p3) {
+            let hp = (half * view.pixels_per_unit(p3)).max(3.0);
+            stars.push(PlacedStar { system: i, rect: [px - hp, py - hp, px + hp, py + hp] });
+        }
+    }
+    Some([maps[0], maps[1], maps[2], maps[3], colour_map])
 }
 
 /// The galaxy map for a target of `width` x `height`: the 2D map (no camera: top-down,
@@ -434,6 +883,14 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
     let three_d = camera.is_some();
     let mut batches = Vec::new();
 
+    // the 3D galaxy as the game draws it (with its map textures), else the renderer's own map
+    let game3d = three_d && inp.maps.is_some();
+    let mut lines: Vec<Line> = Vec::new();
+    let mut stars = Vec::new();
+    let mut scene_maps = None;
+    if let (true, Some(maps), Some(c)) = (game3d, inp.maps, camera) {
+        scene_maps = galaxy_3d(inp, maps, tex, cache, c, &view, &mut batches, &mut lines, &mut stars);
+    } else {
     // ---- background: dust coloured by the galaxy's colour map, the centre, the nebulae
     let radius = g.systems.iter().map(|s| (s.x * s.x + s.y * s.y).sqrt()).fold(1.0f32, f32::max) * 1.05;
     let colour_map = tex.game(cache, inp.game_dir, "gfx/map/galaxycolor.dds").map(|i| tex.images[i].clone());
@@ -483,26 +940,26 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
 
     // ---- lines: hyperlanes, then the fleets' FTL trails
     let lane_width = if three_d { 1.5 } else { layout.lane_width };
-    let mut lines: Vec<Line> = g
+    lines = g
         .lanes
         .iter()
         .map(|&(a, b)| {
             let (sa, sb) = (&g.systems[a as usize], &g.systems[b as usize]);
-            Line { a: V3(sa.x, 0.0, sa.y), b: V3(sb.x, 0.0, sb.y), colour: g.hyperlane_colour, width: lane_width }
+            Line { a: V3(sa.x, 0.0, sa.y), b: V3(sb.x, 0.0, sb.y), colour: g.hyperlane_colour, width: lane_width, mode: 0.0 }
         })
         .collect();
 
     // ---- stars, by texture (one batch per sprite)
-    let mut stars = Vec::new();
     let mut order: Vec<usize> = (0..g.systems.len()).collect();
     order.sort_by(|&a, &b| g.systems[a].texture.cmp(&g.systems[b].texture));
     for i in order {
         let s = &g.systems[i];
         let Some(t) = (if s.texture.is_empty() { None } else { tex.game(cache, inp.game_dir, &s.texture) }) else { continue };
-        // the sprite's size in map units: 6 x GALAXY_STAR_ICON_SCALE x icon_scale, at least 12 px
-        // (2D) or 5 px (3D, half sizes)
+        // the sprite's size in map units: 2D, 6 x GALAXY_STAR_ICON_SCALE x icon_scale, at least
+        // 12 px; 3D, the game's (galaxy_stars.shader: a billboard of half size Scale x 1.5 in its
+        // world, Scale = CGalaxyGraphics::CalcCurrentStarScale) **[V]**, x icon_scale **[I]**
         let size = 6.0 * g.star_icon_scale * s.icon_scale;
-        let (half, least) = if three_d { (size * 0.5, 5.0 * s.icon_scale) } else { ((size.max(12.0 / layout.scale)) * 0.5, 0.0) };
+        let (half, least) = if three_d { (star_half_size(camera.map_or(600.0, |c| c.distance)) * s.icon_scale, 2.0) } else { ((size.max(12.0 / layout.scale)) * 0.5, 0.0) };
         push(&mut batches, Layer::Stars, Blend::Add, t, Quad::billboard(s.x, s.y, 0.0, half, [1.0; 4], 0.0, least));
         if let Some((px, py, _)) = view.project(V3(s.x, 0.0, s.y)) {
             let hp = (half * view.pixels_per_unit(V3(s.x, 0.0, s.y))).max(least);
@@ -510,10 +967,26 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
         }
     }
 
-    // ---- fleets: a marker in the owner's colour, a trail to where an FTL jump goes
+    }
+
+    // ---- fleets: a marker in the owner's colour, a trail to where an FTL jump goes (the game
+    // shows none without its GUI)
     let disc = tex.generated("@disc");
     let mut per_system: HashMap<(i32, i32), u32> = HashMap::new();
-    for f in &g.fleets {
+    // the systems, in the galaxy's order: in 3D within the cone of NCamera.SYSTEM_HOVER_RANGE
+    // (0.005 of the camera's distance to the star off the mouse's ray), on the 2D map the sprite
+    let mut by_system: Vec<&PlacedStar> = stars.iter().collect();
+    by_system.sort_by_key(|s| s.system);
+    let mut picks: Vec<Pick> = by_system
+        .iter()
+        .map(|s| Pick {
+            what: Pickable::System(s.system),
+            centre: (0.5 * (s.rect[0] + s.rect[2]), 0.5 * (s.rect[1] + s.rect[3])),
+            radius: if three_d { 0.005 * view.focal_px } else { (0.5 * (s.rect[2] - s.rect[0])).max(6.0) },
+        })
+        .collect();
+    // (the 3D galaxy as the game's: fleets show in the star labels' presence icons, not as discs)
+    for f in g.fleets.iter().filter(|_| !game3d) {
         if f.station {
             continue;
         }
@@ -533,29 +1006,71 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
         let (x, y) = (f.x + 4.0 + r * a.cos(), f.y + 4.0 + r * a.sin());
         let half = if f.military { 1.6 } else { 1.1 };
         push(&mut batches, Layer::Stars, Blend::Alpha, disc, Quad::billboard(x, y, 0.5, half, colour, 0.0, if three_d { 3.0 } else { 0.0 }));
+        let p3 = V3(x, 0.5, y);
+        if let Some((px, py, _)) = view.project(p3) {
+            picks.push(Pick { what: Pickable::Fleet(f.id), centre: (px, py), radius: (half * view.pixels_per_unit(p3)).max(3.0) });
+        }
         if let (Some((fx, fy)), Some((tx, ty))) = (f.from, f.to) {
             // the trail: from where the jump started to where it goes
-            lines.push(Line { a: V3(fx, 0.3, fy), b: V3(tx, 0.3, ty), colour: [colour[0], colour[1], colour[2], 0.85], width: 2.0 });
+            lines.push(Line { a: V3(fx, 0.3, fy), b: V3(tx, 0.3, ty), colour: [colour[0], colour[1], colour[2], 0.85], width: 2.0, mode: 0.0 });
         }
     }
 
-    // ---- the top bar's sprites and texts
+    // (the selection shows as its gold label: no marker in the 3D view)
+    if let (Some(sel), false) = (inp.overlay.selected, three_d) {
+        selection_marker(&mut batches, &mut lines, tex, cache, inp.game_dir, &view, &picks, sel, three_d);
+    }
+
+    // ---- the top bar's sprites and texts, then the windows over the view
     let mut gui = Gui::default();
-    add_gui(&mut batches, &mut gui, &inp.topbar.items, inp.fonts, tex, cache, inp.game_dir, &HashMap::new());
+    if inp.gui {
+        add_labels(&mut batches, &mut gui, &inp.overlay.labels, &view, inp.fonts, tex, cache, inp.game_dir, inp.states);
+        add_gui(&mut batches, &mut gui, &inp.topbar.items, inp.fonts, tex, cache, inp.game_dir, inp.states);
+        add_gui(&mut batches, &mut gui, &inp.overlay.items, inp.fonts, tex, cache, inp.game_dir, inp.states);
+    }
 
     Scene {
         layout,
         view,
         light: [0.4, 0.8, 0.3, 0.0],
+        light_colour: [1.3, 1.3, 1.3, 1.0],
+        back_light: [0.41, 0.48, 0.55, 1.0],
+        cam_lights: [[0.0; 4]; 5],
         batches,
         lines,
         meshes: Vec::new(),
         clear: [0.0, 0.0, 0.0],
         stars,
+        picks,
         sprites: gui.sprites,
         texts: gui.texts,
         buttons: gui.buttons,
+        post: None,
+        sky: None,
+        env: None,
+        maps: scene_maps,
     }
+}
+
+/// The selection's marker over a picked thing: a ring around it on the screen, in
+/// NGraphics.RELATION_COLOR_SELECTED_RGB.
+#[allow(clippy::too_many_arguments)]
+pub fn selection_marker(
+    batches: &mut Vec<Batch>,
+    _lines: &mut Vec<Line>,
+    tex: &mut Textures,
+    _cache: &mut Cache,
+    _game_dir: &str,
+    _view: &ViewParams,
+    picks: &[Pick],
+    selected: Pickable,
+    _three_d: bool,
+) {
+    let Some(p) = picks.iter().find(|p| p.what == selected) else { return };
+    let ring = tex.generated("@ring");
+    let r = (p.radius * 1.6).max(10.0);
+    let (x, y) = p.centre;
+    push(batches, Layer::Gui, Blend::Alpha, ring, screen_quad([x - r, y - r, x + r, y + r], [0.0, 0.0, 1.0, 1.0], [1.0, 0.73, 0.0, 1.0]));
 }
 
 /// A button's state under the mouse: its sprite shows the matching frame (frame 1 normal, 2
@@ -583,7 +1098,7 @@ pub struct PlacedButton {
 }
 
 fn screen_quad(rect: [f32; 4], uv: [f32; 4], colour: [f32; 4]) -> Quad {
-    Quad { rect, uv, colour, rot: 0.0, kind: QuadKind::Screen, height: 0.0, least_px: 0.0 }
+    Quad { rect, uv, colour, rot: 0.0, kind: QuadKind::Screen, height: 0.0, least_px: 0.0, fx: [0.0; 4], fx2: [0.0; 4] }
 }
 
 /// Adds GUI items to the batches: sprites (button frames by state, cornered tiles as nine
@@ -602,13 +1117,13 @@ pub fn add_gui(
 ) {
     for item in items {
         match item {
-            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action } => {
+            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action, tint } => {
                 let Some(t) = tex.game(cache, game_dir, texture) else { continue };
                 let img = tex.images[t].clone();
                 let (tw, th) = (img.width as f32, img.height as f32);
                 let n = (*frames).max(1);
                 let mut frame = (*frame).max(1);
-                if *button && n > 1 {
+                if *button && (2..=4).contains(&n) {
                     frame = match states.get(path) {
                         Some(ButtonState::Hover) => 2,
                         Some(ButtonState::Pressed) => 3.min(n),
@@ -633,11 +1148,11 @@ pub fn add_gui(
                         let vs = [0.0, by / th, 1.0 - by / th, 1.0];
                         for r in 0..3 {
                             for c in 0..3 {
-                                push(batches, layer, Blend::Alpha, t, screen_quad([xs[c], ys[r], xs[c + 1], ys[r + 1]], [us[c], vs[r], us[c + 1], vs[r + 1]], [1.0; 4]));
+                                push(batches, layer, Blend::Alpha, t, screen_quad([xs[c], ys[r], xs[c + 1], ys[r + 1]], [us[c], vs[r], us[c + 1], vs[r + 1]], *tint));
                             }
                         }
                     }
-                    _ => push(batches, layer, Blend::Alpha, t, screen_quad([*x, *y, x + w, y + h], [u0, 0.0, u1, 1.0], [1.0; 4])),
+                    _ => push(batches, layer, Blend::Alpha, t, screen_quad([*x, *y, x + w, y + h], [u0, 0.0, u1, 1.0], *tint)),
                 }
                 if layer == Layer::Gui {
                     let order = gui.sprites.len() + gui.texts.len();
@@ -650,7 +1165,53 @@ pub fn add_gui(
             GuiItem::Text { path, font, text, spans, x, y, w, h, format, valign } => {
                 let Some(f) = fonts.get(font) else { continue };
                 let Some(t) = tex.game(cache, game_dir, &f.texture) else { continue };
-                let tw = f.width(text);
+                // a text wider than its box is cut, " ..." at its end (as the game's outliner
+                // shows a long name)
+                let cut;
+                let with_icon = spans.iter().any(|(s, _)| s.starts_with('\u{1}'));
+                let (text, spans) = if *w > 8.0 && !with_icon && f.width(text) > w + 0.5 {
+                    let mut keep: Vec<(String, [f32; 3])> = Vec::new();
+                    let mut used = f.width(" ...");
+                    'outer: for (s, c) in spans {
+                        let mut part = String::new();
+                        for ch in s.chars() {
+                            let cw = f.width(&ch.to_string());
+                            if used + cw > *w {
+                                keep.push((part, *c));
+                                break 'outer;
+                            }
+                            used += cw;
+                            part.push(ch);
+                        }
+                        keep.push((part, *c));
+                    }
+                    let last = keep.last().map_or([1.0; 3], |k| k.1);
+                    if let Some(k) = keep.last_mut() {
+                        let trimmed = k.0.trim_end().to_string();
+                        k.0 = trimmed;
+                    }
+                    keep.push((" ...".to_string(), last));
+                    let plain: String = keep.iter().map(|k| k.0.as_str()).collect();
+                    cut = (plain, keep);
+                    (&cut.0, &cut.1)
+                } else {
+                    (text, spans)
+                };
+                // a text icon span ("\u{1}texture\u{1}frames\u{1}frame", render.gui): its texture,
+                // frame and size (the textures loaded first)
+                for (s, _) in spans.iter() {
+                    if let Some(path) = s.strip_prefix('\u{1}').and_then(|r| r.split('\u{1}').next()) {
+                        tex.game(cache, game_dir, path);
+                    }
+                }
+                let icon = |s: &str| -> Option<(usize, f32, f32, f32, f32)> {
+                    let mut p = s.strip_prefix('\u{1}')?.split('\u{1}');
+                    let (path, frames, frame) = (p.next()?, p.next()?.parse::<f32>().ok()?.max(1.0), p.next()?.parse::<f32>().ok()?.max(1.0));
+                    let i = tex.find(path)?;
+                    let img = &tex.images[i];
+                    Some((i, img.width as f32 / frames, img.height as f32, (frame - 1.0) / frames, frame / frames))
+                };
+                let tw: f32 = spans.iter().map(|(s, _)| icon(s).map_or_else(|| f.width(s), |ic| ic.1)).sum();
                 let pen_x = match format.as_str() {
                     "center" | "centre" => x + (w - tw) / 2.0,
                     "right" => x + w - tw,
@@ -666,6 +1227,12 @@ pub fn add_gui(
                 let (aw, ah) = (f.image.width as f32, f.image.height as f32);
                 let mut pen = pen_x;
                 for (s, colour) in spans {
+                    if let Some((ti, iw, ih, u0, u1)) = icon(s) {
+                        let iy = (pen_y + (f.line_height - ih) / 2.0).round();
+                        push(batches, Layer::Text, Blend::Alpha, ti, screen_quad([pen, iy, pen + iw, iy + ih], [u0, 0.0, u1, 1.0], [1.0; 4]));
+                        pen += iw;
+                        continue;
+                    }
                     for (_, r, uv) in f.place(s, pen, pen_y) {
                         push(batches, Layer::Text, Blend::Alpha, t, screen_quad(r, [uv[0] / aw, uv[1] / ah, uv[2] / aw, uv[3] / ah], [colour[0], colour[1], colour[2], 1.0]));
                     }
@@ -698,13 +1265,21 @@ pub fn gui_scene(
         layout,
         view: ViewParams::orthographic(layout.world_to_ndc, width, height),
         light: [0.4, 0.8, 0.3, 0.0],
+        light_colour: [1.3, 1.3, 1.3, 1.0],
+        back_light: [0.41, 0.48, 0.55, 1.0],
+        cam_lights: [[0.0; 4]; 5],
         batches,
         lines: Vec::new(),
         meshes: Vec::new(),
         clear: [0.0, 0.0, 0.0],
         stars: Vec::new(),
+        picks: Vec::new(),
         sprites: gui.sprites,
         texts: gui.texts,
         buttons: gui.buttons,
+        post: None,
+        sky: None,
+        env: None,
+        maps: None,
     }
 }

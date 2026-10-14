@@ -99,6 +99,7 @@ local function push(ctx, sc)
         this = sc, root = ctx.root, from = ctx.from, fromfrom = ctx.fromfrom, prev = ctx.this,
         prevprev = ctx.prev, prevprevprev = ctx.prevprev, prevprevprevprev = ctx.prevprevprev,
         targets = ctx.targets, lists = ctx.lists, created = ctx.created, file = ctx.file,
+        up = ctx, -- the scope this one was made from (its random state starts as a copy of that one's)
     }
 end
 M.push = push
@@ -110,6 +111,7 @@ local function with_file(ctx, file)
     local c = push(ctx, ctx.this)
     c.prev, c.prevprev, c.file = ctx.prev, ctx.prevprev, file
     c.prevprevprev, c.prevprevprevprev = ctx.prevprevprev, ctx.prevprevprevprev
+    c.same = ctx -- the same scope in another file: one random state
     return c
 end
 
@@ -287,6 +289,14 @@ local VALUE_OPS = {
     modulo = true, base = true, value = true, weight = true, min = true, max = true,
 }
 
+-- `trigger:<name>` in a value: TVAL[name](ctx, e) -> the number the trigger compares, or nil when
+-- it has none for the scope (filled by the handler modules, simscript/handlers/)
+M.TVAL = {}
+-- `pow = n` in a value block: the accumulated value to the power n (M.pow, the handlers' to replace)
+M.pow = function(a, b) return a ^ b end
+-- other value operations of the handler modules: VALUE_OP[key](acc, operand) -> acc
+M.VALUE_OP = {}
+
 local function var_raw(name, ctx)
     local fv = db.filevars(ctx.file)
     local v = fv and fv[name]
@@ -297,6 +307,10 @@ local function var_raw(name, ctx)
 end
 
 local value_text
+
+-- `trigger:<name>` values: a numeric trigger's value (the game's GetTriggerValue), name ->
+-- f(ctx, e); the handler modules (simscript/handlers/) fill it
+M.TRIGGER_VALUES = {}
 
 -- inline math: @[ expr ] / @\[ expr ]
 local function mathexpr(text, ctx, e)
@@ -434,6 +448,11 @@ function value_text(t, ctx, e)
         return M.script_value(t:sub(7), ctx, e)
     end
     if t:sub(1, 8) == "trigger:" then
+        local f = M.TRIGGER_VALUES and M.TRIGGER_VALUES[t:sub(9):lower()]
+        if f then return f(ctx, e) end
+        local tv = M.TVAL and M.TVAL[t:sub(9)]
+        local v = tv and tv(ctx, e)
+        if v ~= nil then return v end
         miss("value", t, ctx, e)
         return 0
     end
@@ -462,6 +481,7 @@ function value_text(t, ctx, e)
     return 0 -- an unset variable is 0 in the game
 end
 M.value_text = value_text
+local value_text_tree = value_text -- (the compiler's reference: value_text may be replaced, below)
 
 function M.value(v, ctx, e)
     if v == nil then
@@ -475,7 +495,10 @@ end
 
 local trigger, effect -- forward
 
-local function apply_ops(b, ctx, acc, only_ops)
+-- apply_ops(b, ctx, acc, only_ops): the value block's operations on acc (the tree walker; the
+-- compiler may replace the apply_ops it calls for the blocks in it, below)
+local apply_ops
+local function apply_ops_tree(b, ctx, acc, only_ops)
     local taken = false
     for _, e in ipairs(b) do
         if e.op and e.key and not (only_ops and not VALUE_OPS[e.key.text:lower()]) then
@@ -490,6 +513,7 @@ local function apply_ops(b, ctx, acc, only_ops)
             elseif k == "min" then acc = math.max(acc, M.value(e.value, ctx, e))
             elseif k == "max" then acc = math.min(acc, M.value(e.value, ctx, e))
             elseif k == "abs" then acc = math.abs(acc)
+            elseif k == "pow" then acc = M.pow(acc, M.value(e.value, ctx, e))
             elseif k == "round" then acc = floor(acc + 0.5)
             elseif k == "floor" then acc = floor(acc)
             elseif k == "ceiling" then acc = math.ceil(acc)
@@ -511,6 +535,8 @@ local function apply_ops(b, ctx, acc, only_ops)
                 end
             elseif k == "limit" or k == "weight" or k == "desc" or k == "display_name" then
                 -- handled by the caller or not a value operation
+            elseif M.VALUE_OP[k] then
+                acc = M.VALUE_OP[k](acc, M.value(e.value, ctx, e))
             else
                 -- `count_owned_pop_amount = { limit = { ... } }`: the iterator's count
                 local n = e.value.text == nil and M.count_value and M.count_value(k, e.value, ctx)
@@ -529,6 +555,7 @@ local function apply_ops(b, ctx, acc, only_ops)
     end
     return acc
 end
+apply_ops = apply_ops_tree
 
 function M.value_block(b, ctx)
     return apply_ops(b, ctx, 0)
@@ -786,6 +813,7 @@ local function scripted_call(def, name, e, kind)
 end
 
 -- one statement
+local trigger1_rest
 local function trigger1(e, ctx)
     stats.trigger_evals = stats.trigger_evals + 1
     local key = e.key.text
@@ -794,6 +822,12 @@ local function trigger1(e, ctx)
     if h then
         return h(e, ctx, lk)
     end
+    return trigger1_rest(e, ctx, key, lk)
+end
+
+-- trigger1_rest(e, ctx, key, lk): a statement whose keyword (lk, key lowercased) has no handler in
+-- TRIG: a scope, an iterator, a scripted trigger, a flag, a property
+trigger1_rest = function(e, ctx, key, lk)
     local found, sc = M.resolve(key, ctx, e)
     if found then
         if e.value.text then -- `owner = root`: the same scope
@@ -908,7 +942,8 @@ function M.count_value(key, block, ctx)
 end
 
 -- a block: AND of its statements (keys in skip are parameters, not triggers)
-trigger = function(b, ctx, skip)
+local LIMIT_ONLY = { limit = true }
+local function trigger_tree(b, ctx, skip)
     local taken = false
     for _, e in ipairs(b) do
         if e.op and e.key then
@@ -923,7 +958,7 @@ trigger = function(b, ctx, skip)
                         end
                         if lk == "else" or not lim or trigger(lim, ctx) then
                             taken = true
-                            if not trigger(e.value, ctx, { limit = true }) then return false end
+                            if not trigger(e.value, ctx, LIMIT_ONLY) then return false end
                         end
                     end
                 elseif not trigger1(e, ctx) then
@@ -934,6 +969,7 @@ trigger = function(b, ctx, skip)
     end
     return true
 end
+trigger = trigger_tree
 M.trigger = trigger
 M.trigger1 = trigger1
 
@@ -944,7 +980,6 @@ local function yes(e) return e.value.text ~= "no" end
 -- the if (CTriggerCollectionBase::ReadMember -> CIfTrigger::AddElse 0x1993910), and
 -- CIfTrigger::ActualEvaluate (0x1993380) is the body of the first whose limit holds, true when none
 -- does. if_chain(b, i, ctx) -> its result, and the index of the statement after the chain
-local LIMIT_ONLY = { limit = true }
 local function if_chain(b, i, ctx)
     local result, taken = true, false
     while true do
@@ -1006,9 +1041,10 @@ end
 TRIG["nor"] = TRIG["not"]
 TRIG["nand"] = function(e, ctx) return not trigger(e.value, ctx) end
 TRIG["hidden_trigger"] = TRIG["and"]
+local TOOLTIP_PARAMS = { text = true, fail_text = true, success_text = true }
 TRIG["custom_tooltip"] = function(e, ctx)
     if e.value.text then return true end
-    return trigger(e.value, ctx, { text = true, fail_text = true, success_text = true })
+    return trigger(e.value, ctx, TOOLTIP_PARAMS)
 end
 TRIG["custom_tooltip_fail"] = TRIG["custom_tooltip"]
 local AMOUNT = { amount = true }
@@ -1656,9 +1692,13 @@ local function iterate_effect(kind, lname, e, ctx)
     for _, s2 in ipairs(list) do
         if not limit or trigger(limit, push(ctx, s2)) then chosen[#chosen + 1] = s2 end
     end
+    -- the scope random (simscript/handlers/creation.lua, M.scope_iter): the iterator's own copy of
+    -- the scope's random state, drawn for a random_* pick and handed to each element's scope
+    local SR = M.scope_iter
+    local loop = SR and SR.begin(ctx)
     if kind == "random" then
         if #chosen == 0 then return end
-        chosen = { chosen[rand() % #chosen + 1] }
+        chosen = { chosen[(loop and SR.draw(loop) or rand()) % #chosen + 1] }
     elseif kind == "ordered" then
         local keyed = {}
         for i, s2 in ipairs(chosen) do
@@ -1671,7 +1711,9 @@ local function iterate_effect(kind, lname, e, ctx)
         end
     end
     for _, s2 in ipairs(chosen) do
-        effect(e.value, push(ctx, s2), ITER_PARAMS)
+        local c = push(ctx, s2)
+        if loop then SR.element(loop, c, kind) end
+        effect(e.value, c, ITER_PARAMS)
     end
 end
 
@@ -2006,7 +2048,7 @@ function M.status(kind, key)
         if db.scripted_triggers[key] then return "scripted" end
         local it, l = lk:match("^(any)_(.+)$")
         if not it then it, l = lk:match("^(count)_(.+)$") end
-        if it then return (LISTS[l] or l == "in_list") and "iterator" or nil end
+        if it then return (LISTS[l] or AMOUNTS[l] or l == "in_list") and "iterator" or nil end
     else
         if EFF[lk] then return "lua" end
         if EVENT_EFFECT[lk] then return "event" end
@@ -2024,6 +2066,36 @@ function M.status(kind, key)
         return "scope"
     end
     return nil
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- the compiler (simscript/compile.lua, docs/script_compiler.md): triggers, script values and value
+-- texts compiled to Lua closures, with the walker above as their reference. It is given what it
+-- must match (the locals above) and may replace the trigger, apply_ops and value_text the walker
+-- calls; STELLAR_SCRIPT_COMPILE=off leaves the walker alone.
+M._internal = {
+    S = S, NONE = NONE, E = E, db = db, state = state, stats = stats, miss = miss, sync = sync,
+    push = push, with_file = with_file, compare = compare, flag_name = flag_name, list_of = list_of,
+    var_raw = var_raw, mathexpr = mathexpr, scripted_call = scripted_call, yes = yes,
+    LINKS = LINKS, TRIG = TRIG, LISTS = LISTS, AMOUNTS = AMOUNTS, CREATED_KIND = CREATED_KIND,
+    VALUE_OPS = VALUE_OPS, ITER_PARAMS = ITER_PARAMS, LIMIT_ONLY = LIMIT_ONLY,
+    TOOLTIP_PARAMS = TOOLTIP_PARAMS, AMOUNT = AMOUNT, PROP_ATTR = PROP_ATTR, PROP_SET = PROP_SET,
+    property_trigger = property_trigger, holding = holding, if_chain = if_chain,
+    trigger_tree = trigger_tree, trigger1 = trigger1, trigger1_rest = trigger1_rest,
+    apply_ops_tree = apply_ops_tree, value_text_tree = value_text_tree,
+    -- set(name, f): the trigger / apply_ops / value_text the walker calls
+    set = function(name, f)
+        if name == "trigger" then trigger = f
+        elseif name == "apply_ops" then apply_ops = f
+        elseif name == "value_text" then value_text = f
+        else error("eval._internal.set: " .. tostring(name)) end
+    end,
+}
+-- the handlers kept by area (simscript/handlers/): added to the tables above
+require("simscript.handlers")(M)
+
+if os.getenv("STELLAR_SCRIPT_COMPILE") ~= "off" then
+    require("simscript.compile").install(M)
 end
 
 return M

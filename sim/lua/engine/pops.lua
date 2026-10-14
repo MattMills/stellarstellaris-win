@@ -925,13 +925,10 @@ local function details_block(map)
     return b
 end
 
--- the entry of `key` in obj (the statement)
+-- the entry of `key` in obj (the statement) and its position (engine.world.entry: by the key index
+-- with the world in the store)
 local function entry(obj, key)
-    for i, e in ipairs(obj) do
-        if e.op and e.key and e.key.text == key then
-            return e, i
-        end
-    end
+    return world.entry(obj, key)
 end
 
 -- obj's `key = value`: replaced in place, or inserted after the first of `after` that is there (at
@@ -1199,7 +1196,8 @@ end
 local function fire(host, name, this, from)
     if not host then return end
     local events = require("simscript.events")
-    local ctx = eval.new_ctx(this, from)
+    -- events.on_action takes the on_action's from as from_ctx.this (and fromfrom as its from)
+    local ctx = eval.new_ctx(from or eval.NONE)
     local ok = pcall(events.on_action, name, this, ctx)
     if not ok then pops.stats.on_action_errors = (pops.stats.on_action_errors or 0) + 1 end
 end

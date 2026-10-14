@@ -1050,6 +1050,11 @@ E.system_of = function(kind, id)
     if kind == "colony" then
         return E.system_of("planet", world.colony_planet[id])
     end
+    if kind == "fleet" then
+        -- a fleet's position is its movement_manager's coordinate (the save writes no top-level
+        -- coordinate for a fleet): engine/script/runtime.lua's reader, nil in FTL
+        return require("engine.script.runtime").system_of("fleet", id)
+    end
     local o = obj(kind, id)
     local coord = o and world.field(o, "coordinate")
     return type(coord) == "table" and tonumber(world.field(coord, "origin")) or nil

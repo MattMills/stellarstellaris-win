@@ -115,7 +115,13 @@ end
 --   opts.only: names of the window's children to lay out (all if nil)
 --   opts.hide: element paths or names not drawn
 --   opts.text: element path -> text (else the element's text, localised)
---   opts.actions: element path -> action (what a click on that button does)
+--   opts.actions: element path -> action (what a click on that button does; on a window, its
+--                 background takes the clicks)
+--   opts.frames: element path -> the sprite's frame (the game's run-time state)
+--   opts.sizes: element path -> { w, h } (a window the game sizes at run time)
+--   opts.positions: element path -> { x, y } (a window at another of its places: hide_position)
+--   opts.sprites: element path -> sprite name (an icon the game sets at run time)
+--   opts.tints: element path -> { r, g, b, a } (a sprite coloured: the map labels' relation colour)
 --   opts.parent: the rectangle the window is laid out in (else the screen)
 --   opts.prefix: a path prefix for the window's elements (else "")
 --   opts.texture_size(path) -> w, h (the renderer's: the texture's pixels)
@@ -130,8 +136,21 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
     local report = { sprites = 0, texts = 0, missing_sprites = {}, skipped = {}, rects = {} }
     local loc = opts.loc
 
+    -- a sprite sheet's frame stands for its sheet (with its default frame)
+    local function resolve(name, frame)
+        local s = db.sprites[name]
+        if s and s.sheet and db.sprites[s.sheet] then
+            return s.sheet, frame or s.default_frame
+        end
+        return name, frame
+    end
+
     local function frame_size(sprite)
+        sprite = resolve(sprite)
         local s = db.sprites[sprite]
+        if s and s.size then
+            return s.size[1], s.size[2]
+        end
         if not s or not s.texture then
             return nil
         end
@@ -143,6 +162,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
     end
 
     local function sprite_item(path, name, frame, x, y, w, h, button)
+        name, frame = resolve(name, frame)
         local s = db.sprites[name]
         if not s or not s.texture then
             report.missing_sprites[#report.missing_sprites + 1] = tostring(name)
@@ -157,6 +177,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             kind = "sprite", path = path, sprite = name, texture = s.texture, sprite_kind = s.kind,
             frame = math.max(1, frame or 1), frames = s.frames, x = x, y = y, w = w or fw, h = h or fh,
             border = s.kind == "corneredTileSpriteType" and s.border or nil, button = button,
+            tint = opts.tints and opts.tints[path] or nil,
         }
         items[#items + 1] = item
         report.sprites = report.sprites + 1
@@ -176,6 +197,15 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             for _, s in ipairs(loc.spans(text)) do
                 if s.text then
                     spans[#spans + 1] = { text = s.text, colour = db.textcolors[s.colour or ""] or base }
+                elseif s.icon then
+                    -- a text icon (£name£: GFX_text_<name>): "\1texture\1frames\1frame" for the renderer
+                    local sp = db.sprites["GFX_text_" .. s.icon]
+                    if sp and sp.sheet and db.sprites[sp.sheet] then
+                        sp = { texture = db.sprites[sp.sheet].texture, frames = db.sprites[sp.sheet].frames, frame = sp.default_frame }
+                    end
+                    if sp and sp.texture then
+                        spans[#spans + 1] = { text = "\1" .. sp.texture .. "\1" .. (sp.frames or 1) .. "\1" .. (sp.frame or 1), colour = base }
+                    end
                 end
             end
         else
@@ -234,15 +264,24 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             return get(b, k)
         end
 
-        local pos = field("position")
+        -- a window the game slides in and out is laid out where it shows (show_position)
+        local pos = field("show_position") or field("position")
         local px = number(type(pos) == "table" and get(pos, "x") or nil, vars) or 0
         local py = number(type(pos) == "table" and get(pos, "y") or nil, vars) or 0
+        local over_pos = opts.positions and opts.positions[path]
+        if over_pos then
+            px, py = over_pos[1], over_pos[2]
+        end
         local size = field("size")
+        local over_size = opts.sizes and opts.sizes[path]
         local w = number(type(size) == "table" and (get(size, "width") or get(size, "x")) or nil, vars, parent.w)
         local h = number(type(size) == "table" and (get(size, "height") or get(size, "y")) or nil, vars, parent.h)
+        if over_size then
+            w, h = over_size[1], over_size[2]
+        end
         local scale = number(field("scale"), vars) or 1
-        local sprite = field("spriteType") or field("quadTextureSprite")
-        local frame = number(field("frame"), vars)
+        local sprite = opts.sprites and opts.sprites[path] or field("spriteType") or field("quadTextureSprite")
+        local frame = opts.frames and opts.frames[path] or number(field("frame"), vars)
 
         if ICONS[kind] and sprite and (w == nil or h == nil) then
             local fw, fh = frame_size(sprite)
@@ -259,6 +298,10 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
         local o = anchor(field("origo"))
         local x = parent.x + a[1] * parent.w + px - o[1] * w
         local y = parent.y + a[2] * parent.h + py - o[2] * h
+        -- centerPosition: the element centred on its position
+        if field("centerPosition") == "yes" then
+            x, y = x - w / 2, y - h / 2
+        end
         report.rects[path] = { x = x, y = y, w = w, h = h }
 
         if CONTAINERS[kind] then
@@ -285,7 +328,15 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                             if fill then
                                 bw, bh = w, h
                             end
-                            sprite_item(path .. "/background", bs, number(get(e.value, "frame"), vars), x, y, bw, bh)
+                            -- a window the game takes clicks on (opts.actions names it): its
+                            -- background is its button, over the whole window
+                            local action = opts.actions and opts.actions[path]
+                            local button
+                            if action then
+                                bw, bh = w, h
+                                button = { name = name, action = action }
+                            end
+                            sprite_item(path .. "/background", bs, number(get(e.value, "frame"), vars), x, y, bw, bh, button)
                         end
                     elseif CONTAINERS[k] or ICONS[k] or TEXTS[k] or LISTS[k] then
                         -- a drop-down's expanded window is closed until it is clicked

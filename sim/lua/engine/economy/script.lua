@@ -6,9 +6,14 @@
 -- - links: `owner` and `planet` of a pop group (its `planet` field is its colony's id, not a
 --   planet's), `species` of a pop group or leader, `colony` of a planet (the planet);
 -- - triggers on pop groups: has_trait (the species' traits), is_enslaved, is_being_purged,
---   is_sapient, is_robot_pop_group, is_pop_category, is_unemployed, has_living_standard,
---   has_citizenship_type (the owner's species rights); leaders: is_heir, has_envoy_task;
---   starbases: has_starbase_building, is_scope_valid; ships: has_component.
+--   is_sapient, has_citizenship_type (the owner's species rights); leaders: is_ruler;
+--   planets: num_zones; relations, federations (has_federation).
+--   The script layer has these now (simscript/handlers/runtime.lua, docs/script_runtime.md):
+--   is_scope_valid, is_space_fauna, is_councilor, has_starbase_building, has_active_tradition,
+--   is_robot_pop_group, is_pop_category, is_unemployed, has_living_standard, is_heir,
+--   has_climate, is_ringworld, has_active_building, is_scope_type, has_component,
+--   has_federation_perk, has_federation_law, has_envoy_task; has_ethic and has_trait of a
+--   leader (has_ethic: of a pop group too) and of a country go to it.
 
 local defs = require("engine.defs")
 local world = require("engine.world")
@@ -24,17 +29,27 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- the world, as the triggers need it
 
--- colony id -> planet id
-local colony_planet
+-- colony id -> planet id, kept between evaluations: a hit is checked against the planet's own
+-- `colony` field, and a miss or a stale hit scans the planets again, at most once per
+-- script.with (the scan had been redone on every script.with: 30% of the monthly rebuild)
+local colony_planet = {}
+local scanned = false
 local function planet_of_colony(c)
-    if colony_planet == nil then
-        colony_planet = {}
-        for _, pid in ipairs(world.all("planet")) do
-            local col = world.field(world.object("planet", pid), "colony")
-            if col ~= nil then colony_planet[tonumber(col)] = pid end
-        end
+    if c == nil then return nil end
+    local pid = colony_planet[c]
+    if pid ~= nil and not scanned then
+        local p = world.object("planet", pid)
+        if p ~= nil and tonumber(world.field(p, "colony")) == c then return pid end
     end
-    return c and colony_planet[c]
+    if not scanned then
+        colony_planet = {}
+        for _, id in ipairs(world.all("planet")) do
+            local col = world.field(world.object("planet", id), "colony")
+            if col ~= nil then colony_planet[tonumber(col)] = id end
+        end
+        scanned = true
+    end
+    return colony_planet[c]
 end
 script.planet_of_colony = planet_of_colony
 
@@ -182,7 +197,8 @@ trig.has_trait = function(e, ctx, lk)
         local sid = sc.kind == "pop_group" and group_species(sc.id) or sc.id
         return species_traits(sid)[e.value.text or ""] == true
     end
-    return eval.property(lk)(e, ctx, lk)
+    -- (a leader's, a country's: the script layer's, simscript/handlers/runtime.lua)
+    return (orig_trig.has_trait or eval.property(lk))(e, ctx, lk)
 end
 -- a pop group's flags, from its species rights in its owner
 local function citizenship(id)
@@ -202,31 +218,11 @@ trig.is_sapient = function(e, ctx)
     if not sid then return false == yes(e) end
     return (archetype(sid) ~= "PRESAPIENT") == yes(e)
 end
-trig.is_robot_pop_group = function(e, ctx)
-    if ctx.this.kind ~= "pop_group" then return false == yes(e) end
-    local a = archetype(group_species(ctx.this.id))
-    return (a == "ROBOT" or a == "MACHINE") == yes(e)
-end
-trig.is_pop_category = function(e, ctx)
-    if ctx.this.kind ~= "pop_group" then return false end
-    return (pop_category_def(ctx.this.id)) == e.value.text
-end
-trig.is_unemployed = function(e, ctx)
-    if ctx.this.kind ~= "pop_group" then return false == yes(e) end
-    local _, d = pop_category_def(ctx.this.id)
-    local u = d and defs.field(d.block, "is_unemployment_job") == "yes"
-    return (u == true) == yes(e)
-end
-trig.has_living_standard = function(e, ctx)
-    if ctx.this.kind ~= "pop_group" then return false end
-    return group_right(ctx.this.id, "living_standard") == param(e, "type")
-end
 trig.has_citizenship_type = function(e, ctx)
     if ctx.this.kind ~= "pop_group" then return false end
     return citizenship(ctx.this.id) == param(e, "type")
 end
--- leaders: the ruler is the country's `ruler`; the heir its `heir`, or (the save writes none) the
--- leader with trait_imperial_heir who is not the ruler
+-- leaders: the ruler is the country's `ruler`
 local function leader_country(id)
     local o = tonumber(world.field(world.object("leader", id), "country"))
     return o and world.object("country", o)
@@ -239,49 +235,6 @@ trig.is_ruler = function(e, ctx)
     if ctx.this.kind ~= "leader" then return eval.property("is_ruler")(e, ctx, "is_ruler") end
     return is_ruler(ctx.this.id) == yes(e)
 end
-trig.is_heir = function(e, ctx)
-    if ctx.this.kind ~= "leader" then return false == yes(e) end
-    local c = leader_country(ctx.this.id)
-    local heir = c and tonumber(world.field(c, "heir"))
-    local r
-    if heir then
-        r = heir == ctx.this.id
-    else
-        local traits = world.fields(world.object("leader", ctx.this.id), "traits")
-        r = false
-        for _, t in ipairs(traits) do
-            if t == "trait_imperial_heir" then r = not is_ruler(ctx.this.id) end
-        end
-    end
-    return r == yes(e)
-end
-trig.is_councilor = function(e, ctx)
-    if ctx.this.kind ~= "leader" then return false == yes(e) end
-    local cp = world.stores["council_positions"] or {}
-    local r = false
-    for _, p in pairs(cp) do
-        if tonumber(world.field(p, "leader")) == ctx.this.id then r = true break end
-    end
-    return r == yes(e)
-end
-trig.has_envoy_task = function(e, ctx)
-    if ctx.this.kind ~= "leader" then return false end
-    local task = world.path(world.object("leader", ctx.this.id), "location", "assignment")
-    local want = param(e, "task")
-    return want ~= nil and task == want
-end
--- starbases
-trig.has_starbase_building = function(e, ctx)
-    if ctx.this.kind ~= "starbase" then return false end
-    local b = world.field(world.object("starbase", ctx.this.id), "buildings")
-    for _, x in ipairs(type(b) == "table" and b or {}) do
-        if x.op and x.value.text == e.value.text then return true end
-    end
-    return false
-end
-trig.is_scope_valid = function(e, ctx)
-    return (ctx.this ~= nil and ctx.this ~= eval.NONE) == yes(e)
-end
 
 -- planets
 local function planet_class_def(pid)
@@ -290,25 +243,6 @@ local function planet_class_def(pid)
 end
 local function planet_colony(pid)
     return world.object("colony", tonumber(world.field(world.object("planet", pid), "colony")))
-end
-trig.has_climate = function(e, ctx)
-    if ctx.this.kind ~= "planet" then return false end
-    local d = planet_class_def(ctx.this.id)
-    return d ~= nil and defs.field(d.block, "climate") == e.value.text
-end
-trig.is_ringworld = function(e, ctx)
-    if ctx.this.kind ~= "planet" then return false == yes(e) end
-    local d, class = planet_class_def(ctx.this.id)
-    local r = (d and defs.field(d.block, "ringworld") == "yes") or (class and class:find("ringworld") ~= nil)
-    return (r and true or false) == yes(e)
-end
-trig.has_active_building = function(e, ctx)
-    if ctx.this.kind ~= "planet" then return false end
-    local c = planet_colony(ctx.this.id)
-    for _, bid in ipairs(world.list(world.field(c, "buildings_cache"))) do
-        if world.field(world.object("buildings", tonumber(bid)), "type") == e.value.text then return true end
-    end
-    return false
 end
 -- num_zones = N, or num_zones = { type = zone_x value >= N }
 trig.num_zones = function(e, ctx)
@@ -354,62 +288,16 @@ trig.is_archetype = function(e, ctx)
     local sid = scope_species(ctx.this)
     return sid ~= nil and archetype(sid) == e.value.text
 end
--- any scope
-local SCOPE_TYPES = { pop_group = "pop_group", planet = "planet", country = "country", ship = "ship", fleet = "fleet",
-    leader = "leader", starbase = "starbase", army = "army", species = "species" }
-trig.is_scope_type = function(e, ctx)
-    return SCOPE_TYPES[ctx.this.kind] == e.value.text
-end
--- ships: a component of the ship's design
-trig.has_component = function(e, ctx)
-    if ctx.this.kind ~= "ship" then return false end
-    local s = world.object("ship", ctx.this.id)
-    local impl = world.field(s, "ship_design_implementation")
-    local design = world.object("ship_design", tonumber(world.field(impl, "design")))
-    local want = e.value.text
-    for _, g in ipairs(world.blocks(world.field(design, "growth_stages"))) do
-        for _, sec in ipairs(world.fields(g, "section")) do
-            for _, comp in ipairs(world.fields(sec, "component")) do
-                if world.field(comp, "template") == want then return true end
-            end
-        end
-        for _, key in ipairs(world.fields(g, "required_component")) do
-            if key == want then return true end
-        end
-    end
-    return false
-end
 
 -- ---------------------------------------------------------------------------------------------
--- diplomacy: a country's relations (relations_manager.relation = { owner country <flag>=yes })
+-- diplomacy: a country's relations, the pacts, rivals and federations are the script layer's own
+-- (simscript/handlers/diplomacy.lua over engine.diplomacy); only the envoys are here
 
-local function relation(country, other)
-    local rm = world.field(world.object("country", country), "relations_manager")
-    for _, r in ipairs(world.fields(rm, "relation")) do
-        if type(r) == "table" and tonumber(world.field(r, "country")) == other then return r end
-    end
-    return nil
-end
-script.relation = relation
+script.relation = require("engine.diplomacy").relation
 
 local function other_of(e, ctx)
     local found, sc = eval.resolve(e.value.text or "", ctx, e)
     return found and sc and sc.kind == "country" and sc.id or nil
-end
-
-local RELATION_FLAGS = {
-    has_rival = "is_rival", has_commercial_pact = "commercial_pact", has_research_agreement = "research_agreement",
-    has_diplo_migration_treaty = "migration_access", has_migration_access = "migration_access",
-    has_embassy = "embassy", has_closed_borders = "closed_borders", has_defensive_pact = "defensive_pact",
-    has_non_aggression_pact = "non_aggression_pact", is_guaranteeing = "guarantee",
-}
-for trig_name, flag in pairs(RELATION_FLAGS) do
-    trig[trig_name] = function(e, ctx)
-        if ctx.this.kind ~= "country" then return false end
-        local other = other_of(e, ctx)
-        local r = other and relation(ctx.this.id, other)
-        return r ~= nil and world.field(r, flag) == "yes"
-    end
 end
 
 -- a country's ethics: `ethos = { ethics = { "x" ... } }` in a 4.5 save
@@ -424,21 +312,13 @@ local function country_has_ethic(cid, ethic)
     return false
 end
 trig.has_ethic = function(e, ctx, lk)
-    if ctx.this.kind ~= "country" then return eval.property(lk)(e, ctx, lk) end
+    -- (a pop group's or leader's: the script layer's, simscript/handlers/runtime.lua)
+    if ctx.this.kind ~= "country" then return (orig_trig.has_ethic or eval.property(lk))(e, ctx, lk) end
     return country_has_ethic(ctx.this.id, e.value.text)
 end
 trig.is_gestalt = function(e, ctx, lk)
     if ctx.this.kind ~= "country" then return eval.property(lk)(e, ctx, lk) end
     return country_has_ethic(ctx.this.id, "ethic_gestalt_consciousness") == yes(e)
-end
-
--- a country's traditions (adopted, the save's `traditions` list)
-trig.has_active_tradition = function(e, ctx)
-    if ctx.this.kind ~= "country" then return false end
-    for _, v in ipairs(world.list(world.field(world.object("country", ctx.this.id), "traditions"))) do
-        if v == e.value.text then return true end
-    end
-    return false
 end
 
 -- (eval reads has_policy_flag as a script flag, has_<x>_flag)
@@ -470,40 +350,6 @@ trig.is_harming_relations_with = function(e, ctx)
     return other and envoy_task(ctx.this.id, other, "harm_relations") or false
 end
 
--- federations: the federation whose members list the country
-local function federation_of(country)
-    for fid, f in pairs(world.stores["federation"] or {}) do
-        for _, m in ipairs(world.list(world.field(f, "members"))) do
-            if tonumber(m) == country then return fid end
-        end
-    end
-    return nil
-end
-trig.has_federation = function(e, ctx)
-    if ctx.this.kind ~= "country" then return false == yes(e) end
-    return (federation_of(ctx.this.id) ~= nil) == yes(e)
-end
-links.federation = function(cur)
-    if cur.kind ~= "country" then return nil end
-    local f = federation_of(cur.id)
-    return f and S("federation", f) or nil
-end
-trig.has_federation_perk = function(e, ctx)
-    if ctx.this.kind ~= "federation" then return false end
-    local p = world.path(world.object("federation", ctx.this.id), "federation_progression", "perks")
-    for _, v in ipairs(world.list(p)) do
-        if v == e.value.text then return true end
-    end
-    return false
-end
-trig.has_federation_law = function(e, ctx)
-    if ctx.this.kind ~= "federation" then return false end
-    local laws = world.path(world.object("federation", ctx.this.id), "federation_progression", "laws")
-    for _, x in ipairs(type(laws) == "table" and laws or {}) do
-        if x.op and x.value.text == e.value.text then return true end
-    end
-    return false
-end
 
 -- ---------------------------------------------------------------------------------------------
 -- script values: `value:name|PARAM|@var|`: the caller's scripted variables are resolved where the
@@ -530,21 +376,6 @@ local function ship_size_def(sid)
     return size and defs.get("common/ship_sizes", size)
 end
 script.ship_size_def = ship_size_def
-
-trig.is_space_fauna = function(e, ctx)
-    local sc = ctx.this
-    local r = false
-    if sc.kind == "ship" then
-        local d = ship_size_def(sc.id)
-        r = d ~= nil and defs.field(d.block, "is_space_fauna_ship") == "yes"
-    elseif sc.kind == "fleet" then
-        for _, sid in ipairs(world.list(world.field(world.object("fleet", sc.id), "ships"))) do
-            local d = ship_size_def(tonumber(sid))
-            if d and defs.field(d.block, "is_space_fauna_ship") == "yes" then r = true break end
-        end
-    end
-    return r == yes(e)
-end
 
 -- the cost table of a ship's size: { [res] = amount }, and its total
 local function ship_size_cost(sid)
@@ -657,14 +488,26 @@ end
 
 local installed = 0
 
+-- the counting wrappers, made once (links and trig are complete when the module has loaded)
+local wrapped_links, wrapped_trig
+
 local function install()
-    for k, f in pairs(links) do
-        orig_links[k] = LINKS[k]
-        LINKS[k] = function(...) count("link " .. k) return f(...) end
+    if wrapped_links == nil then
+        wrapped_links, wrapped_trig = {}, {}
+        for k, f in pairs(links) do
+            wrapped_links[k] = function(...) count("link " .. k) return f(...) end
+        end
+        for k, f in pairs(trig) do
+            wrapped_trig[k] = function(...) count("trigger " .. k) return f(...) end
+        end
     end
-    for k, f in pairs(trig) do
+    for k, w in pairs(wrapped_links) do
+        orig_links[k] = LINKS[k]
+        LINKS[k] = w
+    end
+    for k, w in pairs(wrapped_trig) do
         orig_trig[k] = TRIG[k]
-        TRIG[k] = function(...) count("trigger " .. k) return f(...) end
+        TRIG[k] = w
     end
     orig_script_value = eval.script_value
     eval.script_value = script_value
@@ -682,7 +525,7 @@ function script.with(f, ...)
         return f(...)
     end
     installed = installed + 1
-    colony_planet = nil
+    scanned = false
     install()
     local res = { pcall(f, ...) }
     uninstall()

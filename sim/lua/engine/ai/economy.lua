@@ -24,6 +24,7 @@
 -- from the stockpile (engine.ai.economy.orders); engine.construction builds it.
 
 local world = require("engine.world")
+local cmds = require("engine.ai.commands")
 local defs = require("engine.defs")
 local budget = require("engine.ai.budget")
 local B = require("engine.ai.economy.buildables")
@@ -210,7 +211,7 @@ function M.post_orders(country, p, today, commands)
         -- AddAICommandWithCostForPosting: affordable (again) -> post and withdraw
         local category = B.category(b)
         if budget.can_afford_expenditure(country, category, b.cost) then
-            commands[#commands + 1] = command(country, b, today)
+            commands[#commands + 1] = cmds.make("engine.ai.economy", "command", command, country, b, today)
             budget.withdraw(country, category, b.cost)
             M.stats.posted = M.stats.posted + 1
             M.posted[#M.posted + 1] = { date = today, country = country, kind = b.kind, type = b.type, colony = b.colony,
@@ -274,5 +275,7 @@ function M.report()
     }
     return table.concat(lines, "\n")
 end
+
+M.ctor = { command = command }
 
 return M

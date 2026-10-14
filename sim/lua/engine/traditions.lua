@@ -384,10 +384,12 @@ function traditions.perk_points(id)
     return math.min(v, defines().ASCENSION_PERKS_SLOTS)
 end
 
-local function stockpile(id)
+-- the country's stockpile block (made when create, for a payment; a read takes a missing one as empty)
+local function stockpile(id, create)
     local c = country_of(id)
     local module = world.path(c, "modules", "standard_economy_module")
-    return type(module) == "table" and world.child(module, "resources") or nil
+    if type(module) ~= "table" then return nil end
+    return create and world.child(module, "resources") or world.field(module, "resources")
 end
 function traditions.stockpile(id, resource)
     return tonumber(world.field(stockpile(id), resource)) or 0
@@ -427,7 +429,7 @@ local function quoted_list(c, key)
     return world.child(c, key)
 end
 local function append_name(block, name)
-    block[#block + 1] = { text = name, quoted = true }
+    world.append_value(block, name, true)
 end
 
 -- CTraditionType::GetTraditionSwap: of the `tradition_swap`s whose trigger holds, the one with
@@ -529,7 +531,7 @@ end
 
 -- traditions.pay(country, cost): CEconomyCountryModule::RemoveResources
 function traditions.pay(id, cost)
-    local stock = stockpile(id)
+    local stock = stockpile(id, true)
     if not stock then
         return false
     end

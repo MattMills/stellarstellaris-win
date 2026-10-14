@@ -523,10 +523,11 @@ function economy.capacity(country, r)
         local ctx = economy.ctx("country", country, def.file)
         for _, e in ipairs(dyn) do
             if e.op and e.key.text == "modifier" and e.value.text == nil then
-                local add = tonumber(defs.field(e.value, "add")) or 0
+                -- (a modifier's `subtract`, alloys': a value operation, not a trigger)
+                local add = (tonumber(defs.field(e.value, "add")) or 0) - (tonumber(defs.field(e.value, "subtract")) or 0)
                 local cond = {}
                 for _, x in ipairs(e.value) do
-                    if not (x.op and (x.key.text == "add" or x.key.text == "factor")) then
+                    if not (x.op and (x.key.text == "add" or x.key.text == "subtract" or x.key.text == "factor")) then
                         cond[#cond + 1] = x
                     end
                 end

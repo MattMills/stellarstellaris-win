@@ -14,10 +14,9 @@
 -- - is_same_species with a country (its founder species: `is_same_species = from.owner`) or a
 --   leader;
 -- - check_variable_arithmetic (check_variable's comparison: `which = value:x value != 1`);
--- - has_election_type (the country's authority's election_type), is_sector_capital (a planet whose
---   colony is a sector's local_capital), has_opinion_modifier = { who modifier } (the country's
---   relation with `who`), is_councilor_type (the leader's council position's type), has_faction
---   (the pop_factions store), is_original_owner (a planet);
+-- - has_opinion_modifier = { who modifier } (the country's relation with `who`),
+--   is_original_owner (a planet) (is_sector_capital, is_councilor_type, has_election_type and
+--   has_faction are the script layer's now: simscript/handlers/runtime.lua);
 -- - the list enslaved_species (a country's enslaved_species_refs; a planet's enslaved pop groups'
 --   species).
 
@@ -139,36 +138,6 @@ local function country_of(sc)
     return nil
 end
 
--- has_election_type = democratic|oligarchic|none: the country's authority's election_type
--- (common/governments/authorities; none when it has none)
-trig.has_election_type = function(e, ctx)
-    local c = country_of(ctx.this)
-    local o = c and world.object("country", c)
-    local gov = o and world.field(o, "government")
-    local auth = type(gov) == "table" and world.field(gov, "authority")
-    local d = auth and defs.get("common/governments/authorities", auth)
-    local t = d and defs.field(d.block, "election_type") or "none"
-    return t == e.value.text
-end
-
--- is_sector_capital (a planet): its colony is a sector's local_capital (a colony id)
-local sector_capitals
-trig.is_sector_capital = function(e, ctx)
-    if sector_capitals == nil then
-        sector_capitals = {}
-        for _, id in ipairs(world.all("sectors")) do
-            local c = tonumber(world.field(world.object("sectors", id), "local_capital"))
-            if c then sector_capitals[c] = true end
-        end
-    end
-    local r = false
-    if ctx.this.kind == "planet" then
-        local col = tonumber(world.field(world.object("planet", ctx.this.id), "colony"))
-        r = col ~= nil and sector_capitals[col] == true
-    end
-    return r == yes(e)
-end
-
 -- has_opinion_modifier = { who = <country> modifier = <name> } (a country): this country's relation
 -- with `who` holds the opinion modifier (relations_manager's relation { owner country modifier })
 trig.has_opinion_modifier = function(e, ctx)
@@ -194,29 +163,6 @@ trig.has_opinion_modifier = function(e, ctx)
                 if type(m) == "table" and world.field(m, "modifier") == name then return true end
             end
         end
-    end
-    return false
-end
-
--- is_councilor_type = <type> (a leader): the type of the council position it holds
-trig.is_councilor_type = function(e, ctx)
-    if ctx.this.kind ~= "leader" then return false end
-    local cp = world.stores["council_positions"] or {}
-    for _, p in pairs(cp) do
-        if tonumber(world.field(p, "leader")) == ctx.this.id then
-            return world.field(p, "type") == e.value.text
-        end
-    end
-    return false
-end
-
--- has_faction = <type> (a country): a pop faction of that type (the `pop_factions` store)
-trig.has_faction = function(e, ctx)
-    local c = country_of(ctx.this)
-    if not c then return false end
-    for _, id in ipairs(world.all("pop_factions")) do
-        local f = world.object("pop_factions", id)
-        if tonumber(world.field(f, "country")) == c and world.field(f, "type") == e.value.text then return true end
     end
     return false
 end

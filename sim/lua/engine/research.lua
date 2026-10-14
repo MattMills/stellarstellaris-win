@@ -219,11 +219,45 @@ local function is_fallen_empire(c)
     return d and defs.field(d.block, "fallen_empire") == "yes" or false
 end
 
+-- a country's technologies and their levels (tech_status: `technology = name` then its `level`),
+-- indexed once: the level research.level's scan would find for each name (the first `level` after
+-- the first `technology` entry of that name). Kept until research.add_technology changes the
+-- country's technologies (the only writer of those entries), or until tech_status is another block.
+-- (A scan per lookup walked the ~700 entries of tech_status for every technology of an area and its
+-- prerequisites: 3.4 s of 180 days with the table world, 10 s and 56 MB of garbage a day with the
+-- world in the store, where each entry walked is a view built for the walk.)
+local levels_cache = {}
+-- (a worker state reads a copy the main state's add_technology changes: it scans, as before)
+local cache_levels = not (RUST and RUST.worker_index ~= nil)
+local function levels_of(country, status)
+    local key = world.key(status)
+    local c = levels_cache[country]
+    if c and c.key == key then
+        return c.map
+    end
+    local map, cur = {}, nil
+    for _, e in ipairs(status) do
+        if e.op and e.key then
+            local k = e.key.text
+            if k == "technology" then
+                cur = e.value.text
+            elseif k == "level" and cur ~= nil and map[cur] == nil then
+                map[cur] = tonumber(e.value.text) or 1
+            end
+        end
+    end
+    levels_cache[country] = { key = key, map = map }
+    return map
+end
+
 -- research.level(country, tech) -> the level the country has of a technology, or nil
 function research.level(country, name)
     local status = world.field(world.object("country", country), "tech_status")
     if type(status) ~= "table" then
         return nil
+    end
+    if name ~= nil and cache_levels then
+        return levels_of(country, status)[name]
     end
     local found
     for _, e in ipairs(status) do
@@ -508,7 +542,7 @@ function research.increase_potential(country, area)
         if not offered[name] and research.can_research(country, name) then
             local e = by[name]
             if e then
-                e.value.text = tostring((tonumber(e.value.text) or 0) + 1)
+                world.set_entry(block, e, (tonumber(e.value.text) or 0) + 1)
             else
                 world.append(block, name, "1", true)
                 by[name] = block[#block]
@@ -541,6 +575,7 @@ function research.update_alternatives(country, area, reset)
     local M = modifiers_of(country)
     local n = d.NUM_TECH_ALTERNATIVES + math.floor((M.num_tech_alternatives_add or 0) + 1e-9)
     local block = alternatives_of(status, area)
+    world.wrote(status)
     local previous = {}
     if reset then
         for _, e in ipairs(list_entries(block)) do
@@ -548,7 +583,7 @@ function research.update_alternatives(country, area, reset)
         end
         for i = #block, 1, -1 do
             if block[i].text then
-                table.remove(block, i)
+                world.remove_at(block, i)
             end
         end
     else
@@ -558,7 +593,7 @@ function research.update_alternatives(country, area, reset)
                 if research.can_research(country, e.text) then
                     n = n - 1
                 else
-                    table.remove(block, i)
+                    world.remove_at(block, i)
                 end
             end
         end
@@ -588,8 +623,7 @@ function research.update_alternatives(country, area, reset)
     while added < n and #names > 0 do
         local r = RUST.rand()
         local i = rng.weighted(weights, r) or (r % #names + 1)
-        world.append_value(block, names[i])
-        block[#block].quoted = true
+        world.append_value(block, names[i], true)
         -- the chosen one out: the last candidate takes its place
         names[i], weights[i] = names[#names], weights[#weights]
         names[#names], weights[#weights] = nil, nil
@@ -626,6 +660,7 @@ end
 -- research.add_technology(country, tech): the technology added at level 1, or its level raised
 -- (CTechnologyStatus::IncreaseTechnologyLevel), after the other technologies of tech_status
 function research.add_technology(country, name)
+    levels_cache[country] = nil
     local c = world.object("country", country)
     if not c then
         return false
@@ -640,7 +675,7 @@ function research.add_technology(country, name)
                 last = i
             elseif k == "level" then
                 if found then
-                    e.value.text = tostring((tonumber(e.value.text) or 1) + 1)
+                    world.set_entry(status, e, (tonumber(e.value.text) or 1) + 1)
                     return true
                 end
                 last = i
@@ -764,13 +799,14 @@ local function area_day(host, country, status, area, day)
         local add = A + B
         local progress = (pe and tonumber(pe.value.text) or 0) + add
         if add > A and slot then
-            slot.text = world.number_text((tonumber(slot.text) or 0) - (add - A))
+            world.set_entry(world.field(status, "stored_techpoints"), slot, world.number_text((tonumber(slot.text) or 0) - (add - A)))
         end
+        world.wrote(item)
         research.stats.added = research.stats.added + add
         A = A - math.min(add, A)
         progress = math.floor(progress * 100000 + 0.5) / 100000
         if pe then
-            pe.value.text = world.number_text(progress)
+            world.set_entry(item, pe, world.number_text(progress))
         else
             world.insert(item, 1, "progress", progress)
         end
@@ -828,7 +864,7 @@ local function area_day(host, country, status, area, day)
         research.stats.queues_emptied = research.stats.queues_emptied + 1
     end
     if monthly and slot and A > 0 then
-        slot.text = world.number_text((tonumber(slot.text) or 0) + A)
+        world.set_entry(world.field(status, "stored_techpoints"), slot, world.number_text((tonumber(slot.text) or 0) + A))
     end
     -- the options of an area not researching, topped up (UpdateTechAlternatives without reset)
     research.update_alternatives(country, area, false)

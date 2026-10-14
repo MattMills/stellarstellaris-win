@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""A client of stellar-render's command protocol (docs/render.md section 9).
+"""A client of stellar-render's command protocol (docs/render.md section 9), which the real game
+speaks too (headless/view.sh: the game's own frames, for reference shots).
 
 The renderer listens with `stellar-render --listen [ADDR:]PORT` (or STELLAR_RENDER_LISTEN; a port
-alone is localhost). One command per line, one reply line per command, sent when the command is
-complete; `frame -` replies `ok frame - W H MS BYTES` and then the PNG's bytes.
+alone is localhost), the game with `headless/view.sh --listen [ADDR:]PORT SAVE` on 10.5.0.24. One
+command per line, one reply line per command, sent when the command is complete; `frame -`
+replies `ok frame - W H MS BYTES` and then the PNG's bytes. The same command file against both
+(`--addr` of each, `--file`) gives the same views: `camera X Y Z YAW PITCH DISTANCE` is the game's
+camera in map units on both.
 
     ctl.py [--addr HOST:PORT] COMMAND...        send commands, print the replies
     ctl.py [--addr HOST:PORT] --file FILE       send a file's commands (# comments)

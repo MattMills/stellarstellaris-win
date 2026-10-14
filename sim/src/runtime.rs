@@ -71,6 +71,13 @@ pub fn new_lua() -> mlua::Result<Lua> {
             "maxsnap=2000", "sizemcode=1024", "maxmcode=524288", "hotloop=56", "hotexit=10")"#,
     )
     .exec()?;
+    // the collector's pause (percent of the live heap to allocate before a new cycle): the heap is
+    // mostly the world and the definitions, which live for the whole run, so every cycle walks them
+    // again. 180 days from 2210.01.01: 238 ms a day and 4.1 GB at LuaJIT's 200, 209 ms and 6.0 GB at
+    // 400, 203 ms and 9.0 GB at 800 (half of the monthly modifier rebuild had been the collector);
+    // STELLAR_GC_PAUSE overrides it
+    let pause = std::env::var("STELLAR_GC_PAUSE").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(400);
+    lua.load(format!("collectgarbage('setpause', {pause})")).exec()?;
     let repo = repo_dir().to_string_lossy().replace('\\', "/");
     let package: Table = lua.globals().get("package")?;
     package.set(

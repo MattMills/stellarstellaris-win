@@ -34,6 +34,7 @@
 -- STELLAR_AI_CONSTRUCTION=off turns the decisions off.
 
 local world = require("engine.world")
+local cmds = require("engine.ai.commands")
 local defs = require("engine.defs")
 
 local M = {
@@ -389,7 +390,7 @@ local function build_station(us, c, fid, f, taken, first, constructors, commands
         local sid = exploration().system_of(f)
         if sid and world.system_owner[sid] ~= us then
             S.returns = S.returns + 1
-            commands[#commands + 1] = command(us, fid, { kind = "return" })
+            commands[#commands + 1] = cmds.make("engine.ai.construction_ships", "command", command, us, fid, { kind = "return" })
             M.decisions[#M.decisions + 1] = { date = today, country = us, fleet = fid, kind = "return" }
         else
             S.nothing = S.nothing + 1
@@ -412,7 +413,7 @@ local function build_station(us, c, fid, f, taken, first, constructors, commands
         S.unaffordable = S.unaffordable + 1
         return true
     end
-    commands[#commands + 1] = command(us, fid, { kind = "build_station", target = holder, class = class })
+    commands[#commands + 1] = cmds.make("engine.ai.construction_ships", "command", command, us, fid, { kind = "build_station", target = holder, class = class })
     budget().withdraw(us, category, cost)
     taken["0:" .. holder] = true
     if class == st.CLASS.shipclass_starbase then S.starbases = S.starbases + 1 else S.stations = S.stations + 1 end
@@ -465,6 +466,7 @@ end
 local function toggle_needs_stations(us)
     return {
         kind = "toggle_needs_stations", country = us,
+        internal = true,   -- the AI's own flag: a worker flips it itself (engine.store.worker)
         execute = function()
             M.needs_stations[us] = not M.needs_stations[us]
             S.toggles = S.toggles + 1
@@ -532,5 +534,7 @@ function M.report()
         S.weeks, S.fleets, S.busy, S.dirty, S.stations, S.starbases, S.unaffordable, S.returns, S.nothing, S.draws,
         S.executed, S.failed, S.toggles)
 end
+
+M.ctor = { command = command }
 
 return M

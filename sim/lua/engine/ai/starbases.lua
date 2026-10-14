@@ -34,6 +34,7 @@
 -- STELLAR_AI_STARBASES=off turns it off.
 
 local world = require("engine.world")
+local cmds = require("engine.ai.commands")
 local defs = require("engine.defs")
 
 local M = {
@@ -208,7 +209,7 @@ local function build_new_starbases(country, outposts, commands, today)
         return
     end
     b.withdraw(country, category, cost)
-    commands[#commands + 1] = command(country, best, nxt, q, cost, size)
+    commands[#commands + 1] = cmds.make("engine.ai.starbases", "command", command, country, best, nxt, q, cost, size)
     S.upgrades = S.upgrades + 1
     M.decisions[#M.decisions + 1] = { date = today, country = country, starbase = best, level = nxt }
 end
@@ -268,5 +269,7 @@ function M.report()
     return string.format("ai starbases: %d weeks, %d upgrades ordered (%d unaffordable, %d weeks at capacity); commands %d executed, %d failed",
         S.weeks, S.upgrades, S.unaffordable, S.full, S.executed, S.failed)
 end
+
+M.ctor = { command = command }
 
 return M

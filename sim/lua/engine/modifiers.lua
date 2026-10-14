@@ -73,11 +73,17 @@ M.CATEGORIES = { "Country", "Planet", "Colony", "PopGroup", "Ship", "Fleet", "Ar
 -- (`researcher_jobs_bonus_workforce_mult = 0.1`, common/static_modifiers/24_static_modifiers_jobs.txt)
 -- adds that static modifier's entries times the value: a group of types under one name.
 
+local byte, sub = string.byte, string.sub
 local function unq(s)
     if type(s) ~= "string" then
         return s
     end
-    return (s:gsub('^"(.*)"$', "%1"))
+    -- (s:gsub('^"(.*)"$', "%1")) without the pattern: a string of at least two characters
+    -- quoted at both ends loses the quotes
+    if #s >= 2 and byte(s, 1) == 34 and byte(s, -1) == 34 then
+        return sub(s, 2, -2)
+    end
+    return s
 end
 
 -- a number of the script as the game's fixed point (1.0 = 100000)
@@ -120,6 +126,10 @@ end
 local S = {}
 S.__index = S
 
+-- the scripted variables, read once per file system: the files do not change during a run, and
+-- the monthly rebuild makes a new source each time (it had parsed them all again every month)
+local vars_of_fs = setmetatable({}, { __mode = "k" })
+
 -- modifiers.new(opts) -> the sources: opts.types (the graph's definitions: the modifier types'
 -- names, read case-insensitively as the game does), opts.defs (engine.defs), opts.world
 -- (engine.world), opts.fs (the file system; default the script layer's, or opts.game_dir's)
@@ -139,16 +149,22 @@ function M.new(opts)
     for _, name in pairs(self.types.names) do
         self.canon[name:lower()] = name
     end
-    self.filevars, self.globalvars = {}, {}
-    for _, file in ipairs(source.files(self.fs, "common/scripted_variables", "txt")) do
-        local tree = source.parse(self.fs, file)
-        for _, e in ipairs(tree or {}) do
-            if e.op and e.key and e.key.text:sub(1, 1) == "@" and e.value.text then
-                self.globalvars[e.key.text:sub(2)] = e.value.text
+    local vars = vars_of_fs[self.fs]
+    if vars == nil then
+        vars = { files = {}, global = {} }
+        for _, file in ipairs(source.files(self.fs, "common/scripted_variables", "txt")) do
+            local tree = source.parse(self.fs, file)
+            for _, e in ipairs(tree or {}) do
+                if e.op and e.key and e.key.text:sub(1, 1) == "@" and e.value.text then
+                    vars.global[e.key.text:sub(2)] = e.value.text
+                end
             end
         end
+        vars_of_fs[self.fs] = vars
     end
+    self.filevars, self.globalvars = vars.files, vars.global
     self.cache = {}
+    self.active_cache = {}
     self.stats = { unresolved = 0, missing = {}, unknown = {}, triggers = 0, triggers_true = 0, trigger_errors = 0 }
     -- triggers are evaluated by the script layer (simscript.eval over engine.interface) when it is
     -- loaded; without it a triggered modifier is left out
@@ -362,8 +378,12 @@ do
     econ_script = ok and m or nil
 end
 
--- f() with the extra triggers installed where the script layer has none
-function S:with_script(f)
+-- f(...) with the extra triggers installed where the script layer has none -> pcall's ok, result.
+-- Inside src:scripts (a whole rebuild) they are installed already: f is only called.
+function S:with_script(f, ...)
+    if self.scripts_on then
+        return pcall(f, ...)
+    end
     local TRIG = self.eval.TRIG
     local added = {}
     for k, g in pairs(EXTRA_TRIGGERS) do
@@ -374,9 +394,9 @@ function S:with_script(f)
     end
     local ok, r
     if econ_script then
-        ok, r = pcall(econ_script.with, f)
+        ok, r = pcall(econ_script.with, f, ...)
     else
-        ok, r = pcall(f)
+        ok, r = pcall(f, ...)
     end
     for _, k in ipairs(added) do
         TRIG[k] = nil
@@ -384,23 +404,96 @@ function S:with_script(f)
     return ok, r
 end
 
+-- src:scripts(f, ...) -> f's results: f run with the extra triggers and the economy's links and
+-- triggers (engine/economy/script.lua) installed once, so that every trigger and script value
+-- evaluated inside (S:with_script) only calls, instead of installing and taking them out each
+-- time (a whole rebuild: the world does not change inside, so the results are the same)
+function S:scripts(f, ...)
+    if self.eval == nil or self.scripts_on then
+        return f(...)
+    end
+    local TRIG = self.eval.TRIG
+    local added = {}
+    for k, g in pairs(EXTRA_TRIGGERS) do
+        if TRIG[k] == nil then
+            added[#added + 1] = k
+            TRIG[k] = function(e, ctx) return g(self, e, ctx) end
+        end
+    end
+    self.scripts_on = true
+    local res
+    if econ_script then
+        res = { pcall(econ_script.with, f, ...) }
+    else
+        res = { pcall(f, ...) }
+    end
+    self.scripts_on = false
+    for _, k in ipairs(added) do
+        TRIG[k] = nil
+    end
+    if not res[1] then
+        error(res[2], 0)
+    end
+    return unpack(res, 2)
+end
+
+-- src.resolve_ref, noting that the parts being computed depend on it (src.ref_used: the
+-- incremental graph computes those again once the values they read are known,
+-- engine/modifiers/incremental.lua); every read of self.resolve_ref goes through it
+local function ref_of(self)
+    self.ref_used = true
+    return self.resolve_ref
+end
+
 -- a trigger block evaluated in a scope (kind, id; from: an optional { kind, id }, the scope's
--- from) by the script layer -> true, false, or nil when it cannot be evaluated
+-- from) by the script layer -> true, false, or nil when it cannot be evaluated. With
+-- self.trigger_memo set (a table, for the time the world does not change: one incremental
+-- update), a block already evaluated in the same scope (no from) and file gives its answer again.
+local NO_ANSWER = {}
 function S:trigger(block, kind, id, file, from)
     if self.eval == nil or block == nil then
         return nil
     end
+    local memo, by_id = self.trigger_memo, nil
+    if memo ~= nil and from == nil and kind ~= nil and id ~= nil then
+        local m = memo[block]
+        if m == nil then
+            m = { file = file }
+            memo[block] = m
+        end
+        if m.file == file then
+            by_id = m[kind]
+            if by_id == nil then
+                by_id = {}
+                m[kind] = by_id
+            end
+            local r = by_id[id]
+            if r ~= nil then
+                if r == NO_ANSWER then
+                    return nil
+                end
+                return r
+            end
+        end
+    end
     self.stats.triggers = self.stats.triggers + 1
     local ctx = self.eval.new_ctx(self.eval.S(kind, id), from and self.eval.S(from[1], from[2]) or nil, nil, file)
-    local ok, r = self:with_script(function() return self.eval.trigger(block, ctx) end)
+    local ok, r = self:with_script(self.eval.trigger, block, ctx)
     if not ok then
         self.stats.trigger_errors = self.stats.trigger_errors + 1
+        if by_id then
+            by_id[id] = NO_ANSWER
+        end
         return nil
     end
     if r then
         self.stats.triggers_true = self.stats.triggers_true + 1
     end
-    return r and true or false
+    r = r and true or false
+    if by_id then
+        by_id[id] = r
+    end
+    return r
 end
 
 -- a potential written in the scope of an object a country owns (a situation's), evaluated for the
@@ -423,11 +516,59 @@ end
 -- the object or its planet (`mult = modifier:pop_non_noxious_happiness`, `planet.modifier:x`),
 -- read from the graph through self.resolve_ref (a block whose multiplier cannot be read is left
 -- out). The game adds the blocks whose potential fails too, with a multiplier of 0.
+-- What the definition gives (each block's values, potential and multiplier) is read once
+-- (S:triggered_blocks); the potentials and the multipliers read from the graph or the script are
+-- evaluated on every call.
 function S:active(folder, name, key, kind, id, from)
     local out = {}
-    local d = name and self:def_block(folder, name)
+    for _, b in ipairs(self:triggered_blocks(folder, name, key)) do
+        local ok = true
+        if b.pot ~= nil then
+            ok = self:trigger(b.pot, kind, id, b.file, from)
+        end
+        if ok then
+            local mult, ref = b.mult, nil
+            if b.ref_type then
+                ref = { scope = b.ref_scope, type = b.ref_type, kind = kind, id = id }
+                local resolve = ref_of(self)
+                mult = resolve and resolve(ref)
+            elseif b.spec then
+                mult = self:script_mult(b.spec, b.vlink, kind, id, b.file)
+            end
+            if mult ~= nil and mult ~= 0 then
+                out[#out + 1] = { values = b.values, mult = mult, ref = ref }
+            end
+        end
+    end
+    return out
+end
+
+-- the triggered blocks `key` of a definition as S:active reads them, cached: { values (the block's
+-- entries and its inner `modifier`'s), pot, file, and mult (a number in the fixed point), or
+-- ref_scope and ref_type (`mult = [link.]modifier:x`), or spec and vlink (`mult = [link.]value:x`) }
+function S:triggered_blocks(folder, name, key)
+    local byf = self.active_cache[folder]
+    if byf == nil then
+        byf = {}
+        self.active_cache[folder] = byf
+    end
+    local byk = byf[key]
+    if byk == nil then
+        byk = {}
+        byf[key] = byk
+    end
+    if name == nil then
+        return {}
+    end
+    local list = byk[name]
+    if list ~= nil then
+        return list
+    end
+    list = {}
+    byk[name] = list
+    local d = self:def_block(folder, name)
     if d == nil then
-        return out
+        return list
     end
     for _, e in ipairs(d.block) do
         if e.op and e.key and e.key.text == key and type(e.value) == "table" then
@@ -443,37 +584,27 @@ function S:active(folder, name, key, kind, id, from)
                 end
             end
             if values then
-                local pot = self.defs.field(e.value, "potential")
-                local ok = true
-                if pot ~= nil then
-                    ok = self:trigger(pot, kind, id, d.file, from)
-                end
-                if ok then
-                    local mult = self.defs.field(e.value, "mult")
-                    local ref
-                    if type(mult) == "string" then
-                        local link, ty = mult:match("^([%w_]*)%.?modifier:([%w_]+)$")
-                        local vlink, spec = mult:match("^([%w_]*)%.?value:(.+)$")
-                        if ty then
-                            ref = { scope = link ~= "" and link or "this", type = self.canon[ty:lower()] or ty, kind = kind, id = id }
-                            mult = self.resolve_ref and self.resolve_ref(ref)
-                        elseif spec then
-                            mult = self:script_mult(spec, vlink, kind, id, d.file)
-                        else
-                            mult = self:number(mult, d.file)
-                            mult = mult and fixed(mult) or 100000
-                        end
+                local b = { values = values, pot = self.defs.field(e.value, "potential"), file = d.file }
+                local mult = self.defs.field(e.value, "mult")
+                if type(mult) == "string" then
+                    local link, ty = mult:match("^([%w_]*)%.?modifier:([%w_]+)$")
+                    local vlink, spec = mult:match("^([%w_]*)%.?value:(.+)$")
+                    if ty then
+                        b.ref_scope, b.ref_type = link ~= "" and link or "this", self.canon[ty:lower()] or ty
+                    elseif spec then
+                        b.spec, b.vlink = spec, vlink
                     else
-                        mult = 100000
+                        mult = self:number(mult, d.file)
+                        b.mult = mult and fixed(mult) or 100000
                     end
-                    if mult ~= nil and mult ~= 0 then
-                        out[#out + 1] = { values = values, mult = mult, ref = ref }
-                    end
+                else
+                    b.mult = 100000
                 end
+                list[#list + 1] = b
             end
         end
     end
-    return out
+    return list
 end
 
 -- the economic categories a category's production multipliers come from: itself and its parents
@@ -525,13 +656,14 @@ function S:script_mult(spec, link, kind, id, file)
         local jd = job and self:def_block("common/pop_jobs", job)
         local rb = jd and self.defs.field(jd.block, "resources")
         local category = type(rb) == "table" and unq(self.defs.field(rb, "category"))
-        if not (category and res and self.resolve_ref) then
+        local resolve = ref_of(self)
+        if not (category and res and resolve) then
             return nil
         end
         local sum = 0
         for _, c in ipairs(self:produces_chain(category)) do
             for _, t in ipairs({ c .. "_produces_mult", c .. "_" .. res .. "_produces_mult" }) do
-                local v = self.resolve_ref({ scope = "colony", type = self.canon[t:lower()] or t, kind = kind, id = id })
+                local v = resolve({ scope = "colony", type = self.canon[t:lower()] or t, kind = kind, id = id })
                 if v == nil then
                     return nil
                 end
@@ -823,6 +955,17 @@ function S:index_world()
             self.players[c] = true
         end
     end
+end
+
+-- src:refresh([st]): the world changed (a month passed): its indexes made again and what was
+-- computed from it dropped (the pop groups' shares, the new colonies, the structure: st, the
+-- month's engine.modifiers.structure, or made again when needed); what was read from the files
+-- (definitions' values and blocks, defines, keyed templates) is kept. A source kept so gives the
+-- parts a new one would (the incremental graph keeps one; STELLAR_MODIFIER_CHECK compares)
+function S:refresh(st)
+    self.shared, self.new_count = nil, nil
+    self.structure = st
+    self:index_world()
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -1436,7 +1579,8 @@ function S:colony_stability(id, get)
     local w = self.world
     local col = w.object("colony", id)
     local planet = self.planet_of_colony[id]
-    if not (col and planet and self.resolve_ref) then
+    local resolve = ref_of(self)
+    if not (col and planet and resolve) then
         return nil
     end
     if type(w.field(w.object("planet", planet), "owner")) ~= "number" then
@@ -1463,7 +1607,7 @@ function S:colony_stability(id, get)
             if h == nil then
                 local cat = unq(w.field(w.field(g, "key") or {}, "category"))
                 local function pv(t)
-                    return self.resolve_ref({ scope = "this", kind = "pop_group", id = tonumber(gid), type = self.canon[t] or t }) or 0
+                    return resolve({ scope = "this", kind = "pop_group", id = tonumber(gid), type = self.canon[t] or t }) or 0
                 end
                 h = 0.5 + (pv("pop_happiness") + pv("pop_citizen_happiness") + pv("pop_cat_" .. tostring(cat) .. "_happiness")) / 100000
                 h = math.max(0, math.min(1, h))
@@ -1550,9 +1694,10 @@ function S:colony(id)
         end
     end
     -- a value of the colony's node, read from the graph (self.resolve_ref), or nil
+    local resolve = ref_of(self)
     local function get(t)
-        return self.resolve_ref and planet
-            and self.resolve_ref({ scope = "colony", kind = "planet", id = planet, type = self.canon[t] or t }) or nil
+        return resolve and planet
+            and resolve({ scope = "colony", kind = "planet", id = planet, type = self.canon[t] or t }) or nil
     end
     local stability = self:colony_stability(id, get) or num("stability")
     if stability then
@@ -1565,7 +1710,7 @@ function S:colony(id)
     -- the save's field is not (the save's is the end of the previous day); else the save's. (A
     -- fallen empire's colony with both mults at 0.05: 18000 x 1.1 = 19800, as the save has it)
     local amenities, ausage = num("amenities"), num("amenities_usage")
-    if self.resolve_ref and planet then
+    if resolve and planet then
         local add, mult = get("planet_amenities_add"), get("planet_amenities_mult")
         if add and mult then
             local nadd, nmult = get("planet_amenities_no_happiness_add"), get("planet_amenities_no_happiness_mult")
@@ -1909,12 +2054,21 @@ function S:ship(id)
     -- station is the size of the starbase's level, whatever its design says.
     self.structure = self.structure or require("engine.modifiers.structure").new(w, self.defs)
     local size = unq(w.field(gs, "ship_size"))
-    for sb, station in pairs(self.structure.station_of) do
-        if station == id then
-            local level = unq(w.field(w.object("starbases", sb), "level"))
-            local ld = level and self.defs.get("common/starbase_levels", level)
-            size = ld and unq(self.defs.field(ld.block, "ship_size")) or size
+    -- the starbases whose station it is (station_of inverted once per structure, in its pairs
+    -- order: a scan of every starbase for every ship had been)
+    if self.stations_of == nil or self.stations_for ~= self.structure then
+        local inv = {}
+        for sb, station in pairs(self.structure.station_of) do
+            local l = inv[station] or {}
+            inv[station] = l
+            l[#l + 1] = sb
         end
+        self.stations_of, self.stations_for = inv, self.structure
+    end
+    for _, sb in ipairs(self.stations_of[id] or {}) do
+        local level = unq(w.field(w.object("starbases", sb), "level"))
+        local ld = level and self.defs.get("common/starbase_levels", level)
+        size = ld and unq(self.defs.field(ld.block, "ship_size")) or size
     end
     if size then
         parts.add("ship_size:" .. size, self:def_values("common/ship_sizes", size, "ship_modifier"))

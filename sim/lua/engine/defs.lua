@@ -21,6 +21,7 @@ local defs = {
 -- defs.load(fs, game_dir): every folder under common/ that has .txt files
 function defs.load(fs, game_dir)
     local t0 = RUST.clock()
+    defs.fs = fs
     local folders = {}
     for _, file in ipairs(RUST.list_files(game_dir, "common")) do
         local folder = file:match("^(.*)/[^/]*$")
@@ -47,13 +48,36 @@ function defs.load(fs, game_dir)
     defs.seconds = RUST.clock() - t0
 end
 
+-- a definition's inline scripts expanded (in place, once), as the game reads them at load: what
+-- reads a definition sees the same block wherever and whenever it reads it. (stellar.script.source
+-- .expand writes a nested block's expansion into the block itself, so before this a definition
+-- read before some other module had expanded it differed from one read after.)
+local function expand(folder, d)
+    if d and not d.expanded then
+        d.expanded = true
+        local fs = defs.fs
+        if fs and d.block then
+            local ok, x = pcall(source.expand, fs, d.block, nil, 0, "file: " .. tostring(d.file))
+            if ok and x then d.block = x end
+        end
+    end
+    return d
+end
+
+local expanded_folders = {}
 function defs.folder(folder)
-    return defs.folders[folder] or {}
+    local f = defs.folders[folder]
+    if f == nil then return {} end
+    if not expanded_folders[folder] then
+        expanded_folders[folder] = true
+        for _, d in pairs(f) do expand(folder, d) end
+    end
+    return f
 end
 
 function defs.get(folder, name)
     local f = defs.folders[folder]
-    return f and f[name]
+    return f and expand(folder, f[name])
 end
 
 -- the first value of `key` in a definition's block (a token's text, or a block), or nil

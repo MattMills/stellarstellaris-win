@@ -27,6 +27,7 @@ on the 24-core box were fine).
 | `standard.sh` | our simulation against a standard at chosen horizons, or two standards compared |
 | `dev/standard_events.py` | what happens in a standard: counts per save, countries and wars appearing |
 | `setup.sh` | builds the runtime directory `/opt/stellaris-headless/game` |
+| `view.sh` | the game's own frames, driven by commands over TCP or from a script: reference shots for `sim/render` (view mode, below) |
 | `dev/gsdiff.sh` | diff two gamestates with the one known noise line masked |
 | `dev/callsites.py` | the call-site table for the profiler (by caller, or by callee over a full disassembly) |
 | `dev/pcfuncs.py` | a pool-read table's instructions, by function |
@@ -546,8 +547,66 @@ the gamestate, in the same format as a save's `gamestate` (CRLF, which `run.sh` 
 the process `_exit`s. The save's `tick` (`CGameState+8`, the `_nTickCount`) is restored by the load
 itself (4 for `autosave_2210.01.01`).
 
-`HEADLESS_MODE=frame` posts one turn a frame and lets the main loop run instead; it works but is
-unusable under llvmpipe (the in-game frame, ship graphics included, takes about a minute).
+`HEADLESS_MODE=frame` posts one turn a frame and lets the main loop run instead. With
+`HEADLESS_RENDER=1` (frames drawn) it hangs after a few turns: the main thread spins in
+`CShipGraphics::RenderShip`'s angle wrap (an `addss` loop at +0x140 that adds a step until the angle
+reaches a bound, `ucomiss; jb` back:
+the main thread was at that loop in three gdb samples 5 s apart on 2026-10-14;
+a NaN keeps it there (the ship's rotation at CShipGraphics +0x110 comes from `asinf` of +0xb4, NaN
+out of [-1, 1]: the cause is read from the code, not caught). That hang, not
+llvmpipe, was the "minute a frame": drawn while paused (view mode, below), a frame takes 10 to
+20 ms at 1600x900.
+
+### View mode: the game's frames, driven by commands (`view.sh`)
+
+```
+headless/view.sh [--size WxH] [--listen [ADDR:]PORT] [--script FILE] [--replies FILE] [--menu] <save.sav>
+# e.g. reference shots for sim/render, from a command file:
+bash headless/view.sh --script shots.txt --replies shots.replies /opt/stellaris-saves/autosave_2210.01.01.sav
+```
+
+`HEADLESS_MODE=view`: the game boots, loads the save (or, with `--menu`, waits at the main menu
+for a `load`), never ticks on its own, and draws its frames on an Xvfb screen of the window's
+size (default 1600x900, windowed, vsync off; Mesa llvmpipe). It runs commands from the script,
+then from TCP (one client at a time, localhost unless an address is given) until `quit`; one reply
+per command, when it is complete. The protocol is `sim/render`'s (`docs/render.md` section 9), so
+`sim/render/tools/ctl.py` drives both and one command file takes the same shots of the game and of
+the renderer:
+
+| command | in the game |
+|---|---|
+| `load PATH` | at the main menu: the file copied into the user dir, `CFrontEndIdler::LaunchSave`; the reply once the game is in (one save per run) |
+| `pause` | ok: the game only ticks on `step` |
+| `step DAYS` | the loop mode's turns until the date moved DAYS days, frame smoothing off (nothing drawn; ~30 ms a day) |
+| `view galaxy`, `view system ID` | `CGameCamera::LeaveSystem`, `CGameCamera::EnterSystem` (the object from `TPdxRef<CGalacticObject>::_pDatabase`) |
+| `focus system ID` | the galaxy camera's target on the system (`CGalacticObject::GetCoordinate` +0x408, x 2) |
+| `camera X Y Z YAW PITCH DISTANCE` | the camera's orientation, in map units and degrees, put back every frame after the game's camera update; `camera off` releases it |
+| `resize W H` | ok if the window is W x H (it is set at start: `--size`) |
+| `gui off\|on` | `g_bNoGUI`, the hide-GUI key's flag (the GUI and the system's orbit lines) |
+| `frame PATH.png`, `frame -` | the window captured from the X server once the picture settles: from 2 s and 10 frames on, two captures in a row nearly equal (at most 30 s; `HEADLESS_FRAME_WAIT`, `_MIN`, `_TIMEOUT`); a PNG (zlib) |
+| `state [planet ID]` | JSON: date, view, window, the camera (orientation and its smoothing target, eye, look-at, up, FOV, aspect, near, far, the view and projection matrices), the system's zoom steps; with a planet its `CPlanet::CalcCurrentEntityScale`, `GetDisplaySize` and entity world transform |
+| `quit` | `_exit(0)` (no gamestate written) |
+
+How (all in `headless.c`, the layouts read from the Linux build's code):
+
+- the camera is `CInGameIdler` +0x218, a `CGameCamera` beginning with its `CCamera` (view matrix
+  +0x00, projection +0x40, eye +0x180, look-at +0x18c, up +0x198, FOV +0x1a4, aspect +0x1a8, near
+  +0x1ac, far +0x1b0); its orientation {x, y, z, distance, pitch, yaw} at +0x218, its target
+  orientation at +0x230, the system it is in at +0x274 (-1 the galaxy);
+- `CInGameIdler::UpdateInternal` calls `CGameCamera::Update` after `CheckTick`: that `call rel32`
+  is pointed at a thunk near the executable that calls the original and then writes the set
+  orientation into both orientations and calls `CGameCamera::UpdateInternalCamera` (eye and
+  matrices), so the frame is drawn from it;
+- planets: `CGameState` +0x918 the planet manager (entries of 16 bytes at +0xdc0, the `CPlanet` at
+  +8, the count at +0xdc8; the planet's id at +0x18, its size at +0x150, its entity at +0xc20);
+  `EntityInstanceGetWorldTransform` gives the entity's world matrix;
+- libX11 (`XGetImage` on the largest mapped top-level window) and zlib (`compress2`, `crc32`) are
+  loaded with `dlopen`, so the build line is unchanged.
+
+Seen in the game (2210.01.01, system 401): its bodies sit at y = -150 of the system's world (the
+save's coordinates x 10), the ships at y = 0; a body's entity scale is `planet_size` x 0.1 x its
+class's `entity_scale` x 0.35 (`g_bDisableScaling` set: PLANET_SCALE_SYSTEM is not used) x 0.7 for
+a moon. The comparisons with `sim/render` are in `docs/render.md` section 10.
 
 The site table for the pool traces was made with
 `dev/callsites.py game/stellaris sites_pools.tsv -f <the tick's phases> -f <the ship chain: CShipUpdateParallelFunc, CShip::MicroUpdateParallel, CSection::MicroUpdateCombatComponentsParallel, CWeaponComponent::MicroUpdateTargetingParallel> --callee "(Daily|Monthly)[A-Za-z]*\(.*int( const)?\*" --asm re/full.asm`,
@@ -620,4 +679,6 @@ after a successful run), `cache/` (Mesa shaders, the profiler's site table).
   load it again (done above), or call the save task (`CSaveGameTaskManager`).
 - Offsets that are not symbols are 4.5.2's: the `CString` layout, `CGameState` +0x8/+0xa0/+0xc4,
   the front end's +0x250, the DLC map (+0xd8, node +0x50/+0x40c), the tick command's fields.
-- Frame mode needs the in-game graphics update off too, if it is ever wanted.
+- Frame mode (ticks with frames drawn) hangs in `CShipGraphics::RenderShip` on a NaN rotation
+  (above); view mode draws frames only while paused. A `state ship ID` (the ship's entity, through
+  `CShipGraphics`) is not done.

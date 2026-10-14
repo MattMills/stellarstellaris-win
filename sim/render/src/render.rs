@@ -25,6 +25,115 @@ struct ViewUniform {
     px_to_ndc: [f32; 2],
     focal: f32,
     srgb: u32,
+    /// 1: the HDR scene (colours in linear space, nothing clamped)
+    linear: u32,
+    _pad: [u32; 3],
+    /// the star's light (colour x intensity) and the planets' back light (gfx/lights, gfx/worldgfx)
+    light_colour: [f32; 4],
+    back_light: [f32; 4],
+    /// the ships' lights: cam_light_1..3_diffuse, rim_light_diffuse, ambient (linear)
+    cam_lights: [[f32; 4]; 5],
+}
+
+/// One post-effect pass's constants (post.wgsl's Post), one 256-byte slot each.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable, Default)]
+struct PostUniform {
+    inv_src: [f32; 2],
+    axis: f32,
+    weight0: f32,
+    weights: [f32; 4],
+    offsets: [f32; 4],
+    bright_threshold: f32,
+    emissive_bloom: f32,
+    middle_grey: f32,
+    min_hdr: f32,
+    max_hdr: f32,
+    srgb_out: u32,
+    use_lut: u32,
+    _pad: f32,
+    uv_scale: [f32; 2],
+    _pad2: [f32; 2],
+}
+
+const POST_SLOT: u64 = 256;
+/// the post effects' constant slots: bright, luminance, 4 per bloom level, restore
+const POST_SLOTS: u64 = 3 + 4 * MAX_BLOOM_LEVELS as u64;
+const MAX_BLOOM_LEVELS: u32 = 16;
+/// the scene's format under the post effects
+pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// The bloom's blur kernel as CGameRendering::Bloom makes it (4.5.2 Linux, read from the code):
+/// a Gaussian of 2 sigma² = max(2 x width², 0.01) over taps 0..8, normalised over the 17 taps, x
+/// `scale`; the centre weight and four bilinear pairs (taps 1+2, 3+4, 5+6, 7+8: their summed
+/// weight at their weighted offset).
+fn bloom_kernel(width: f32, scale: f32) -> (f32, [f32; 4], [f32; 4]) {
+    let s2 = (2.0 * width * width).max(0.01);
+    let w: Vec<f32> = (0..=8).map(|k| (-((k * k) as f32) / s2).exp()).collect();
+    let total = w[0] + 2.0 * w[1..].iter().sum::<f32>();
+    let n = scale / total;
+    let (mut weights, mut offsets) = ([0.0; 4], [0.0; 4]);
+    for i in 0..4 {
+        let (a, b) = (w[2 * i + 1], w[2 * i + 2]);
+        weights[i] = (a + b) * n;
+        offsets[i] = if a + b > 0.0 { ((2 * i + 1) as f32 * a + (2 * i + 2) as f32 * b) / (a + b) } else { 0.0 };
+    }
+    (w[0] * n, weights, offsets)
+}
+
+/// The view's bind group: its uniform, the galaxy view's five map textures (map.wgsl) and a
+/// clamping linear sampler.
+fn view_bind_with(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, maps: [&wgpu::TextureView; 5], sampler: &wgpu::Sampler) -> wgpu::BindGroup {
+    fn t(b: u32, v: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
+        wgpu::BindGroupEntry { binding: b, resource: wgpu::BindingResource::TextureView(v) }
+    }
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("view"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+            t(1, maps[0]),
+            t(2, maps[1]),
+            t(3, maps[2]),
+            t(4, maps[3]),
+            t(5, maps[4]),
+            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    })
+}
+
+/// The pipelines of the map and the meshes for one target format.
+struct Pipelines {
+    quad_alpha: wgpu::RenderPipeline,
+    quad_add: wgpu::RenderPipeline,
+    line: wgpu::RenderPipeline,
+    mesh_opaque: wgpu::RenderPipeline,
+    mesh_alpha: wgpu::RenderPipeline,
+    mesh_add: wgpu::RenderPipeline,
+    /// added, alpha left alone (the game's BlendStateAdditiveBlendNoAlpha)
+    mesh_add_rgb: wgpu::RenderPipeline,
+    /// both faces, blended, alpha added (BlendStateAlphaBlendWriteAlpha: the planets' rings)
+    mesh_ring: wgpu::RenderPipeline,
+    /// additive effects (PixelPdxMeshAdditive), back faces culled
+    mesh_glow: wgpu::RenderPipeline,
+}
+
+/// The post effects' sized resources and their bind groups, for the uploaded scene: the HDR
+/// scene; at half its size the bright pass and each bloom level (`level`), the blur's middle
+/// (`tmp`), the blurred level (`blurred`) and the accumulated bloom (`bloom`); the luminance.
+struct PostFrame {
+    size: (u32, u32),
+    hdr_view: wgpu::TextureView,
+    /// level, tmp, blurred, bloom
+    half_views: [wgpu::TextureView; 4],
+    lum_view: wgpu::TextureView,
+    _textures: Vec<wgpu::Texture>,
+    /// reading: the scene (bright), level (luminance, blur x), tmp (blur y), blurred (copies),
+    /// the restore's (scene, bloom, luminance, colour cube)
+    binds: Vec<wgpu::BindGroup>,
+    /// each bloom level's size (the first the half size)
+    levels: Vec<(u32, u32)>,
+    clear: wgpu::Color,
 }
 
 #[repr(C)]
@@ -34,6 +143,8 @@ struct QuadInstance {
     uv: [f32; 4],
     colour: [f32; 4],
     misc: [f32; 4],
+    fx: [f32; 4],
+    fx2: [f32; 4],
 }
 
 #[repr(C)]
@@ -54,7 +165,9 @@ struct DrawUniform {
     atmosphere: [f32; 4],
     extra: [f32; 4],
     lava: [[f32; 4]; 3],
-    pad: [[f32; 4]; 5],
+    std: [f32; 4],
+    /// a ship's PixelPdxMeshShip constants (MeshDraw::ship)
+    ship: [[f32; 4]; 4],
 }
 
 const DRAW_SLOT: u64 = 256;
@@ -151,7 +264,8 @@ pub async fn open_device(
         let desc = wgpu::DeviceDescriptor {
             label: Some("stellar-render"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+            // all the adapter has (no downlevel cap)
+            required_limits: adapter.limits(),
             ..Default::default()
         };
         match adapter.request_device(&desc).await {
@@ -189,7 +303,7 @@ struct Draw {
 
 struct MeshDrawGpu {
     mesh: String,
-    textures: (String, String, String),
+    textures: (String, String, String, String, String),
     shading: Shading,
     slot: u32,
 }
@@ -198,14 +312,37 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// The map's pipelines, textures, meshes and buffers on one device, for one target format.
 pub struct Renderer {
-    quad_alpha: wgpu::RenderPipeline,
-    quad_add: wgpu::RenderPipeline,
-    line_pipeline: wgpu::RenderPipeline,
-    mesh_opaque: wgpu::RenderPipeline,
-    mesh_alpha: wgpu::RenderPipeline,
-    mesh_add: wgpu::RenderPipeline,
+    /// for the target's format (the 2D map, the front end, the GUI over a 3D view)
+    ldr: Pipelines,
+    /// for the HDR scene under the post effects
+    hdr: Pipelines,
     uniform: wgpu::Buffer,
     view_bind: wgpu::BindGroup,
+    view_layout: wgpu::BindGroupLayout,
+    /// the map textures the view bind group holds (their names), rebuilt when they change
+    view_maps: Option<[String; 5]>,
+    gui_uniform: wgpu::Buffer,
+    gui_view_bind: wgpu::BindGroup,
+    post_bright: wgpu::RenderPipeline,
+    post_lum: wgpu::RenderPipeline,
+    post_blur: wgpu::RenderPipeline,
+    post_copy: wgpu::RenderPipeline,
+    post_add: wgpu::RenderPipeline,
+    post_restore: wgpu::RenderPipeline,
+    post_textures_layout: wgpu::BindGroupLayout,
+    post_uniform: wgpu::Buffer,
+    post_uniform_bind: wgpu::BindGroup,
+    _dummy: wgpu::Texture,
+    dummy_view: wgpu::TextureView,
+    _dummy_cube: wgpu::Texture,
+    dummy_cube_view: wgpu::TextureView,
+    post: Option<PostFrame>,
+    sky_pipeline: wgpu::RenderPipeline,
+    sky_layout: wgpu::BindGroupLayout,
+    sky_uniform: wgpu::Buffer,
+    sky_uniform_bind: wgpu::BindGroup,
+    sky_bind: Option<wgpu::BindGroup>,
+    cubes: HashMap<String, (Arc<Image>, wgpu::Texture, wgpu::TextureView)>,
     texture_layout: wgpu::BindGroupLayout,
     mesh_texture_layout: wgpu::BindGroupLayout,
     draw_layout: wgpu::BindGroupLayout,
@@ -213,7 +350,7 @@ pub struct Renderer {
     wrap_sampler: wgpu::Sampler,
     textures: HashMap<String, GpuTexture>,
     meshes: HashMap<String, GpuMesh>,
-    mesh_binds: HashMap<(String, String, String), wgpu::BindGroup>,
+    mesh_binds: HashMap<(String, String, String, String, String), wgpu::BindGroup>,
     quads: Option<wgpu::Buffer>,
     lines: Option<wgpu::Buffer>,
     n_lines: u32,
@@ -260,12 +397,36 @@ impl Renderer {
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
         };
-        let view_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("view"), entries: &[uniform_entry(0, false)] });
+        let cube_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::Cube,
+                multisampled: false,
+            },
+            count: None,
+        };
+        // the view: its uniform; the galaxy view's map textures (terra incognita, the borders'
+        // distance, edge and fill colours, the dust's colour map: map.wgsl) and their sampler
+        let view_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("view"),
+            entries: &[uniform_entry(0, false), texture_entry(1), texture_entry(2), texture_entry(3), texture_entry(4), texture_entry(5), sampler_entry(6)],
+        });
         let texture_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("texture"), entries: &[texture_entry(0), sampler_entry(1)] });
         let mesh_texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mesh textures"),
-            entries: &[texture_entry(0), texture_entry(1), texture_entry(2), sampler_entry(3)],
+            entries: &[
+                texture_entry(0),
+                texture_entry(1),
+                texture_entry(2),
+                sampler_entry(3),
+                // a cube map: the stars' lava noise (gfx/worldgfx/lava_noise.dds)
+                cube_entry(4),
+                // the world's environment map
+                cube_entry(5),
+            ],
         });
         let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("draw"), entries: &[uniform_entry(0, true)] });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
@@ -273,11 +434,6 @@ impl Renderer {
             size: std::mem::size_of::<ViewUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
-        });
-        let view_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("view"),
-            layout: &view_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }],
         });
         let sampler_with = |mode: wgpu::AddressMode| {
             device.create_sampler(&wgpu::SamplerDescriptor {
@@ -310,6 +466,8 @@ impl Renderer {
             attr(1, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(QuadInstance, uv)),
             attr(2, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(QuadInstance, colour)),
             attr(3, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(QuadInstance, misc)),
+            attr(4, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(QuadInstance, fx)),
+            attr(5, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(QuadInstance, fx2)),
         ];
         let line_attrs = [
             attr(0, wgpu::VertexFormat::Float32x4, std::mem::offset_of!(LineInstance, a)),
@@ -348,7 +506,9 @@ impl Renderer {
                         attrs: &[wgpu::VertexAttribute],
                         blend: Option<wgpu::BlendState>,
                         depth_stencil: Option<wgpu::DepthStencilState>,
-                        cull: Option<wgpu::Face>| {
+                        cull: Option<wgpu::Face>,
+                        format: wgpu::TextureFormat,
+                        write_mask: wgpu::ColorWrites| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(name),
                 layout: Some(layout),
@@ -358,14 +518,15 @@ impl Renderer {
                     compilation_options: Default::default(),
                     buffers: &[Some(wgpu::VertexBufferLayout { array_stride: stride as u64, step_mode: step, attributes: attrs })],
                 },
-                primitive: wgpu::PrimitiveState { cull_mode: cull, ..Default::default() },
+                // the game's meshes wind clockwise seen from outside under its left-handed view (D3D)
+                primitive: wgpu::PrimitiveState { front_face: wgpu::FrontFace::Cw, cull_mode: cull, ..Default::default() },
                 depth_stencil,
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
                     module,
                     entry_point: Some(fs),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask })],
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -377,15 +538,198 @@ impl Renderer {
         let inst = wgpu::VertexStepMode::Instance;
         let vert = wgpu::VertexStepMode::Vertex;
         let tested = depth(false, wgpu::CompareFunction::LessEqual);
+        // the HDR scene keeps the bloom's mask in alpha, as the game's scene does: the opaque
+        // meshes write their emissive; the additive passes (the game's BlendStateAdditiveBlend and
+        // the particles' BlendStateAdditive: SRC_ALPHA, ONE, alpha written, no alpha factors of
+        // their own, so OpenGL's glBlendFunc blends alpha by the same factors) add alpha x alpha;
+        // the alpha-blended ones (RGB only in the game) leave it
+        let additive_hdr = wgpu::BlendState { color: additive.color, alpha: additive.color };
+        let ring_blend = wgpu::BlendState {
+            color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
+            alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+        };
+        let set = |format: wgpu::TextureFormat, hdr: bool| {
+            let (all, colour) = (wgpu::ColorWrites::ALL, if hdr { wgpu::ColorWrites::COLOR } else { wgpu::ColorWrites::ALL });
+            let alpha = Some(wgpu::BlendState::ALPHA_BLENDING);
+            let add = Some(if hdr { additive_hdr } else { additive });
+            Pipelines {
+                quad_alpha: pipeline("quads", &shader, &quad_layout, "vs_quad", "fs_quad", qs, inst, &quad_attrs, alpha, tested.clone(), None, format, colour),
+                quad_add: pipeline("quads added", &shader, &quad_layout, "vs_quad", "fs_quad", qs, inst, &quad_attrs, add, tested.clone(), None, format, all),
+                line: pipeline("lines", &shader, &line_layout, "vs_lane", "fs_lane", ls, inst, &line_attrs, alpha, tested.clone(), None, format, colour),
+                mesh_opaque: pipeline("meshes", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, None, depth(true, wgpu::CompareFunction::Less), Some(wgpu::Face::Back), format, all),
+                mesh_alpha: pipeline("meshes blended", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, alpha, tested.clone(), Some(wgpu::Face::Back), format, colour),
+                mesh_add: pipeline("meshes added", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, add, tested.clone(), Some(wgpu::Face::Front), format, all),
+                mesh_add_rgb: pipeline("meshes added rgb", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, Some(additive), tested.clone(), Some(wgpu::Face::Front), format, colour),
+                // BlendStateAlphaBlendWriteAlpha: SRC_ALPHA, INV_SRC_ALPHA; DestAlpha ONE with
+                // the default SourceAlpha ONE: alpha added
+                mesh_ring: pipeline("meshes ring", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, Some(ring_blend), tested.clone(), None, format, all),
+                // PixelPdxMeshAdditive effects: BlendStateAdditiveBlend (alpha written), the default
+                // rasterizer (back faces culled), no depth write
+                mesh_glow: pipeline("meshes glow", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, add, tested.clone(), Some(wgpu::Face::Back), format, all),
+            }
+        };
+        let ldr = set(format, false);
+        let hdr = set(HDR_FORMAT, true);
+
+        // the post effects (post.wgsl): a uniform slot per pass, four textures and a sampler
+        let post_shader = device.create_shader_module(wgpu::include_wgsl!("post.wgsl"));
+        let post_uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("post"), entries: &[uniform_entry(0, true)] });
+        let post_textures_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("post textures"),
+            entries: &[texture_entry(0), texture_entry(1), texture_entry(2), texture_entry(3), sampler_entry(4)],
+        });
+        let post_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("post"),
+            bind_group_layouts: &[Some(&post_uniform_layout), Some(&post_textures_layout)],
+            immediate_size: 0,
+        });
+        let full_blend = |name: &str, fs: &str, format: wgpu::TextureFormat, blend: Option<wgpu::BlendState>| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(name),
+                layout: Some(&post_layout),
+                vertex: wgpu::VertexState { module: &post_shader, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &post_shader,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let full = |name: &str, fs: &str, format: wgpu::TextureFormat| full_blend(name, fs, format, None);
+        // downsample.shader's BlendStateAdditive (ONE, ONE): the levels into the bloom
+        let one_one = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
+        let post_add = full_blend("post bloom add", "fs_copy", HDR_FORMAT, Some(wgpu::BlendState { color: one_one, alpha: one_one }));
+        let post_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("post"),
+            size: POST_SLOT * POST_SLOTS,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let post_uniform_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("post"),
+            layout: &post_uniform_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &post_uniform, offset: 0, size: wgpu::BufferSize::new(std::mem::size_of::<PostUniform>() as u64) }),
+            }],
+        });
+        let gui_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gui view"),
+            size: std::mem::size_of::<ViewUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let dummy = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("dummy"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let dummy_view = dummy.create_view(&wgpu::TextureViewDescriptor::default());
+        let view_bind = view_bind_with(device, &view_layout, &uniform, [&dummy_view; 5], &sampler);
+        let gui_view_bind = view_bind_with(device, &view_layout, &gui_uniform, [&dummy_view; 5], &sampler);
+        let dummy_cube = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("dummy cube"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 6 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let dummy_cube_view = dummy_cube.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::Cube), ..Default::default() });
+        // the sky (sky.wgsl): a uniform, a cube map, a colour cube and a sampler; the HDR scene only
+        let sky_shader = device.create_shader_module(wgpu::include_wgsl!("sky.wgsl"));
+        let sky_uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("sky"), entries: &[uniform_entry(0, false)] });
+        let sky_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sky textures"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::Cube,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                texture_entry(1),
+                sampler_entry(2),
+            ],
+        });
+        let sky_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("sky"),
+            bind_group_layouts: &[Some(&sky_uniform_layout), Some(&sky_layout)],
+            immediate_size: 0,
+        });
+        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("sky"),
+            layout: Some(&sky_pipeline_layout),
+            vertex: wgpu::VertexState { module: &sky_shader, entry_point: Some("vs_sky"), compilation_options: Default::default(), buffers: &[] },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: depth(false, wgpu::CompareFunction::LessEqual),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &sky_shader,
+                entry_point: Some("fs_sky"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: HDR_FORMAT, blend: None, write_mask: wgpu::ColorWrites::COLOR })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let sky_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sky"),
+            size: 80,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let sky_uniform_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("sky"),
+            layout: &sky_uniform_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: sky_uniform.as_entire_binding() }],
+        });
         Renderer {
-            quad_alpha: pipeline("quads", &shader, &quad_layout, "vs_quad", "fs_quad", qs, inst, &quad_attrs, Some(wgpu::BlendState::ALPHA_BLENDING), tested.clone(), None),
-            quad_add: pipeline("quads added", &shader, &quad_layout, "vs_quad", "fs_quad", qs, inst, &quad_attrs, Some(additive), tested.clone(), None),
-            line_pipeline: pipeline("lines", &shader, &line_layout, "vs_lane", "fs_lane", ls, inst, &line_attrs, Some(wgpu::BlendState::ALPHA_BLENDING), tested.clone(), None),
-            mesh_opaque: pipeline("meshes", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, None, depth(true, wgpu::CompareFunction::Less), None),
-            mesh_alpha: pipeline("meshes blended", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, Some(wgpu::BlendState::ALPHA_BLENDING), tested.clone(), None),
-            mesh_add: pipeline("meshes added", &mesh_shader, &mesh_layout, "vs_mesh", "fs_mesh", ms, vert, &mesh_attrs, Some(additive), tested, Some(wgpu::Face::Front)),
+            ldr,
+            hdr,
             uniform,
             view_bind,
+            view_layout,
+            view_maps: None,
+            gui_uniform,
+            gui_view_bind,
+            post_bright: full("post bright", "fs_bright", HDR_FORMAT),
+            post_lum: full("post luminance", "fs_luminance", HDR_FORMAT),
+            post_blur: full("post blur", "fs_blur", HDR_FORMAT),
+            post_copy: full("post copy", "fs_copy", HDR_FORMAT),
+            post_add,
+            post_restore: full("post restore", "fs_restore", format),
+            post_textures_layout,
+            post_uniform,
+            post_uniform_bind,
+            _dummy: dummy,
+            dummy_view,
+            _dummy_cube: dummy_cube,
+            dummy_cube_view,
+            post: None,
+            sky_pipeline,
+            sky_layout,
+            sky_uniform,
+            sky_uniform_bind,
+            sky_bind: None,
+            cubes: HashMap::new(),
             texture_layout,
             mesh_texture_layout,
             draw_layout,
@@ -443,6 +787,40 @@ impl Renderer {
         self.textures.insert(name.to_string(), GpuTexture { source: img.clone(), _texture: texture, view, bind });
     }
 
+    /// A cube map (dds::load_cube: six faces stacked) as a cube texture, one mip.
+    fn cube(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, name: &str, img: &Arc<Image>) {
+        if self.cubes.get(name).is_some_and(|c| Arc::ptr_eq(&c.0, img)) {
+            return;
+        }
+        self.mesh_binds.retain(|k, _| k.3 != name && k.4 != name);
+        let size = img.width;
+        let levels = crate::dds::cube_levels(img);
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(name),
+            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 6 },
+            mip_level_count: levels,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let mut offset = 0usize;
+        for m in 0..levels {
+            let s = (size >> m).max(1);
+            let bytes = (s * s * 24) as usize;
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: m, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &img.rgba[offset..offset + bytes],
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(s * 4), rows_per_image: Some(s) },
+                wgpu::Extent3d { width: s, height: s, depth_or_array_layers: 6 },
+            );
+            offset += bytes;
+        }
+        let view = texture.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::Cube), ..Default::default() });
+        self.cubes.insert(name.to_string(), (img.clone(), texture, view));
+    }
+
     fn mesh(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, m: &Arc<MeshData>) {
         if self.meshes.get(&m.key).is_some_and(|g| Arc::ptr_eq(&g.source, m)) {
             return;
@@ -477,8 +855,32 @@ impl Renderer {
             px_to_ndc: [2.0 / v.width.max(1) as f32, 2.0 / v.height.max(1) as f32],
             focal: v.focal_px,
             srgb: self.srgb as u32,
+            linear: 0,
+            _pad: [0; 3],
+            light_colour: scene.light_colour,
+            back_light: scene.back_light,
+            cam_lights: scene.cam_lights,
         };
-        queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&view));
+        // the scene's view (linear under the post effects) and the GUI's (over the target)
+        let hdr = scene.post.is_some();
+        let scene_view = ViewUniform { srgb: if hdr { 0 } else { self.srgb as u32 }, linear: hdr as u32, ..view };
+        queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&scene_view));
+        // the galaxy view's map textures in the view's bind group (rebuilt when they change)
+        let maps = scene.maps.map(|m| m.map(|i| textures.names[i].clone()));
+        if let Some(m) = scene.maps {
+            for i in m {
+                self.texture(device, queue, &textures.names[i], &textures.images[i]);
+            }
+        }
+        if maps.is_some() || maps != self.view_maps {
+            let views: [&wgpu::TextureView; 5] = match &maps {
+                Some(names) => [0, 1, 2, 3, 4].map(|k| &self.textures[&names[k]].view),
+                None => [&self.dummy_view; 5],
+            };
+            self.view_bind = view_bind_with(device, &self.view_layout, &self.uniform, views, &self.sampler);
+            self.view_maps = maps;
+        }
+        queue.write_buffer(&self.gui_uniform, 0, bytemuck::bytes_of(&view));
         self.clear = scene.clear;
         if self.depth.as_ref().is_none_or(|d| (d.0, d.1) != (v.width, v.height)) {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -515,13 +917,15 @@ impl Renderer {
                     q.height,
                     q.least_px,
                 ],
+                fx: q.fx,
+                fx2: q.fx2,
             }));
             self.draws.push(Draw { layer: b.layer, blend: b.blend, texture: name.clone(), range: start..instances.len() as u32 });
         }
         let lines: Vec<LineInstance> = scene
             .lines
             .iter()
-            .map(|l| LineInstance { a: [l.a.0, l.a.1, l.a.2, l.width], b: [l.b.0, l.b.1, l.b.2, 0.0], colour: l.colour })
+            .map(|l| LineInstance { a: [l.a.0, l.a.1, l.a.2, l.width], b: [l.b.0, l.b.1, l.b.2, l.mode], colour: l.colour })
             .collect();
         let buffer = |label: &str, bytes: &[u8]| {
             let buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -545,8 +949,13 @@ impl Renderer {
         let mut order: Vec<usize> = (0..scene.meshes.len()).collect();
         order.sort_by_key(|&i| match scene.meshes[i].shading {
             Shading::Lit | Shading::Emissive | Shading::Star => 0,
-            Shading::Clouds => 1,
-            Shading::Atmosphere | Shading::StarAtmosphere => 2,
+            Shading::Clouds | Shading::Ring | Shading::Button => 1,
+            Shading::Atmosphere | Shading::StarAtmosphere | Shading::Additive => 2,
+        });
+        // the world's environment map (its levels by glossiness), shared by every mesh
+        let env_name = scene.env.map(|(i, _)| {
+            self.cube(device, queue, &textures.names[i], &textures.images[i]);
+            textures.names[i].clone()
         });
         for i in order {
             let m = &scene.meshes[i];
@@ -554,7 +963,17 @@ impl Renderer {
             for &t in &m.textures {
                 self.texture(device, queue, &textures.names[t], &textures.images[t]);
             }
-            let names = (textures.names[m.textures[0]].clone(), textures.names[m.textures[1]].clone(), textures.names[m.textures[2]].clone());
+            let cube_name = m.cube.map(|i| {
+                self.cube(device, queue, &textures.names[i], &textures.images[i]);
+                textures.names[i].clone()
+            });
+            let names = (
+                textures.names[m.textures[0]].clone(),
+                textures.names[m.textures[1]].clone(),
+                textures.names[m.textures[2]].clone(),
+                cube_name.clone().unwrap_or_default(),
+                env_name.clone().unwrap_or_default(),
+            );
             if !self.mesh_binds.contains_key(&names) {
                 let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("mesh textures"),
@@ -564,20 +983,27 @@ impl Renderer {
                         wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.textures[&names.1].view) },
                         wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.textures[&names.2].view) },
                         wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.wrap_sampler) },
+                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(cube_name.as_ref().map_or(&self.dummy_cube_view, |c| &self.cubes[c].2)) },
+                        wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(env_name.as_ref().map_or(&self.dummy_cube_view, |c| &self.cubes[c].2)) },
                     ],
                 });
                 self.mesh_binds.insert(names.clone(), bind);
             }
             let k = &m.look;
             let l = |c: [f32; 3]| [c[0], c[1], c[2], 1.0];
+            // the planet class's atmosphere colour, made linear in the HDR scene (^2.2: GfxToLinear
+            // in SetStarEntityCustomData / SetPlanetEntityCustomData); its intensity as it is
+            let a = k.atmosphere;
+            let atmosphere = if hdr { [a[0].max(0.0).powf(2.2), a[1].max(0.0).powf(2.2), a[2].max(0.0).powf(2.2), a[3]] } else { a };
             uniforms.push(DrawUniform {
                 model: m.model.cols(),
                 tint: m.tint,
                 params: m.params,
-                atmosphere: k.atmosphere,
+                atmosphere,
                 extra: [k.width, k.kind, 0.0, 0.0],
                 lava: [l(k.lava[0]), l(k.lava[1]), l(k.lava[2])],
-                pad: [[0.0; 4]; 5],
+                std: [m.std[0], m.std[1], scene.env.map_or(0.0, |e| e.1), m.std[3]],
+                ship: m.ship,
             });
             self.mesh_draws.push(MeshDrawGpu { mesh: m.mesh.key.clone(), textures: names, shading: m.shading, slot: (uniforms.len() - 1) as u32 });
         }
@@ -599,6 +1025,151 @@ impl Renderer {
             });
             self.draw_uniforms = Some((buf, bind));
         }
+
+        // the post effects: their targets (kept while the size holds), constants and bind groups
+        let Some(p) = scene.post.clone() else {
+            self.post = None;
+            self.sky_bind = None;
+            return;
+        };
+        // the sky
+        self.sky_bind = None;
+        if let Some(s) = &scene.sky {
+            let name = textures.names[s.cube].clone();
+            self.cube(device, queue, &name, &textures.images[s.cube]);
+            let lut = s.lut.map(|i| {
+                self.texture(device, queue, &textures.names[i], &textures.images[i]);
+                textures.names[i].clone()
+            });
+            let (sx, sy) = (v.width as f32 / (2.0 * v.focal_px), v.height as f32 / (2.0 * v.focal_px));
+            let fwd = v.right.cross(v.up);
+            let uniform: [[f32; 4]; 5] = [
+                [fwd.0, fwd.1, fwd.2, 0.0],
+                [v.right.0 * sx, v.right.1 * sx, v.right.2 * sx, 0.0],
+                [v.up.0 * sy, v.up.1 * sy, v.up.2 * sy, 0.0],
+                [s.hsv_shift[0], s.hsv_shift[1], s.hsv_shift[2], s.ycocg as u32 as f32],
+                [lut.is_some() as u32 as f32, 1.0, 0.0, 0.0],
+            ];
+            queue.write_buffer(&self.sky_uniform, 0, bytemuck::cast_slice(&uniform));
+            let lut_view = lut.as_ref().map_or(&self.dummy_view, |n| &self.textures[n].view);
+            self.sky_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("sky"),
+                layout: &self.sky_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.cubes[&name].2) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(lut_view) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                ],
+            }));
+        }
+        let (w, h) = (v.width.max(1), v.height.max(1));
+        let (hw, hh) = ((w / 2).max(1), (h / 2).max(1));
+        let make = |label: &str, w: u32, h: u32| {
+            let t = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: HDR_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = t.create_view(&wgpu::TextureViewDescriptor::default());
+            (t, view)
+        };
+        let reuse = self.post.as_ref().is_some_and(|f| f.size == (w, h));
+        let (hdr_view, half_views, lum_view, textures_kept) = if reuse {
+            let f = self.post.take().unwrap();
+            (f.hdr_view, f.half_views, f.lum_view, f._textures)
+        } else {
+            let (t0, v0) = make("hdr scene", w, h);
+            let (t1, v1) = make("bloom level", hw, hh);
+            let (t2, v2) = make("bloom tmp", hw, hh);
+            let (t3, v3) = make("bloom blurred", hw, hh);
+            let (t4, v4) = make("bloom", hw, hh);
+            let (t5, v5) = make("luminance", 1, 1);
+            (v0, [v1, v2, v3, v4], v5, vec![t0, t1, t2, t3, t4, t5])
+        };
+        let lut_name = p.lut.map(|i| {
+            self.texture(device, queue, &textures.names[i], &textures.images[i]);
+            textures.names[i].clone()
+        });
+        // the bloom's levels: bloom_iterations of them while a level is at least 4 x 4, each half
+        // the last (RenderPostEffects' loop)
+        let mut levels = Vec::new();
+        let (mut lw, mut lh) = (hw, hh);
+        while levels.len() < p.bloom_iterations.min(MAX_BLOOM_LEVELS) as usize && lw >= 4 && lh >= 4 {
+            levels.push((lw, lh));
+            lw /= 2;
+            lh /= 2;
+        }
+        // the constants: bright, luminance, per level (blur x, blur y, add, halve), restore
+        let (weight0, weights, offsets) = bloom_kernel(p.bloom_width, p.bloom_scale);
+        let base = PostUniform {
+            bright_threshold: p.bright_threshold,
+            emissive_bloom: p.emissive_bloom,
+            middle_grey: p.middle_grey,
+            min_hdr: p.hdr_min,
+            max_hdr: p.hdr_max,
+            srgb_out: self.srgb as u32,
+            use_lut: lut_name.is_some() as u32,
+            weight0,
+            weights,
+            offsets,
+            uv_scale: [1.0, 1.0],
+            ..Default::default()
+        };
+        let mut slots = vec![PostUniform { inv_src: [1.0 / w as f32, 1.0 / h as f32], ..base }, base];
+        let inv_half = [1.0 / hw as f32, 1.0 / hh as f32];
+        for &(lw, lh) in &levels {
+            // the blur over the whole half-size target (the level at its top left, the rest
+            // cleared), then the level's part copied
+            let part = [lw as f32 / hw as f32, lh as f32 / hh as f32];
+            slots.push(PostUniform { inv_src: inv_half, axis: 0.0, ..base });
+            slots.push(PostUniform { inv_src: inv_half, axis: 1.0, ..base });
+            slots.push(PostUniform { uv_scale: part, ..base });
+            slots.push(PostUniform { uv_scale: part, ..base });
+        }
+        slots.push(base);
+        let mut bytes = vec![0u8; slots.len() * POST_SLOT as usize];
+        for (k, s) in slots.iter().enumerate() {
+            let b = bytemuck::bytes_of(s);
+            bytes[k * POST_SLOT as usize..k * POST_SLOT as usize + b.len()].copy_from_slice(b);
+        }
+        queue.write_buffer(&self.post_uniform, 0, &bytes);
+        let bind = |t: [&wgpu::TextureView; 4]| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("post textures"),
+                layout: &self.post_textures_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(t[0]) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(t[1]) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(t[2]) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(t[3]) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                ],
+            })
+        };
+        let d = &self.dummy_view;
+        let lut_view = lut_name.as_ref().map_or(d, |n| &self.textures[n].view);
+        let binds = vec![
+            bind([&hdr_view, d, d, d]),
+            bind([&half_views[0], d, d, d]),
+            bind([&half_views[1], d, d, d]),
+            bind([&half_views[2], d, d, d]),
+            bind([&hdr_view, &half_views[3], &lum_view, lut_view]),
+        ];
+        let lin = |c: f32| {
+            let c = c as f64;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let clear = wgpu::Color { r: lin(scene.clear[0]), g: lin(scene.clear[1]), b: lin(scene.clear[2]), a: 0.0 };
+        self.post = Some(PostFrame { size: (w, h), hdr_view, half_views, lum_view, _textures: textures_kept, binds, levels, clear });
     }
 
     fn clear_colour(&self) -> wgpu::Color {
@@ -615,10 +1186,80 @@ impl Renderer {
         wgpu::Color { r: to(self.clear[0]), g: to(self.clear[1]), b: to(self.clear[2]), a: 1.0 }
     }
 
-    /// Records the uploaded scene into `target`, the layers in `mask` (bits of Layer::bit): the
-    /// batches in order, the meshes when the Models layer is reached, the lines at the Lanes
-    /// layer.
+    /// Records the uploaded scene into `target`, the layers in `mask` (bits of Layer::bit). Without
+    /// post effects: everything straight into the target. With them: the world's layers into the
+    /// HDR scene, the game's post-effect chain (post.wgsl) into the target, then the GUI's layers
+    /// over it.
     pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, mask: u32) {
+        let Some(f) = &self.post else {
+            self.draw_layers(encoder, target, self.clear_colour(), true, &self.ldr, &self.view_bind, mask, false);
+            return;
+        };
+        let gui = Layer::Gui.bit() | Layer::Text.bit();
+        self.draw_layers(encoder, &f.hdr_view, f.clear, true, &self.hdr, &self.view_bind, mask & !gui, true);
+        let [level, tmp, blurred, bloom] = &f.half_views;
+        self.post_pass(encoder, &self.post_bright, level, 0, &f.binds[0], true, None);
+        self.post_pass(encoder, &self.post_lum, &f.lum_view, 1, &f.binds[1], true, None);
+        if f.levels.is_empty() {
+            self.post_pass(encoder, &self.post_copy, bloom, 0, &f.binds[0], true, Some((0, 0)));
+        }
+        for (k, &(lw, lh)) in f.levels.iter().enumerate() {
+            let s = 2 + 4 * k as u32;
+            self.post_pass(encoder, &self.post_blur, tmp, s, &f.binds[1], true, None);
+            self.post_pass(encoder, &self.post_blur, blurred, s + 1, &f.binds[2], true, None);
+            self.post_pass(encoder, &self.post_add, bloom, s + 2, &f.binds[3], k == 0, None);
+            if k + 1 < f.levels.len() {
+                // the next level at the top left of the cleared level target
+                self.post_pass(encoder, &self.post_copy, level, s + 3, &f.binds[3], true, Some((lw / 2, lh / 2)));
+            }
+        }
+        self.post_pass(encoder, &self.post_restore, target, 2 + 4 * f.levels.len() as u32, &f.binds[4], true, None);
+        if mask & gui != 0 {
+            self.draw_layers(encoder, target, wgpu::Color::BLACK, false, &self.ldr, &self.gui_view_bind, mask & gui, false);
+        }
+    }
+
+    /// One full-screen pass of the post effects into `target` (cleared first, or loaded), over
+    /// its `viewport` at the top left (all of it when None; nothing drawn when empty).
+    #[allow(clippy::too_many_arguments)]
+    fn post_pass(&self, encoder: &mut wgpu::CommandEncoder, pipeline: &wgpu::RenderPipeline, target: &wgpu::TextureView, slot: u32, bind: &wgpu::BindGroup, clear: bool, viewport: Option<(u32, u32)>) {
+        let load = if clear { wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT) } else { wgpu::LoadOp::Load };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("post"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+            })],
+            ..Default::default()
+        });
+        if let Some((w, h)) = viewport {
+            if w == 0 || h == 0 {
+                return;
+            }
+            pass.set_viewport(0.0, 0.0, w as f32, h as f32, 0.0, 1.0);
+        }
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &self.post_uniform_bind, &[slot * POST_SLOT as u32]);
+        pass.set_bind_group(1, bind, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// One pass over `target` (cleared to `clear`, or loaded): the batches of the layers in
+    /// `mask` in order, the meshes when the Models layer is reached, the lines at the Lanes layer.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_layers(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        clear: wgpu::Color,
+        clear_target: bool,
+        pipes: &Pipelines,
+        view_bind: &wgpu::BindGroup,
+        mask: u32,
+        sky: bool,
+    ) {
         let Some((_, _, _, depth_view)) = &self.depth else { return };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("map"),
@@ -626,7 +1267,7 @@ impl Renderer {
                 view: target,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(self.clear_colour()), store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations { load: if clear_target { wgpu::LoadOp::Clear(clear) } else { wgpu::LoadOp::Load }, store: wgpu::StoreOp::Store },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth_view,
@@ -635,7 +1276,14 @@ impl Renderer {
             }),
             ..Default::default()
         });
-        pass.set_bind_group(0, &self.view_bind, &[]);
+        if let (true, Some(b)) = (sky && mask & Layer::Background.bit() != 0, &self.sky_bind) {
+            // the sky first, behind everything
+            pass.set_pipeline(&self.sky_pipeline);
+            pass.set_bind_group(0, &self.sky_uniform_bind, &[]);
+            pass.set_bind_group(1, b, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        pass.set_bind_group(0, view_bind, &[]);
         let (Some(quads), Some(lines)) = (&self.quads, &self.lines) else { return };
         let mut meshes_drawn = false;
         let mut lines_drawn = false;
@@ -647,9 +1295,14 @@ impl Renderer {
             for d in &self.mesh_draws {
                 let g = &self.meshes[&d.mesh];
                 pass.set_pipeline(match d.shading {
-                    Shading::Lit | Shading::Emissive | Shading::Star => &self.mesh_opaque,
-                    Shading::Clouds => &self.mesh_alpha,
-                    Shading::Atmosphere | Shading::StarAtmosphere => &self.mesh_add,
+                    Shading::Lit | Shading::Emissive | Shading::Star => &pipes.mesh_opaque,
+                    Shading::Clouds | Shading::Button => &pipes.mesh_alpha,
+                    Shading::Ring => &pipes.mesh_ring,
+                    // PdxMeshAtmosphere: BlendStateAdditiveBlendNoAlpha; PdxMeshAtmosphereStar:
+                    // BlendStateAdditiveBlend (alpha written: the star's bloom)
+                    Shading::Atmosphere => &pipes.mesh_add_rgb,
+                    Shading::StarAtmosphere => &pipes.mesh_add,
+                    Shading::Additive => &pipes.mesh_glow,
                 });
                 pass.set_bind_group(1, &self.mesh_binds[&d.textures], &[]);
                 pass.set_bind_group(2, draw_bind, &[d.slot * DRAW_SLOT as u32]);
@@ -660,7 +1313,7 @@ impl Renderer {
         };
         let draw_lines = |pass: &mut wgpu::RenderPass<'_>| {
             if mask & Layer::Lanes.bit() != 0 && self.n_lines > 0 {
-                pass.set_pipeline(&self.line_pipeline);
+                pass.set_pipeline(&pipes.line);
                 pass.set_vertex_buffer(0, lines.slice(..));
                 pass.draw(0..6, 0..self.n_lines);
             }
@@ -678,7 +1331,7 @@ impl Renderer {
             if mask & d.layer.bit() == 0 || d.range.is_empty() {
                 continue;
             }
-            pass.set_pipeline(if d.blend == Blend::Add { &self.quad_add } else { &self.quad_alpha });
+            pass.set_pipeline(if d.blend == Blend::Add { &pipes.quad_add } else { &pipes.quad_alpha });
             pass.set_bind_group(1, &self.textures[&d.texture].bind, &[]);
             pass.set_vertex_buffer(0, quads.slice(..));
             pass.draw(0..6, d.range.clone());

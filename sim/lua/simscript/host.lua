@@ -74,8 +74,11 @@ function host.run_effect(id, kind, sid)
     end)
 end
 
-function host.on_action(name, kind, sid)
-    return counted(events.on_action, name, eval.S(kind, sid), nil)
+-- seed: the value the game made the on_action's scope from (CEventScope(int)), when the engine
+-- drew one; else the scope is a default one's (simscript/events.lua)
+function host.on_action(name, kind, sid, seed)
+    local rng = seed and require("engine.script.scope_random").new(seed) or nil
+    return counted(events.on_action, name, eval.S(kind, sid), nil, rng)
 end
 
 function host.weight()
@@ -117,6 +120,7 @@ function host.report()
         stats.fired_total, nfired, stats.trigger_failed, stats.options, stats.mtth_rolls, stats.delayed_queued)
     p("     %d script effects, %d engine effects queued, %d flushes inside effects, %d trigger evaluations, %d effect statements, %d Lua errors",
         stats.script, stats.engine, stats.flushes, stats.trigger_evals, stats.effect_runs, stats.errors)
+    if eval.compiler then p("%s", eval.compiler.report()) end
     local oas = sorted_by_count(stats.on_actions)
     local l = {}
     for _, o in ipairs(oas) do l[#l + 1] = o.key .. " " .. o.count end

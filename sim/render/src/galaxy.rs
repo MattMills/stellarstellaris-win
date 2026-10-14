@@ -19,6 +19,10 @@ pub struct System {
     /// the star's sprite on the galaxy map (a path in the game directory), "" if none
     pub texture: String,
     pub icon_scale: f32,
+    /// the star's height over the plane (the save's visual_height: the game's world, map x 2)
+    pub height: f32,
+    /// its name (a save's name block, localised by render.names)
+    pub name: Name,
 }
 
 /// A country that owns at least one system, with its two map colours.
@@ -35,6 +39,19 @@ pub struct Country {
     pub primary: [f32; 3],
     pub secondary: [f32; 3],
     pub systems: usize,
+    /// its flag: emblem and background (category, file) and colours (sRGB, the `flag` swatches)
+    pub flag: Option<Flag>,
+    /// its name block (render.names localises it)
+    pub name_block: Name,
+    /// its government type (a localisation key: the galaxy banner's empire_type)
+    pub government: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Flag {
+    pub icon: (String, String),
+    pub background: (String, String),
+    pub colours: Vec<[f32; 3]>,
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +76,46 @@ pub struct Galaxy {
     pub nebulae: Vec<Nebula>,
     /// What the Lua query read (counts and timing).
     pub notes: String,
+    /// the player's terra incognita: its bitmap (size x size, row by row, 0 unknown, 255 known)
+    /// and the systems it has cleared
+    pub terra_incognita: Option<TerraIncognita>,
+    /// the save's galaxy.core_radius (map units)
+    pub core_radius: f32,
+    /// the player's country id
+    pub player: u32,
+    /// the countries the player has communications with (None: no player country, all shown)
+    pub communications: Option<Vec<u32>>,
+    /// the player's planets (the outliner's colonies)
+    pub planets: Vec<PlanetInfo>,
+    /// the player's capital: its planet and system (save ids)
+    pub capital: Option<(u32, u32)>,
+    /// the player's alerts: (key, icon sprite, priority HIGH/MEDIUM/LOW), in their order
+    pub alerts: Vec<(String, String, String)>,
+    /// the outliner's members (utility ships by class, military fleets, shipyards, starbases,
+    /// colonies by sector) and the player's sectors
+    pub outliner: Vec<OutlinerEntry>,
+    pub sectors: Vec<(u32, Name)>,
+}
+
+impl Galaxy {
+    /// The owner a system's border and pin show (CBorderShapeCalculator::CalculateOwnerIds): its
+    /// owner when that is the player or a country the player has communications with.
+    pub fn shown_owner(&self, s: &System) -> Option<usize> {
+        let o = s.owner?;
+        let id = self.countries[o].id;
+        match &self.communications {
+            Some(c) if id != self.player && !c.contains(&id) => None,
+            _ => Some(o),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TerraIncognita {
+    pub size: usize,
+    pub bitmap: Vec<u8>,
+    #[allow(dead_code)]
+    pub systems: Vec<u32>,
 }
 
 /// A fleet on the map: its position (its system's, or the galaxy coordinate between systems),
@@ -73,8 +130,13 @@ pub struct Fleet {
     pub station: bool,
     pub ships: u32,
     pub military: bool,
+    /// the save's military_power (the map label's strength)
+    pub military_power: f32,
     pub from: Option<(f32, f32)>,
     pub to: Option<(f32, f32)>,
+    pub name: Name,
+    /// the system it is in (None: between systems)
+    pub system: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +146,70 @@ pub struct Nebula {
     pub radius: f32,
     #[allow(dead_code)]
     pub name: String,
+    /// the ids of the systems in it
+    pub systems: Vec<u32>,
+}
+
+/// A save's name block: a localisation key (or the name itself when `literal`), and the
+/// variables its text takes (render.names puts them together).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Name {
+    pub key: String,
+    pub literal: bool,
+    pub vars: Vec<(String, Name)>,
+}
+
+impl Name {
+    pub fn read(t: Option<Table>) -> mlua::Result<Name> {
+        let Some(t) = t else { return Ok(Name::default()) };
+        let mut vars = Vec::new();
+        if let Some(v) = t.get::<Option<Table>>("vars")? {
+            for p in v.sequence_values::<Table>() {
+                let p = p?;
+                vars.push((p.get("key")?, Name::read(p.get("value")?)?));
+            }
+        }
+        Ok(Name { key: t.get::<Option<String>>("key")?.unwrap_or_default(), literal: t.get::<Option<bool>>("literal")?.unwrap_or(false), vars })
+    }
+
+    /// As a Lua table for render.names.
+    pub fn to_lua(&self, lua: &mlua::Lua) -> mlua::Result<Table> {
+        let t = lua.create_table()?;
+        t.set("key", self.key.as_str())?;
+        t.set("literal", self.literal)?;
+        let vars = lua.create_table()?;
+        for (k, v) in &self.vars {
+            let e = lua.create_table()?;
+            e.set("key", k.as_str())?;
+            e.set("value", v.to_lua(lua)?)?;
+            vars.push(e)?;
+        }
+        t.set("vars", vars)?;
+        Ok(t)
+    }
+}
+
+/// An outliner member: its kind (civilian, military, shipyard, starbase, planet), id, name, its
+/// second line's key (a ship size, a starbase type, a colony designation), military power,
+/// system and sector.
+#[derive(Clone, Debug)]
+pub struct OutlinerEntry {
+    pub kind: String,
+    pub id: u32,
+    pub name: Name,
+    pub sub: String,
+    pub power: f32,
+    pub system: i64,
+    pub sector: i64,
+}
+
+/// A planet of the player's: its id, name, class and system.
+#[derive(Clone, Debug)]
+pub struct PlanetInfo {
+    pub id: u32,
+    pub name: Name,
+    pub class: String,
+    pub system: i64,
 }
 
 /// The renderer's Lua directory (`sim/render/lua` under `runtime::repo_dir`), for `package.path`.
@@ -150,6 +276,26 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                 primary: rgb(&c.get("primary")?)?,
                 secondary: rgb(&c.get("secondary")?)?,
                 systems: 0,
+                name_block: Name::read(c.get("name_block")?)?,
+                government: c.get::<Option<String>>("government")?.unwrap_or_default(),
+                flag: match c.get::<Option<Table>>("flag")? {
+                    Some(f) => {
+                        let part = |k: &str| -> mlua::Result<(String, String)> {
+                            Ok(match f.get::<Option<Table>>(k)? {
+                                Some(p) => (p.get("category")?, p.get("file")?),
+                                None => (String::new(), String::new()),
+                            })
+                        };
+                        let mut colours = Vec::new();
+                        if let Some(cs) = f.get::<Option<Table>>("colours")? {
+                            for c in cs.sequence_values::<Table>() {
+                                colours.push(rgb(&c?)?);
+                            }
+                        }
+                        Some(Flag { icon: part("icon")?, background: part("background")?, colours })
+                    }
+                    None => None,
+                },
             });
         }
         let mut systems = Vec::new();
@@ -168,6 +314,8 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                 star_class: s.get("star_class")?,
                 texture: s.get("texture")?,
                 icon_scale: s.get("icon_scale")?,
+                height: s.get::<Option<f32>>("height")?.unwrap_or(0.0),
+                name: Name::read(s.get("name")?)?,
             });
         }
         let mut lanes = Vec::new();
@@ -195,14 +343,23 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                 station: f.get("station")?,
                 ships: f.get("ships")?,
                 military: f.get("military")?,
+                military_power: f.get::<Option<f32>>("military_power")?.unwrap_or(0.0),
                 from: pair("from_x", "from_y")?,
                 to: pair("to_x", "to_y")?,
+                name: Name::read(f.get("name")?)?,
+                system: f.get("system")?,
             });
         }
         let mut nebulae = Vec::new();
         for n in g.get::<Table>("nebulae")?.sequence_values::<Table>() {
             let n = n?;
-            nebulae.push(Nebula { x: n.get("x")?, y: n.get("y")?, radius: n.get("radius")?, name: n.get("name")? });
+            nebulae.push(Nebula {
+                x: n.get("x")?,
+                y: n.get("y")?,
+                radius: n.get("radius")?,
+                name: n.get("name")?,
+                systems: n.get::<Option<Table>>("systems")?.map(|t| t.sequence_values::<u32>().collect::<mlua::Result<Vec<_>>>()).transpose()?.unwrap_or_default(),
+            });
         }
         Ok(Galaxy {
             date: g.get("date")?,
@@ -219,6 +376,71 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
             dust_size: g.get("dust_size")?,
             dust_size_extra: g.get("dust_size_extra")?,
             notes: g.get("notes")?,
+            terra_incognita: match g.get::<Option<Table>>("terra_incognita")? {
+                Some(t) => {
+                    let size: usize = t.get::<Option<usize>>("size")?.unwrap_or(256);
+                    let runs: Vec<u32> = t.get::<Table>("runs")?.sequence_values::<u32>().collect::<mlua::Result<_>>()?;
+                    let systems: Vec<u32> = t.get::<Table>("systems")?.sequence_values::<u32>().collect::<mlua::Result<_>>()?;
+                    // run lengths, the first unknown, alternating (CTerraIncognitaMap)
+                    let mut bitmap = Vec::with_capacity(size * size);
+                    for (k, n) in runs.iter().enumerate() {
+                        let v = if k % 2 == 0 { 0u8 } else { 255u8 };
+                        bitmap.extend(std::iter::repeat_n(v, *n as usize));
+                    }
+                    bitmap.resize(size * size, 0);
+                    Some(TerraIncognita { size, bitmap, systems })
+                }
+                None => None,
+            },
+            core_radius: g.get::<Option<f32>>("core_radius")?.unwrap_or(0.0),
+            player: g.get::<Option<u32>>("player")?.unwrap_or(0),
+            communications: g.get::<Option<Table>>("communications")?.map(|t| t.sequence_values::<u32>().collect::<mlua::Result<Vec<_>>>()).transpose()?,
+            outliner: match g.get::<Option<Table>>("outliner")? {
+                Some(t) => t
+                    .sequence_values::<Table>()
+                    .map(|e| -> mlua::Result<OutlinerEntry> {
+                        let e = e?;
+                        Ok(OutlinerEntry {
+                            kind: e.get("kind")?,
+                            id: e.get("id")?,
+                            name: Name::read(e.get("name")?)?,
+                            sub: e.get::<Option<String>>("sub")?.unwrap_or_default(),
+                            power: e.get::<Option<f32>>("power")?.unwrap_or(0.0),
+                            system: e.get::<Option<i64>>("system")?.unwrap_or(-1),
+                            sector: e.get::<Option<i64>>("sector")?.unwrap_or(-1),
+                        })
+                    })
+                    .collect::<mlua::Result<_>>()?,
+                None => Vec::new(),
+            },
+            sectors: match g.get::<Option<Table>>("sectors")? {
+                Some(t) => t.sequence_values::<Table>().map(|s| -> mlua::Result<(u32, Name)> { let s = s?; Ok((s.get("id")?, Name::read(s.get("name")?)?)) }).collect::<mlua::Result<_>>()?,
+                None => Vec::new(),
+            },
+            alerts: match g.get::<Option<Table>>("alerts")? {
+                Some(t) => t
+                    .sequence_values::<Table>()
+                    .map(|a| -> mlua::Result<(String, String, String)> {
+                        let a = a?;
+                        Ok((a.get("key")?, a.get("icon")?, a.get("priority")?))
+                    })
+                    .collect::<mlua::Result<_>>()?,
+                None => Vec::new(),
+            },
+            capital: match g.get::<Option<Table>>("capital")? {
+                Some(t) => Some((t.get("planet")?, t.get("system")?)),
+                None => None,
+            },
+            planets: match g.get::<Option<Table>>("planets")? {
+                Some(t) => t
+                    .sequence_values::<Table>()
+                    .map(|p| -> mlua::Result<PlanetInfo> {
+                        let p = p?;
+                        Ok(PlanetInfo { id: p.get("id")?, name: Name::read(p.get("name")?)?, class: p.get("class")?, system: p.get("system")? })
+                    })
+                    .collect::<mlua::Result<_>>()?,
+                None => Vec::new(),
+            },
         })
     };
     read().map_err(|e| format!("render.galaxy: {e}"))

@@ -23,6 +23,7 @@
 local world = require("engine.world")
 local defs = require("engine.defs")
 local eval = require("simscript.eval")
+local live = require("engine.store.live")   -- the store's copy of the country (docs/data_layer.md)
 
 local survey = {
     stats = {
@@ -275,7 +276,8 @@ function survey.add_surveyed(country, ty, id, fleet, host)
     local h = {}
     world.append(h, "type", ty)
     world.append(h, "id", id)
-    table.insert(b, pos, h)
+    world.insert_value(b, pos, h)
+    live.touch("country", country)
     S.holders_added = S.holders_added + 1
     RUST.rand()
     RUST.rand()

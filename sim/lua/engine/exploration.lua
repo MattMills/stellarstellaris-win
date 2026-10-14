@@ -407,16 +407,14 @@ local function set_list(obj, key, values)
         if e then world.remove_entry(obj, e) end
         return
     end
-    local block
+    local tokens = {}
+    for i, v in ipairs(values) do tokens[i] = { text = tostring(v) } end
     if e and e.value.text == nil then
-        block = e.value
-        for i = #block, 1, -1 do block[i] = nil end
+        world.replace(e.value, tokens)
     else
         if e then world.remove_entry(obj, e) end
-        block = {}
-        world.append(obj, key, block)
+        world.append(obj, key, tokens)
     end
-    for i, v in ipairs(values) do block[i] = { text = tostring(v) } end
 end
 local function copy(t)
     local out = {}
@@ -1426,9 +1424,10 @@ end
 -- the day (systems.lua `daily.countries_parallel`); STELLAR_EXPLORATION=off leaves the save's
 -- fields as they are (to measure what the module changes)
 local OFF = os.getenv("STELLAR_EXPLORATION") == "off"
--- STELLAR_STORE=ffi: the pass over the shared store, on the worker pool (engine.store.bridge,
--- docs/data_layer.md); the surveys it finds come back into STATE for country_serial
-local STORE = os.getenv("STELLAR_STORE") == "ffi"
+-- the pass over the shared store, on the worker pool (engine.store.bridge, docs/data_layer.md),
+-- unless STELLAR_STORE=off (this module's own pass); the surveys it finds come back into STATE for
+-- country_serial
+local STORE = require("engine.store.live").on
 function X.countries_daily(host, date)
     if OFF then return end
     if STORE then
@@ -1453,8 +1452,9 @@ local function remove_surveyed(cid, ty, id)
     for i, e in ipairs(b) do
         if not e.text and not e.op and (tonumber(world.field(e, "type")) or 0) == ty
             and tonumber(world.field(e, "id")) == id then
-            table.remove(b, i)
+            world.remove_at(b, i)
             X.stats.unsurveyed = (X.stats.unsurveyed or 0) + 1
+            require("engine.store.live").touch("country", cid)
             return true
         end
     end

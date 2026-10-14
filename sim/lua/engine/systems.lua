@@ -96,7 +96,7 @@ local function count_down_flags(obj)
                 if days <= 1 then
                     world.remove_entry(flags, e)
                 else
-                    days_e.value.text = tostring(days - 1)
+                    world.set_entry(e.value, days_e, days - 1)
                 end
             end
         end
@@ -120,7 +120,7 @@ local function count_down_modifiers(obj)
                         if days <= 1 then
                             world.remove_entry(items, item)
                         else
-                            f.value.text = tostring(days - 1)
+                            world.set_entry(item, f, days - 1)
                         end
                     end
                 end
@@ -233,8 +233,9 @@ P["daily.colonies_serial"] = function(host, date)
     end
     call_optional("engine.colonies", "daily_serial", host, date)
 end
--- CModifierNodeManager::Update in the monthly update: the world's modifier graph built again (when
--- the modifiers come from the world: engine.economy.world_source)
+-- CModifierNodeManager::Update in the monthly update: the world's modifier graph brought up to date
+-- (when the modifiers come from the world: engine.economy.world_source; only what changed,
+-- engine.modifiers.incremental, docs/modifier_incremental.md)
 P["monthly.modifiers"] = function()
     local engine = package.loaded["engine"]
     local source = engine and engine.modifier_source
@@ -262,9 +263,14 @@ P["monthly.countries_serial"] = function(host, date)
     call_optional("engine.ai.strategy", "monthly", host, date)
     require("engine.leaders").monthly()
     each_country(function(id)
+        -- CCountry::MonthlyUpdateSerial (0x6f4b10): one draw, the pulse's scope made from it
+        -- (CEventScope position H(draw)); the pulse only for a country type with has_pulse_events
+        local seed = RUST.rand()
         -- CCountryEventManager::MonthlyUpdateSerial: the country's situations, before its pulse
         call_optional("engine.situations", "country_monthly", host, date, id)
-        host.on_action("on_monthly_pulse_country", "country", id)
+        if systems.has_pulse_events(id) then
+            host.on_action("on_monthly_pulse_country", "country", id, seed)
+        end
     end)
 end
 -- NColonyUpdate::MonthlyUpdate: growth and decline of the colonies' pops (engine.pops, once it is
@@ -326,20 +332,45 @@ P["ai.process"] = function(host, date)
         systems.not_modelled["ai.process"] = (systems.not_modelled["ai.process"] or 0) + 1
     end
 end
+-- the end of CGameState::MonthlyUpdate (0x261620): one draw, the pulse's scope made from it
 P["monthly.on_monthly_pulse"] = function(host)
-    host.on_action("on_monthly_pulse", "none", 0)
+    host.on_action("on_monthly_pulse", "none", 0, RUST.rand())
 end
+-- CGameState::YearlyUpdate (0x262ee0): one draw for the global pulses' scope (the yearly one, then
+-- the longer ones of the year); then each country whose type has_pulse_events: one draw, its
+-- pulses in that scope (CCountryType flags bit 2)
 P["yearly.on_yearly_pulse"] = function(host, date)
-    host.on_action("on_yearly_pulse", "none", 0)
-    each_country(function(id) host.on_action("on_yearly_pulse_country", "country", id) end)
-    -- the longer pulses, by the year (2200 is the start)
     local year = date and date.year or 0
+    local longer = {}
     for _, p in ipairs({ { 2, "on_bi_yearly_pulse" }, { 5, "on_five_year_pulse" }, { 10, "on_decade_pulse" } }) do
-        if (year - 2200) % p[1] == 0 then
-            host.on_action(p[2], "none", 0)
-            each_country(function(id) host.on_action(p[2] .. "_country", "country", id) end)
-        end
+        -- the longer pulses, by the year (2200 is the start)
+        if (year - 2200) % p[1] == 0 then longer[#longer + 1] = p[2] end
     end
+    local seed = RUST.rand()
+    host.on_action("on_yearly_pulse", "none", 0, seed)
+    for _, name in ipairs(longer) do host.on_action(name, "none", 0, seed) end
+    each_country(function(id)
+        if systems.has_pulse_events(id) then
+            local cseed = RUST.rand()
+            host.on_action("on_yearly_pulse_country", "country", id, cseed)
+            for _, name in ipairs(longer) do host.on_action(name .. "_country", "country", id, cseed) end
+        end
+    end)
+end
+
+-- a country whose type gets the country pulses (common/country_types: has_pulse_events, no by default)
+local pulse_types = {}
+function systems.has_pulse_events(id)
+    local t = world.field(world.object("country", id), "type")
+    t = type(t) == "string" and t:gsub('^"(.*)"$', "%1") or nil
+    if not t then return false end
+    local v = pulse_types[t]
+    if v == nil then
+        local d = require("engine.defs").get("common/country_types", t)
+        v = d ~= nil and require("engine.defs").field(d.block, "has_pulse_events") == "yes"
+        pulse_types[t] = v
+    end
+    return v
 end
 
 -- systems.phase(kind, name, host, date) -> whether something models it

@@ -9,9 +9,13 @@
 //! - `view galaxy`, `view system ID` (the save's system id), `view model NAME` (an entity or a
 //!   pdxmesh of gfx/models alone), `view menu`, `view 2d`, `view 3d`
 //! - `focus system ID`, `focus fleet ID`: the galaxy camera over it
-//! - `camera X Y Z YAW PITCH DISTANCE` (the target on the plane is X, Z = the map's x, y),
+//! - `camera X Y Z YAW PITCH DISTANCE` (the target on the plane is X, Z = the map's x, y; the
+//!   game's camera: the eye at target + distance (-cos p sin y, sin p, cos p cos y), camera.rs),
 //!   `orbit DYAW DPITCH`, `zoom FACTOR` (< 1 closer), `pan DX DY` (fractions of the distance)
-//! - `resize W H`
+//! - `resize W H`, `gui off|on` (the top bar, a system's orbit lines)
+//! - the clock (clock.rs: the simulation on its own thread): `pause` (stopped, as the game's
+//!   headless), `pause off` (running), `speed 1..5`, `wait SECONDS` (real time passes)
+//! - `select system|fleet|planet|ship ID`, `select none`: the selection (marked; `state` names it)
 //! - `key NAME down|up`, `mouse X Y [left|right down|up]`, `scroll DY`
 //! - `frame PATH.png` (renders the view, writes the PNG: `ok frame PATH W H MS`), `frame -`
 //! - `state` (JSON: screen, view, camera, date, size), `quit`
@@ -19,6 +23,7 @@
 use std::io::{BufRead, BufReader, Write};
 
 use crate::app::{App, MapView, Screen};
+use crate::scene::Pickable;
 use crate::camera::OrbitCamera;
 use crate::math::V3;
 use crate::render::{Backend, Offscreen};
@@ -94,8 +99,23 @@ impl Engine {
             )
         });
         let (date, systems, fleets, sim) = a.map.as_ref().map_or(("".to_string(), 0, 0, false), |m| {
-            (m.date(), m.galaxy.systems.len(), m.galaxy.fleets.len(), matches!(m.source, crate::Source::Sim(_)))
+            (m.date(), m.galaxy.systems.len(), m.galaxy.fleets.len(), m.clock.as_ref().is_some_and(|c| c.status().ready))
         });
+        // the clock: paused, the speed, the simulation's thread (loading, days run, a day's time)
+        let clock = a.map.as_ref().map_or("null".to_string(), |m| {
+            let s = m.clock.as_ref().map(|c| c.status()).unwrap_or_default();
+            format!(
+                "{{\"paused\":{},\"speed\":{},\"loading\":{},\"days\":{},\"day_ms\":{:.0},\"snapshot_ms\":{:.0}}}",
+                m.paused, m.speed, s.loading, s.days, s.day_ms, s.snapshot_ms
+            )
+        });
+        let selected = match (a.selected, &a.map) {
+            (Some(Pickable::System(i)), Some(m)) => format!("\"system {}\"", m.galaxy.systems[i].id),
+            (Some(Pickable::Fleet(id)), _) => format!("\"fleet {id}\""),
+            (Some(Pickable::Body(id)), _) => format!("\"planet {id}\""),
+            (Some(Pickable::Ship(id)), _) => format!("\"ship {id}\""),
+            _ => "null".to_string(),
+        };
         // the fleets by movement state, and those in an FTL jump (drawn with a trail)
         let mut states: std::collections::BTreeMap<String, usize> = Default::default();
         let mut jumping = 0;
@@ -109,7 +129,7 @@ impl Engine {
         }
         let states: Vec<String> = states.iter().map(|(k, n)| format!("\"{k}\":{n}")).collect();
         format!(
-            "{{\"screen\":\"{:?}\",\"view\":\"{view}\",\"camera\":{camera},\"date\":\"{date}\",\"systems\":{systems},\"fleets\":{fleets},\"movement\":{{{}}},\"ftl_trails\":{jumping},\"simulation\":{sim},\"size\":[{},{}],\"frames\":{}}}",
+            "{{\"screen\":\"{:?}\",\"view\":\"{view}\",\"camera\":{camera},\"date\":\"{date}\",\"clock\":{clock},\"selected\":{selected},\"systems\":{systems},\"fleets\":{fleets},\"movement\":{{{}}},\"ftl_trails\":{jumping},\"simulation\":{sim},\"size\":[{},{}],\"frames\":{}}}",
             a.screen,
             states.join(","),
             a.size.0,
@@ -200,11 +220,11 @@ impl Engine {
                     other => return Err(format!("focus {other:?}: system ID or fleet ID")),
                 };
                 self.app.show_galaxy();
-                if let Some(c) = self.app.camera.as_mut() {
+                if let Some(mut c) = self.app.camera {
                     c.target = V3(x, 0.0, y);
                     c.distance = c.distance.min(180.0).max(c.min_distance);
+                    self.app.set_camera(c);
                 }
-                self.app.invalidate();
                 Ok(Reply::ok(format!("focus {what} {id} at {x:.1} {y:.1}")))
             }
             "camera" => {
@@ -219,10 +239,58 @@ impl Engine {
                 .unwrap_or_else(|| OrbitCamera::galaxy(500.0));
                 c.target = V3(v[0], v[1], v[2]);
                 c.yaw = v[3].to_radians();
-                c.pitch = v[4].to_radians().clamp(c.min_pitch, c.max_pitch);
-                c.distance = v[5].clamp(c.min_distance, c.max_distance);
+                // as the game's headless `camera`: set as given (the limits widened to it)
+                c.pitch = v[4].to_radians();
+                c.distance = v[5].max(1e-3);
+                c.min_pitch = c.min_pitch.min(c.pitch);
+                c.max_pitch = c.max_pitch.max(c.pitch);
+                c.min_distance = c.min_distance.min(c.distance);
+                c.max_distance = c.max_distance.max(c.distance);
                 self.app.set_camera(c);
                 Ok(Reply::ok("camera"))
+            }
+            "gui" => {
+                let on = a.first().copied() != Some("off");
+                let m = self.app.map.as_mut().ok_or("no map loaded")?;
+                m.gui = on;
+                self.app.invalidate();
+                Ok(Reply::ok(format!("gui {}", if on { "on" } else { "off" })))
+            }
+            "pause" => {
+                // `pause` (as the game's headless: the clock stopped), `pause off` runs it
+                let on = a.first().copied() != Some("off");
+                self.app.set_paused(on)?;
+                self.flush_log();
+                Ok(Reply::ok(if on { "pause" } else { "pause off" }))
+            }
+            "wait" => {
+                // real time passes (the clock runs on its own thread while unpaused)
+                let s: f64 = num(a.first(), "seconds")?;
+                std::thread::sleep(std::time::Duration::from_secs_f64(s.clamp(0.0, 600.0)));
+                self.app.update();
+                Ok(Reply::ok(format!("wait {s} date {}", self.app.map.as_ref().map_or(String::new(), |m| m.date()))))
+            }
+            "speed" => {
+                let s: u8 = num(a.first(), "speed")?;
+                if !(1..=crate::clock::SPEEDS).contains(&s) {
+                    return Err(format!("speed 1..{}", crate::clock::SPEEDS));
+                }
+                self.app.set_speed(s)?;
+                self.flush_log();
+                Ok(Reply::ok(format!("speed {s}")))
+            }
+            "select" => {
+                let what = match (a.first().copied(), a.get(1)) {
+                    (Some("none"), _) | (None, _) => None,
+                    (Some("system"), Some(_)) => Some(Pickable::System(self.system_index(num(a.get(1), "id")?)?)),
+                    (Some("fleet"), Some(_)) => Some(Pickable::Fleet(num(a.get(1), "id")?)),
+                    (Some("planet"), Some(_)) => Some(Pickable::Body(num(a.get(1), "id")?)),
+                    (Some("ship"), Some(_)) => Some(Pickable::Ship(num(a.get(1), "id")?)),
+                    other => return Err(format!("select {other:?}: system ID, fleet ID, planet ID, ship ID or none")),
+                };
+                self.app.select(what);
+                self.flush_log();
+                Ok(Reply::ok(format!("select {}", a.join(" "))))
             }
             "orbit" => {
                 self.app.orbit(num(a.first(), "dyaw")?, num(a.get(1), "dpitch")?);
@@ -278,7 +346,7 @@ impl Engine {
             }
             "scroll" => {
                 let dy: f32 = num(a.first(), "dy")?;
-                self.app.zoom(0.85f32.powf(dy));
+                self.app.wheel(dy);
                 Ok(Reply::ok("scroll"))
             }
             "frame" => {

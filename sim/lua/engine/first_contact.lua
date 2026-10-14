@@ -57,6 +57,7 @@
 local world = require("engine.world")
 local defs = require("engine.defs")
 local bit = require("bit")
+local live = require("engine.store.live")   -- the store's copy of what exploration reads (docs/data_layer.md)
 
 world.KINDS.first_contact = world.KINDS.first_contact or "contacts"
 
@@ -310,7 +311,7 @@ local function set_stage(id, fc, key)
         local b = {}
         world.append(b, "date", engine and engine.date_text and engine.date_text() or tostring(world.meta.date), true)
         world.append(b, "stage", old, true)
-        completed[#completed + 1] = b
+        world.push(completed, b)
         world.set(fc, "stage", key)
     else
         world.append(fc, "stage", key, true)
@@ -359,6 +360,8 @@ local function finish(host, id, fc)
     if owner and other then
         drop(relation(owner, other), "pre_communications_name")
         drop(relation(other, owner), "pre_communications_name")
+        live.touch("country", owner)
+        live.touch("country", other)
     end
     world.set(fc, "status", "finished")
     first_contact.stats.finished = first_contact.stats.finished + 1
@@ -525,7 +528,7 @@ function first_contact.country_daily(host, date, country)
         else
             -- gone: out of the list (the last one moved into its place), the contact destroyed
             local last = entries[#entries]
-            entries[i].text = last.text
+            world.set_entry(list, entries[i], last.text)
             world.remove_entry(list, last)
             table.remove(entries)
             if fc then

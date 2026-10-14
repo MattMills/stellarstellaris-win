@@ -256,7 +256,7 @@ local function enter_stage(s, sid, t, i, with_draw)
             world.append_value(flags, "no")
             entries[k] = flags[#flags]
         end
-        entries[i + 1].text = "yes"
+        world.set_entry(flags, entries[i + 1], "yes")
         if with_draw then
             draw() -- line 1251
         end

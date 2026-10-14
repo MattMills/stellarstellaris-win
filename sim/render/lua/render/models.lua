@@ -14,14 +14,17 @@ local source = require("stellar.script.source")
 
 local models = {}
 
+-- a key's value; the last one when the key is repeated, as the game reads it [I]
+-- (mammalian_01_science_mesh: `scale = 1.0` ... `scale = 2.8`)
 local function get(block, key)
     key = key:lower()
+    local found
     for _, e in ipairs(type(block) == "table" and block or {}) do
         if e.op and e.key and e.key.text:lower() == key then
-            return e.value.text or e.value
+            found = e.value.text or e.value
         end
     end
-    return nil
+    return found
 end
 
 local function each(block, key, f)
@@ -57,6 +60,24 @@ local function settings_of(block)
             diffuse = get(m, "texture_diffuse"), normal = get(m, "texture_normal"),
             specular = get(m, "texture_specular"), shader = get(m, "shader"),
         }
+    end)
+    return out
+end
+
+-- the particle effects an entity's default state starts (`default_state = "idle"`, `state = {
+-- name = "idle" event = { node particle ... } }`): { { particle, node } }
+local function state_particles(e)
+    local want = get(e, "default_state") or "idle"
+    local out = {}
+    each(e, "state", function(s)
+        if get(s, "name") == want then
+            each(s, "event", function(ev)
+                local p = get(ev, "particle")
+                if p then
+                    out[#out + 1] = { particle = p, node = get(ev, "node") or "" }
+                end
+            end)
+        end
     end)
     return out
 end
@@ -116,9 +137,14 @@ function models.load(game_dir)
                             end
                         end
                     end)
+                    -- game_data: the entity's shader constants (bloom_factor: vBloomFactor,
+                    -- uv_animation_speed, ...)
+                    local gd = get(e, "game_data")
                     db.entities[name] = {
                         name = name, pdxmesh = get(e, "pdxmesh"), clone = get(e, "clone"), scale = tonumber(get(e, "scale")) or 1,
-                        settings = settings_of(e), attach = attach, source = f,
+                        settings = settings_of(e), attach = attach, source = f, particles = state_particles(e),
+                        bloom_factor = type(gd) == "table" and tonumber(get(gd, "bloom_factor")) or nil,
+                        recolor_crunch = type(gd) == "table" and tonumber(get(gd, "emissive_recolor_crunch")) or nil,
                     }
                 end
             end)
@@ -152,6 +178,9 @@ local function resolve(db, e, depth)
         name = e.name, pdxmesh = base.pdxmesh, scale = (base.scale or 1) * (e.scale or 1),
         settings = settings, attach = #(e.attach or {}) > 0 and e.attach or base.attach,
         source = e.source, clone = e.clone,
+        particles = #(e.particles or {}) > 0 and e.particles or base.particles,
+        bloom_factor = e.bloom_factor or base.bloom_factor,
+        recolor_crunch = e.recolor_crunch or base.recolor_crunch,
     }
 end
 
@@ -176,6 +205,9 @@ function models.describe(db, name)
         out.pdxmesh = e.pdxmesh
         out.scale = (e.scale or 1) * (m.scale or 1)
         out.attach = e.attach
+        out.particles = e.particles or {}
+        out.bloom_factor = e.bloom_factor
+        out.recolor_crunch = e.recolor_crunch
     else
         m = db.meshes[name]
         if not m then

@@ -45,6 +45,76 @@ end
 world.entries = {}   -- store name -> { [id] = its entry in the tree (removal writes 'id = none') }
 world.store_blocks = {}  -- store name -> the tree's block that holds it (new objects are added there)
 
+-- The blocks the writers below change, for the store's copy of the world (engine.store.full):
+-- after world.track_owners(), every block knows its object (store and id) and the block it is in,
+-- and each writer calls world.on_write(store, id, block, how):
+--   how "own"  the writer changed block's own entries (a token set, an entry added or taken out);
+--   how "deep" world.wrote(block): a module changed something in block or below it itself (an
+--              entry's text set directly, table.insert into a block);
+--   no block   the object itself (created, its slot reused, removed).
+-- A block a writer adds belongs to the object of the block it is added to.
+local owner = setmetatable({}, { __mode = "k" })      -- block -> the object's block
+local parent_of = setmetatable({}, { __mode = "k" })  -- block -> the block it is in
+local object_of = setmetatable({}, { __mode = "k" })  -- an object's block -> { store, id }
+local tracking = false
+world.on_write = nil
+
+-- block (in parent) and every block in it belong to obj
+local function own(block, obj, parent)
+    owner[block] = obj
+    parent_of[block] = parent
+    for _, e in ipairs(block) do
+        local v = e.op and e.value or e
+        if type(v) == "table" and v.text == nil then own(v, obj, block) end
+    end
+end
+
+local function wrote(block, how, key)
+    local f = world.on_write
+    if f then
+        local o = object_of[owner[block]]
+        if o then f(o[1], o[2], block, how, key) end
+    end
+end
+
+-- world.parent(block) -> the block it is in (after world.track_owners)
+function world.parent(block)
+    return parent_of[block]
+end
+
+-- world.wrote(block): a module that changed block (or anything in it) without this API's writers
+-- says so (an entry's text set directly, entries inserted or removed with table.*)
+function world.wrote(block)
+    if tracking then wrote(block, "deep") end
+end
+
+-- world.adopt(name, id, block): an object a module put into its store itself (a freed slot reused:
+-- engine.fleets.create.place) given its blocks' owner, and marked
+function world.adopt(name, id, block)
+    if not tracking then return end
+    object_of[block] = { name, id }
+    own(block, block, world.store_blocks[name])
+    if world.on_write then world.on_write(name, id) end
+end
+
+-- world.retrack(block): the blocks now in block (its entries replaced) given its object and itself as parent
+function world.retrack(block)
+    if tracking then own(block, owner[block], parent_of[block]) end
+end
+
+-- world.track_owners(): every object's blocks given their object, from now on kept by the writers
+function world.track_owners()
+    if tracking then return end
+    tracking = true
+    for name, store in pairs(world.stores) do
+        local holder = world.store_blocks[name]
+        for id, block in pairs(store) do
+            object_of[block] = { name, id }
+            own(block, block, holder)
+        end
+    end
+end
+
 local function add_store(name, block)
     local store, ids, entries = world.stores[name] or {}, world.ids[name] or {}, world.entries[name] or {}
     for _, e in ipairs(block) do
@@ -187,6 +257,7 @@ end
 -- world.reindex(obj): the index of obj dropped, for code that rewrote obj's entries directly
 -- without changing its length
 function world.reindex(obj)
+    if tracking then wrote(obj, "deep") end
     fields_of[obj] = nil
 end
 
@@ -271,8 +342,17 @@ local function appended(obj, key, entry)
 end
 
 -- world.set(obj, key, value): the first `key = <token>` of obj changed, or added
+-- world.token_entry(obj, key) -> the first `key = <token>` entry of obj (the one world.set sets), or nil
+function world.token_entry(obj, key)
+    for _, e in ipairs(fields(obj)[key] or {}) do
+        if e.value.text ~= nil then return e end
+    end
+    return nil
+end
+
 function world.set(obj, key, value)
     local text = type(value) == "number" and number_text(value) or tostring(value)
+    if tracking then wrote(obj, "own", key) end
     for _, e in ipairs(fields(obj)[key] or {}) do
         if e.value.text ~= nil then
             e.value.text = text
@@ -294,6 +374,10 @@ function world.child(obj, key)
     local e = { key = { text = key }, op = "=", value = block }
     obj[#obj + 1] = e
     appended(obj, key, e)
+    if tracking then
+        owner[block], parent_of[block] = owner[obj], obj
+        wrote(obj, "own")
+    end
     return block
 end
 
@@ -304,6 +388,10 @@ function world.append(obj, key, value, quoted)
     local e = { key = { text = key }, op = "=", value = v }
     obj[#obj + 1] = e
     appended(obj, key, e)
+    if tracking then
+        if v.text == nil then own(v, owner[obj], obj) end
+        wrote(obj, "own")
+    end
 end
 
 -- world.insert(obj, pos, key, value[, quoted]): `key = value` at position pos of obj (the save's
@@ -313,15 +401,32 @@ function world.insert(obj, pos, key, value, quoted)
         or { text = type(value) == "number" and number_text(value) or tostring(value), quoted = quoted or nil }
     table.insert(obj, pos, { key = { text = key }, op = "=", value = v })
     fields_of[obj] = nil
+    if tracking then
+        if v.text == nil then own(v, owner[obj], obj) end
+        wrote(obj, "own")
+    end
+end
+
+-- world.push(block, value): a bare value at the end of a list block, a token's text or a block (a
+-- block given here belongs to block's object from now on)
+function world.push(block, value)
+    local v = type(value) == "table" and value or { text = tostring(value) }
+    block[#block + 1] = v
+    if tracking then
+        if v.text == nil then own(v, owner[block], block) end
+        wrote(block, "own")
+    end
 end
 
 -- world.append_value(block, text): a bare value at the end of a list block
-function world.append_value(block, text)
-    block[#block + 1] = { text = tostring(text) }
+function world.append_value(block, text, quoted)
+    block[#block + 1] = { text = tostring(text), quoted = quoted or nil }
+    if tracking then wrote(block, "own") end
 end
 
 -- world.remove_value(block, text): a bare value taken out of a list block
 function world.remove_value(block, text)
+    if tracking then wrote(block, "own") end
     text = tostring(text)
     for i = #block, 1, -1 do
         if block[i].text == text then
@@ -332,6 +437,7 @@ end
 
 -- world.remove_entry(block, entry): one entry taken out of a block (a statement or a list element)
 function world.remove_entry(block, entry)
+    if tracking then wrote(block, "own") end
     for i = #block, 1, -1 do
         if block[i] == entry then
             table.remove(block, i)
@@ -347,6 +453,7 @@ function world.remove(kind, id)
     local name = world.KINDS[kind] or kind
     local store, ids = world.stores[name], world.ids[name]
     if store and store[id] then
+        if tracking and world.on_write then world.on_write(name, id) end
         store[id] = nil
         -- the save keeps the slot: 'id = none'
         local e = world.entries[name] and world.entries[name][id]
@@ -362,6 +469,130 @@ function world.remove(kind, id)
 end
 
 -- world.create(kind, id, block): a new object in its store (and in the save, at the store's end)
+-- the writers both worlds have for what modules did to blocks directly (engine.store.world has the
+-- same: the main state runs on either)
+
+-- world.replace(block, entries): the block's entries replaced by entries (the pdxscript form)
+function world.replace(block, entries)
+    local list = {}
+    for i, x in ipairs(entries) do list[i] = x end
+    for i = #block, 1, -1 do block[i] = nil end
+    for i, x in ipairs(list) do block[i] = x end
+    fields_of[block] = nil
+    if tracking then
+        own(block, owner[block], parent_of[block])
+        wrote(block, "deep")
+    end
+end
+
+-- world.append_entry(block, e): an entry of the pdxscript form (a keyed entry, a bare token or block)
+-- at the end of the block
+function world.append_entry(block, e)
+    block[#block + 1] = e
+    fields_of[block] = nil
+    if tracking then
+        local v = e.op and e.value or e
+        if type(v) == "table" and v.text == nil then own(v, owner[block], block) end
+        wrote(block, "own")
+    end
+end
+
+-- world.same(a, b): whether a and b are the same block (engine.store.world compares a handle with a
+-- table it was made from)
+function world.same(a, b)
+    return a == b
+end
+
+-- world.set_entry(block, e, text): the token of entry e of block (an entry `key = token`, or a bare
+-- token, as ipairs gives it) set
+function world.set_entry(block, e, value)
+    if type(value) == "table" and value.text == nil then
+        -- a block: the entry's value
+        e.value = value
+        if tracking then
+            own(value, owner[block], block)
+            wrote(block, "own")
+        end
+        return
+    end
+    local text = tostring(type(value) == "table" and value.text or value)
+    local v = e.op and e.value or e
+    if e.op and v.text == nil then e.value = { text = text } else v.text = text end
+    if tracking then wrote(block, "own") end
+end
+
+-- world.set_text(block, i, text): the token of the block's entry i (1-based) set
+function world.set_text(block, i, text)
+    local x = block[i]
+    local v = x.op and x.value or x
+    v.text = tostring(text)
+    if x.op then fields_of[block] = nil end
+    if tracking then wrote(block, "own") end
+end
+
+-- world.set_key(block, i, key): the key of the block's entry i
+function world.set_key(block, i, key)
+    block[i].key.text = tostring(key)
+    fields_of[block] = nil
+    if tracking then wrote(block, "own") end
+end
+
+-- world.insert_value(block, pos, value): a bare value (a token's text or a block) at position pos
+function world.insert_value(block, pos, value)
+    local v = type(value) == "table" and value or { text = tostring(value) }
+    table.insert(block, pos, v)
+    if tracking then
+        if v.text == nil then own(v, owner[block], block) end
+        wrote(block, "own")
+    end
+    return v
+end
+
+-- world.remove_at(block, i): the block's entry i taken out
+function world.remove_at(block, i)
+    if tracking then wrote(block, "own") end
+    table.remove(block, i)
+    fields_of[block] = nil
+end
+
+-- world.none_slot(store, index, gen) -> the id of the first `<id> = none` slot of the store whose
+-- id is index modulo gen (a freed slot a new object may take), or nil
+function world.none_slot(name, index, gen)
+    name = world.KINDS[name] or name
+    for _, x in ipairs(world.store_blocks[name] or {}) do
+        local id = x.op and x.key and tonumber(x.key.text)
+        if id and id % gen == index and x.value.text == "none" then return id end
+    end
+    return nil
+end
+
+-- world.place(store, id, old, block, gen) -> the object's block: a freed slot `old = none` becomes
+-- the object (the save keeps its place), else the object goes at the end (world.create)
+function world.place(name, id, old, block, gen)
+    name = world.KINDS[name] or name
+    local e
+    if old then
+        for _, x in ipairs(world.store_blocks[name] or {}) do
+            if x.op and x.key and tonumber(x.key.text) == old and x.value.text == "none" then
+                e = x
+                break
+            end
+        end
+    end
+    if not e then return world.create(name, id, block) end
+    e.key.text = tostring(id)
+    e.value = block
+    world.stores[name][id] = block
+    world.entries[name][id] = e
+    if old ~= id then world.entries[name][old] = nil end
+    local ids = world.ids[name]
+    ids[#ids + 1] = id
+    table.sort(ids, function(x, y) return x % gen < y % gen end)
+    fields_of[world.store_blocks[name]] = nil
+    world.adopt(name, id, block)
+    return block
+end
+
 function world.create(kind, id, block)
     local name = world.KINDS[kind] or kind
     local holder = world.store_blocks[name]
@@ -373,6 +604,11 @@ function world.create(kind, id, block)
     world.stores[name][id] = block
     world.entries[name][id] = e
     world.ids[name][#world.ids[name] + 1] = id
+    if tracking then
+        object_of[block] = { name, id }
+        own(block, block, holder)
+        if world.on_write then world.on_write(name, id) end
+    end
     return block
 end
 
@@ -449,6 +685,47 @@ function world.index()
 end
 
 -- the blocks of a list block (`hyperlane = { { to = 1 } { to = 2 } }`)
+-- world.statements(block) -> an iterator over block's `key = value` statements: the key's text and
+-- the value (a token's text, or a block), in order
+function world.statements(block)
+    local i = 0
+    return function()
+        while block do
+            i = i + 1
+            local e = block[i]
+            if e == nil then return nil end
+            if e.op and e.key then
+                local v = e.value
+                return e.key.text, (v.text or v)
+            end
+        end
+        return nil
+    end
+end
+
+-- world.count(block) -> the number of its entries; world.key(block) -> a key for a cache of
+-- something about the block (the block itself here; engine.store.world gives the block's id, as two
+-- handles of one block are two values)
+function world.count(block)
+    return #block
+end
+function world.key(block)
+    return block
+end
+
+-- world.entry(obj, key) -> the first `key = value` statement of obj (the entry the writers take:
+-- set_entry, remove_entry) and its position, or nil. A walk here, as the modules' own helpers did;
+-- engine.store.world finds it by the block's key index instead of building a view of every entry.
+function world.entry(obj, key)
+    if obj == nil then return nil end
+    for i, e in ipairs(obj) do
+        if e.op and e.key and e.key.text == key then
+            return e, i
+        end
+    end
+    return nil
+end
+
 function world.blocks(block)
     local out = {}
     if type(block) == "table" then

@@ -251,8 +251,25 @@ local function index_add(ix, key, pos)
     return false
 end
 
+-- the index a block had when a write dropped it (its entries moved: insert, remove, clear): built
+-- again in the same slots when its keys still fit, so that a block written over and over does not
+-- take new index slots each time
+local stale_ix = {}
+local function drop_index(bid)
+    local b = B[bid]
+    local ix = b.index
+    if ix ~= 0 and ix ~= EMPTY_IX then stale_ix[bid] = ix end
+    b.index = 0
+end
+S.drop_index = drop_index
+
 local function build_index(bid)
     local b = B[bid]
+    local old = stale_ix[bid]
+    if old then
+        stale_ix[bid] = nil
+        return S.rebuild_index(bid, old)
+    end
     local n, first = b.count, b.first
     local keys = 0
     for p = 0, n - 1 do
@@ -284,6 +301,36 @@ local function build_index(bid)
     end
 end
 S.build_index = build_index
+
+-- S.rebuild_index(bid, ix): block bid's key index built again in ix, an index it had (cleared and
+-- refilled when its keys still fit at build_index's load), else a new one (engine.store.full, after
+-- a block's entries were written again)
+function S.rebuild_index(bid, ix)
+    if ix and ix ~= 0 and ix ~= EMPTY_IX then
+        local b = B[bid]
+        local size = IX[ix] + 1
+        local keys = 0
+        for p = 0, b.count - 1 do
+            if E[b.first + p].op ~= 0 then keys = keys + 1 end
+        end
+        if keys > 0 and 4 * keys <= size then
+            for s = ix + 1, ix + 2 * size do IX[s] = 0 end
+            local ok = true
+            for p = 0, b.count - 1 do
+                local e = E[b.first + p]
+                if e.op ~= 0 and e.key ~= 0 and not index_add(ix, e.key, p) then
+                    ok = false
+                    break
+                end
+            end
+            if ok then
+                b.index = ix
+                return ix
+            end
+        end
+    end
+    return build_index(bid)
+end
 
 local scan
 -- the first entry of key k (an id) in block bid, or nil
@@ -524,7 +571,7 @@ function S.append_entry(bid, i)
     local b = B[bid]
     ffi.copy(E + b.first + b.count, E + i, 16)
     b.count = b.count + 1
-    b.index = 0
+    drop_index(bid)
     return b.first + b.count - 1
 end
 
@@ -547,10 +594,10 @@ function S.insert_at(bid, pos, key, value, quoted)
         ffi.copy(E + at + 1, E + at, (n - pos + 1) * 16)
     end
     b.count = n + 1
-    b.index = 0
+    drop_index(bid)
     local e = E[at]
-    e.key = sid(key)
-    e.op = 1
+    e.key = key ~= nil and sid(key) or 0   -- (nil: a bare value)
+    e.op = key ~= nil and 1 or 0
     e.flags = 0
     e.pad = 0
     if type(value) == "table" then
@@ -572,7 +619,7 @@ function S.remove_at(bid, i)
         ffi.copy(E + i, E + i + 1, (last - i) * 16)
     end
     b.count = b.count - 1
-    b.index = 0
+    drop_index(bid)
     return true
 end
 
@@ -580,7 +627,7 @@ end
 function S.clear(bid)
     local b = B[bid]
     b.count = 0
-    b.index = 0
+    drop_index(bid)
 end
 
 -- S.set_numbers(bid, values): the block's entries are the bare values `values` (numbers)
@@ -588,7 +635,7 @@ function S.set_numbers(bid, values)
     local b = B[bid]
     local n = #values
     b.count = 0
-    b.index = 0
+    drop_index(bid)
     grow(bid, n)
     local first = b.first
     for j = 1, n do
@@ -749,5 +796,57 @@ function S.usage()
         H.n_entries, H.n_entries * 16 / 1048576, H.n_blocks, H.n_index, H.n_str, H.n_str_bytes / 1048576,
         tonumber(H.n_bytes) / 1048576)
 end
+
+-- ---------------------------------------------------------------------------------------------
+-- a block handle walked the way engine.world's tables are (the engine's code on a worker:
+-- engine.store.worker, docs/data_layer.md section 12): ipairs(h) gives each entry as a table of
+-- pdxscript's form, made for the walk (changing it changes nothing in the store), #h is the number of
+-- entries, and a field a block record does not have (.text, .op, .key, .value) reads nil. A block in
+-- an entry is a handle again, or the Lua table a worker holds for it (S.block_value, set by
+-- engine.store.world).
+-- entry i (of block bid, its j-th) as the pdxscript form; _b and _p (the block, the position) let
+-- the world's writers find it again (engine.store.world: set_entry, remove_entry)
+local function entry_table(i, bid, j)
+    local e = E[i]
+    local v
+    if e.kind == BLOCK then
+        v = S.block_value(e.v.u.a)
+    else
+        v = { text = text(i), quoted = band(e.flags, 2) ~= 0 or nil, _b = bid, _p = j }
+    end
+    if e.op ~= 0 then
+        return { key = { text = str(e.key), quoted = band(e.flags, 1) ~= 0 or nil }, op = OP_TEXT[e.op], value = v, _b = bid, _p = j }
+    end
+    return v
+end
+S.entry_table = entry_table
+-- a block handle (engine.store.world): a struct holding the block's pointer, so that h[i], #h,
+-- ipairs(h) and == go through these metamethods (a number index on a pointer would be pointer
+-- arithmetic: the record of another block)
+ffi.cdef("typedef struct { pdx_block *p; } pdx_handle;")
+S.handle_t = ffi.typeof("pdx_handle")
+local function next_entry(h, j)
+    j = j + 1
+    local b = h.p
+    if j > b.count then return nil end
+    return j, entry_table(b.first + j - 1, tonumber(b - B), j)
+end
+ffi.metatype("pdx_handle", {
+    -- h[k]: entry k as a read-only view (a table of the pdxscript form: changing it changes nothing;
+    -- the world's writers change the store), nil for anything else
+    __index = function(h, k)
+        if type(k) == "number" then
+            local b = h.p
+            if k >= 1 and k <= b.count then return entry_table(b.first + k - 1, tonumber(b - B), k) end
+        end
+        return nil
+    end,
+    __len = function(h) return h.p.count end,
+    __ipairs = function(h) return next_entry, h, 0 end,
+    __pairs = function(h) return next_entry, h, 0 end,
+    __eq = function(a, b) return ffi.istype(S.handle_t, a) and ffi.istype(S.handle_t, b) and a.p == b.p end,
+    __tostring = function(h) return "block " .. tonumber(h.p - B) end,
+})
+S.block_value = function(a) return S.handle_t(B + a) end
 
 return S
