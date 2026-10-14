@@ -111,6 +111,10 @@ The save writes the block only when the properties differ from the defaults: the
 | `attacker_war_exhaustion`, `defender_war_exhaustion <op> x` | 0x1958700 / 0x19588c0 | the war's `attacker_war_exhaustion` / `defender_war_exhaustion` (`CWar +0x118` / `+0x120`) | **[V]** offsets, **[I]** names |
 | `has_truce = <c>` | `CHasTruceTrigger` 0x1988a60 -> `CCountry::HasTruceWith` 0x701c20 | both valid; a valid truce on the relation, either way | **[V]** call, **[I]** either way |
 | `num_truces` | the module's `GetNumTruces` | relations with a valid truce (`UpdateDiplomaticCache`) | **[V]** |
+| `attacker`, `defender` (links) | scopes.log | a war's main attacker / defender: the side's participant with `call_type = primary`, else its first | **[I]** |
+| `using_war_goal = { type owner }` | `CUsingWarGoalTrigger` 0x19c4470 | the owner valid; the war goal of its side (`attacker_war_goal` when it is an attacker, else `defender_war_goal`, CWar +0xd8 / +0xf8) is of the type | **[V]** |
+| `is_total_war = yes/no` | `CIsTotalWarTrigger` 0x19c4870 | the attackers' war goal type's flag at +0x56c, read as `total_war = yes` in common/war_goals | **[V]** code, **[I]** flag name |
+| `has_casus_belli = { target type }` | `CHasCasusBelliTrigger` 0x19b99b0 | the target valid and not us, communications, both types with `diplomatic_wars`; then a `casus_belli` entry of the module towards the target (of the type when given: `CDiplomacyCountryModule::HasCasusBelli`) | **[V]** checks, **[I]** HasCasusBelli as the list's entry |
 
 No save of ours has a war or a truce: the 2210.01.01 save and both 10-year standards have none. The
 war triggers are false and the iterators are empty in every run. Ending wars, peace deals, truces
@@ -132,7 +136,7 @@ and the war-exhaustion dynamics are engine state the simulation does not model (
 | `has_waystation_pact = <c>` | (eval.lua, `E.has_waystation_pact`) | bit 27, or the federation's `waystation_pact` | **[V]** |
 | `has_rival = <c>` | `CHasRival` 0x19b07f0 -> `CCountry::IsRivaling` 0x72c240 | c among the module's `rivals` | **[V]** |
 | `has_association_status = <c>` | `CCountry::HasAssociateStatusWith` 0x716860 | one's `associated_federation` is the other's federation | **[V]** call |
-| `has_closed_borders = <c>` | `CHasClosedBordersTrigger` 0x19a3e20 | bit 15 and `CCountry::CanControlAccessFor(this, c)` 0x71c460: not each other's overlord or subject, not one federation, c needs border access, no `forced_open_borders` still running | **[V]** bit and call, **[I]** CanControlAccessFor in part (its agreement and primitive rules are not ported) |
+| `has_closed_borders = <c>` | `CHasClosedBordersTrigger` 0x19a3e20 | bit 15 and `CCountry::CanControlAccessFor(this, c)` 0x71c460: not each other's overlord or subject, not one federation, c needs border access or its type is `playable`, no `forced_open_borders` still running | **[V]** bit and call, **[I]** CanControlAccessFor in part (its agreement and primitive rules are not ported) |
 | `is_hostile = <c>` | `CCountry::IsHostile` 0x702100 | the relation's `hostile`, or at war; not with a forced neutrality or friendliness | **[I]**: the parent-country, AlwaysNeutral and diplomatic-wars rules of IsHostile are not ported |
 | `has_relation_flag = { who flag }`, `reverse_has_relation_flag` | `CHasRelationFlagTrigger` 0x197d3f0 | the flag in the relation's `flags` (of this towards who, or who towards this) | **[V]** |
 | `num_defensive_pacts`, `num_guarantees`, `num_non_aggression_pacts`, `num_commercial_pacts`, `num_waystation_pacts`, `num_research_agreements`, `num_migration_pacts`, `num_rivals`, `num_closed_borders`, `num_truces` | `CNumDiplomacyRelationsTrigger<CDiplomacyCountryModule::GetNum*>` 0x19c8b30..0x19c8ef0 | the module's counters, as `CDiplomacyCountryModule::UpdateDiplomaticCache` (0x6a2c90) counts them; also values (`trigger:num_non_aggression_pacts`) | **[V]** |
@@ -140,6 +144,7 @@ and the war-exhaustion dynamics are engine state the simulation does not model (
 | `trust = { who value }` | `CTrustTrigger` 0x1960850 | the relation's trust (`CRelation +0x118`), truncated to an integer | **[V]** |
 | `highest_threat <op> x` | `CHighestThreat` 0x19b1f50 -> `GetLargestThreat` 0x6a3940 | the largest `threat` of the relations towards the module's `threats`, at least 0 | **[V]** |
 | `their_opinion = { who value }` | `CTheirOpinionTrigger` 0x1961900 | who's opinion of this (`engine.ai.opinion`) | **[V]** shape, **[I]** that the game's thread cache holds the same value |
+| `opinion_level = { who level <op> l }` | `COpinionLevelTrigger` 0x1960e90, `CalculateOpinion` 0x1961450 | the two opinions summed (ours of who and who's of us): > `OPINION_EXCELLENT` excellent, > `OPINION_GOOD` good, < `OPINION_TERRIBLE` terrible, >= `OPINION_POOR` neutral, else poor; the levels compared in that order (terrible 0 ... excellent 4) | **[V]** |
 
 The counters follow `UpdateDiplomaticCache` **[V]**. It runs over the country's relations whose other country exists, when both are alive and both country types have `relations = yes` (none when ours has not):
 
@@ -197,6 +202,7 @@ The federation of a country scope is its `federation` (`CScopeObjectReference::G
 | `has_federation_law = <l>`, `has_any_federation_law_in_category = <c>` | `CFederation::HasLaw`, `CFederationProgression::GetEnactedLaw` | the progression's `laws = { category = law }` | **[V]** calls, **[I]** reading |
 | `has_federation_setting = <s>` | `CHasFederationSetting` 0x1a18c40 | the settings byte | **[V]** |
 | `any_federation_ally` | `CFederationAllyListBuilder` | the other members of the country's federation | **[I]** order |
+| `federation_leader` (link) | scopes.log | the federation's `leader` | **[I]** |
 | `any_associate`, `any_federation` | the builders | the associates; every federation | **[I]** |
 
 ## The galactic community
@@ -211,6 +217,9 @@ The federation of a country scope is its `federation` (`CScopeObjectReference::G
 | `is_years_since_community_formation` | 0x1a05eb0 | -1 when not formed, else the years | **[V]** |
 | `is_active_resolution = <r>` | `CGalacticCommunity::IsResolutionActive` 0x62bc10 | the newest passed resolution of the type, unless a newer one of the same category replaced it | **[V]** walk, **[I]** `CResolutionType::CanBeActive` and the category's stacking flag not read |
 | `any_galcom_member`, `any_council_member` | the builders | the members; the leader and the council | **[I]** order |
+| `galactic_community_rank <op> n` | 0x1a06920 | the place in `members` + 1 (the game keeps them in diplomatic weight order), -1 when not a member | **[V]** |
+| `num_council_positions <op> n` | 0x1a06790 | `council_positions` (CGalacticCommunity +0x2ec) | **[V]** offset, **[I]** name |
+| `is_permanent_councillor = yes/no` | 0x1a06b10 | in `permanent_council` | **[V]** |
 
 ## Borders
 
@@ -219,6 +228,8 @@ The federation of a country scope is its `federation` (`CScopeObjectReference::G
 | `is_within_borders_of = <c>`, `is_inside_border = <c>` | 0x194c540, 0x195c5e0 | the owner of the scope's system (a planet's, a ship's fleet's, a fleet's, a system) is c | **[V]** |
 | `is_neighbor_of = <c>` | `CIsNeighborOfTrigger<SNeighborOfImpl>` 0x19e7090 | a country: its relation towards c has `borders` (bit 4); another scope: its system is c's or a hyperlane from one of c's | **[V]** country, **[I]** `CalcIsBorderingSystem` |
 | `has_potential_claims = yes/no` | `CHasPotentialClaimsTrigger` 0x19ac650 -> `CCountry::HasPotentialClaimTarget` 0x72e9c0 | over the country's relations: `CanMakePotentialClaimOnCountry` 0x72ea70 (see below) | **[V]** |
+| `has_claim = <system / planet / country>` | `CHasClaimTrigger` 0x19ac130 | a valid claim (`GetClaimsBy`, `CClaim::IsValid`) on the system or the planet's system; a country: `CDiplomacyCountryModule::HasClaim`, read as a claim on one of its systems | **[V]** shape, **[I]** HasClaim |
+| `num_claims_on_system = { target value <op> n }` | `CNumClaimsOnSystem` 0x1a14140 | the count of our claims on the target's system | **[V]** |
 
 **Claims.** `CanMakePotentialClaimOnCountry(us, other)` holds when either:
 
@@ -312,7 +323,7 @@ At the 2210.01.01 load, 22 country pairs are closed at level 3. Examples: 167772
 
 **Not done, needing engine state the simulation does not model:**
 
-- Ending wars, peace deals, war goals and their use (`using_war_goal`, `is_total_war`, `has_war_goal`), war leaders (`is_war_leader`).
+- Ending wars, peace deals, making war goals (`has_war_goal`), war leaders (`is_war_leader`).
 - The war exhaustion's changes, truces made by peace, the AI's diplomatic actions (proposals, accepting pacts, closing borders, rivalries).
 - No save of ours has a war, so the war keywords are implemented from the code and the writers but untested on data.
 
@@ -329,9 +340,8 @@ At the 2210.01.01 load, 22 country pairs are closed at level 3. Examples: 167772
 **Not implemented in this area:**
 
 - `relative_power` (`CRelativePowerTrigger`: the AI's fleet, economy and technology power ratings and their level names; 6 hits in the 180-day run, in the ethics);
-- `can_declare_war`, `would_join_war`, `has_casus_belli`, `has_claim`, `num_claims_on_system`;
-- `opinion_level`, `intel`, `has_intel*`;
-- `galactic_community_rank`, `num_council_positions`, `is_permanent_councillor`;
+- `can_declare_war`, `would_join_war`;
+- `intel`, `has_intel*` (the intel manager's reports);
 - the espionage keywords;
 - `can_access_system` / `has_access_fleet` (`CFleetMovementManager::CalcCanMoveTo`: a path search);
 - `agreement_preset`, `any_agreement`, `vassals`, the specialist triggers.

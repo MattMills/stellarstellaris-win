@@ -197,6 +197,52 @@ return function(eval)
         local os = D.side_in(war, other)
         return my ~= nil and os ~= nil and my == os
     end
+    -- the war's main attacker / defender (scopes.log `attacker`, `defender`): the side's participant
+    -- called as `primary`, else its first [I]
+    local function main_of(w, side)
+        local first
+        for _, p in ipairs(world.blocks(world.field(D.war_obj(w), side))) do
+            local c = D.ref(world.field(p, "country"))
+            if c then
+                if world.field(p, "call_type") == "primary" then return c end
+                first = first or c
+            end
+        end
+        return first
+    end
+    LINKS["attacker"] = function(cur)
+        if cur.kind ~= "war" then return nil end
+        local c = main_of(cur.id, "attackers")
+        return c and S("country", c) or nil
+    end
+    LINKS["defender"] = function(cur)
+        if cur.kind ~= "war" then return nil end
+        local c = main_of(cur.id, "defenders")
+        return c and S("country", c) or nil
+    end
+    -- using_war_goal = { type = <wg> owner = <c> } (CUsingWarGoalTrigger 0x19c4470): the war goal of
+    -- the owner's side (its attackers' `attacker_war_goal`, else `defender_war_goal`) is of the type
+    local function war_goal_type(w, side)
+        local g = world.field(D.war_obj(w), side .. "_war_goal")
+        return type(g) == "table" and world.field(g, "type") or nil
+    end
+    TRIG["using_war_goal"] = function(e, ctx)
+        if e.value.text or ctx.this.kind ~= "war" or not D.war_obj(ctx.this.id) then return false end
+        local o = param_scope(e.value, "owner", ctx)
+        if not o or o.kind ~= "country" or not D.alive(o.id) then return false end
+        local want = param_text(e.value, "type")
+        local side = D.side_in(ctx.this.id, o.id) == "attackers" and "attacker" or "defender"
+        return want ~= nil and war_goal_type(ctx.this.id, side) == want
+    end
+    -- is_total_war = yes/no (CIsTotalWarTrigger 0x19c4870): the attackers' war goal type has
+    -- `total_war = yes` (common/war_goals) [I: the flag's name, CWarGoalType +0x56c]
+    TRIG["is_total_war"] = function(e, ctx)
+        if ctx.this.kind ~= "war" then return false end
+        local t = war_goal_type(ctx.this.id, "attacker")
+        local defs = require("engine.defs")
+        local d = t and defs.get("common/war_goals", t)
+        return ((d ~= nil and defs.field(d.block, "total_war") == "yes") == yes(e))
+    end
     -- attacker_war_exhaustion / defender_war_exhaustion <op> x (CAttackerWarExhaustionTrigger
     -- 0x1958700 / 0x19588c0): the war's attacker_war_exhaustion (CWar +0x118 / +0x120)
     for _, side in ipairs({ "attacker", "defender" }) do
@@ -245,7 +291,10 @@ return function(eval)
         if D.overlord(us) == them or D.overlord(them) == us then return false end
         local f = D.federation(us)
         if f and f == D.federation(them) then return false end
-        if not D.property(them, "needs_border_access") then return false end
+        -- the target needs border access, or its type is playable (CCountryType flag bit 1)
+        if not D.property(them, "needs_border_access") and not D.type_key(them, "playable", false) then
+            return false
+        end
         local forced = D.date_days(world.field(D.relation(us, them), "forced_open_borders"))
         return not (forced and forced >= eval.today())
     end)
@@ -336,6 +385,56 @@ return function(eval)
         if not us or not w or w.kind ~= "country" or not D.alive(w.id) then return false end
         sync()
         return compare_value(require("engine.ai.opinion").of(w.id, us), e, ctx)
+    end
+
+    -- opinion_level = { who = <c> level <op> terrible/poor/neutral/good/excellent }
+    -- (COpinionLevelTrigger 0x1960e90, CalculateOpinion 0x1961450): the two opinions summed (ours of
+    -- who and who's of us), > OPINION_EXCELLENT excellent (4), > OPINION_GOOD good (3), <
+    -- OPINION_TERRIBLE terrible (0), >= OPINION_POOR neutral (2), else poor (1); compared as levels
+    local LEVELS = { terrible = 0, poor = 1, neutral = 2, good = 3, excellent = 4 }
+    local function gameplay_define(k, default)
+        local defs = require("engine.defs")
+        local g = defs.get("common/defines", "NGameplay")
+        return g and tonumber(defs.field(g.block, k)) or default
+    end
+    TRIG["opinion_level"] = function(e, ctx)
+        if e.value.text then return false end
+        local us = this_country(ctx)
+        local w = param_scope(e.value, "who", ctx)
+        local name, x = param_text(e.value, "level")
+        if not us or not w or w.kind ~= "country" or not D.alive(w.id) or not name then return false end
+        sync()
+        local op = require("engine.ai.opinion")
+        local sum = op.of(us, w.id) + op.of(w.id, us)
+        local lv
+        if sum > gameplay_define("OPINION_EXCELLENT", 750) then lv = 4
+        elseif sum > gameplay_define("OPINION_GOOD", 300) then lv = 3
+        elseif sum < gameplay_define("OPINION_TERRIBLE", -750) then lv = 0
+        elseif sum >= gameplay_define("OPINION_POOR", -300) then lv = 2
+        else lv = 1 end
+        return compare(lv, x.op, LEVELS[name] or 5)
+    end
+
+    -- has_casus_belli = { target = <c> type = <cb> } (CHasCasusBelliTrigger 0x19b99b0): not itself,
+    -- communications with the target, both types with `diplomatic_wars`; then the module's
+    -- `casus_belli = { { type owner country } }` towards the target (of the type, when given)
+    TRIG["has_casus_belli"] = function(e, ctx)
+        if e.value.text then return false end
+        local us = this_country(ctx)
+        local t = param_scope(e.value, "target", ctx)
+        if not us or not t or t.kind ~= "country" or not D.alive(t.id) or t.id == us then return false end
+        if not D.flag(us, t.id, "communications") then return false end
+        if not D.type_key(us, "diplomatic_wars", false) or not D.type_key(t.id, "diplomatic_wars", false) then
+            return false
+        end
+        local want = param_text(e.value, "type")
+        local m = D.diplomacy_module(us)
+        for _, cb in ipairs(world.blocks(m and world.field(m, "casus_belli") or nil)) do
+            if D.ref(world.field(cb, "country")) == t.id and (want == nil or world.field(cb, "type") == want) then
+                return true
+            end
+        end
+        return false
     end
 
     -- ------------------------------------------------------------------------------------------
@@ -475,6 +574,12 @@ return function(eval)
         local f = sc.kind == "federation" and sc.id or (sc.kind == "country" and D.federation(sc.id))
         return f and countries_scopes(D.associates(f)) or {}
     end
+    -- federation_leader (scopes.log: a federation's leading empire): its `leader`
+    LINKS["federation_leader"] = function(cur)
+        local f = cur.kind == "federation" and cur.id or (cur.kind == "country" and D.federation(cur.id))
+        local l = f and D.ref(world.field(D.fed_obj(f), "leader"))
+        return (l and D.alive(l)) and S("country", l) or nil
+    end
     -- any_federation (CFederationListBuilder): every federation
     LISTS["federation"] = function()
         local out = {}
@@ -540,6 +645,29 @@ return function(eval)
             if passed[i] == want then return true end
         end
         return false
+    end
+    -- galactic_community_rank <op> n (0x1a06920): the place in `members` (kept in diplomatic weight
+    -- order by the game) + 1, -1 when not a member
+    num_trigger("galactic_community_rank", function(ctx)
+        local us = ctx.this.kind == "country" and ctx.this.id or nil
+        for i, m in ipairs(D.gc_members()) do
+            if m == us then return i end
+        end
+        return -1
+    end)
+    -- num_council_positions <op> n (0x1a06790): the community's council size (`council_positions`,
+    -- CGalacticCommunity +0x2ec)
+    num_trigger("num_council_positions", function()
+        return tonumber(world.field(D.community(), "council_positions")) or 0
+    end)
+    -- is_permanent_councillor = yes/no (0x1a06b10): in `permanent_council`
+    TRIG["is_permanent_councillor"] = function(e, ctx)
+        local us = ctx.this.kind == "country" and ctx.this.id or -1
+        local r = false
+        for _, c in ipairs(D.id_list(world.field(D.community(), "permanent_council"))) do
+            if c == us then r = true break end
+        end
+        return r == yes(e)
     end
     -- any_galcom_member / any_council_member (CGalcomMemberListBuilder,
     -- CGalacticCouncilMemberListBuilder)
@@ -658,6 +786,45 @@ return function(eval)
         end
         return false
     end
+    -- the claims of us on a system (`claims = { { owner claims } }`, CGalacticObject::GetClaimsBy)
+    local function claims_on(sid, us)
+        for _, c in ipairs(world.blocks(world.field(world.object("system", sid), "claims"))) do
+            if tonumber(world.field(c, "owner")) == us then return tonumber(world.field(c, "claims")) or 0 end
+        end
+        return 0
+    end
+    -- has_claim = <system / planet / country> (CHasClaimTrigger 0x19ac130): a valid claim on the
+    -- system (a planet's system); a country: CDiplomacyCountryModule::HasClaim, a claim on one of its
+    -- systems [I]
+    TRIG["has_claim"] = function(e, ctx)
+        local us = this_country(ctx)
+        if not us or not e.value.text then return false end
+        local found, t = eval.resolve(e.value.text, ctx, e)
+        if not found or not t or t == NONE then return false end
+        sync()
+        if t.kind == "system" then return has_claim_on(t.id, us) end
+        if t.kind == "planet" then
+            local s = system_of(t)
+            return s ~= nil and has_claim_on(s, us)
+        end
+        if t.kind == "country" then
+            for _, sid in ipairs(D.systems_of(t.id)) do
+                if has_claim_on(sid, us) then return true end
+            end
+        end
+        return false
+    end
+    -- num_claims_on_system = { target = <system> value <op> n } (CNumClaimsOnSystem 0x1a14140): our
+    -- claims' count on the system
+    TRIG["num_claims_on_system"] = function(e, ctx)
+        if e.value.text then return false end
+        local us = this_country(ctx)
+        local t = param_scope(e.value, "target", ctx)
+        local s = t and system_of(t)
+        if not us or not s then return false end
+        return compare_value(claims_on(s, us), e, ctx)
+    end
+
     -- has_potential_claims = yes/no (CHasPotentialClaimsTrigger 0x19ac650 ->
     -- CCountry::HasPotentialClaimTarget 0x72e9c0): over the country's relations
     TRIG["has_potential_claims"] = function(e, ctx)
