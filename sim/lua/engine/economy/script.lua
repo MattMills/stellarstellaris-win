@@ -8,7 +8,8 @@
 -- - triggers on pop groups: has_trait (the species' traits), is_enslaved, is_being_purged,
 --   is_sapient, is_robot_pop_group, is_pop_category, is_unemployed, has_living_standard,
 --   has_citizenship_type (the owner's species rights); leaders: is_heir, has_envoy_task;
---   starbases: has_starbase_building, is_scope_valid; ships: has_component.
+--   starbases: has_starbase_building; ships: has_component (is_scope_valid and is_space_fauna
+--   are the script layer's now: simscript/handlers/runtime.lua).
 
 local defs = require("engine.defs")
 local world = require("engine.world")
@@ -289,9 +290,6 @@ trig.has_starbase_building = function(e, ctx)
     end
     return false
 end
-trig.is_scope_valid = function(e, ctx)
-    return (ctx.this ~= nil and ctx.this ~= eval.NONE) == yes(e)
-end
 
 -- planets
 local function planet_class_def(pid)
@@ -540,21 +538,6 @@ local function ship_size_def(sid)
     return size and defs.get("common/ship_sizes", size)
 end
 script.ship_size_def = ship_size_def
-
-trig.is_space_fauna = function(e, ctx)
-    local sc = ctx.this
-    local r = false
-    if sc.kind == "ship" then
-        local d = ship_size_def(sc.id)
-        r = d ~= nil and defs.field(d.block, "is_space_fauna_ship") == "yes"
-    elseif sc.kind == "fleet" then
-        for _, sid in ipairs(world.list(world.field(world.object("fleet", sc.id), "ships"))) do
-            local d = ship_size_def(tonumber(sid))
-            if d and defs.field(d.block, "is_space_fauna_ship") == "yes" then r = true break end
-        end
-    end
-    return r == yes(e)
-end
 
 -- the cost table of a ship's size: { [res] = amount }, and its total
 local function ship_size_cost(sid)
