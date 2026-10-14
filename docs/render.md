@@ -936,6 +936,12 @@ home system at the same place and scale, the top bar's clock, the outliner.
   touches, a stack centred on its members' mean centre, the heights summed; inside, the highest
   sort key first: military fleets, civilian fleets, planets, each by id), each at the top centre
   of its slot: the frame's columns of planets 64 px apart and stations 48 apart.
+- **Star labels on the galaxy** (`star_mapicon`, app.rs `galaxy_labels`) **[I]**: the name of each
+  system in the player's terra incognita on a plate fitted to it, under the star, within
+  GALAXY_SHOW_STARNAME_ZOOM (800 of the game's world); the plate in the relation colour, gold when
+  selected (the 3D views draw no ring); the fleets are no discs on the 3D galaxy (the game shows
+  them in the star labels' presence icons, not drawn yet). The galaxy banner shows the empire's
+  name and its government type.
 - **Flags** (flag.rs; flag_sprite.shader, flagSpriteType) **[V]**: the background's red, green
   and blue weight the flag's first three colours (flags/colors.txt `flag`), the emblem
   (flags/<category>[/small|/map]/<file>) over it in its rectangle, the alpha cut by the mask, the
@@ -971,9 +977,8 @@ home system at the same place and scale, the top bar's clock, the outliner.
 
 ### Not done yet
 
-- Map labels on the galaxy (star_mapicon: system names, owner flags; CGalacticObjectMapIcon
-  not read) and the zoom rules (GALAXY_SHOW_STARNAME_ZOOM ...); the labels' ship counters and the
-  the fleet type icon's frame rule (by eye now); the capital label's flag and health bar positions;
+- The galaxy star labels' own rules (CGalacticObjectMapIcon not read: owner flags, the capital
+  plate, which names show, the fleets' presence icons, the empire's map name); the fleet type icon's frame rule (by eye now); the capital label's flag and health bar positions;
   the hyperlane exit arrows (CNavigationArrow,
   navigation_arrow_entity).
 - Alerts: unlock tradition, first contact stage, council agenda (and the other 60 conditions).

@@ -265,6 +265,7 @@ function galaxy.extract(game_dir)
                 flag = fl and { icon = part("icon"), background = part("background"), colours = fcolours } or nil,
                 id = o, name = galaxy.name_text(world.field(c, "name")) or ("country " .. o),
                 name_block = galaxy.name_block(world.field(c, "name")),
+                government = tostring(world.path(c, "government", "type") or ""):gsub('"', ""),
                 kind = tostring(world.field(c, "type") or ""),
                 colours = { names[1] or "", names[2] or "" },
                 primary = p or { 1, 1, 1 }, secondary = q or { 1, 1, 1 }, source = src or "",

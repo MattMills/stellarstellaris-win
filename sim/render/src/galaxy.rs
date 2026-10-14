@@ -43,6 +43,8 @@ pub struct Country {
     pub flag: Option<Flag>,
     /// its name block (render.names localises it)
     pub name_block: Name,
+    /// its government type (a localisation key: the galaxy banner's empire_type)
+    pub government: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -275,6 +277,7 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                 secondary: rgb(&c.get("secondary")?)?,
                 systems: 0,
                 name_block: Name::read(c.get("name_block")?)?,
+                government: c.get::<Option<String>>("government")?.unwrap_or_default(),
                 flag: match c.get::<Option<Table>>("flag")? {
                     Some(f) => {
                         let part = |k: &str| -> mlua::Result<(String, String)> {

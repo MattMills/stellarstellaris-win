@@ -145,7 +145,7 @@ pub struct App {
     /// the map labels (mapicons.gui) of what the view shows
     pub overlay_labels: Vec<scene::Label>,
     /// what the windows were laid out for: the size, view, selection, snapshot, GUI shown
-    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool)>,
+    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool)>,
     /// the player holds the camera (a drag, a turn); the plane's point a drag holds; what the
     /// camera follows; the systems' cameras as they were left; the last system shown
     holding: bool,
@@ -706,6 +706,9 @@ impl App {
     /// an owner or deposits (CPlanetMapIcon::Update), in the relation colour
     /// (GetDiplomaticRelationColor: the player's, else neutral; the selected one gold).
     fn system_labels(&mut self) -> Result<Vec<scene::Label>, String> {
+        if self.view == MapView::Galaxy && self.mode3d {
+            return self.galaxy_labels();
+        }
         let MapView::System(si) = self.view else { return Ok(Vec::new()) };
         let (w, h) = self.size;
         let gd = self.game_dir.clone();
@@ -934,6 +937,77 @@ impl App {
         Ok(labels)
     }
 
+    /// The galaxy's star labels (mapicons.gui `star_mapicon`, CGalacticObjectMapIcon): the name of
+    /// each system the player knows (its terra incognita's systems) on its plate under the star,
+    /// within GALAXY_SHOW_STARNAME_ZOOM (800 of the game's world: 400 map units); the plate in
+    /// the owner's relation colour (the player's; others grey), gold when selected **[I]**: the
+    /// icon's own update not read.
+    fn galaxy_labels(&mut self) -> Result<Vec<scene::Label>, String> {
+        let (w, h) = self.size;
+        let gd = self.game_dir.clone();
+        if self.camera.is_some_and(|c| c.distance > 400.0) {
+            return Ok(Vec::new());
+        }
+        self.map.as_mut().ok_or("no map")?.topbar(w, h)?;
+        let map = self.map.as_mut().ok_or("no map")?;
+        if !map.gui {
+            return Ok(Vec::new());
+        }
+        let g = map.galaxy.clone();
+        let player = map.player_country();
+        let known: Vec<usize> = match &g.terra_incognita {
+            Some(ti) => ti.systems.iter().filter_map(|id| g.systems.iter().position(|s| s.id == *id)).collect(),
+            None => (0..g.systems.len()).collect(),
+        };
+        let names = gui::format_names(&self.runtime, &known.iter().map(|&i| &g.systems[i].name).collect::<Vec<_>>())?;
+        let widths: Vec<f32> = names.iter().map(|n| map.fonts.as_ref().and_then(|f| f.get("cg_16b")).map_or(8.0 * n.len() as f32, |f| f.width(n)).min(176.0)).collect();
+        let mut specs = Vec::new();
+        let mut anchors = Vec::new();
+        for ((&i, name), tw) in known.iter().zip(names).zip(widths) {
+            let s = &g.systems[i];
+            let prefix = format!("/label/system/{}", s.id);
+            let p = format!("{prefix}/star_mapicon");
+            let mut spec = gui::WindowSpec::new("interface/mapicons.gui", "star_mapicon");
+            spec.parent = Some([0.0, 0.0, 0.0, 0.0]);
+            spec.only = Some(vec!["name_bg".into(), "name".into()]);
+            // the plate fitted to the name (NMapIcon::AdjustNameBg), centred under the star
+            let bw = tw + 10.0;
+            spec.positions.push((format!("{p}/name_bg"), (-bw / 2.0, 14.0)));
+            spec.sizes.push((format!("{p}/name_bg"), (bw, 18.0)));
+            spec.text.push((format!("{p}/name"), name));
+            let sel = self.selected == Some(Pickable::System(i));
+            let owner = g.shown_owner(s);
+            let c = if sel {
+                [1.5, 1.1, 0.0, 1.0]
+            } else if owner.is_some() && owner == player {
+                [0.0, 0.89, 0.61, 1.0]
+            } else {
+                [0.56, 0.56, 0.56, 1.0]
+            };
+            spec.tints.push((format!("{p}/name_bg"), c));
+            spec.actions.push((format!("{p}/name_bg"), format!("select:system:{i}")));
+            spec.prefix = Some(prefix);
+            specs.push(spec);
+            anchors.push(V3(s.x, s.height * 0.5, s.y));
+        }
+        let layout = gui::layout_specs(&self.runtime, w, h, &specs)?;
+        let mut labels: Vec<scene::Label> = anchors.iter().map(|&a| scene::Label { anchor: a, drop: 0.0, items: Vec::new(), bounds: None, sort: 0 }).collect();
+        let index: HashMap<String, usize> = specs.iter().enumerate().map(|(k, s)| (s.prefix.clone().unwrap_or_default(), k)).collect();
+        for it in layout.items {
+            let path = match &it {
+                GuiItem::Sprite { path, .. } | GuiItem::Text { path, .. } => path.clone(),
+            };
+            let base = path.split('/').take(4).collect::<Vec<_>>().join("/");
+            if let Some(&k) = index.get(&base) {
+                labels[k].items.push(it);
+            }
+        }
+        let map = self.map.as_mut().unwrap();
+        let all: Vec<GuiItem> = labels.iter().flat_map(|l| l.items.iter().cloned()).collect();
+        gui::fonts(&self.runtime, &gd, &all, map.fonts.get_or_insert_with(HashMap::new))?;
+        Ok(labels)
+    }
+
     /// The main screen's other windows (docs/render.md section 12): the left bar's buttons
     /// (main.gui `maingui_left_bar_buttons`, as collapsed), the alerts (alerts.gui), the bottom
     /// bar (main_bottom.gui: the system's or the galaxy's banner, the map modes, the toolbar).
@@ -1007,8 +1081,9 @@ impl App {
             _ => {
                 if let Some(p) = player {
                     names.push(&g.countries[p].name_block);
+                    // CGovernmentType::GetName: the government type's name
+                    bottom.text.push(("/maingui_bottombar/leave_galaxy_window/empire_type".into(), g.countries[p].government.clone()));
                 }
-                bottom.hide.push("empire_type".into());
                 "leave_galaxy_window"
             }
         };
@@ -1244,7 +1319,7 @@ impl App {
             let (w, h) = self.size;
             let states = self.states();
             if self.screen == Screen::Map {
-                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused));
+                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0)));
                 if key != self.overlay_key {
                     self.overlay_items = self.selection_windows();
                     self.overlay_labels = match self.system_labels() {
@@ -1423,7 +1498,11 @@ impl App {
             Some(a) if a.starts_with("select:") => {
                 let mut it = a.split(':').skip(1);
                 let (kind, id) = (it.next().unwrap_or(""), it.next().and_then(|v| v.parse::<u32>().ok()).ok_or(format!("bad action {a}"))?);
-                self.select(Some(if kind == "planet" { Pickable::Body(id) } else { Pickable::Fleet(id) }));
+                self.select(Some(match kind {
+                    "planet" => Pickable::Body(id),
+                    "system" => Pickable::System(id as usize),
+                    _ => Pickable::Fleet(id),
+                }));
             }
             Some(other) => self.log.push(format!("  {other}: not done yet (its window is not laid out)")),
             None => {}

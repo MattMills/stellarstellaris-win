@@ -981,7 +981,8 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
             radius: if three_d { 0.005 * view.focal_px } else { (0.5 * (s.rect[2] - s.rect[0])).max(6.0) },
         })
         .collect();
-    for f in g.fleets.iter().filter(|_| !(game3d && !inp.gui)) {
+    // (the 3D galaxy as the game's: fleets show in the star labels' presence icons, not as discs)
+    for f in g.fleets.iter().filter(|_| !game3d) {
         if f.station {
             continue;
         }
@@ -1011,8 +1012,8 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
         }
     }
 
-    // ---- the selection's marker
-    if let Some(sel) = inp.overlay.selected {
+    // (the selection shows as its gold label: no marker in the 3D view)
+    if let (Some(sel), false) = (inp.overlay.selected, three_d) {
         selection_marker(&mut batches, &mut lines, tex, cache, inp.game_dir, &view, &picks, sel, three_d);
     }
 
