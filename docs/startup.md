@@ -305,7 +305,10 @@ path (`gReloadWorldStage`), not for the command line.
   `CGameApplication::OnQuit` when `-timer` enabled it.
 
 Loading a save: `CGameState::ReadMember` restores `random_seed` / `random_count` and
-`CCountryAI::ReadMember` the AI's random fields only with `g_bUseSavedRandom` (`-loadrandomseed`);
+`CCountryAI::ReadMember` (`0xb763dc`, `0xb7641b`) the AI's `random_*` fields only with
+`g_bUseSavedRandom` (`-loadrandomseed`). A headless run with `-loadrandomseed` picked the AI's
+traditions as a generator restarted at the country id would, so something may restart it after the
+load (docs/random.md; not confirmed).
 `CGameState::InitPostRead` (`0x24be80`) then applies `-rng_seed=` / `-rng_pos=` (`CSystem::_nSeed`,
 `CRandom::_Random`, `CSystem::_nRandomCount`): either option sets `g_bUseForcedSeed`, and both
 values are written (the one not given is 0). Without `-loadrandomseed` or these, `LaunchSave` /
