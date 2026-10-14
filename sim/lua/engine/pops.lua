@@ -1199,7 +1199,8 @@ end
 local function fire(host, name, this, from)
     if not host then return end
     local events = require("simscript.events")
-    local ctx = eval.new_ctx(this, from)
+    -- events.on_action takes the on_action's from as from_ctx.this (and fromfrom as its from)
+    local ctx = eval.new_ctx(from or eval.NONE)
     local ok = pcall(events.on_action, name, this, ctx)
     if not ok then pops.stats.on_action_errors = (pops.stats.on_action_errors or 0) + 1 end
 end
