@@ -452,6 +452,12 @@ function creation.report()
         parts[#parts + 1] = string.format("%s %d%s", k, s.applied, #why > 0 and (" (not: " .. table.concat(why, ", ") .. ")") or "")
     end
     local out = "script creation: " .. (#parts > 0 and table.concat(parts, "; ") or "nothing applied")
+    local es = package.loaded["engine.script.event_save"]
+    if es then out = out .. "\n" .. es.report() end
+    local st = require("simscript.eval").stats
+    out = out .. string.format("\nevents: %d option draws (AI), %d human options, %d random_events draws, %d delayed loaded or queued, %d delayed fired",
+        st.option_draws or 0, st.human_options or 0, st.random_event_draws or 0,
+        (es and es.stats.delayed or 0) + (st.delayed_queued or 0), st.delayed_fired or 0)
     for _, e in ipairs(creation.errors) do
         out = out .. "\n  error: " .. e
     end

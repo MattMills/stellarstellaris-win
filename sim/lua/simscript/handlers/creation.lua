@@ -15,6 +15,125 @@ return function(eval)
 
     -- the appliers (engine.systems.effects.*)
     local creation = require("engine.script.creation")
+    local SR = require("engine.script.scope_random")
+
+    -- -----------------------------------------------------------------------------------------
+    -- the scope random (docs/script_creation.md "Scope random"): each context's random state, made
+    -- when it first draws. A scope made from another (eval's push: a scope change, an iterator's
+    -- element, an event's scope) starts from a copy of that one's state (CEventScope::Copy,
+    -- CEventTarget::GetScope); a scripted effect's context (with_file: `same`) is the same scope; a
+    -- root context without one is a default scope's (Init(0)) unless its maker seeded it
+
+    local function rng_of(ctx)
+        local r = ctx.rng
+        if r then return r end
+        if ctx.same then
+            r = rng_of(ctx.same)
+        elseif ctx.up then
+            r = SR.copy(rng_of(ctx.up))
+        else
+            r = SR.default()
+        end
+        ctx.rng = r
+        return r
+    end
+    eval.scope_rng = rng_of
+    function eval.scope_draw(ctx)
+        return SR.draw(rng_of(ctx))
+    end
+    -- a context's scope made from a value (CEventScope(int): position H(x), seed 0)
+    function eval.seed_scope(ctx, x)
+        ctx.rng = SR.new(x)
+        return ctx
+    end
+    -- the iterators (eval's iterate_effect): the iterator's own copy of the scope's state; a
+    -- random_* pick draws from it (CRandomInListEffect::GetRandomIndex), and the element's scope
+    -- continues it; every_* gives each element position H(position + 1) of it
+    -- (CEveryInListEffect::ExecuteActual); ordered_* hands it on as it is [I]
+    eval.scope_iter = {
+        begin = function(ctx) return SR.copy(rng_of(ctx)) end,
+        draw = SR.draw,
+        element = function(loop, c, kind)
+            if kind == "every" then loop.pos = SR.H(loop.pos + 1) end
+            c.rng = loop
+        end,
+    }
+
+    local function trunc(x)
+        return x < 0 and -floor(-x) or floor(x)
+    end
+
+    -- random = { chance = <int> <effects> } (CRandomEffect::ExecuteActual 0x16e2d60): one draw from
+    -- the scope, r % 100 < chance; chance a CIntVariableValue, 0 by default; no modifiers [V]
+    EFF["random"] = function(e, ctx)
+        if e.value.text ~= nil then return end
+        local chance = 0
+        for _, x in ipairs(e.value) do
+            if x.op and x.key.text:lower() == "chance" then chance = trunc(eval.value(x.value, ctx, x)) end
+        end
+        if eval.scope_draw(ctx) % 100 < chance then
+            eval.effect(e.value, ctx, { chance = true, modifier = true })
+        end
+    end
+
+    -- the entries of a random_list: { weight (int: the CFixedPoint key with its modifiers,
+    -- truncated), block }
+    local function list_entries(e, ctx)
+        local entries, total = {}, 0
+        for _, x in ipairs(e.value) do
+            if x.op and x.value.text == nil then
+                local base = tonumber(x.key.text) or eval.value(x.key, ctx, x)
+                -- the weight as a CFixedPoint, then its integer part
+                local w = trunc(floor(eval.weight(x.value, ctx, base) * 100000 + 0.5) / 100000)
+                local ok = true
+                for _, y in ipairs(x.value) do
+                    if y.op and y.key.text:lower() == "trigger" and y.value.text == nil then ok = eval.trigger(y.value, ctx) end
+                end
+                if ok then
+                    entries[#entries + 1] = { w, x.value }
+                    total = total + w
+                end
+            end
+        end
+        return entries, total
+    end
+
+    -- random_list = { <w> = { modifier = { } <effects> } ... } (CRandomListEffect::ExecuteActual
+    -- 0x17c5440, NRandomListImpl::ExecuteRandomList): each entry's weight an integer, the sum above
+    -- 0: one draw from the scope % the sum; the first entry where the remainder minus the weights
+    -- so far goes below 0 [V]
+    EFF["random_list"] = function(e, ctx)
+        if e.value.text ~= nil then return end
+        local entries, total = list_entries(e, ctx)
+        if total <= 0 then return end
+        local r = eval.scope_draw(ctx) % total
+        for _, en in ipairs(entries) do
+            r = r - en[1]
+            if r < 0 then
+                return eval.effect(en[2], ctx, { modifier = true, trigger = true })
+            end
+        end
+    end
+
+    -- locked_random_list (CLockedRandomListEffect::GetOptionIndex 0x17c6190): the scope's position
+    -- itself (an int32), no draw: position % the sum, the first entry whose running sum of positive
+    -- weights is above it [V]
+    EFF["locked_random_list"] = function(e, ctx)
+        if e.value.text ~= nil then return end
+        local entries, total = list_entries(e, ctx)
+        if total == 0 then return end
+        local pos = SR.signed_pos(rng_of(ctx))
+        local r = math.fmod(pos, total)
+        local cum = 0
+        for _, en in ipairs(entries) do
+            if en[1] > 0 then
+                cum = cum + en[1]
+                if cum > r then
+                    return eval.effect(en[2], ctx, { modifier = true, trigger = true })
+                end
+            end
+        end
+    end
 
     local function where(ctx, e)
         return (ctx and ctx.file or "?") .. ":" .. tostring(e and e.line or "?")
