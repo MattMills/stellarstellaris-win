@@ -1163,7 +1163,8 @@ pub fn add_gui(
                 // a text wider than its box is cut, " ..." at its end (as the game's outliner
                 // shows a long name)
                 let cut;
-                let (text, spans) = if *w > 8.0 && f.width(text) > w + 0.5 {
+                let with_icon = spans.iter().any(|(s, _)| s.starts_with('\u{1}'));
+                let (text, spans) = if *w > 8.0 && !with_icon && f.width(text) > w + 0.5 {
                     let mut keep: Vec<(String, [f32; 3])> = Vec::new();
                     let mut used = f.width(" ...");
                     'outer: for (s, c) in spans {
@@ -1191,7 +1192,21 @@ pub fn add_gui(
                 } else {
                     (text, spans)
                 };
-                let tw = f.width(text);
+                // a text icon span ("\u{1}texture\u{1}frames\u{1}frame", render.gui): its texture,
+                // frame and size (the textures loaded first)
+                for (s, _) in spans.iter() {
+                    if let Some(path) = s.strip_prefix('\u{1}').and_then(|r| r.split('\u{1}').next()) {
+                        tex.game(cache, game_dir, path);
+                    }
+                }
+                let icon = |s: &str| -> Option<(usize, f32, f32, f32, f32)> {
+                    let mut p = s.strip_prefix('\u{1}')?.split('\u{1}');
+                    let (path, frames, frame) = (p.next()?, p.next()?.parse::<f32>().ok()?.max(1.0), p.next()?.parse::<f32>().ok()?.max(1.0));
+                    let i = tex.find(path)?;
+                    let img = &tex.images[i];
+                    Some((i, img.width as f32 / frames, img.height as f32, (frame - 1.0) / frames, frame / frames))
+                };
+                let tw: f32 = spans.iter().map(|(s, _)| icon(s).map_or_else(|| f.width(s), |ic| ic.1)).sum();
                 let pen_x = match format.as_str() {
                     "center" | "centre" => x + (w - tw) / 2.0,
                     "right" => x + w - tw,
@@ -1207,6 +1222,12 @@ pub fn add_gui(
                 let (aw, ah) = (f.image.width as f32, f.image.height as f32);
                 let mut pen = pen_x;
                 for (s, colour) in spans {
+                    if let Some((ti, iw, ih, u0, u1)) = icon(s) {
+                        let iy = (pen_y + (f.line_height - ih) / 2.0).round();
+                        push(batches, Layer::Text, Blend::Alpha, ti, screen_quad([pen, iy, pen + iw, iy + ih], [u0, 0.0, u1, 1.0], [1.0; 4]));
+                        pen += iw;
+                        continue;
+                    }
                     for (_, r, uv) in f.place(s, pen, pen_y) {
                         push(batches, Layer::Text, Blend::Alpha, t, screen_quad(r, [uv[0] / aw, uv[1] / ah, uv[2] / aw, uv[3] / ah], [colour[0], colour[1], colour[2], 1.0]));
                     }

@@ -744,24 +744,30 @@ impl App {
             let p = format!("{prefix}/fleet_map_icon");
             let mut spec = gui::WindowSpec::new("interface/mapicons.gui", "fleet_map_icon");
             spec.parent = Some([0.0, 0.0, 0.0, 0.0]);
-            // (the shield bar hidden at 0: no shield data read [I]; the ship counters not drawn)
-            for n in ["fleet_icon", "fleet_type", "cloaked_state", "has_ftl_magnet", "has_ftl_inhibitor", "ship_counters", "resources", "special_project", "shield"] {
+            // (the shield bar hidden at 0: the military ones have shields, the others none [I];
+            // the ship counters laid out below)
+            for n in ["fleet_icon", "fleet_type", "cloaked_state", "has_ftl_magnet", "has_ftl_inhibitor", "ship_counters", "resources", "special_project"] {
                 spec.hide.push(n.into());
             }
+            if f.military_power <= 0.0 {
+                spec.hide.push("shield".into());
+            }
             // the type icon (GFX_ship_class_small) by what the fleet is [I: CFleet::GetIconFrame
-            // not read]: military 10, a starbase 8, science and research 9, construction and
-            // mining 7, colony 6
+            // not read; matched by eye to the game's frame]: military 3, a starbase 8, science and
+            // research 9, mining 7, construction 2, colony 6
             let kind = s.size.as_str();
             let frame = if kind.contains("starbase") {
                 8
             } else if kind.contains("research") || kind.contains("science") || kind.contains("observation") {
                 9
-            } else if kind.contains("mining") || kind.contains("construct") {
+            } else if kind.contains("mining") {
                 7
+            } else if kind.contains("construct") {
+                2
             } else if kind.contains("colon") {
                 6
             } else {
-                10
+                3
             };
             spec.frames.push((format!("{p}/type"), frame));
             let sel = selected == Some(Pickable::Fleet(f.id));
@@ -772,16 +778,49 @@ impl App {
             spec.actions.push((format!("{p}/bg"), format!("select:fleet:{}", f.id)));
             let military = f.military_power > 0.0;
             if military {
-                // CFleetMapIcon: MILITARY_POWER (*0 under 1000, then *1 with K)
-                spec.text.push((format!("{p}/offensive_power"), si_number(f.military_power.round())));
+                // CFleetMapIcon: MILITARY_POWER "£military_power£ $VALUE|*0$" (*1 with K from 1000)
+                spec.text.push((format!("{p}/offensive_power"), format!("\u{a3}military_power\u{a3} {}", si_number(f.military_power.round()))));
             } else {
                 spec.hide.push("offensive_power".into());
             }
-            spec.prefix = Some(prefix);
+            spec.prefix = Some(prefix.clone());
             specs.push(spec);
+            // the ship counters (ship_counters: a ship_counter_entry per ship size of its military
+            // ships, centred under the bar; GFX_ship_counter_<n> by the size [I])
+            let c_tint = c;
+            if military && !f.station {
+                let mut counts: Vec<(u32, u32)> = Vec::new();
+                for sh in data.ships.iter().filter(|x| x.fleet == f.id) {
+                    let n = match sh.size.as_str() {
+                        "corvette" => 4,
+                        "destroyer" => 8,
+                        "cruiser" => 16,
+                        "battleship" => 32,
+                        "titan" => 64,
+                        "juggernaut" | "colossus" => 128,
+                        _ => continue,
+                    };
+                    match counts.iter_mut().find(|c| c.0 == n) {
+                        Some(c) => c.1 += 1,
+                        None => counts.push((n, 1)),
+                    }
+                }
+                let k = counts.len() as f32;
+                for (j, (n, c)) in counts.iter().enumerate() {
+                    let mut e = gui::WindowSpec::new("interface/mapicons.gui", "ship_counter_entry");
+                    let ep = format!("{prefix}/res{j}");
+                    e.parent = Some([-65.0 + 25.0 + 87.0 / 2.0 - k * 18.0 / 2.0 + j as f32 * 18.0, 8.0 + 24.0, 0.0, 0.0]);
+                    e.sprites.push((format!("{ep}/ship_counter_entry/icon"), format!("GFX_ship_counter_{n}")));
+                    e.text.push((format!("{ep}/ship_counter_entry/count"), c.to_string()));
+                    e.tints.push((format!("{ep}/ship_counter_entry/icon"), c_tint));
+                    e.prefix = Some(ep);
+                    specs.push(e);
+                }
+            }
             // civilian fleets (not stations) take military_fleet_icon_size 108 x 48 less: 32
             let bounds = [-65.0, 8.0, 108.0, if military || f.station { 48.0 } else { 32.0 }];
-            let sort = f.id as i64 + if military { 0x1_FFFF_FFFE } else { 0xFFFF_FFFF };
+            // (stations sort with the military: not flagged civilian [I], the frame's order)
+            let sort = f.id as i64 + if military || f.station { 0x1_FFFF_FFFE } else { 0xFFFF_FFFF };
             meta.push((V3(s.x, 0.0, s.y), 0.0, Some(bounds), sort, f.owner));
         }
         // the planets with an owner or deposits; their names localised

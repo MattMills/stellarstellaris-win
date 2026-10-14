@@ -148,6 +148,9 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
     local function frame_size(sprite)
         sprite = resolve(sprite)
         local s = db.sprites[sprite]
+        if s and s.size then
+            return s.size[1], s.size[2]
+        end
         if not s or not s.texture then
             return nil
         end
@@ -194,6 +197,15 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             for _, s in ipairs(loc.spans(text)) do
                 if s.text then
                     spans[#spans + 1] = { text = s.text, colour = db.textcolors[s.colour or ""] or base }
+                elseif s.icon then
+                    -- a text icon (£name£: GFX_text_<name>): "\1texture\1frames\1frame" for the renderer
+                    local sp = db.sprites["GFX_text_" .. s.icon]
+                    if sp and sp.sheet and db.sprites[sp.sheet] then
+                        sp = { texture = db.sprites[sp.sheet].texture, frames = db.sprites[sp.sheet].frames, frame = sp.default_frame }
+                    end
+                    if sp and sp.texture then
+                        spans[#spans + 1] = { text = "\1" .. sp.texture .. "\1" .. (sp.frames or 1) .. "\1" .. (sp.frame or 1), colour = base }
+                    end
                 end
             end
         else

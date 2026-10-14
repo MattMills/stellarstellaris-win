@@ -919,9 +919,13 @@ home system at the same place and scale, the top bar's clock, the outliner.
 - **Map labels in a system** (mapicons.gui; CFleetMapIcon, CPlanetMapIcon, CMapIcon; app.rs
   `system_labels`, scene.rs `add_labels`) **[V]**: every fleet and station has a
   `fleet_map_icon` (at its .gui position (-65, 8) from the fleet's point): its flag, the bars
-  (health, armor full; the shield hidden at 0), the type icon (GFX_ship_class_small; the frame by
-  what the fleet is **[I]**: CFleet::GetIconFrame not read) and, when its military_power is above
-  0, its strength (MILITARY_POWER: whole under 1000, then K with one decimal). A planet with an
+  (health, armor full; the shield for military fleets, hidden at 0 for the others **[I]**), the
+  type icon (GFX_ship_class_small; the frame by what the fleet is, matched by eye: military 3,
+  starbase 8, science and research 9, mining 7, construction 2 **[I]**: CFleet::GetIconFrame not
+  read) and, when its military_power is above 0, its strength (MILITARY_POWER "£military_power£
+  $VALUE|*0$": the text icon drawn inline, GFX_text_<name>) and its ship counters
+  (`ship_counter_entry` per ship size, GFX_ship_counter_4 for corvettes ... 128 **[I]**, the count,
+  tinted). Stations sort with the military in a stack (the frame's order). A planet with an
   owner or deposits has a `planet_map_icon` under it (the planet's point less 0.6 x its display
   size along the camera's up): the name on a plate as wide as the name + 23 (AdjustNameBg), the
   flag at its left (the capital: bg_capital, flag_capital and its decoration), a colony's type and
@@ -969,8 +973,8 @@ home system at the same place and scale, the top bar's clock, the outliner.
 
 - Map labels on the galaxy (star_mapicon: system names, owner flags; CGalacticObjectMapIcon
   not read) and the zoom rules (GALAXY_SHOW_STARNAME_ZOOM ...); the labels' ship counters and the
-  military power's text icon (£military_power£: text icons are not drawn); the fleet type icon's
-  frame rule; the order of stations within a stack; the hyperlane exit arrows (CNavigationArrow,
+  the fleet type icon's frame rule (by eye now); the capital label's flag and health bar positions;
+  the hyperlane exit arrows (CNavigationArrow,
   navigation_arrow_entity).
 - Alerts: unlock tradition, first contact stage, council agenda (and the other 60 conditions).
 - The map mode buttons (common/map_modes), the left bar's background strip (needs clipping).
