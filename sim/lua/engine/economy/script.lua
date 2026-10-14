@@ -391,35 +391,14 @@ trig.has_component = function(e, ctx)
 end
 
 -- ---------------------------------------------------------------------------------------------
--- diplomacy: a country's relations (relations_manager.relation = { owner country <flag>=yes })
+-- diplomacy: a country's relations, the pacts, rivals and federations are the script layer's own
+-- (simscript/handlers/diplomacy.lua over engine.diplomacy); only the envoys are here
 
-local function relation(country, other)
-    local rm = world.field(world.object("country", country), "relations_manager")
-    for _, r in ipairs(world.fields(rm, "relation")) do
-        if type(r) == "table" and tonumber(world.field(r, "country")) == other then return r end
-    end
-    return nil
-end
-script.relation = relation
+script.relation = require("engine.diplomacy").relation
 
 local function other_of(e, ctx)
     local found, sc = eval.resolve(e.value.text or "", ctx, e)
     return found and sc and sc.kind == "country" and sc.id or nil
-end
-
-local RELATION_FLAGS = {
-    has_rival = "is_rival", has_commercial_pact = "commercial_pact", has_research_agreement = "research_agreement",
-    has_diplo_migration_treaty = "migration_access", has_migration_access = "migration_access",
-    has_embassy = "embassy", has_closed_borders = "closed_borders", has_defensive_pact = "defensive_pact",
-    has_non_aggression_pact = "non_aggression_pact", is_guaranteeing = "guarantee",
-}
-for trig_name, flag in pairs(RELATION_FLAGS) do
-    trig[trig_name] = function(e, ctx)
-        if ctx.this.kind ~= "country" then return false end
-        local other = other_of(e, ctx)
-        local r = other and relation(ctx.this.id, other)
-        return r ~= nil and world.field(r, flag) == "yes"
-    end
 end
 
 -- a country's ethics: `ethos = { ethics = { "x" ... } }` in a 4.5 save
@@ -480,40 +459,6 @@ trig.is_harming_relations_with = function(e, ctx)
     return other and envoy_task(ctx.this.id, other, "harm_relations") or false
 end
 
--- federations: the federation whose members list the country
-local function federation_of(country)
-    for fid, f in pairs(world.stores["federation"] or {}) do
-        for _, m in ipairs(world.list(world.field(f, "members"))) do
-            if tonumber(m) == country then return fid end
-        end
-    end
-    return nil
-end
-trig.has_federation = function(e, ctx)
-    if ctx.this.kind ~= "country" then return false == yes(e) end
-    return (federation_of(ctx.this.id) ~= nil) == yes(e)
-end
-links.federation = function(cur)
-    if cur.kind ~= "country" then return nil end
-    local f = federation_of(cur.id)
-    return f and S("federation", f) or nil
-end
-trig.has_federation_perk = function(e, ctx)
-    if ctx.this.kind ~= "federation" then return false end
-    local p = world.path(world.object("federation", ctx.this.id), "federation_progression", "perks")
-    for _, v in ipairs(world.list(p)) do
-        if v == e.value.text then return true end
-    end
-    return false
-end
-trig.has_federation_law = function(e, ctx)
-    if ctx.this.kind ~= "federation" then return false end
-    local laws = world.path(world.object("federation", ctx.this.id), "federation_progression", "laws")
-    for _, x in ipairs(type(laws) == "table" and laws or {}) do
-        if x.op and x.value.text == e.value.text then return true end
-    end
-    return false
-end
 
 -- ---------------------------------------------------------------------------------------------
 -- script values: `value:name|PARAM|@var|`: the caller's scripted variables are resolved where the

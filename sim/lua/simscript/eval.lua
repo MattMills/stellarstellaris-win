@@ -298,6 +298,10 @@ end
 
 local value_text
 
+-- `trigger:<name>` values: a numeric trigger's value (the game's GetTriggerValue), name ->
+-- f(ctx, e); the handler modules (simscript/handlers/) fill it
+M.TRIGGER_VALUES = {}
+
 -- inline math: @[ expr ] / @\[ expr ]
 local function mathexpr(text, ctx, e)
     local s = text:gsub("^@\\?%[", ""):gsub("%]$", "")
@@ -434,6 +438,8 @@ function value_text(t, ctx, e)
         return M.script_value(t:sub(7), ctx, e)
     end
     if t:sub(1, 8) == "trigger:" then
+        local f = M.TRIGGER_VALUES[t:sub(9):lower()]
+        if f then return f(ctx, e) end
         miss("value", t, ctx, e)
         return 0
     end
