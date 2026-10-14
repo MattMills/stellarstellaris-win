@@ -10,6 +10,8 @@ each is checked. It is updated as the parts land.
 | orders | `engine/fleets/orders.lua` | docs/fleet_orders.md | the order queue (`fleet.order`), each order's progress and completion; surveys: planets' `surveyed_by`, anomalies, deposits revealed, the country's `surveyed_deposit_holders`, the science leader's experience |
 | exploration | `engine/exploration.lua` | docs/exploration.md | each country's `terra_incognita`, `hyperlane_systems`, `sensor_range_fleets`, `highest_intel_level` and intel |
 | the AI's fleet decisions | `engine/ai/` (`exploration.lua`, ...) | docs/ai.md | science ships' survey targets, construction ships' outposts and starbases, ship building through the AI budget, then military movements |
+| stations | `engine/fleets/stations.lua` (+ `engine/ai/construction_ships.lua`, `engine/ai/starbases.lua`) | docs/stations.md | the build order's start (its cost), tick (the build position) and finish: the new orbital station or outpost (ship, fleet, `starbases` entry, its queue and design), the planet's station and controller, the system's owner, borders and sector; the AI's construction ships and starbase upgrades |
+| creation | `engine/fleets/create.lua` (+ `engine/construction.lua`, `engine/ai/shipbuilding.lua`) | docs/shipbuilding.md | ships and fleets made from a design (`create.ship`, `create.fleet`, `create.add_ship`, `create.enter_orbit`, `create.around_orbital`, `create.station`; ids by `create.allocate`), the shipyards' ships, the armies' transports, the AI's daily ship and army orders |
 
 ## Interfaces
 

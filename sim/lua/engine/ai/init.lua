@@ -142,8 +142,9 @@ ai.counters = counters
 -- weekly / monthly / yearly(country, today, commands) functions, called when they are there (the
 -- economic plan and build plan come first in CAIInteriorMinister::MonthlyUpdate, the traditions
 -- later; in WeeklyUpdate the civilian fleets, engine.ai.exploration, come after the districts and
--- buildings)
-ai.INTERIOR = { "economy", "exploration", "traditions" }
+-- buildings; HandleStarbases and HandleStarbasesDefenses, engine.ai.starbases, between them; the
+-- construction ships, engine.ai.construction_ships, are the civilian fleets' constructor branch)
+ai.INTERIOR = { "economy", "starbases", "exploration", "construction_ships", "traditions" }
 
 -- ai.process(host, date): the day's AI (CGameState::ProcessAI)
 function ai.process(host, date)
@@ -161,6 +162,12 @@ function ai.process(host, date)
             local interior = has_module(country, "interior_minister_module")
             if interior and setting(country, "tech") then
                 research.daily(country, today, commands)
+            end
+            -- then the interior minister's armies and ships (engine.ai.shipbuilding: BuildArmies,
+            -- BuildShips; CAIInteriorMinister::DailyUpdate after the research)
+            local shipbuilding = interior and optional("engine.ai.shipbuilding")
+            if shipbuilding and shipbuilding.daily then
+                shipbuilding.daily(country, today, commands)
             end
             local due = tick_counters(country)
             -- the weekly updates, then the monthly (CCountryAI::MonthlyUpdate: the AI's budget,
@@ -204,6 +211,16 @@ function ai.report()
     local ex = package.loaded["engine.ai.exploration"]
     if type(ex) == "table" and ex.report then
         text = text .. "\n" .. ex.report()
+    end
+    local sb = package.loaded["engine.ai.shipbuilding"]
+    if type(sb) == "table" and sb.report then
+        text = text .. "\n" .. sb.report()
+    end
+    for _, name in ipairs({ "engine.ai.construction_ships", "engine.ai.starbases" }) do
+        local m = package.loaded[name]
+        if type(m) == "table" and m.report then
+            text = text .. "\n" .. m.report()
+        end
     end
     return text
 end

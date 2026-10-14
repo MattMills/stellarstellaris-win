@@ -1590,6 +1590,29 @@ TRIG["is_inside_nebula"] = function(e, ctx)
     return (E.is_inside_nebula(sc.kind, sc.id) == true) == yes(e)
 end
 
+-- shipbuilding
+-- used_naval_capacity_percent <op> x: the country's naval capacity used, as a share of its naval
+-- capacity (E.used_naval_capacity_percent; the AI budget's ships and starbases entries read it)
+TRIG["used_naval_capacity_percent"] = function(e, ctx)
+    local sc = ctx.this
+    if sc == NONE or not E.used_naval_capacity_percent then return false end
+    sync()
+    local v = E.used_naval_capacity_percent(sc.kind, sc.id)
+    if v == nil then return false end
+    return compare(v, e.op, M.value(e.value, ctx, e))
+end
+
+-- stations
+-- exploitable_planets <op> n (CExploitablePlanets): the planets of the country's systems with
+-- orbital resources and no station, colonies left out (E.exploitable_planets; the AI budget's
+-- minerals_expenditure_stations_expand reads it)
+TRIG["exploitable_planets"] = function(e, ctx)
+    local sc = ctx.this
+    if sc == NONE or sc.kind ~= "country" or not E.exploitable_planets then return false end
+    sync()
+    return compare(E.exploitable_planets(sc.id), e.op, M.value(e.value, ctx, e))
+end
+
 -- ---------------------------------------------------------------------------------------------
 -- effects
 

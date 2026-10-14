@@ -603,7 +603,28 @@ end
 function station_order.is_done(o)
     return station_progress(o) >= 100 * ONE
 end
+-- the order's start, tick and finish are engine.fleets.stations' when it is there (the cost paid,
+-- the move to the build position, the station created: docs/stations.md)
+local function stations()
+    local name = "engine.fleets.stations"
+    -- STELLAR_STATIONS=off: the order's progress only, nothing built (a comparison without them)
+    if os.getenv("STELLAR_STATIONS") == "off" then
+        return nil
+    end
+    if package.loaded[name] then
+        return package.loaded[name]
+    end
+    if package.searchpath(name, package.path) then
+        local ok, m = pcall(require, name)
+        if ok then return m end
+    end
+    return nil
+end
 function station_order.tick(o, fid, f)
+    local st = stations()
+    if st then
+        return st.order.tick(o, fid, f, orders)
+    end
     local sub = sub_order(o)
     if sub then
         local T = TYPES[sub.type]
@@ -616,8 +637,24 @@ function station_order.tick(o, fid, f)
     end
     world.set(o.block, "progress", (station_progress(o) + station_speed()) / ONE)
 end
-function station_order.start() end
-function station_order.finish(o, fid, f)
+function station_order.start(o, fid, f, _, host)
+    local st = stations()
+    if st then
+        return st.order.start(o, fid, f, orders, host)
+    end
+end
+function station_order.should_cancel(o, fid, f, _, host)
+    local st = stations()
+    if st and st.order.should_cancel then
+        return st.order.should_cancel(o, fid, f, orders, host)
+    end
+    return false
+end
+function station_order.finish(o, fid, f, _, host)
+    local st = stations()
+    if st then
+        return st.order.finish(o, fid, f, orders, host)
+    end
     S.stations_not_built = S.stations_not_built + 1
 end
 
@@ -990,6 +1027,7 @@ function orders.report()
         S.days, list(S.started), list(S.ticked), list(S.finished), S.cancelled, S.issued, S.refused,
         S.ship_order_events, S.entered_orbit, S.left_orbit, S.stations_not_built, list(S.not_modelled))
         .. "\n" .. require("engine.fleets.survey").report()
+        .. (package.loaded["engine.fleets.stations"] and ("\n" .. package.loaded["engine.fleets.stations"].report()) or "")
 end
 
 return orders

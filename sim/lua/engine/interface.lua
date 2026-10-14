@@ -1149,6 +1149,49 @@ E.is_inside_nebula = function(kind, id)
     return sid ~= nil and require("engine.exploration").galaxy().nebula[sid] == true
 end
 
+-- shipbuilding
+-- E.used_naval_capacity_percent(kind, id): a country's used_naval_capacity over its naval capacity,
+-- (NAVAL_CAPACITY_BASE + country_naval_cap_add) * (1 + country_naval_cap_mult) (as
+-- engine.economy.units reads it); nil for another scope
+E.used_naval_capacity_percent = function(kind, id)
+    if kind ~= "country" then return nil end
+    local c = obj("country", id)
+    if not c then return nil end
+    local used = tonumber(world.field(c, "used_naval_capacity")) or 0
+    local base = 50
+    for _, d in pairs(defs().folder("common/defines")) do
+        local v = defs().field(defs().field(d.block, "NCountry") or {}, "NAVAL_CAPACITY_BASE")
+        if v then base = tonumber(v) or base end
+    end
+    local economy = package.loaded["engine.economy"]
+    local M = economy and economy.modifiers("country", id) or {}
+    local cap = (base + (M.country_naval_cap_add or 0)) * (1 + (M.country_naval_cap_mult or 0))
+    if cap <= 0 then return used > 0 and 1e9 or 0 end
+    return used / cap
+end
+
+-- stations
+-- E.exploitable_planets(country): CExploitablePlanets::GetTriggerValue (0x19af250): the planets
+-- of the systems within the country's borders that are not colonies, have no orbital station and
+-- have orbital resources (engine.fleets.stations)
+E.exploitable_planets = function(country)
+    local st = require("engine.fleets.stations")
+    local n = 0
+    for _, sid in ipairs(world.all("system")) do
+        if world.system_owner[sid] == country then
+            for _, v in ipairs(world.fields(obj("system", sid), "planet")) do
+                local pid = tonumber(v)
+                local p = pid and obj("planet", pid)
+                local f = p and tonumber(world.field(p, "shipclass_orbital_station"))
+                if p and not world.planet_colony[pid] and not (f and obj("fleet", f)) and st.orbital_class(pid) then
+                    n = n + 1
+                end
+            end
+        end
+    end
+    return n
+end
+
 -- ---------------------------------------------------------------------------------------------
 -- engine effects: queued, applied at the barrier by the systems that model them
 

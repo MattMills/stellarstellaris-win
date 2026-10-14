@@ -723,6 +723,26 @@ war aggressiveness) = `ai.colonizer` and (strategy list 19, `STRATEGY_EXPAND_BOR
 or fewer than `AI_BUDGETING_START_YEARS` (15) years since `START_YEAR`) **[V]**. The colonization
 targets are list 1 of the strategic data, built monthly by `CreateColonizeData` (section 9).
 
+### The daily ships and armies: `BuildArmies`, `BuildShips` **[V]** (Linux build)
+
+Full detail in [shipbuilding.md](shipbuilding.md) section 7. `CAIInteriorMinister::DailyUpdate`
+(Linux `0x2751e20`) runs, after `UnlockTechnologies` (the research choice) and the special
+projects: `BuildArmies` (with `construction` or `limited_construction`, not human recently) and
+`BuildShips` (with `construction` or `limited_military_construction`), then `DisbandShips` and the
+contracts. So the interior minister's daily unsynced draws are, in order: research (3), then
+`BuildArmies` (2 every day, for the scopes; one more for a tie between army types), then
+`BuildShipOfOwnerType`'s `GetOrRequestDesign` (one per ship size the strategy's list 9 wants, one
+more when a size's design info is first made). `BuildShipOfOwnerType` is one call for the
+country's own ships (the federation's or the galactic community's when the country leads their
+fleet), not one per civilian kind, and posts one ship a day at most: the size and shipyard with
+the lowest (owned + queued) x naval cap usage / wanted. The strategy's lists 9 (BUILD_SHIP, id =
+the ship size's index in the database: 23 corvette, 29 constructor, 30 colonizer, 34 science) and
+10 (BUILD_ARMY, id = the army type's index: 10 assault_army) give the counts wanted; an order takes
+one off. Ported in `engine/ai/shipbuilding.lua` (called from `engine/ai/init.lua` after the
+research); the AI's ship designer (`RequestNewShipDesign`) is not, so it orders no military ship.
+Over 180 days from 2210.01.01 the game's AIs order 6 ships (5 with designs made in those days) and
+no army; the port 4 constructors and no army (shipbuilding.md section 9).
+
 ## 6. Fleets (decision structure) **[V]** (names, calls)
 
 `CAIMilitaryMinister::WeeklyUpdate` (`0xbfbe50`) manages fleet groups (`CAIFleetGroup`, 128 bytes:
@@ -866,6 +886,35 @@ runs the science-ship decisions of the countries due on day n on a loaded `s<n>`
   touches `_bInitializedStrategy` (`+0x379`, which `CCountryAI::Update` requires). The Lua does not
   rebuild at load yet, so from `2200.01.11` its science ships find no EXPLORE list until the first
   month.
+
+### Construction ships and starbases **[V]** (docs/stations.md)
+
+The constructor branch of `HandleCivilianFleets` (0xbbbf94-0xbbc11b; Lua:
+`engine/ai/construction_ships.lua`): a construction ship with an actual order, or any while the AI's
+`DirtyExpandStrategy` is set (an outpost finished since the last strategic data:
+`CFleetSetExpansionFlag`), is only counted; the others get `BuildStation` (0xbbe150), with "first" =
+no construction ship counted yet this week. `BuildStation`: `FindDepositHolderForOrbitalStation`
+(0xbbd230; one unsynced AI draw a call) over the BUILD_ORBITAL_STATION list (3): the nearest affordable
+station whose path is clear (score -jumps * `CONSTRUCTION_SHIP_DISTANCE_PENALTY`); with none, or for
+the first construction ship, `FindPlanetForStarbase` (0xbbc820) over the EXPAND_BORDERS list (19):
+value - jumps * 20 + a draw % `EXPANSION_RANDOM_AMOUNT` (one unsynced draw per candidate), the best
+above 0; the budget checks (`CanAffordExpenditure`, `CanAffordUpkeep` with a mining station's output
+counted against its upkeep) and `CFleetBuildOrbitalStationCommand`, its cost withdrawn. A ship with
+nothing to build outside our systems returns to base. `CToggleAINeedsStationsCommand` keeps the
+`NeedsStations` flag (never in the saves: kept in Lua).
+
+`HandleStarbases` (0xbc4f70; Lua: `engine/ai/starbases.lua`), on the week after the districts and
+buildings: with room under the starbase capacity, `BuildNewStarbases` (0xbc5ab0) upgrades the outpost
+of the highest `CalcStarbaseSystemScore` (0xbc4c10) to a starport, posted as a construction item of
+the starbase's queue (`buildable_starbase_upgrade`). Downgrades, modules, buildings, the upgraded
+starbases' next levels and the defense platforms are not ported.
+
+**Against the game**, 180 days from `autosave_2210.01.01`: of the game's 23 new build orders, the
+Lua gives 15 to the same fleet for the same planet (11 of 14 stations, 4 of 9 outposts: the outposts'
+random term draws a stream that drifts from the game's), and the orders' blocks equal the game's
+(cost, design, build position); the one starbase upgrade the game queued (country 6, starbase 114)
+is the one the Lua orders. In the world: 17 of the game's 19 AI-built stations and all 5 outposts
+are built, on the game's day or 2-4 days late (docs/stations.md, "Checks").
 
 ## 7. Moving the AI to Lua
 
@@ -1176,7 +1225,7 @@ in 180 days (16777224: 0; 16777221: 30).
 | 0 | `CCountryAI::CreateConquerData` (`0xb6e970`): systems to claim, `CalcStrategicValue` (`0xb6ef20`) | claims (`CGameRules::CanAddClaim`), intel, attitudes |
 | 9 | `CCountryAI::CreateNavyBuildData` (`0xb72c10`): per ship size, the ships wanted (`CalcBuildableShipsAndDesiredFractions`, `SetNumWantedShips`) less the owned and queued | ships, designs, construction queues |
 | 10 | `CCountryAI::CreateArmyBuildData` (`0xb73120`): per army type (`CArmyType::PotentialBuildBy`), from pops, colonies' queued armies, transport fleets | armies, army types, fleets |
-| 3, 19 | `CreateColonizeData`'s station and expansion parts | `CDepositHolder::CanBuildStation` (`0xd949f0`: the latest orbital design of the class, `CPlanet::CanBuildStation` `0xe00c90`, the hideable and non-hideable checks, `can_planet_support_orbital_stations`), `NAIUtil::ShouldBuildStarbase` (`0xba4fa0`), `CalcExpansionValue` (`0xba5390`) |
+| 3, 19 | `CreateColonizeData`'s station and expansion parts: **ported** (docs/stations.md) | `CDepositHolder::CanBuildStation` (`0xd949f0`: the latest orbital design of the class, `CPlanet::CanBuildStation` `0xe00c90`, the hideable and non-hideable checks, `can_planet_support_orbital_stations`), `NAIUtil::ShouldBuildStarbase` (`0xba4fa0`), `CalcExpansionValue` (`0xba5390`) |
 | 1 | `AddColonyData` | `CPlanet::CanColonize` (`0xdfff10`), `NAIUtil::ShouldColonizePlanet` (`0xba4df0`), habitability, the synced draw |
 | 6, 14, 15, 17, 18, 22, 25, 26, 28, 30, 32 | `CAIMilitaryMinister::CreateStrategicData` (`0xbfbd00`): clears them, then `CreateHostileFleetData` (14), `CreateHostileCountryFleetSystemData` (15), `CreateRelationStrategyData` (17, 18, 28), `CreateScriptedOrdersStrategyData` (30), and the policy's offensive and defensive strategies (6, 16, 17, 18, 25; `RandomizePriority`, synced) | fleets, wars |
 | 31 | `CAIInteriorMinister::CreateStrategicData` (`0xbb4ea0`): each point of interest (`CCountry +0x2500`) with a location: `(31, system, 0, 1)`, merged | points of interest |
@@ -1190,10 +1239,13 @@ minister's targets, the interior minister's colonization and starbases.
 is where `MonthlyUpdateStrategy` sits in the game's month (after the budget, before
 `MonthlyUpdateSerial`); no new phase is needed. For every country with an `ai` block it clears
 `need_strategic_war_data` and `recalculate` and sets `initialized`; for a `relations = yes` type
-whose colonize data is due (the rule above) it rebuilds lists 2 and 23, keeps the other lists as
-they are, sets `colonize` and clears `dirty_expand_strategy`, and writes the lists back in the
-save's order. `strategy.compare()` checks the ported lists against the world's (a loaded save).
-`STELLAR_AI_STRATEGY=off` keeps the lists as loaded (A/B).
+whose colonize data is due (the rule above) it rebuilds lists 2, 3, 19 and 23, keeps the other lists
+as they are, sets `colonize` and clears `dirty_expand_strategy`, and writes the lists back in the
+save's order; the order they were made in is kept for the AI that walks them (`strategy.entries`).
+`strategy.compare()` checks the ported lists against the world's (a loaded save).
+`STELLAR_AI_STRATEGY=off` keeps the lists as loaded (A/B). Lists 3 (stations) and 19 (expansion) use
+`engine.fleets.stations` (`CanBuildStation`, the orbital deposits; docs/stations.md); they equal the
+game's at load in 2210.01.01 (114 of 114, 38 of 38), 2210.07.01 (119, 36) and 2211.01.01 (115, 36).
 
 Implemented locally (the script layer has no equivalent): the galaxy index (planets per system, the
 star planet, hyperlanes, bypass systems), the hyperlane jumps (a Dijkstra by `length`, ties to the
