@@ -302,6 +302,20 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
     // the top bar, as on the map
     let topbar = map.topbar(width, height)?;
     let data = map.system_data(id)?;
+    // the hyperlane exits (CNavigationArrowManager::InitForSystem): a neighbour by hyperlane the
+    // player has discovered (CGalacticObject::IsDiscoveredBy; here: in its terra incognita's
+    // cleared systems [I]), its direction from the system and its name
+    let exits: Vec<((f32, f32), crate::galaxy::Name)> = {
+        let g = &map.galaxy;
+        let s = &g.systems[index];
+        let known = |o: usize| g.terra_incognita.as_ref().is_none_or(|t| t.systems.contains(&g.systems[o].id));
+        g.lanes
+            .iter()
+            .filter_map(|&(a, b)| if a as usize == index { Some(b as usize) } else if b as usize == index { Some(a as usize) } else { None })
+            .filter(|&o| known(o))
+            .map(|o| ((g.systems[o].x - s.x, g.systems[o].y - s.y), g.systems[o].name.clone()))
+            .collect()
+    };
     // what was drawn is told once per system and world
     let key = (id, Arc::as_ptr(&data) as usize);
     let verbose = map.logged_system != Some(key);
@@ -494,6 +508,34 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
             batches_push(&mut batches, Layer::Stars, Blend::Alpha, disc, Quad::billboard(s.x, s.y, 0.5, 0.8, [0.8, 0.9, 1.0, 1.0], 0.0, 3.0));
         } else {
             ships_drawn += 1;
+        }
+    }
+    if *gui && !exits.is_empty() {
+        let names: Vec<&crate::galaxy::Name> = exits.iter().map(|e| &e.1).collect();
+        let names = crate::gui::format_names(rt, &names).unwrap_or_default();
+        if let Some(fonts) = fonts.as_mut() {
+            if !fonts.contains_key(ARROW_FONT.0) {
+                match crate::font::Font::load(&gd, ARROW_FONT.0, ARROW_FONT.1) {
+                    Ok(f) => {
+                        fonts.insert(ARROW_FONT.0.to_string(), f);
+                    }
+                    Err(e) => missing.push(e),
+                }
+            }
+        }
+        let font = fonts.as_ref().and_then(|f| f.get(ARROW_FONT.0));
+        let arrow = lib.model(rt, &gd, "navigation_arrow_entity");
+        for (k, ((dx, dy), _)) in exits.iter().enumerate() {
+            let (p, n) = navigation_arrow(data.inner_radius, *dx, *dy);
+            if let Ok(model) = &arrow {
+                // turned to point outward (its mesh points along -z, as a ship's model), the
+                // entity's scale (60) applied by models::draws
+                let t = M4::translation(p).mul(&M4::rotation_y((-n.0).atan2(-n.1))).mul(&M4::scaling(1.0 / SYSTEM_SPACE_SCALE));
+                meshes.extend(models::draws(model, t, [1.0; 4], &Look::default(), tex, &mut cache, &gd));
+            }
+            if let (Some(f), Some(name)) = (font, names.get(k)) {
+                arrow_text(&mut batches, f, tex, &mut cache, &gd, name, p, n);
+            }
         }
     }
     if verbose && !missing.is_empty() {
@@ -765,6 +807,67 @@ const PLANET_RING_ENTITY: &str = "gas_giant_rings_01_entity";
 
 fn batches_push(batches: &mut Vec<scene::Batch>, layer: Layer, blend: Blend, texture: usize, q: Quad) {
     scene::push(batches, layer, blend, texture, q);
+}
+
+/// NGraphics.NAVIGATION_ARROW_OFFSET, NAVIGATION_ARROW_TEXT_OFFSET, NAVIGATION_ARROW_TEXT_SCALE,
+/// NAVIGATION_ARROW_FONT_SIZE, NAVIGATION_ARROW_TEXT_KERNING (the game's world: x 10 map units)
+const ARROW_OFFSET: f32 = 150.0;
+const ARROW_TEXT_OFFSET: f32 = -50.0;
+const ARROW_TEXT_SCALE: f32 = 1.6;
+const ARROW_FONT_SIZE: f32 = 32.0;
+const ARROW_TEXT_KERNING: f32 = 8.0;
+/// NAVIGATION_ARROW_FONT "Orbitron" is the TrueType face (fonts/fonts.asset); its bitmap
+/// (gfx/fonts/orbitron, 36 px) stands in, scaled to the 32 px size **[I]**
+const ARROW_FONT: (&str, &str) = ("orbitron", "gfx/fonts/orbitron");
+/// the text's colour (SNavigationTextConstants not read): by eye, its peak at the game's frame's
+/// (112, 218, 208) over the thinner bitmap letters **[I]**
+const ARROW_TEXT_RGBA: [f32; 4] = [0.68, 1.35, 1.12, 1.0];
+/// the bitmap's letters stretched upright to the TrueType face's height in the game's frame (its
+/// letters are as far apart, about 1.7 times as tall) **[I]**
+const ARROW_TEXT_TALL: f32 = 1.7;
+
+/// A hyperlane exit's arrow (CNavigationArrow::Init): the FTL point toward the neighbour
+/// (CGalacticObject::CalcFTLPointWith: toward it at 1.05 x the system's radius, CGalacticObject
+/// +0xfe8, the save's inner_radius by the game's frame **[I]**) on the bodies' plane, pushed
+/// ARROW_OFFSET further along its
+/// direction from the centre (in 3D: the plane's depth included); and the outward direction in
+/// the plane (the arrow turned about y to it).
+fn navigation_arrow(radius: f32, dx: f32, dy: f32) -> (V3, (f32, f32)) {
+    let l = (dx * dx + dy * dy).sqrt().max(1e-6);
+    let (ux, uy) = (dx / l, dy / l);
+    let r = 1.05 * radius;
+    let p = V3(ux * r, PLANE_Y, uy * r);
+    (p.add(p.norm().scale(ARROW_OFFSET / SYSTEM_SPACE_SCALE)), (ux, uy))
+}
+
+/// The neighbour's name on the plane beside its arrow (CNavigationArrow::Init, a
+/// CPdx3DTextObject drawn by the Text3D effect: alpha blended, RGB written): ARROW_TEXT_OFFSET
+/// from the arrow along its direction from the centre, centred **[I]**; its x axis along the
+/// tangent (n.z, -n.x), its up outward, ARROW_TEXT_SCALE world units a pixel of the face, the
+/// letters ARROW_TEXT_KERNING pixels further apart.
+#[allow(clippy::too_many_arguments)]
+fn arrow_text(batches: &mut Vec<scene::Batch>, f: &crate::font::Font, tex: &mut Textures, cache: &mut Cache, gd: &str, text: &str, p: V3, n: (f32, f32)) {
+    let Some(t) = tex.game(cache, gd, &f.texture) else { return };
+    let at = p.add(p.norm().scale(ARROW_TEXT_OFFSET / SYSTEM_SPACE_SCALE));
+    let s = ARROW_TEXT_SCALE / SYSTEM_SPACE_SCALE * ARROW_FONT_SIZE / f.line_height.max(1.0);
+    let glyphs = f.place(text, 0.0, 0.0);
+    let w = f.width(text) + ARROW_TEXT_KERNING * glyphs.len().saturating_sub(1) as f32;
+    let (aw, ah) = (f.image.width as f32, f.image.height as f32);
+    let tangent = (n.1, -n.0);
+    // a plane quad turned by `rot` takes its x to the tangent and its +z to the outward
+    // direction; the page's rows turned over so the letters' tops are outward
+    let rot = (-n.0).atan2(n.1);
+    for (i, (_, r, uv)) in glyphs.iter().enumerate() {
+        let lx = (r[0] + r[2]) / 2.0 + i as f32 * ARROW_TEXT_KERNING - w / 2.0;
+        let ly = (f.line_height / 2.0 - (r[1] + r[3]) / 2.0) * ARROW_TEXT_TALL;
+        let cx = at.0 + (tangent.0 * lx + n.0 * ly) * s;
+        let cz = at.2 + (tangent.1 * lx + n.1 * ly) * s;
+        let (hw, hh) = ((r[2] - r[0]) / 2.0 * s, (r[3] - r[1]) / 2.0 * s * ARROW_TEXT_TALL);
+        let mut q = Quad::plane([cx - hw, cz - hh, cx + hw, cz + hh], ARROW_TEXT_RGBA, rot);
+        q.uv = [uv[0] / aw, uv[3] / ah, uv[2] / aw, uv[1] / ah];
+        q.height = at.1;
+        scene::push(batches, Layer::Stars, Blend::Alpha, t, q);
+    }
 }
 
 /// A camera fitted to a model alone.

@@ -949,7 +949,7 @@ impl Renderer {
         let mut order: Vec<usize> = (0..scene.meshes.len()).collect();
         order.sort_by_key(|&i| match scene.meshes[i].shading {
             Shading::Lit | Shading::Emissive | Shading::Star => 0,
-            Shading::Clouds | Shading::Ring => 1,
+            Shading::Clouds | Shading::Ring | Shading::Button => 1,
             Shading::Atmosphere | Shading::StarAtmosphere | Shading::Additive => 2,
         });
         // the world's environment map (its levels by glossiness), shared by every mesh
@@ -1296,7 +1296,7 @@ impl Renderer {
                 let g = &self.meshes[&d.mesh];
                 pass.set_pipeline(match d.shading {
                     Shading::Lit | Shading::Emissive | Shading::Star => &pipes.mesh_opaque,
-                    Shading::Clouds => &pipes.mesh_alpha,
+                    Shading::Clouds | Shading::Button => &pipes.mesh_alpha,
                     Shading::Ring => &pipes.mesh_ring,
                     // PdxMeshAtmosphere: BlendStateAdditiveBlendNoAlpha; PdxMeshAtmosphereStar:
                     // BlendStateAdditiveBlend (alpha written: the star's bloom)

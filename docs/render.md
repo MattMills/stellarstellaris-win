@@ -987,13 +987,29 @@ home system at the same place and scale, the top bar's clock, the outliner.
   - `alert_council_agenda_ready_for_activation` (44): government `council_agenda_progress` at
     the agenda's cost (@base_agenda_cost 7000) **[I]**: EMPIRE_SIZE_COUNCIL_AGENDA_COST_PENALTY
     would put the cost over the save's 7008, yet the game shows the alert.
+- **Hyperlane exit arrows** (CNavigationArrowManager::InitForSystem, CNavigationArrow::Init;
+  system.rs `navigation_arrow`, `arrow_text`) **[V]** for place and turn: one a hyperlane whose
+  neighbour the player has discovered (IsDiscoveredBy; here its terra incognita's cleared
+  systems **[I]**). The FTL point (CalcFTLPointWith: toward the neighbour at 1.05 x the
+  CGalacticObject +0xfe8 radius, the save's inner_radius by the frame) on the bodies' plane
+  (DEFAULT_PLANET_PLANE), pushed NAVIGATION_ARROW_OFFSET (150) along its 3D direction from the
+  centre; turned about y to atan2(z, x) + 90 degrees (its mesh's -z outward);
+  navigation_arrow_entity (scale 60), PdxMeshNavigationButton: the diffuse's first of five
+  frames (u x 0.8), unlit, alpha blended, no depth write (Shading::Button; the intel grey and the
+  hover, press and selected frames not drawn). The neighbour's name (GetNameForPlayer, a
+  CPdx3DTextObject, Text3D: blended, RGB only) at NAVIGATION_ARROW_TEXT_OFFSET (-50) along the
+  same direction, its x along the tangent, its up outward, NAVIGATION_ARROW_TEXT_SCALE (1.6) world
+  units a pixel of the face, NAVIGATION_ARROW_TEXT_KERNING (8) pixels between letters **[I]**:
+  the face is Orbitron's TrueType (32 px); the bitmap gfx/fonts/orbitron stands in, stretched
+  1.7 x upright and coloured to the game's frame by eye; centred on its place.
 
 ### Not done yet
 
 - The galaxy star labels' own rules (CGalacticObjectMapIcon not read: owner flags, the capital
-  plate, which names show, the fleets' presence icons, the empire's map name); the fleet type icon's frame rule (by eye now); the capital label's flag and health bar positions;
-  the hyperlane exit arrows (CNavigationArrow,
-  navigation_arrow_entity).
+  plate, which names show, the fleets' presence icons, the empire's map name); the fleet type
+  icon's frame rule (by eye now); the capital label's flag and health bar positions.
+- The arrows' text in the TrueType face (no TrueType rasteriser here), its colour constants
+  (SNavigationTextConstants), the arrows' hover and click (to the neighbour).
 - Alerts: the other 60 conditions; the tradition and agenda costs' modifiers.
 - The left bar's background strip (needs clipping).
 - The outliner rows' icons (fleet status, leader level, planet portrait, starbase type, status

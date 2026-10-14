@@ -149,6 +149,9 @@ pub enum Shading {
     /// an additive effect (PixelPdxMeshAdditive: BlendStateAdditiveBlend, no depth write): the
     /// diffuse x its alpha, alpha x vBloomFactor
     Additive,
+    /// a hyperlane exit's arrow (PixelPdxMeshNavigationButton: BlendStateAlphaBlend, no depth
+    /// write): the texture's first of five frames, unlit
+    Button,
 }
 
 impl Shading {
@@ -162,6 +165,7 @@ impl Shading {
             Shading::StarAtmosphere => 5.0,
             Shading::Ring => 6.0,
             Shading::Additive => 7.0,
+            Shading::Button => 8.0,
         }
     }
 }

@@ -464,6 +464,12 @@ fn fs_mesh(i: VsOut) -> @location(0) vec4<f32> {
     if (kind > 6.5 && kind < 7.5) {
         return additive(i);
     }
+    if (kind > 7.5 && kind < 8.5) {
+        // PixelPdxMeshNavigationButton, not hovered, pressed nor selected: the mesh's uv is for
+        // four frames, the texture has five (u x 0.8), the first; the intel grey not applied
+        let d = textureSample(diffuse_tex, samp, vec2<f32>(i.uv.x * 0.8, i.uv.y));
+        return output(lin(d.rgb), d.a);
+    }
     if (kind < 0.5 && has(u32(draw.stdc.x + 0.5), F_SHIP)) {
         return ship(i);
     }

@@ -85,6 +85,9 @@ pub fn shading_of(game_dir: &str, shader: &str) -> Option<Shading> {
     if s.contains("planetrings") {
         return Some(Shading::Ring);
     }
+    if s == "pdxmeshnavigationbutton" {
+        return Some(Shading::Button);
+    }
     if s == "pdxmeshstar" {
         return Some(Shading::Star);
     }
