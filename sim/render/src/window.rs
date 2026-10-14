@@ -1,12 +1,14 @@
 //! The windowed mode: the front end and the map (app.rs) in a window (winit). The mouse hovers,
-//! presses and clicks the GUI's buttons; Escape goes back from the map (or the load window) to
-//! the menu; C on the menu continues the newest save; Q closes. `frames` closes the window after
-//! that many frames (for tests).
+//! presses and clicks the GUI's buttons; on the map a click on a star opens its system, the
+//! right button drags to turn the camera, the left drags to pan, the wheel zooms (and W A S D,
+//! Q E, R F, + - as in app.rs); Space steps the simulation a day, P runs it (a day a frame);
+//! Escape goes back (system -> galaxy -> menu); C on the menu continues the newest save; Q on the
+//! menu closes. `frames` closes the window after that many frames (for tests).
 
 use std::sync::Arc;
 
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
@@ -40,6 +42,10 @@ struct Win {
     first_frame: Option<std::time::Instant>,
     /// fit the window to the screen (no size was asked for)
     fit: bool,
+    /// a mouse button held: which, where it went down, whether it moved (a drag, not a click)
+    held: Option<(MouseButton, (f32, f32), bool)>,
+    /// the simulation runs a day a frame
+    running: bool,
 }
 
 impl Win {
@@ -151,6 +157,17 @@ impl Win {
                 s.window.request_redraw();
             }
         }
+        if self.running {
+            // a day a frame while it runs
+            match self.app.step(1) {
+                Ok(r) => eprintln!("step: {r}"),
+                Err(e) => {
+                    self.running = false;
+                    eprintln!("step: {e}");
+                }
+            }
+            s.window.request_redraw();
+        }
         Ok(())
     }
 
@@ -206,28 +223,92 @@ impl ApplicationHandler for Win {
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state: ElementState::Pressed, .. }, .. } => {
                 let key = match &logical_key {
                     Key::Named(NamedKey::Escape) => Some("escape".to_string()),
+                    Key::Named(NamedKey::ArrowUp) => Some("up".to_string()),
+                    Key::Named(NamedKey::ArrowDown) => Some("down".to_string()),
+                    Key::Named(NamedKey::ArrowLeft) => Some("left".to_string()),
+                    Key::Named(NamedKey::ArrowRight) => Some("right".to_string()),
+                    Key::Named(NamedKey::PageUp) => Some("pageup".to_string()),
+                    Key::Named(NamedKey::PageDown) => Some("pagedown".to_string()),
+                    Key::Named(NamedKey::Space) => Some("space".to_string()),
                     Key::Character(c) => Some(c.as_str().to_lowercase()),
                     _ => None,
                 };
-                if key.as_deref() == Some("q") {
-                    event_loop.exit();
-                } else if let Some(k) = key {
-                    let r = self.app.key(&k);
-                    self.after(event_loop, r);
+                let on_map = self.app.screen == crate::app::Screen::Map;
+                match key.as_deref() {
+                    Some("q") if !on_map => event_loop.exit(),
+                    Some("space") if on_map => {
+                        let r = self.app.step(1).map(|s| {
+                            eprintln!("step: {s}");
+                            true
+                        });
+                        self.after(event_loop, r);
+                    }
+                    Some("p") if on_map => {
+                        self.running = !self.running;
+                        eprintln!("simulation {}", if self.running { "running" } else { "paused" });
+                        if let Some(s) = &self.shown {
+                            s.window.request_redraw();
+                        }
+                    }
+                    Some(k) => {
+                        let r = self.app.key(k);
+                        self.after(event_loop, r);
+                    }
+                    None => {}
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
+                let (px, py) = self.cursor;
                 self.cursor = (position.x as f32, position.y as f32);
+                let (dx, dy) = (self.cursor.0 - px, self.cursor.1 - py);
+                let on_map = self.app.screen == crate::app::Screen::Map;
+                let cursor = self.cursor;
+                let mut drag = None;
+                if let Some((button, start, moved)) = self.held.as_mut() {
+                    let far = (cursor.0 - start.0).abs() + (cursor.1 - start.1).abs() > 4.0;
+                    if on_map && (*moved || far) {
+                        *moved = true;
+                        drag = Some(*button);
+                    }
+                }
+                if let Some(button) = drag {
+                    let h = self.shown.as_ref().map_or(900.0, |s| s.config.height as f32);
+                    match button {
+                        MouseButton::Right => self.app.orbit(-dx * 0.3, dy * 0.3),
+                        _ => self.app.pan(-dx / h * 1.2, dy / h * 1.2),
+                    }
+                    self.after(event_loop, Ok(true));
+                    return;
+                }
                 let r = self.app.mouse_move(self.cursor.0, self.cursor.1);
                 self.after(event_loop, r);
             }
-            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+            WindowEvent::MouseInput { state, button, .. } => {
                 let (x, y) = self.cursor;
-                let r = match state {
-                    ElementState::Pressed => self.app.mouse_down(x, y),
-                    ElementState::Released => self.app.mouse_up(x, y),
+                match state {
+                    ElementState::Pressed => {
+                        self.held = Some((button, (x, y), false));
+                        if button == MouseButton::Left {
+                            let r = self.app.mouse_down(x, y);
+                            self.after(event_loop, r);
+                        }
+                    }
+                    ElementState::Released => {
+                        let dragged = self.held.take().is_some_and(|h| h.2);
+                        if button == MouseButton::Left && !dragged {
+                            let r = self.app.mouse_up(x, y);
+                            self.after(event_loop, r);
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
-                self.after(event_loop, r);
+                self.app.zoom(0.85f32.powf(dy));
+                self.after(event_loop, Ok(true));
             }
             WindowEvent::Resized(size) => {
                 if let Some(s) = self.shown.as_mut() {
@@ -265,6 +346,8 @@ pub fn run(app: App, backend: render::Backend, want: Option<String>, frames: Opt
         error: None,
         first_frame: None,
         fit,
+        held: None,
+        running: false,
     };
     event_loop.run_app(&mut win).map_err(|e| format!("event loop: {e}"))?;
     win.flush_log();

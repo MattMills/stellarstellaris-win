@@ -16,8 +16,11 @@ use std::rc::Rc;
 
 use stellar_sim::{save, Runtime};
 
+use crate::camera::OrbitCamera;
 use crate::dds::Cache;
 use crate::font::Font;
+use crate::models;
+use crate::system;
 use crate::gui::{self, GuiItem};
 use crate::scene::{self, ButtonState, Scene, Textures};
 use crate::Map;
@@ -115,11 +118,29 @@ pub struct App {
     pub log: Vec<String>,
     /// notes of the last layout (background, saves listed, sprites missing)
     pub notes: Vec<String>,
+    /// the map: in 3D from `camera` (else the 2D map), the galaxy or a system
+    pub mode3d: bool,
+    pub camera: Option<OrbitCamera>,
+    pub view: MapView,
+    pub system_camera: Option<OrbitCamera>,
+    /// the model view: the model shown (an entity or a pdxmesh), and the models read for it
+    pub model: Option<String>,
+    pub models: models::Library,
     hover: Option<String>,
     pressed: Option<String>,
     items: Option<((u32, u32, Screen), Vec<GuiItem>)>,
     scene: Option<Scene>,
     generation: u64,
+}
+
+/// What the map screen shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MapView {
+    Galaxy,
+    /// a system: its index in the galaxy's systems
+    System(usize),
+    /// a model alone (App::model), on the map screen with or without a map
+    Model,
 }
 
 impl App {
@@ -143,12 +164,97 @@ impl App {
             version,
             log,
             notes: Vec::new(),
+            mode3d: true,
+            camera: None,
+            view: MapView::Galaxy,
+            system_camera: None,
+            model: None,
+            models: models::Library::default(),
             hover: None,
             pressed: None,
             items: None,
             scene: None,
             generation: 0,
         })
+    }
+
+    /// The camera of what the map shows (the galaxy's or the system's).
+    pub fn current_camera(&mut self) -> Option<&mut OrbitCamera> {
+        match self.view {
+            MapView::Galaxy => self.camera.as_mut(),
+            MapView::System(_) | MapView::Model => self.system_camera.as_mut(),
+        }
+    }
+
+    /// Moves the camera (degrees), zooms it (a factor), pans it (fractions of its distance).
+    pub fn orbit(&mut self, dyaw: f32, dpitch: f32) {
+        if let Some(c) = self.current_camera() {
+            c.orbit(dyaw.to_radians(), dpitch.to_radians());
+        }
+        self.scene = None;
+    }
+    pub fn zoom(&mut self, factor: f32) {
+        if let Some(c) = self.current_camera() {
+            c.zoom(factor);
+        }
+        self.scene = None;
+    }
+    pub fn pan(&mut self, dx: f32, dy: f32) {
+        if let Some(c) = self.current_camera() {
+            c.pan(dx, dy);
+        }
+        self.scene = None;
+    }
+    pub fn set_camera(&mut self, c: OrbitCamera) {
+        match self.view {
+            MapView::Galaxy => self.camera = Some(c),
+            MapView::System(_) | MapView::Model => self.system_camera = Some(c),
+        }
+        self.scene = None;
+    }
+
+    /// Shows the galaxy, or a system (by the save's id), on the map screen.
+    pub fn show_galaxy(&mut self) {
+        self.view = MapView::Galaxy;
+        self.screen = Screen::Map;
+        self.scene = None;
+    }
+    pub fn show_system(&mut self, index: usize) -> Result<(), String> {
+        let map = self.map.as_mut().ok_or("no map loaded")?;
+        if index >= map.galaxy.systems.len() {
+            return Err(format!("no system {index}"));
+        }
+        self.system_camera = Some(system::camera_for(map, index));
+        self.view = MapView::System(index);
+        self.screen = Screen::Map;
+        self.scene = None;
+        self.log.push(format!("system view: {} (id {})", map.galaxy.systems[index].star_class, map.galaxy.systems[index].id));
+        Ok(())
+    }
+
+    /// Shows a model alone (an entity or a pdxmesh of gfx/models), with a camera fitted to it.
+    pub fn show_model(&mut self, name: &str) -> Result<(), String> {
+        let cam = system::model_camera(&mut self.models, &self.runtime, &self.game_dir, name)?;
+        self.system_camera = Some(cam);
+        self.model = Some(name.to_string());
+        self.view = MapView::Model;
+        self.screen = Screen::Map;
+        self.scene = None;
+        self.log.push(format!("model view: {name}"));
+        Ok(())
+    }
+
+    /// Steps the simulation behind the map `days` days.
+    pub fn step(&mut self, days: u64) -> Result<String, String> {
+        let map = self.map.as_mut().ok_or("no map loaded")?;
+        let r = map.step(days)?;
+        self.scene = None;
+        Ok(r)
+    }
+
+    /// The scene must be built again (the world or the view changed).
+    pub fn invalidate(&mut self) {
+        self.scene = None;
     }
 
     pub fn resize(&mut self, w: u32, h: u32) {
@@ -218,7 +324,22 @@ impl App {
         if self.scene.is_none() {
             let (w, h) = self.size;
             let scene = match self.screen {
-                Screen::Map => self.map.as_mut().ok_or("no map")?.frame(w, h)?.scene,
+                Screen::Map if self.view == MapView::Model => {
+                    let cam = self.system_camera.ok_or("no camera")?;
+                    let name = self.model.clone().ok_or("no model")?;
+                    let mut cache = self.cache.borrow_mut();
+                    system::model_scene(&mut self.models, &self.runtime, &self.game_dir, &name, &cam, w, h, &mut self.textures, &mut cache)?
+                }
+                Screen::Map => {
+                    let map = self.map.as_mut().ok_or("no map")?;
+                    match (self.view, &self.system_camera) {
+                        (MapView::System(i), Some(cam)) => system::build(map, i, cam, w, h)?,
+                        _ => {
+                            let cam = if self.mode3d { self.camera.as_ref() } else { None };
+                            map.frame(w, h, cam)?.scene
+                        }
+                    }
+                }
                 _ => {
                     let items = self.items()?;
                     let mut states = HashMap::new();
@@ -241,7 +362,7 @@ impl App {
     /// The textures of the current screen's scene.
     pub fn textures(&self) -> &Textures {
         match (&self.screen, &self.map) {
-            (Screen::Map, Some(m)) => &m.textures,
+            (Screen::Map, Some(m)) if self.view != MapView::Model => &m.textures,
             _ => &self.textures,
         }
     }
@@ -274,8 +395,19 @@ impl App {
         Ok(false)
     }
 
-    /// The button released over the one pressed is a click: its action is done.
+    /// The button released over the one pressed is a click: its action is done. On the galaxy
+    /// map, a click on a star opens its system.
     pub fn mouse_up(&mut self, x: f32, y: f32) -> Result<bool, String> {
+        if self.screen == Screen::Map {
+            if self.view == MapView::Galaxy {
+                let hit = self.scene()?.star_at(x, y, 14.0);
+                if let Some(i) = hit {
+                    self.show_system(i)?;
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
         let under = self.button_at(x, y)?;
         let pressed = self.pressed.take();
         self.scene = None;
@@ -323,10 +455,17 @@ impl App {
         self.scene = None;
     }
 
-    /// Loads a save and shows its map.
+    /// Loads a save and shows its map (with `sim`: as a running simulation, which can step).
     pub fn load(&mut self, path: &str) -> Result<(), String> {
+        self.load_as(path, false)
+    }
+
+    pub fn load_as(&mut self, path: &str, sim: bool) -> Result<(), String> {
         let t0 = std::time::Instant::now();
-        let map = Map::load(&self.game_dir, path)?;
+        let map = if sim { Map::load_sim(&self.game_dir, path)? } else { Map::load(&self.game_dir, path)? };
+        let radius = map.galaxy.systems.iter().map(|s| (s.x * s.x + s.y * s.y).sqrt()).fold(1.0f32, f32::max) * 1.05;
+        self.camera = Some(OrbitCamera::galaxy(radius));
+        self.view = MapView::Galaxy;
         self.log.push(format!(
             "loaded {path} in {:.1} s: {} systems, {} hyperlanes, {} owners",
             t0.elapsed().as_secs_f64(),
@@ -346,11 +485,41 @@ impl App {
         self.load(&path)
     }
 
-    /// A key: Escape (back to the menu from the map or the load window), C (continue on the
-    /// menu). Whether something changed.
+    /// A key: Escape (back from a system to the galaxy, from the map or the load window to the
+    /// menu), C (continue on the menu); on the map: W A S D pan, Q E turn, R F tilt, + - zoom,
+    /// V the 2D map or 3D. Whether something changed.
     pub fn key(&mut self, key: &str) -> Result<bool, String> {
+        if self.screen == Screen::Map {
+            let step = 0.06;
+            match key {
+                "w" | "up" => self.pan(0.0, step),
+                "s" | "down" => self.pan(0.0, -step),
+                "a" | "left" => self.pan(-step, 0.0),
+                "d" | "right" => self.pan(step, 0.0),
+                "q" => self.orbit(-10.0, 0.0),
+                "e" => self.orbit(10.0, 0.0),
+                "r" => self.orbit(0.0, 5.0),
+                "f" => self.orbit(0.0, -5.0),
+                "+" | "=" | "pageup" => self.zoom(0.8),
+                "-" | "pagedown" => self.zoom(1.25),
+                "v" => {
+                    self.mode3d = !self.mode3d;
+                    self.scene = None;
+                }
+                "escape" if self.view != MapView::Galaxy && self.map.is_some() => {
+                    self.log.push(format!("escape: {:?} -> Galaxy", self.view));
+                    self.show_galaxy();
+                }
+                "escape" => {
+                    self.log.push("escape: Map -> Menu".into());
+                    self.show(Screen::Menu);
+                }
+                _ => return Ok(false),
+            }
+            return Ok(true);
+        }
         match (key, self.screen) {
-            ("escape", Screen::Map) | ("escape", Screen::Load) => {
+            ("escape", Screen::Load) => {
                 self.log.push(format!("escape: {:?} -> Menu", self.screen));
                 self.show(Screen::Menu);
                 Ok(true)

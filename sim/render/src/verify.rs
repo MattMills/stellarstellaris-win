@@ -136,7 +136,8 @@ impl Check {
     pub fn ok(&self, lanes: bool) -> bool {
         self.stars_ok == self.stars
             && (!lanes || self.lanes_ok == self.lanes)
-            && self.owners.iter().all(|o| {
+            // (the owners of fleets alone have no territory)
+            && self.owners.iter().filter(|o| o.pixels > 0).all(|o| {
                 o.fill_visible_changed * 100 >= o.fill_visible * 98 && o.fill_error < 3.0 && o.edge_error < 40.0
             })
             && self.sprites_ok == self.sprites_visible
@@ -418,8 +419,9 @@ pub fn check(
     // lanes, at their middle
     let dl = diff(Layer::Lanes);
     let mut lanes_ok = 0;
-    for l in &scene.lanes {
-        let (mx, my) = layout.to_pixel(0.5 * (l[0] + l[2]), 0.5 * (l[1] + l[3]));
+    // (the hyperlanes are the scene's first lines; the fleets' trails follow)
+    for l in scene.lines.iter().take(galaxy.lanes.len()) {
+        let (mx, my) = layout.to_pixel(0.5 * (l.a.0 + l.b.0), 0.5 * (l.a.2 + l.b.2));
         if (-1..=1).any(|dy| (-1..=1).any(|dx| dl.at(mx as i32 + dx, my as i32 + dy) > 0)) {
             lanes_ok += 1;
         }
@@ -538,7 +540,7 @@ pub fn check(
         changed,
         stars: scene.stars.len(),
         stars_ok,
-        lanes: scene.lanes.len(),
+        lanes: galaxy.lanes.len(),
         lanes_ok,
         owners,
         sprites: scene.sprites.len(),
