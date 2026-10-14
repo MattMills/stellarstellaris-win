@@ -2063,6 +2063,9 @@ M._internal = {
         else error("eval._internal.set: " .. tostring(name)) end
     end,
 }
+-- the handlers kept by area (simscript/handlers/): added to the tables above
+require("simscript.handlers")(M)
+
 if os.getenv("STELLAR_SCRIPT_COMPILE") ~= "off" then
     require("simscript.compile").install(M)
 end
