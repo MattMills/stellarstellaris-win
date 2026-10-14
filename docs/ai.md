@@ -161,8 +161,10 @@ and its day counters at `id % 7`, `id % 30`, `id % 360`. The synced RNG (`synced
 always restored. Consistent with the saves: `random_count` of country 16777217 is 16,790,500 in
 2210.01.01 and 16,781,668 (= id + 4,451, about 25 draws a day) in 2210.07.01, a game loaded in
 between; `synced_random_count` grew by 13 in 180 days. So a simulation started from a save
-reproduces a game *loaded* from that save when it resets the unsynced RNG to the id (or both use
-`-loadrandomseed` and the saved position).
+reproduces a game *loaded* from that save when it resets the unsynced RNG to the id. With
+`-loadrandomseed` too: the headless game, run with it from 2210.01.01, picks the AI's traditions as
+the generator restarted at the id does (2 of 2), not as the saved position does (1 of 2), so the
+restore is not seen in practice **[I]** (docs/random.md).
 
 ### Country type AI settings (`SCountryAISettings`, `CCountryType +0x68`) **[V]**
 
