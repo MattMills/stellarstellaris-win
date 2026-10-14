@@ -99,6 +99,7 @@ local function push(ctx, sc)
         this = sc, root = ctx.root, from = ctx.from, fromfrom = ctx.fromfrom, prev = ctx.this,
         prevprev = ctx.prev, prevprevprev = ctx.prevprev, prevprevprevprev = ctx.prevprevprev,
         targets = ctx.targets, lists = ctx.lists, created = ctx.created, file = ctx.file,
+        up = ctx, -- the scope this one was made from (its random state starts as a copy of that one's)
     }
 end
 M.push = push
@@ -110,6 +111,7 @@ local function with_file(ctx, file)
     local c = push(ctx, ctx.this)
     c.prev, c.prevprev, c.file = ctx.prev, ctx.prevprev, file
     c.prevprevprev, c.prevprevprevprev = ctx.prevprevprev, ctx.prevprevprevprev
+    c.same = ctx -- the same scope in another file: one random state
     return c
 end
 
@@ -1690,9 +1692,13 @@ local function iterate_effect(kind, lname, e, ctx)
     for _, s2 in ipairs(list) do
         if not limit or trigger(limit, push(ctx, s2)) then chosen[#chosen + 1] = s2 end
     end
+    -- the scope random (simscript/handlers/creation.lua, M.scope_iter): the iterator's own copy of
+    -- the scope's random state, drawn for a random_* pick and handed to each element's scope
+    local SR = M.scope_iter
+    local loop = SR and SR.begin(ctx)
     if kind == "random" then
         if #chosen == 0 then return end
-        chosen = { chosen[rand() % #chosen + 1] }
+        chosen = { chosen[(loop and SR.draw(loop) or rand()) % #chosen + 1] }
     elseif kind == "ordered" then
         local keyed = {}
         for i, s2 in ipairs(chosen) do
@@ -1705,7 +1711,9 @@ local function iterate_effect(kind, lname, e, ctx)
         end
     end
     for _, s2 in ipairs(chosen) do
-        effect(e.value, push(ctx, s2), ITER_PARAMS)
+        local c = push(ctx, s2)
+        if loop then SR.element(loop, c, kind) end
+        effect(e.value, c, ITER_PARAMS)
     end
 end
 

@@ -74,8 +74,11 @@ function host.run_effect(id, kind, sid)
     end)
 end
 
-function host.on_action(name, kind, sid)
-    return counted(events.on_action, name, eval.S(kind, sid), nil)
+-- seed: the value the game made the on_action's scope from (CEventScope(int)), when the engine
+-- drew one; else the scope is a default one's (simscript/events.lua)
+function host.on_action(name, kind, sid, seed)
+    local rng = seed and require("engine.script.scope_random").new(seed) or nil
+    return counted(events.on_action, name, eval.S(kind, sid), nil, rng)
 end
 
 function host.weight()
