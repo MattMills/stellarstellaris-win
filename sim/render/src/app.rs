@@ -1022,9 +1022,11 @@ impl App {
         // gridbox; the order of the game's frame (CTopbarMenuOrderSettings' default) [I]
         let mut bar = gui::WindowSpec::new("interface/main.gui", "maingui_left_bar_buttons");
         bar.positions.push(("/maingui_left_bar_buttons".into(), (-225.0, 35.0)));
-        // (the background, 320 wide, shows only within the 250-wide window in the game: a clip
-        // the GUI here does not do; left out)
-        bar.only = Some(vec!["lock".into()]);
+        // its background (the container `background`, GFX_navbar_bg_wide at its 320 x 610): the
+        // game's frame has its right edge at x = 35, 65 left of its (5, 5) in the window at the
+        // hide position [I: what moves it is not read; no clip: the texture's own edge shows]
+        bar.positions.push(("/maingui_left_bar_buttons/background".into(), (-60.0, 5.0)));
+        bar.only = Some(vec!["lock".into(), "background".into(), "navbar_bg".into()]);
         specs.push(bar);
         let views = ["situation", "council", "traditions", "technology", "leaders", "species", "empire", "expansion_planner", "fleet_manager", "contacts", "discoveries", "claims", "market"];
         for (i, v) in views.iter().enumerate() {

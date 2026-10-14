@@ -971,8 +971,11 @@ home system at the same place and scale, the top bar's clock, the outliner.
 - **The left bar** (main.gui `maingui_left_bar_buttons`, collapsed at its hide_position): the
   views' icons (GFX_topbar_<view>_button x 0.6) down its gridbox, in the frame's order
   (situation, council, traditions, technology, leaders, species, empire, expansion planner, fleet
-  manager, contacts, discoveries, claims, market) **[I]**; its background (clipped to the window
-  in the game) is left out.
+  manager, contacts, discoveries, claims, market) **[I]**; its background (the container
+  `background`, GFX_navbar_bg_wide at its 320 x 610, no clip needed: the texture's own right edge
+  is the strip's) with its right edge at x = 35 as in the game's frame, 65 left of its (5, 5) in
+  the window at the hide position **[I]**: what moves it is not read (CMainGui::
+  UpdateLeftBarButtons only sets the window's target position).
 - **Alerts** (alerts.gui `alerticon_window`; CAlertManager) **[V]**: from (200, 30), 55 x 72
   apart, five a row, the banner by priority (common/alerts.txt), the alert's icon (a sprite sheet's
   frame: `sprite_sheet_sprite_type`, `default_frame`), in the order of common/alerts.txt's IDs
@@ -1011,7 +1014,7 @@ home system at the same place and scale, the top bar's clock, the outliner.
 - The arrows' text in the TrueType face (no TrueType rasteriser here), its colour constants
   (SNavigationTextConstants), the arrows' hover and click (to the neighbour).
 - Alerts: the other 60 conditions; the tradition and agenda costs' modifiers.
-- The left bar's background strip (needs clipping).
+- The left bar background's 65 px offset (by the frame), the thin outline under it in the game.
 - The outliner rows' icons (fleet status, leader level, planet portrait, starbase type, status
   lists), the military row's size line ("15/50 (15)"), the location's colour, the frontier
   sector, the tab buttons over Overview, the other tabs, collapsing groups.
