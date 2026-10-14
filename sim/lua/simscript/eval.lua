@@ -287,6 +287,14 @@ local VALUE_OPS = {
     modulo = true, base = true, value = true, weight = true, min = true, max = true,
 }
 
+-- `trigger:<name>` in a value: TVAL[name](ctx, e) -> the number the trigger compares, or nil when
+-- it has none for the scope (filled by the handler modules, simscript/handlers/)
+M.TVAL = {}
+-- `pow = n` in a value block: the accumulated value to the power n (M.pow, the handlers' to replace)
+M.pow = function(a, b) return a ^ b end
+-- other value operations of the handler modules: VALUE_OP[key](acc, operand) -> acc
+M.VALUE_OP = {}
+
 local function var_raw(name, ctx)
     local fv = db.filevars(ctx.file)
     local v = fv and fv[name]
@@ -438,8 +446,11 @@ function value_text(t, ctx, e)
         return M.script_value(t:sub(7), ctx, e)
     end
     if t:sub(1, 8) == "trigger:" then
-        local f = M.TRIGGER_VALUES[t:sub(9):lower()]
+        local f = M.TRIGGER_VALUES and M.TRIGGER_VALUES[t:sub(9):lower()]
         if f then return f(ctx, e) end
+        local tv = M.TVAL and M.TVAL[t:sub(9)]
+        local v = tv and tv(ctx, e)
+        if v ~= nil then return v end
         miss("value", t, ctx, e)
         return 0
     end
@@ -500,6 +511,7 @@ local function apply_ops_tree(b, ctx, acc, only_ops)
             elseif k == "min" then acc = math.max(acc, M.value(e.value, ctx, e))
             elseif k == "max" then acc = math.min(acc, M.value(e.value, ctx, e))
             elseif k == "abs" then acc = math.abs(acc)
+            elseif k == "pow" then acc = M.pow(acc, M.value(e.value, ctx, e))
             elseif k == "round" then acc = floor(acc + 0.5)
             elseif k == "floor" then acc = floor(acc)
             elseif k == "ceiling" then acc = math.ceil(acc)
@@ -521,6 +533,8 @@ local function apply_ops_tree(b, ctx, acc, only_ops)
                 end
             elseif k == "limit" or k == "weight" or k == "desc" or k == "display_name" then
                 -- handled by the caller or not a value operation
+            elseif M.VALUE_OP[k] then
+                acc = M.VALUE_OP[k](acc, M.value(e.value, ctx, e))
             else
                 -- `count_owned_pop_amount = { limit = { ... } }`: the iterator's count
                 local n = e.value.text == nil and M.count_value and M.count_value(k, e.value, ctx)
@@ -2026,7 +2040,7 @@ function M.status(kind, key)
         if db.scripted_triggers[key] then return "scripted" end
         local it, l = lk:match("^(any)_(.+)$")
         if not it then it, l = lk:match("^(count)_(.+)$") end
-        if it then return (LISTS[l] or l == "in_list") and "iterator" or nil end
+        if it then return (LISTS[l] or AMOUNTS[l] or l == "in_list") and "iterator" or nil end
     else
         if EFF[lk] then return "lua" end
         if EVENT_EFFECT[lk] then return "event" end

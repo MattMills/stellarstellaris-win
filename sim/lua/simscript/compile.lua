@@ -272,10 +272,14 @@ function C.install(M)
             return function(ctx, e) return M.script_value(spec, ctx, e) end
         end
         if t:sub(1, 8) == "trigger:" then
-            local name = t:sub(9):lower()
+            local name = t:sub(9)
+            local lower = name:lower()
             return function(ctx, e)
-                local f = M.TRIGGER_VALUES and M.TRIGGER_VALUES[name]
+                local f = M.TRIGGER_VALUES and M.TRIGGER_VALUES[lower]
                 if f then return f(ctx, e) end
+                local tv = M.TVAL and M.TVAL[name]
+                local v = tv and tv(ctx, e)
+                if v ~= nil then return v end
                 miss("value", t, ctx, e)
                 return 0
             end
@@ -1185,6 +1189,8 @@ function C.install(M)
                     op = function(ctx, acc) return min(acc, M.value(v, ctx, e)) end
                 elseif k == "abs" then
                     op = function(_, acc) return abs(acc) end
+                elseif k == "pow" then
+                    op = function(ctx, acc) return M.pow(acc, M.value(v, ctx, e)) end
                 elseif k == "round" then
                     op = function(_, acc) return floor(acc + 0.5) end
                 elseif k == "floor" then
@@ -1219,6 +1225,11 @@ function C.install(M)
                     chain[#ops + 1] = k == "if" and 1 or 2
                 elseif k == "limit" or k == "weight" or k == "desc" or k == "display_name" then
                     -- handled by the caller or not a value operation
+                elseif M.VALUE_OP[k] then
+                    op = function(ctx, acc)
+                        local f = M.VALUE_OP[k]
+                        return f(acc, M.value(v, ctx, e))
+                    end
                 else
                     -- `count_owned_pop_amount = { limit = { ... } }`: the iterator's count; a scope
                     local block = v.text == nil
