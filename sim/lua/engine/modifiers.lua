@@ -120,6 +120,10 @@ end
 local S = {}
 S.__index = S
 
+-- the scripted variables, read once per file system: the files do not change during a run, and
+-- the monthly rebuild makes a new source each time (it had parsed them all again every month)
+local vars_of_fs = setmetatable({}, { __mode = "k" })
+
 -- modifiers.new(opts) -> the sources: opts.types (the graph's definitions: the modifier types'
 -- names, read case-insensitively as the game does), opts.defs (engine.defs), opts.world
 -- (engine.world), opts.fs (the file system; default the script layer's, or opts.game_dir's)
@@ -139,15 +143,20 @@ function M.new(opts)
     for _, name in pairs(self.types.names) do
         self.canon[name:lower()] = name
     end
-    self.filevars, self.globalvars = {}, {}
-    for _, file in ipairs(source.files(self.fs, "common/scripted_variables", "txt")) do
-        local tree = source.parse(self.fs, file)
-        for _, e in ipairs(tree or {}) do
-            if e.op and e.key and e.key.text:sub(1, 1) == "@" and e.value.text then
-                self.globalvars[e.key.text:sub(2)] = e.value.text
+    local vars = vars_of_fs[self.fs]
+    if vars == nil then
+        vars = { files = {}, global = {} }
+        for _, file in ipairs(source.files(self.fs, "common/scripted_variables", "txt")) do
+            local tree = source.parse(self.fs, file)
+            for _, e in ipairs(tree or {}) do
+                if e.op and e.key and e.key.text:sub(1, 1) == "@" and e.value.text then
+                    vars.global[e.key.text:sub(2)] = e.value.text
+                end
             end
         end
+        vars_of_fs[self.fs] = vars
     end
+    self.filevars, self.globalvars = vars.files, vars.global
     self.cache = {}
     self.stats = { unresolved = 0, missing = {}, unknown = {}, triggers = 0, triggers_true = 0, trigger_errors = 0 }
     -- triggers are evaluated by the script layer (simscript.eval over engine.interface) when it is

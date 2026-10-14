@@ -24,17 +24,27 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- the world, as the triggers need it
 
--- colony id -> planet id
-local colony_planet
+-- colony id -> planet id, kept between evaluations: a hit is checked against the planet's own
+-- `colony` field, and a miss or a stale hit scans the planets again, at most once per
+-- script.with (the scan had been redone on every script.with: 30% of the monthly rebuild)
+local colony_planet = {}
+local scanned = false
 local function planet_of_colony(c)
-    if colony_planet == nil then
-        colony_planet = {}
-        for _, pid in ipairs(world.all("planet")) do
-            local col = world.field(world.object("planet", pid), "colony")
-            if col ~= nil then colony_planet[tonumber(col)] = pid end
-        end
+    if c == nil then return nil end
+    local pid = colony_planet[c]
+    if pid ~= nil and not scanned then
+        local p = world.object("planet", pid)
+        if p ~= nil and tonumber(world.field(p, "colony")) == c then return pid end
     end
-    return c and colony_planet[c]
+    if not scanned then
+        colony_planet = {}
+        for _, id in ipairs(world.all("planet")) do
+            local col = world.field(world.object("planet", id), "colony")
+            if col ~= nil then colony_planet[tonumber(col)] = id end
+        end
+        scanned = true
+    end
+    return colony_planet[c]
 end
 script.planet_of_colony = planet_of_colony
 
@@ -657,14 +667,26 @@ end
 
 local installed = 0
 
+-- the counting wrappers, made once (links and trig are complete when the module has loaded)
+local wrapped_links, wrapped_trig
+
 local function install()
-    for k, f in pairs(links) do
-        orig_links[k] = LINKS[k]
-        LINKS[k] = function(...) count("link " .. k) return f(...) end
+    if wrapped_links == nil then
+        wrapped_links, wrapped_trig = {}, {}
+        for k, f in pairs(links) do
+            wrapped_links[k] = function(...) count("link " .. k) return f(...) end
+        end
+        for k, f in pairs(trig) do
+            wrapped_trig[k] = function(...) count("trigger " .. k) return f(...) end
+        end
     end
-    for k, f in pairs(trig) do
+    for k, w in pairs(wrapped_links) do
+        orig_links[k] = LINKS[k]
+        LINKS[k] = w
+    end
+    for k, w in pairs(wrapped_trig) do
         orig_trig[k] = TRIG[k]
-        TRIG[k] = function(...) count("trigger " .. k) return f(...) end
+        TRIG[k] = w
     end
     orig_script_value = eval.script_value
     eval.script_value = script_value
@@ -682,7 +704,7 @@ function script.with(f, ...)
         return f(...)
     end
     installed = installed + 1
-    colony_planet = nil
+    scanned = false
     install()
     local res = { pcall(f, ...) }
     uninstall()
