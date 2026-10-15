@@ -546,6 +546,7 @@ takes the same shots of both.
 | `frame PATH.png` | `ok frame PATH W H MS` (MS: scene, upload, GPU and read-back) |
 | `frame -` | `ok frame - W H MS BYTES`, then the PNG's bytes |
 | `state` | JSON: screen, view, camera, date, the clock (paused, speed, loading, days run, a day's and a snapshot's ms), the selection, systems, fleets by movement state, FTL trails, size |
+| `bench SECONDS [FPS]` | frames at FPS (120) drawn as a window draws them, on the commands' one thread: what they took against the frame's time (section 12; `--bench SECONDS` measures the window's own way, the app on its UI thread) |
 | `quit` | ends the server |
 
 The game's headless serves `pause` and `step` the same way; `speed`, `wait` and `select` are the
@@ -805,7 +806,8 @@ home system at the same place and scale, the top bar's clock, the outliner.
 ### The clock (`sim/render/src/clock.rs`)
 
 - **The simulation runs on its own thread**, which owns its Lua runtime (the save with the game's
-  definitions and the script layer); nothing of it is shared. It starts when the clock is first
+  definitions and the script layer); nothing of it is shared. Its days run in 1 ms slices (the next
+  section). It starts when the clock is first
   unpaused or stepped (the save loads in about 4 s on 10.5.0.24, 8 s on the laptop) and after
   every day publishes a snapshot: the galaxy read from the world, the galaxy view's map textures
   (made again only when the owners or terra incognita changed: their hash), the shown system's
@@ -836,6 +838,100 @@ home system at the same place and scale, the top bar's clock, the outliner.
   GUI's buttons first (their hover and pressed frames too); a window's background takes the
   clicks of a window an action names (gui.lua `opts.actions`). Not drawn: the bars' animated
   textures (their `animation` masks).
+
+### The render thread renders only (`sim/render/src/ui.rs`)
+
+The Lua engine does not stop the render. Three threads (and the worker pool's):
+
+- **The simulation's thread** (clock.rs) runs the days in 1 ms slices with every other
+  millisecond unused, the Lua VM stopping the engine's code at each slice's deadline
+  (docs/frame_timing.md: the patched LuaJIT, the preempter; the worker pool's jobs too), then reads
+  the snapshot (whole, between days). That is the default on Linux; on Windows each day runs
+  whole (below). STELLAR_RENDER_CLOCK=sliced or =thread chooses.
+- **One Lua world.** The simulation's world is the only one: with a simulation the map's runtime
+  has the game's files alone (models, GUI, fonts, worlds' graphics), and what is drawn of the world
+  (the galaxy, the system shown, the top bar's amounts) comes with the snapshots. A save loaded as
+  a world (`load`, the window without `--sim`) has its world in the map's runtime until the
+  simulation starts; its first snapshot replaces it (the runtime made anew, the models' index and
+  the particles set up again there). A system the snapshot does not carry yet is asked for and
+  waited for on the UI thread.
+- **The UI thread** owns the app: its Lua runtime (the GUI's layouts, the names' localisation, the
+  game's files), the input, the clock's handle and the scene. It runs the jobs the window sends (the
+  input), and every 1/120 s while something moves (the clock, the camera, a held key) or after a
+  job updates the app, takes the newest snapshot, builds the scene when something changed and
+  publishes it with the textures it uses, their mip chains made there.
+- **The render (main) thread** draws the newest published scene every 1/120 s. A new scene's
+  textures, cube maps and meshes go up at most 4 MB a frame (`Renderer::preload`; the first one
+  whatever its size), the scene before drawn until they are all up; then the scene's own buffers.
+
+Before, the render thread built the scene itself when a day's snapshot came: on 10.5.0.24, 7 to 11
+ms of it (the selection windows laid out in Lua about 4.2 ms, the galaxy's scene 4.8 ms, the
+labels 1.3 ms), and 6 ms more of mip chains when the owners changed.
+
+**`--bench SECONDS`** measures it: the window's way, offscreen (the app on its UI thread, the save
+as a running simulation, the galaxy in 3D; the render thread draws the newest scene at 120 FPS,
+uploads as above, waits for the GPU's frame; no read-back): 3 s paused, then SECONDS with the clock
+at STELLAR_BENCH_SPEED (3). The command protocol's `bench SECONDS [FPS]` does the same on the one
+thread the commands run on (the way before). On 10.5.0.24 at 640x360 (the GTX 1080 Ti at its boot
+clocks draws the galaxy in 4.2 ms there; at 960x540 it takes 10.4 ms, over the frame alone), 20 s:
+
+| | Normal: frames over 8.33 ms, the longest | Fastest | the render thread's CPU part, the longest |
+|---|---|---|---|
+| the scene built on the render thread (before) | 52, 18.5 ms | 97, 26.5 ms | 13 to 21 ms |
+| the UI thread, the days whole | 0, 6.8 ms | 0, 7.1 ms | 1.8 ms |
+| the UI thread, the days in slices | 1 (the GPU's 8.7 ms frame), 8.7 ms | 0, 6.6 ms | 1.8 ms |
+
+A new scene's frame takes the render thread at most about 1 ms (its buffers). The simulation's
+slices: 8,038 in 20 s at Normal, 5 longer than 1 ms, the longest 1.22 ms. In slices the
+simulation runs at about half its speed: 44 days in 20 s at Normal (51 the game's), 48 at Fastest
+(89 with the days whole). (These runs were before the collector's pause below; with it, 30 s at
+Normal: no frame over, the render thread's CPU part at most 1.8 ms, 59 days, the slices' longest
+21 ms: an atomic step of the collector, which now runs during play.)
+
+**Windows** (the laptop: i7-8705G, 4 cores; Radeon RX Vega M, DX12; the binary cross-compiled
+as CI builds it, x86_64-pc-windows-gnullvm), 640x360, 20 s at Normal:
+
+| | frames over 8.33 ms | the render thread's CPU part, the longest |
+|---|---|---|
+| the scene built on the render thread (before) | 43 | 43.6 ms (scene 24.9, upload 14.0, update 4.7) |
+| the UI thread, the days whole | 3 (the GPU's frames, up to 10.7 ms) | 2.0 ms |
+
+At 1280x720 the Vega M's own frames are over 8.33 ms at times (its p99 12.6 ms); the render
+thread's part stays under the frame. **The slices on Windows**: a thread woken from a sleep starts
+about half a millisecond late (Windows' high resolution timers at their best; 15.6 ms with the
+system's default timer, which `cadence::fine_timers` raises to 1 ms), so a slice began half way
+into its millisecond, and the simulation ran in slices at 0.35 to 0.40 game days a second where
+whole days give 2.25 (the frame timing harness, 10 days). The preempter spins its last 1 ms there
+(0.25 ms on Linux; with 0.25 ms half its hooks came more than 0.1 ms late), and the pool's and the
+preempter's waits sleep in short high resolution steps; a precise millisecond would need the
+unused ones spent waiting. So the days run whole on Windows by default.
+
+**Memory.** The process at 8 GB had four causes; the first three are gone, the fourth bounded:
+
+- a second world: the map's runtime kept the save's world while the simulation ran (above);
+- each decoded texture twice: the textures' cache and the scenes' registry each held a copy
+  (`dds::Cache` now holds the images shared), and a mip chain's level 0 was a third, made at each
+  upload (now the image itself);
+- the mip chains made ahead (ui.rs) of the scenes the render thread skipped for newer ones (at the
+  fastest speed a day's map textures, 16 MB and more each): kept, 150 MB a second;
+- the simulation's heap: stellar_sim's collector pause is 400 (the heap grows to five times its
+  live 1.4 GB before a cycle, chosen for speed). The renderer sets 200 before its Lua states are
+  made (`runtime::set_gc_pause`; STELLAR_GC_PAUSE overrides; LuaJIT takes a new pause only at a
+  cycle's end, so a pause set after the load came too late).
+
+Now (`--bench` prints it): the process at 2.1 GB after the load (the UI thread's runtimes about 90
+MB, the decoded textures 157 MB), and at Normal on 10.5.0.24 about 4.1 GB after 30 s (the
+simulation's heap at most 2.8 GB); at the fastest speed it levels at 4.5 GB on Linux and moves
+between 4.4 and 5.5 GB on Windows, where at 400 it went past 7.6 GB and on. A pause of 150 levels
+at 3.7 GB for 14% of the speed. The rest is the worker pool's Lua states, the store (which holds
+the part of the world exploration reads, for the workers: docs/data_layer.md), and the GPU
+driver's. The renderer does not fault the heap in ahead as the frame timing harness does
+(`runtime::prefault_heap`: 3.9 GB at once). On the laptop the window had run out of GPU memory
+before its first frame (the Vega M's 4 GB under the process's 8): it draws now.
+
+**The window** keeps one frame in flight: each frame waits for the GPU to finish the one before
+(with a mailbox present nothing else holds frames back, and the resources the scenes replace are
+freed when the device is polled).
 
 ### The camera (`sim/render/src/camera.rs`, `app.rs`; CGameCamera)
 

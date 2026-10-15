@@ -111,6 +111,31 @@ pub fn tune_malloc() {
     });
 }
 
+static GC_PAUSE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(400);
+
+/// The collector's pause the Lua states made from now on take (400 unless set; STELLAR_GC_PAUSE
+/// overrides it): set before a state is made, since LuaJIT takes a new pause only at the end of
+/// a cycle (a state that loaded at 400 grows to five times its live heap before the next).
+pub fn set_gc_pause(percent: u32) {
+    GC_PAUSE.store(percent, std::sync::atomic::Ordering::Release);
+}
+
+fn gc_pause() -> u32 {
+    GC_PAUSE.load(std::sync::atomic::Ordering::Acquire)
+}
+
+static SLICES_AHEAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the simulation made from now on will run in slices (set before its load: the worker
+/// pool, made with the load, faults its threads' heaps in then: [`prefault_heap`]).
+pub fn set_slices_ahead(on: bool) {
+    SLICES_AHEAD.store(on, std::sync::atomic::Ordering::Release);
+}
+
+pub fn slices_ahead() -> bool {
+    SLICES_AHEAD.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// Memory for this thread's heap faulted in now, `mb` MB of it (the environment variable `env`
 /// overrides it; 0: none): blocks allocated, a byte written in each page, and freed. With
 /// [`tune_malloc`]'s settings glibc keeps them in the thread's arena, so the heap's growth while
@@ -178,8 +203,8 @@ pub fn new_lua() -> mlua::Result<Lua> {
     // mostly the world and the definitions, which live for the whole run, so every cycle walks them
     // again. 180 days from 2210.01.01: 238 ms a day and 4.1 GB at LuaJIT's 200, 209 ms and 6.0 GB at
     // 400, 203 ms and 9.0 GB at 800 (half of the monthly modifier rebuild had been the collector);
-    // STELLAR_GC_PAUSE overrides it
-    let pause = std::env::var("STELLAR_GC_PAUSE").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(400);
+    // STELLAR_GC_PAUSE overrides it, and a program may choose another default ([`set_gc_pause`])
+    let pause = std::env::var("STELLAR_GC_PAUSE").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or_else(gc_pause);
     lua.load(format!("collectgarbage('setpause', {pause})")).exec()?;
     let repo = repo_dir().to_string_lossy().replace('\\', "/");
     let package: Table = lua.globals().get("package")?;

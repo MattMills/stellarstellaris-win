@@ -267,7 +267,7 @@ impl Layout {
 
 /// The textures a scene uses: index -> (name, image). Game files by their path, generated ones
 /// by a name starting with "@".
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Textures {
     pub names: Vec<String>,
     pub images: Vec<Arc<Image>>,
@@ -298,7 +298,7 @@ impl Textures {
         }
         match cache.get(game_dir, path) {
             Ok(img) => {
-                let img = Arc::new(img.clone());
+                let img = img.clone();
                 Some(self.add(path, img))
             }
             Err(e) => {
@@ -324,7 +324,7 @@ impl Textures {
         }
         match cache.get_cube(game_dir, path, levels) {
             Ok(img) => {
-                let img = Arc::new(img.clone());
+                let img = img.clone();
                 Some(self.add(&name, img))
             }
             Err(e) => {

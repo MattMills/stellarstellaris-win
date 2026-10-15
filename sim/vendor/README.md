@@ -47,6 +47,14 @@ in the collector's phases (mark, atomic and its parts, sweep, finalize), in the 
 trace's optimization and assembly by its size, and the traces and collector steps put off to the
 next slice. The frame timing report prints it for the sliced mode.
 
+The record's clock is `clock_gettime(CLOCK_MONOTONIC)`, and on Windows the UCRT's
+`timespec_get` (MSVC, and llvm-mingw for CI's x86_64-pc-windows-gnullvm build of the renderer).
+
+The build script (`src/lib.rs`): the copies of the sources are made writable, and the copy of
+`luajit2/.relver` is removed before the release file is copied over it. On a share Windows sees
+the vendored files read-only and the dot file hidden, and does not copy over a hidden file; the
+crate from crates.io never met this.
+
 `sim/Cargo.toml` and `sim/render/Cargo.toml` take it with `[patch.crates-io]`. Cargo does not see a
 change to the C sources: after one, `cargo clean -p mlua-sys -p luajit-src` (mlua-sys builds
 LuaJIT). To update LuaJIT: replace the directory with the new crate's sources and make the changes

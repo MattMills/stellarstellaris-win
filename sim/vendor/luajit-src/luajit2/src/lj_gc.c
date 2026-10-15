@@ -47,7 +47,8 @@ static STELLAR_TLS double stellar_gc_room;
 double stellar_clock(void)
 {
   struct timespec ts;
-#if defined(_MSC_VER)
+#if defined(_WIN32)
+  /* the UCRT's (MSVC, and llvm-mingw for x86_64-pc-windows-gnullvm, CI's Windows build) */
   timespec_get(&ts, TIME_UTC);
 #else
   clock_gettime(CLOCK_MONOTONIC, &ts);

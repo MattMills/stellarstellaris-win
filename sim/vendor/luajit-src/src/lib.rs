@@ -130,6 +130,8 @@ impl Build {
 
         // Copy release version file
         let relver = build_dir.join(".relver");
+        // stellarstellaris: the copy of luajit2/.relver removed first (see the Windows build)
+        let _ = fs::remove_file(&relver);
         fs::copy(manifest_dir.join("luajit_relver.txt"), &relver)
             .context(|| format!("Cannot copy 'luajit_relver.txt'"))?;
 
@@ -269,6 +271,9 @@ impl Build {
 
         // Copy release version file
         let relver = build_dir.join(".relver");
+        // stellarstellaris: the copy of luajit2/.relver removed first (from a share it comes
+        // hidden, and Windows does not copy over a hidden file)
+        let _ = fs::remove_file(&relver);
         fs::copy(manifest_dir.join("luajit_relver.txt"), &relver)
             .context(|| format!("Cannot copy 'luajit_relver.txt'"))?;
 
@@ -323,6 +328,17 @@ fn cp_r(src: &Path, dst: &Path) -> Result<(), DynError> {
             let _ = fs::remove_file(&dst);
             fs::copy(&path, &dst)
                 .context(|| format!("Cannot copy '{}' to '{}'", path.display(), dst.display()))?;
+            // stellarstellaris (sim/vendor/README.md): the copy writable, whatever the source's
+            // permissions (a vendored source on a share Windows sees read-only: the build then
+            // could not copy over it, nor the next build remove it)
+            if let Ok(md) = fs::metadata(&dst) {
+                let mut perms = md.permissions();
+                if perms.readonly() {
+                    #[allow(clippy::permissions_set_readonly_false)]
+                    perms.set_readonly(false);
+                    let _ = fs::set_permissions(&dst, perms);
+                }
+            }
         }
     }
     Ok(())

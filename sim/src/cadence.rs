@@ -117,7 +117,9 @@ pub fn sleep_until(t: f64) {
 }
 
 /// The calling thread's timer slack at a nanosecond (Linux: 50 us by default, by which a sleep may
-/// wake late), so that a slice starts close to its slot's start.
+/// wake late), so that a slice starts close to its slot's start. On Windows the system timer at
+/// 1 ms for the process (timeBeginPeriod; 15.6 ms by default, at which a timed wait wakes: Rust's
+/// sleep is high resolution, a condition variable's or a channel's timed wait is not).
 pub fn fine_timers() {
     #[cfg(target_os = "linux")]
     unsafe {
@@ -126,6 +128,17 @@ pub fn fine_timers() {
         }
         const PR_SET_TIMERSLACK: i32 = 29;
         prctl(PR_SET_TIMERSLACK, 1u64);
+    }
+    #[cfg(windows)]
+    {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| unsafe {
+            #[link(name = "winmm")]
+            extern "system" {
+                fn timeBeginPeriod(period: u32) -> u32;
+            }
+            timeBeginPeriod(1);
+        });
     }
 }
 

@@ -61,8 +61,11 @@ fn worker_main(
         }
     };
     crate::cadence::fine_timers();
-    // the heap's growth faulted in before the jobs (crate::runtime::prefault_heap)
-    crate::runtime::prefault_heap(384, "STELLAR_PREFAULT_WORKER_MB");
+    // the heap's growth faulted in before the jobs, when the jobs will run in slices
+    // (crate::runtime::prefault_heap)
+    if crate::runtime::slices_ahead() {
+        crate::runtime::prefault_heap(384, "STELLAR_PREFAULT_WORKER_MB");
+    }
     let log = crate::cadence::register(&format!("lua-worker-{index}"));
     let mut earliest = 0.0;
     let mut pinned = false;
@@ -186,7 +189,22 @@ impl Pool {
         let until = std::time::Instant::now() + wait;
         while self.outstanding.get() > 0 {
             let left = until.saturating_duration_since(std::time::Instant::now());
-            let r = self.done.recv_timeout(left);
+            let r = if cfg!(windows) && left < std::time::Duration::from_millis(20) {
+                // (Windows: a channel's timed wait wakes at the system timer's granularity, a
+                // millisecond at best; a short wait, a slice's, looks every 0.1 ms between high
+                // resolution sleeps instead)
+                match self.done.try_recv() {
+                    Ok(x) => Ok(x),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(std::sync::mpsc::RecvTimeoutError::Disconnected),
+                    Err(std::sync::mpsc::TryRecvError::Empty) if left.is_zero() => Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        std::thread::sleep(left.min(std::time::Duration::from_micros(100)));
+                        continue;
+                    }
+                }
+            } else {
+                self.done.recv_timeout(left)
+            };
             note_overshoot(std::time::Instant::now().saturating_duration_since(until).as_secs_f64());
             match r {
                 Ok((i, r)) => {

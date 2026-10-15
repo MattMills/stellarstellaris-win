@@ -76,6 +76,13 @@ its page faults and whether the thread was off the CPU (preempted or blocked), a
 `STELLAR_PREEMPT_TRACE=1` the Lua stack where the hook yielded late or could not yield; how late the
 preempter set its hooks; and how late the worker pool's waits came back.
 
+**In the renderer** (docs/render.md section 12, "The render thread renders only"): the render
+thread draws only, the app and its Lua on a UI thread, the simulation's days in these slices on
+Linux (whole on Windows, where a sleeping thread wakes half a millisecond late). Judged by the 120
+FPS standard: with the clock running no frame's CPU part reaches the frame's time (at most 1.8 ms
+on 10.5.0.24, 2 ms on the Windows laptop, where 13 to 44 ms before). The renderer neither faults
+the heap in ahead nor keeps a collector pause of 400 (memory: 4 to 5.5 GB, from 8).
+
 **What is open**:
 
 - the pace: 90% of Normal. Every other millisecond idle and a margin of 0.1 ms leave the

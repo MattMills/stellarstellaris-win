@@ -60,12 +60,15 @@ const NONE: u64 = 0x7ff0_0000_0000_0000; // f64::INFINITY's bits
 
 // How long before a deadline the preempter stops sleeping and spins to it: a sleeping thread wakes
 // late by the timer's and the core's wake-up latency, tens of microseconds and at times over 100
-// (with 80 µs, 2% of the hooks were set more than 10 µs late in some runs, up to 0.9 ms).
+// (with 80 µs, 2% of the hooks were set more than 10 µs late in some runs, up to 0.9 ms). On
+// Windows 1 ms: its high resolution timers wake about half a millisecond late (with 0.25 ms, half
+// the hooks came more than 0.1 ms late on the laptop; with 1 ms, 13,705 of 14,094 within 10 µs).
 // STELLAR_PREEMPT_SPIN_US overrides it.
 fn spin() -> f64 {
     static SPIN: OnceLock<f64> = OnceLock::new();
     *SPIN.get_or_init(|| {
-        std::env::var("STELLAR_PREEMPT_SPIN_US").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(250.0) / 1e6
+        let default = if cfg!(windows) { 1000.0 } else { 250.0 };
+        std::env::var("STELLAR_PREEMPT_SPIN_US").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(default) / 1e6
     })
 }
 
@@ -155,7 +158,19 @@ fn run(p: &Preempter) {
                 }
                 p.vms.lock().unwrap()
             } else {
-                p.wake.wait_timeout(vms, Duration::from_secs_f64(wait - spin())).unwrap().0
+                // (Windows: a condition variable's timed wait wakes at the system timer's
+                // granularity, a millisecond at best, where a sleep is high resolution: the lock
+                // free, a sleep of 0.5 ms at most, and the VMs looked at again)
+                #[cfg(windows)]
+                {
+                    drop(vms);
+                    std::thread::sleep(Duration::from_secs_f64((wait - spin()).min(0.0005)));
+                    p.vms.lock().unwrap()
+                }
+                #[cfg(not(windows))]
+                {
+                    p.wake.wait_timeout(vms, Duration::from_secs_f64(wait - spin())).unwrap().0
+                }
             }
         } else {
             p.wake.wait(vms).unwrap()

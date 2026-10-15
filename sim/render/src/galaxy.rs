@@ -235,6 +235,18 @@ pub fn runtime(save_path: &str) -> Result<Runtime, String> {
     Ok(runtime)
 }
 
+/// A runtime with no world, for the game's files (models, GUI, worlds' graphics), and the
+/// renderer's Lua modules on the path: the map's while a simulation runs, which has the one world
+/// (its snapshots carry what is drawn of it).
+pub fn files_runtime() -> Result<Runtime, String> {
+    let runtime = Runtime::new(stellar_sim::Date::from_ymd(2200, 1, 1), 0).map_err(|e| format!("the Lua runtime: {e}"))?;
+    let path = format!("{}/?.lua", lua_dir());
+    let package: Table = runtime.lua.globals().get("package").map_err(|e| e.to_string())?;
+    let old: String = package.get("path").map_err(|e| e.to_string())?;
+    package.set("path", format!("{path};{old}")).map_err(|e| e.to_string())?;
+    Ok(runtime)
+}
+
 /// A runtime with the game's files and the save loaded for a simulation (the definitions, the
 /// script layer, the world), and the renderer's Lua modules on the path.
 pub fn sim_runtime(game_dir: &str, save_path: &str) -> Result<Runtime, String> {

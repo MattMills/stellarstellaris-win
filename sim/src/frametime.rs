@@ -848,6 +848,7 @@ where
         .spawn(move || {
             let run = || -> Result<ThreadResult, String> {
                 let t0 = Instant::now();
+                crate::runtime::set_slices_ahead(sliced);
                 let mut sim = load()?;
                 let load_s = t0.elapsed().as_secs_f64();
                 // the heap's growth faulted in before the run (crate::runtime::prefault_heap), and
