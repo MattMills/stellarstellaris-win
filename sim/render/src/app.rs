@@ -144,8 +144,9 @@ pub struct App {
     pub overlay_items: Vec<GuiItem>,
     /// the map labels (mapicons.gui) of what the view shows
     pub overlay_labels: Vec<scene::Label>,
-    /// what the windows were laid out for: the size, view, selection, snapshot, GUI shown
-    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool)>,
+    /// what the windows were laid out for: the size, view, selection, snapshot, GUI shown, paused,
+    /// star names' zoom, observing
+    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool)>,
     /// the player holds the camera (a drag, a turn); the plane's point a drag holds; what the
     /// camera follows; the systems' cameras as they were left; the last system shown
     holding: bool,
@@ -1342,7 +1343,7 @@ impl App {
             let (w, h) = self.size;
             let states = self.states();
             if self.screen == Screen::Map {
-                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0)));
+                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0), m.observe));
                 if key != self.overlay_key {
                     let t = Instant::now();
                     self.overlay_items = self.selection_windows();
