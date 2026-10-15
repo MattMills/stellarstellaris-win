@@ -36,6 +36,7 @@
 
 local world = require("engine.world")
 local defs = require("engine.defs")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local strategy = {
     stats = { months = 0, countries = 0, colonize = 0, entries = 0, kept = 0, seconds = 0 },
@@ -110,6 +111,7 @@ local function galaxy()
     G = { tree = world.tree, systems = {}, planets_of = {}, system_of = {}, lanes = {}, bypasses_of = {},
           bypass_system = {}, star = {}, jumps = {} }
     for _, sid in ipairs(world.all("system")) do
+        slice.tick("ai/strategy.lua:113")
         local s = world.object("system", sid)
         G.systems[#G.systems + 1] = sid
         local planets = {}
@@ -199,6 +201,7 @@ local function jumps_from(src)
     end
     local done = {}
     while #heap > 0 do
+        slice.tick("strategy paths")
         local x = pop()
         local d, j, s = x[1], x[2], x[3]
         if not done[s] and d == dist[s] and j == jumps[s] then
@@ -425,6 +428,7 @@ end
 local function jumps_from_border(sid, own)
     local best = 2147483647
     for _, s in ipairs(own) do
+        slice.tick("strategy border")
         local j = (s == sid) and 0 or jumps_from(s)[sid]
         if j and j < best then
             best = j
@@ -468,6 +472,7 @@ function strategy.compute(id)
         if world.system_owner[sid] == id then own[#own + 1] = sid end
     end
     for _, sid in ipairs(g.systems) do
+        slice.tick("strategy system")
         local owner = world.system_owner[sid]
         -- the system's owner: nobody, or us (an enemy's, one without access, another's: skipped)
         if owner == nil or owner == id then
@@ -558,15 +563,43 @@ local function block_of(s)
     }
 end
 
--- CCountryAI::WriteMembers: the lists in type order, each stable-sorted by (id, target)
+-- CCountryAI::WriteMembers: the lists in type order, each stable-sorted by (id, target). A merge
+-- sort with a tick between its merges (a phase in pieces may stop in it, as it cannot in
+-- table.sort's comparator, a call from C): the order is total (the place in the list last), so
+-- any sort gives this one.
+local function before(a, b)
+    if a.type ~= b.type then return a.type < b.type end
+    if a.id ~= b.id then return a.id < b.id end
+    if a.target ~= b.target then return a.target < b.target end
+    return a.n < b.n
+end
 local function sorted(list)
+    local n = #list
     for i, s in ipairs(list) do s.n = i end
-    table.sort(list, function(a, b)
-        if a.type ~= b.type then return a.type < b.type end
-        if a.id ~= b.id then return a.id < b.id end
-        if a.target ~= b.target then return a.target < b.target end
-        return a.n < b.n
-    end)
+    local src, dst, width = list, {}, 1
+    while width < n do
+        local i = 1
+        while i <= n do
+            slice.tick("strategy sort")
+            local mid, hi = math.min(i + width, n + 1), math.min(i + 2 * width, n + 1)
+            local a, b, k = i, mid, i
+            while a < mid and b < hi do
+                if before(src[b], src[a]) then
+                    dst[k], b = src[b], b + 1
+                else
+                    dst[k], a = src[a], a + 1
+                end
+                k = k + 1
+            end
+            while a < mid do dst[k], a, k = src[a], a + 1, k + 1 end
+            while b < hi do dst[k], b, k = src[b], b + 1, k + 1 end
+            i = i + 2 * width
+        end
+        src, dst, width = dst, src, width * 2
+    end
+    if src ~= list then
+        for i = 1, n do list[i] = src[i] end
+    end
     return list
 end
 
@@ -574,6 +607,7 @@ end
 local function write(ai, fresh, rebuilt)
     local kept, pos, out = {}, nil, {}
     for i, e in ipairs(ai) do
+        slice.tick("strategy write")
         if e.op and e.key and e.key.text == "strategy" and e.value.text == nil then
             pos = pos or #out + 1
             local s = entry_of(e)
@@ -594,6 +628,7 @@ local function write(ai, fresh, rebuilt)
     sorted(all)
     local entries = {}
     for i, s in ipairs(all) do
+        slice.tick("strategy entries")
         entries[i] = { key = { text = "strategy" }, op = "=", value = block_of(s) }
     end
     -- the block rewritten in place: out[1..pos-1], the strategies, out[pos..]
@@ -651,6 +686,7 @@ function strategy.entries(id, t)
     local c = country(id)
     local ai = c and world.field(c, "ai")
     for _, e in ipairs(type(ai) == "table" and ai or {}) do
+        slice.tick("strategy entries read")
         if e.op and e.key and e.key.text == "strategy" and e.value.text == nil then
             local s = entry_of(e)
             if s.type == t then
@@ -670,6 +706,7 @@ function strategy.monthly(host, date)
     local t0 = os.clock()
     strategy.stats.months = strategy.stats.months + 1
     for _, id in ipairs(world.all("country")) do
+        slice.tick("ai/strategy.lua:674")
         local c = country(id)
         local ai = c and world.field(c, "ai")
         if type(ai) == "table" then
@@ -684,6 +721,7 @@ function strategy.monthly(host, date)
                 -- the save writes them sorted (strategy.entries)
                 local made = {}
                 for _, s in ipairs(fresh) do
+                    slice.tick("strategy made")
                     local l = made[s.type]
                     if not l then
                         l = {}
@@ -719,6 +757,7 @@ function strategy.compare(only)
         return by[t]
     end
     for _, id in ipairs(world.all("country")) do
+        slice.tick("ai/strategy.lua:723")
         local c = country(id)
         local ai = c and world.field(c, "ai")
         if type(ai) == "table" and type_flag(c, "relations") and (only == nil or only == id) then

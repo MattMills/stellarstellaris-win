@@ -13,6 +13,7 @@
 -- produces mults), as CBuildable*::CalcCost / CalcUpkeep give them.
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local defs = require("engine.defs")
 local eval = require("simscript.eval")
 
@@ -66,6 +67,7 @@ function B.table(b, kind)
     local e = economy()
     local base = {}
     for _, blk in ipairs(t[kind] or {}) do
+        slice.tick("ai/economy/buildables.lua:68")
         local ok, holds = true, true
         if blk.trigger then
             ok, holds = pcall(eval.trigger, blk.trigger, ctx)
@@ -74,6 +76,7 @@ function B.table(b, kind)
             local m = blk.mult and e.value_of(blk.mult, ctx) or 1
             if m ~= 0 then
                 for _, rv in ipairs(blk.values) do
+                    slice.tick("ai/economy/buildables.lua:76")
                     local okv, v = pcall(e.value_of, rv[2], ctx)
                     if okv and v then
                         base[rv[1]] = (base[rv[1]] or 0) + v * m
@@ -139,6 +142,7 @@ end
 -- the kinds a queue item is (the buildable_<kind> key)
 function B.item_kind(item)
     for _, e in ipairs(item) do
+        slice.tick("ai/economy/buildables.lua:141")
         if e.op and e.key and e.value.text == nil and e.key.text:sub(1, 10) == "buildable_" then
             return e.key.text:sub(11), e.value
         end
@@ -153,6 +157,7 @@ function B.has_queued_construction(queue)
         return false
     end
     for _, iid in ipairs(world.list(world.field(q, "items"))) do
+        slice.tick("ai/economy/buildables.lua:155")
         local item = world.object("construction.item_mgr.items", tonumber(iid))
         local kind = item and B.item_kind(item)
         if kind == "district" or kind == "planet_building" or kind == "planet_upgrade_building" then

@@ -48,6 +48,7 @@
 
 local bit = require("bit")
 local source = require("stellar.script.source")
+local tick = require("engine.slice").tick   -- a phase in pieces (docs/frame_timing.md)
 
 local M = {}
 
@@ -797,6 +798,7 @@ function S:index_world()
     local w = self.world
     self.planet_of_colony = {}
     for _, id in ipairs(w.all("planet")) do
+        tick("modifier source index")
         local c = w.field(w.object("planet", id), "colony")
         if type(c) == "number" then
             self.planet_of_colony[c] = id
@@ -804,12 +806,14 @@ function S:index_world()
     end
     self.federation_of = {}
     for _, id in ipairs(w.all("federation")) do
+        tick("modifier source index")
         for _, m in ipairs(list_of(w, w.object("federation", id), "members")) do
             self.federation_of[tonumber(m)] = id
         end
     end
     self.sector_of_system = {}
     for _, id in ipairs(w.all("sectors")) do
+        tick("modifier source index")
         for _, s in ipairs(list_of(w, w.object("sectors", id), "systems")) do
             self.sector_of_system[tonumber(s)] = id
         end
@@ -817,6 +821,7 @@ function S:index_world()
     -- leaders: skill level and traits
     self.leaders = {}
     for _, id in ipairs(w.all("leader")) do
+        tick("modifier source index")
         local o = w.object("leader", id)
         local l = { traits = {}, level = 0 }
         for _, e in ipairs(o) do
@@ -836,6 +841,7 @@ function S:index_world()
     -- council positions by country
     self.council = {}
     for _, id in ipairs(w.all("council_positions")) do
+        tick("modifier source index")
         local o = w.object("council_positions", id)
         local country = w.field(o, "country")
         if type(country) == "number" then
@@ -847,7 +853,9 @@ function S:index_world()
     -- the colonized planets of each country; the planet each governor governs
     self.colonies_of, self.governed = {}, {}
     for _, pid in ipairs(w.all("planet")) do
+        tick("modifiers.lua:855")
         local p = w.object("planet", pid)
+        tick("modifier source index")
         local owner, colony = w.field(p, "owner"), w.field(p, "colony")
         if type(owner) == "number" and type(colony) == "number" then
             local l = self.colonies_of[owner] or {}
@@ -862,6 +870,7 @@ function S:index_world()
     -- the planets of each system
     self.planets_of_system = {}
     for _, pid in ipairs(w.all("planet")) do
+        tick("modifiers.lua:871")
         local coord = w.field(w.object("planet", pid), "coordinate")
         local sys = type(coord) == "table" and tonumber(w.field(coord, "origin"))
         if sys then
@@ -885,6 +894,7 @@ function S:index_world()
         table.sort(l)
     end
     for _, gid in ipairs(w.all("galactic_object")) do
+        tick("modifiers.lua:894")
         for _, sb in ipairs(list_of(w, w.object("galactic_object", gid), "starbases")) do
             self.system_of_starbase[tonumber(sb)] = gid
         end
@@ -893,6 +903,7 @@ function S:index_world()
     -- its general, the leader of an army embarked in it
     self.fleet_general, self.fleet_leader = {}, {}
     for _, aid in ipairs(w.all("army")) do
+        tick("modifiers.lua:902")
         local a = w.object("army", aid)
         local leader, ship = tonumber(w.field(a, "leader")), tonumber(w.field(a, "ship"))
         local fleet = ship and tonumber(w.field(w.object("ships", ship), "fleet"))
@@ -902,6 +913,7 @@ function S:index_world()
         end
     end
     for _, lid in ipairs(w.all("leader")) do
+        tick("modifiers.lua:911")
         local loc = w.field(w.object("leader", lid), "location")
         if type(loc) == "table" and unq(w.field(loc, "type")) == "ship" then
             local ship = tonumber(w.field(loc, "id"))
@@ -931,6 +943,7 @@ function S:index_world()
     -- the situations of each country
     self.situations_of = {}
     for _, sid in ipairs(w.all("situations")) do
+        tick("modifiers.lua:940")
         local c = tonumber(w.field(w.object("situations", sid), "country"))
         if c then
             local l = self.situations_of[c] or {}
@@ -941,6 +954,7 @@ function S:index_world()
     -- the country each ruler rules
     self.ruler_of = {}
     for _, cid in ipairs(w.all("country")) do
+        tick("modifiers.lua:950")
         local r = w.field(w.object("country", cid), "ruler")
         if type(r) == "number" then
             self.ruler_of[r] = cid
@@ -1334,6 +1348,7 @@ function S:contributions(parts, id)
     -- (the starbases' country_modifier reach the country through their StarbaseCountry nodes)
     local mega = {}
     for _, mid in ipairs(w.all("megastructures")) do
+        tick("modifiers.lua:1343")
         local o = w.object("megastructures", mid)
         if w.field(o, "owner") == id then
             sum_into(mega, self:def_values("common/megastructures", unq(w.field(o, "type")), "country_modifier"))

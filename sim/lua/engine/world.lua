@@ -9,6 +9,7 @@
 --   world.object("country", 0), world.field(obj, "capital"), world.list(obj, "civics")
 
 local pdxscript = require("pdxscript")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local world = {
     stores = {},   -- store name -> { [id] = block }
@@ -214,8 +215,15 @@ end
 -- every read of an index made stale by a direct edit is counted with its traceback
 -- (world.stale_report()), to find the code that must call world.reindex; without it, an index is
 -- trusted until world.reindex / insert / remove_entry drops it.
+--
+-- Only a block of more than SMALL entries is indexed; a smaller one (most of them: coordinates,
+-- short lists) is scanned, which costs no more than the index and leaves nothing to keep. (The
+-- index is a weak table, and every weak table is traversed again and cleared in the collector's
+-- atomic step: with every block read indexed it was most of that step, which a frame cannot cut;
+-- docs/frame_timing.md.) A scan and a current index give the same entries in the same order.
+local SMALL = tonumber(os.getenv("STELLAR_WORLD_SMALL") or "") or 8
 local fields_of = setmetatable({}, { __mode = "k" })
-local length_of = setmetatable({}, { __mode = "k" })
+local length_of = setmetatable({}, { __mode = "k" })   -- (with STELLAR_WORLD_CHECK=1 only)
 local check = os.getenv("STELLAR_WORLD_CHECK") == "1"
 local stale = {}
 function world.stale_report()
@@ -249,9 +257,20 @@ local function fields(obj)
             end
         end
         fields_of[obj] = f
-        length_of[obj] = n
+        if check then length_of[obj] = n end
     end
     return f
+end
+
+-- the first entry `key = ...` of a small block (scanned), and whether obj is one
+local function small(obj)
+    return #obj <= SMALL
+end
+local function first_of(obj, key)
+    for _, e in ipairs(obj) do
+        if e.op and e.key and e.key.text == key then return e end
+    end
+    return nil
 end
 
 -- world.reindex(obj): the index of obj dropped, for code that rewrote obj's entries directly
@@ -267,8 +286,14 @@ function world.field(obj, key)
     if obj == nil then
         return nil
     end
-    local l = fields(obj)[key]
-    local v = l and l[1] and l[1].value
+    local v
+    if small(obj) then
+        local e = first_of(obj, key)
+        v = e and e.value
+    else
+        local l = fields(obj)[key]
+        v = l and l[1] and l[1].value
+    end
     if v and v.text then
         return tonumber(v.text) or v.text
     end
@@ -276,6 +301,15 @@ function world.field(obj, key)
 end
 function world.fields(obj, key)
     local out = {}
+    if obj and small(obj) then
+        for _, e in ipairs(obj) do
+            if e.op and e.key and e.key.text == key then
+                local v = e.value
+                out[#out + 1] = v.text or v
+            end
+        end
+        return out
+    end
     for i, e in ipairs(obj and fields(obj)[key] or {}) do
         local v = e.value
         out[i] = v.text or v
@@ -338,26 +372,36 @@ local function appended(obj, key, entry)
         f[key] = list
     end
     list[#list + 1] = entry
-    length_of[obj] = n
+    if check then length_of[obj] = n end
 end
 
--- world.set(obj, key, value): the first `key = <token>` of obj changed, or added
--- world.token_entry(obj, key) -> the first `key = <token>` entry of obj (the one world.set sets), or nil
-function world.token_entry(obj, key)
+-- the first `key = <token>` entry of obj
+local function token_entry(obj, key)
+    if small(obj) then
+        for _, e in ipairs(obj) do
+            if e.op and e.key and e.key.text == key and e.value.text ~= nil then return e end
+        end
+        return nil
+    end
     for _, e in ipairs(fields(obj)[key] or {}) do
         if e.value.text ~= nil then return e end
     end
     return nil
 end
 
+-- world.set(obj, key, value): the first `key = <token>` of obj changed, or added
+-- world.token_entry(obj, key) -> the first `key = <token>` entry of obj (the one world.set sets), or nil
+function world.token_entry(obj, key)
+    return token_entry(obj, key)
+end
+
 function world.set(obj, key, value)
     local text = type(value) == "number" and number_text(value) or tostring(value)
     if tracking then wrote(obj, "own", key) end
-    for _, e in ipairs(fields(obj)[key] or {}) do
-        if e.value.text ~= nil then
-            e.value.text = text
-            return
-        end
+    local t = token_entry(obj, key)
+    if t then
+        t.value.text = text
+        return
     end
     local e = { key = { text = key }, op = "=", value = { text = text } }
     obj[#obj + 1] = e
@@ -634,6 +678,7 @@ function world.index()
     -- `owned_planets` are colony ids
     world.colony_planet, world.planet_colony = {}, {}
     for _, pid in ipairs(world.all("planet")) do
+        slice.tick("world.lua:636")
         local c = tonumber(world.field(world.object("planet", pid), "colony"))
         if c then
             world.colony_planet[c], world.planet_colony[pid] = pid, c
@@ -650,13 +695,16 @@ function world.index()
         end
     end
     for _, id in ipairs(world.all("planet")) do
+        slice.tick("world.lua:652")
         push(world.planets_of, tonumber(world.field(world.object("planet", id), "owner")), id)
     end
     for _, id in ipairs(world.all("pop_group")) do
+        slice.tick("world.lua:655")
         local colony = tonumber(world.field(world.object("pop_group", id), "planet"))
         push(world.pop_groups_of, colony and world.colony_planet[colony], id)
     end
     for _, id in ipairs(world.all("leader")) do
+        slice.tick("world.lua:659")
         push(world.leaders_of, tonumber(world.field(world.object("leader", id), "country")), id)
     end
     -- owners the save does not write on the object: a fleet's is the country whose
@@ -664,6 +712,7 @@ function world.index()
     -- ship -> that ship's fleet -> the fleet's owner)
     world.fleet_owner, world.system_owner = {}, {}
     for _, cid in ipairs(world.all("country")) do
+        slice.tick("world.lua:666")
         local owned = world.path(world.object("country", cid), "fleets_manager", "owned_fleets")
         for _, entry in ipairs(world.blocks(owned)) do
             local fleet = tonumber(world.field(entry, "fleet"))
@@ -673,6 +722,7 @@ function world.index()
         end
     end
     for _, sid in ipairs(world.all("system")) do
+        slice.tick("world.lua:675")
         for _, sb in ipairs(world.list(world.field(world.object("system", sid), "starbases"))) do
             local station = tonumber(world.field(world.object("starbase", tonumber(sb)), "station"))
             local fleet = station and tonumber(world.field(world.object("ship", station), "fleet"))

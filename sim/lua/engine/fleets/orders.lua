@@ -41,6 +41,7 @@
 local world = require("engine.world")
 local eval = require("simscript.eval")
 local live = require("engine.store.live")   -- the store's copy of what exploration reads (docs/data_layer.md)
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local orders = {
     stats = { days = 0, ticked = {}, finished = {}, started = {}, cancelled = 0, issued = 0, refused = 0,
@@ -330,6 +331,7 @@ end
 -- [I] from the saves, the star's coordinate + (d + 9, -(d + 9)), d = 0.33 size + 2.7
 local function starbase_system(sbid)
     for _, sys in ipairs(world.all("galactic_object")) do
+        slice.tick("fleets/orders.lua:333")
         for _, v in ipairs(world.list(world.field(world.object("galactic_object", sys), "starbases"))) do
             if tonumber(v) == sbid then return sys end
         end
@@ -847,12 +849,14 @@ function orders.daily(host, date)
     end
     S.days = S.days + 1
     for _, fid in ipairs(world.all("fleet")) do
+        slice.tick("fleets/orders.lua:850")
         local f = fleet(fid)
         if f and (world.field(f, "current_order") or world.field(f, "order")) then
             local h = current_handle(f)
             if h and KEPT[h.type] then
                 count(S.not_modelled, h.type)
             else
+                slice.check("fleet orders")
                 handle_orders(fid, f, host)
             end
         end

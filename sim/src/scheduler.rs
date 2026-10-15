@@ -14,6 +14,14 @@
 //! section 1). Each runs in the Lua engine (`engine.phase`), followed by its barrier (the engine
 //! effects queued in it applied). Parallel phases run with random draws forbidden; the day's pool of
 //! 1,000 draws is taken where the game takes it.
+//!
+//! A tick can also be run a [`Unit`] at a time ([`Simulation::step`]), and a unit in pieces
+//! ([`Simulation::step_until`]): each phase runs as a Lua coroutine that yields, past a deadline,
+//! at the checks of the engine's loops (engine.slice), and goes on where it stopped at the next
+//! step. A renderer gives the simulation what is left of each frame that way (docs/frame_timing.md).
+//! Pieces, steps and [`Simulation::tick`] run the same units in the same order.
+
+use std::collections::VecDeque;
 
 use crate::date::Date;
 use crate::rng::DAILY_POOL_SIZE;
@@ -78,6 +86,70 @@ pub const YEARLY_PHASES: [&str; 2] = [
     "cleanup",         // ClearUnusedShipDesigns, ClearInvalidFleetDesigns
 ];
 
+/// The pieces a tick is run in by [`Simulation::step`]: one phase each, which cannot be cut
+/// shorter (a phase is one call into the Lua engine, and its barrier).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Unit {
+    /// `MicroUpdate`, every tick (the first unit of a tick, after the commands)
+    Micro,
+    /// `ProcessAI`, on the tick `_nTickCount % 10 == 4`
+    Ai,
+    /// a phase of `DailyUpdate` (`random_pool` draws the day's pool)
+    Daily(&'static str),
+    /// a phase of `MonthlyUpdate` (the first draws the month's pool before it runs)
+    Monthly(&'static str),
+    /// a phase of `YearlyUpdate`
+    Yearly(&'static str),
+}
+
+impl Unit {
+    /// The phase's kind, as in [`Simulation::phase_times`]: micro, ai, daily, monthly, yearly.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Unit::Micro => "micro",
+            Unit::Ai => "ai",
+            Unit::Daily(_) => "daily",
+            Unit::Monthly(_) => "monthly",
+            Unit::Yearly(_) => "yearly",
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Unit::Micro => "update",
+            Unit::Ai => "process",
+            Unit::Daily(n) | Unit::Monthly(n) | Unit::Yearly(n) => n,
+        }
+    }
+
+    /// `kind.name`, the key of [`Simulation::phase_times`].
+    pub fn label(&self) -> String {
+        format!("{}.{}", self.kind(), self.name())
+    }
+}
+
+/// What a [`Simulation::step`] or [`Simulation::step_until`] ran.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Step {
+    pub unit: Unit,
+    /// the unit finished (else it yielded at its deadline and goes on at the next step)
+    pub done: bool,
+    /// the tick's last unit finished: the tick is done
+    pub tick_done: bool,
+}
+
+/// A unit begun and not finished: its phase's coroutine, between two pieces.
+struct Running {
+    unit: Unit,
+    /// the phase's coroutine (none for a unit that is not a phase: the day's random pool)
+    thread: Option<mlua::Thread>,
+    started: bool,
+    /// the generator's forbidden zone before the unit (a parallel phase forbids draws)
+    old_forbidden: bool,
+    /// the unit's time so far, seconds
+    secs: f64,
+}
+
 pub struct Simulation {
     pub runtime: Runtime,
     pub tracing: bool,
@@ -92,6 +164,10 @@ pub struct Simulation {
     cached_year: i32,
     commands: Vec<Command>,
     pool: Vec<i32>,
+    /// the units of the tick in progress not begun yet (empty between ticks)
+    pending: VecDeque<Unit>,
+    /// the unit begun and not finished
+    current: Option<Running>,
 }
 
 impl Simulation {
@@ -110,6 +186,8 @@ impl Simulation {
             cached_year: d.year(),
             commands: Vec::new(),
             pool: Vec::new(),
+            pending: VecDeque::new(),
+            current: None,
         }
     }
 
@@ -139,20 +217,6 @@ impl Simulation {
         }
     }
 
-    fn phase(&mut self, kind: &str, name: &str, parallel: bool) {
-        let old = self.runtime.rng.borrow_mut().set_forbidden(parallel);
-        let t = std::time::Instant::now();
-        if let Err(e) = self.runtime.phase(kind, name) {
-            if self.errors.len() < 20 {
-                self.errors.push(format!("{kind}.{name}: {e}"));
-            }
-        }
-        let e = self.phase_times.entry(format!("{kind}.{name}")).or_insert((0, 0.0));
-        e.0 += 1;
-        e.1 += t.elapsed().as_secs_f64();
-        self.runtime.rng.borrow_mut().set_forbidden(old);
-    }
-
     /// The phases by time spent, slowest first: `phase  calls  seconds  ms per call`.
     pub fn phase_report(&self) -> String {
         let mut v: Vec<_> = self.phase_times.iter().collect();
@@ -169,8 +233,101 @@ impl Simulation {
         out
     }
 
-    /// One `CSession::ProcessSynchronousCommands` pass: the commands, then `HandleTurnTick`.
+    /// One `CSession::ProcessSynchronousCommands` pass: the commands, then `HandleTurnTick`. In the
+    /// middle of a tick (after [`Simulation::step`]), the rest of that tick.
     pub fn tick(&mut self) {
+        while !self.step().tick_done {}
+    }
+
+    pub fn run_ticks(&mut self, n: u64) {
+        for _ in 0..n {
+            self.tick();
+        }
+    }
+
+    pub fn run_days(&mut self, days: u64) {
+        self.run_ticks(days * 10);
+    }
+
+    /// Whether a tick is in progress: some of its units have run, the others not yet.
+    pub fn mid_tick(&self) -> bool {
+        self.current.is_some() || !self.pending.is_empty()
+    }
+
+    /// Whether a unit is in progress: begun, yielded at its deadline, not finished.
+    pub fn mid_unit(&self) -> bool {
+        self.current.is_some()
+    }
+
+    /// The unit the next [`Simulation::step`] runs: the one in progress, the tick's next, or
+    /// between ticks the next tick's first ([`Unit::Micro`], after the commands).
+    pub fn upcoming(&self) -> Unit {
+        match &self.current {
+            Some(r) => r.unit,
+            None => self.pending.front().copied().unwrap_or(Unit::Micro),
+        }
+    }
+
+    /// Runs one unit of a tick whole: between ticks, the next tick begins first (its commands,
+    /// the tick count, the date). The units of a tick are the phases [`Simulation::tick`] runs, in
+    /// its order. A unit in progress is finished.
+    pub fn step(&mut self) -> Step {
+        self.step_until(f64::INFINITY)
+    }
+
+    /// Runs the next unit, or the one in progress, until it finishes or until `deadline` (on the
+    /// platform's clock, `runtime::clock`): past it the phase yields at its next check
+    /// (engine.slice) and goes on, where it stopped, at the next call. Nothing else may run in the
+    /// Lua state meanwhile but more steps.
+    pub fn step_until(&mut self, deadline: f64) -> Step {
+        if self.current.is_none() {
+            if self.pending.is_empty() {
+                self.begin_tick();
+            }
+            let unit = self.pending.pop_front().expect("a tick has at least MicroUpdate");
+            self.start_unit(unit);
+        }
+        let mut r = self.current.take().expect("a unit in progress");
+        let done = match &r.thread {
+            None => true,
+            Some(thread) => {
+                let first = if r.started { None } else { Some((r.unit.kind(), r.unit.name())) };
+                r.started = true;
+                let t = std::time::Instant::now();
+                let res = self.runtime.resume_phase(thread, first, deadline);
+                r.secs += t.elapsed().as_secs_f64();
+                match res {
+                    Ok(done) => done,
+                    Err(e) => {
+                        if self.errors.len() < 20 {
+                            self.errors.push(format!("{}: {e}", r.unit.label()));
+                        }
+                        true
+                    }
+                }
+            }
+        };
+        let unit = r.unit;
+        if !done {
+            self.current = Some(r);
+            return Step { unit, done: false, tick_done: false };
+        }
+        if r.thread.is_some() {
+            let e = self.phase_times.entry(unit.label()).or_insert((0, 0.0));
+            e.0 += 1;
+            e.1 += r.secs;
+        }
+        self.runtime.rng.borrow_mut().set_forbidden(r.old_forbidden);
+        let tick_done = self.pending.is_empty();
+        if tick_done {
+            self.ticks += 1;
+        }
+        Step { unit, done: true, tick_done }
+    }
+
+    /// The start of `HandleTurnTick`: the commands, `_nTickCount`, the date on the day tick; the
+    /// tick's units queued (the day's, the month's and the year's when they are due).
+    fn begin_tick(&mut self) {
         let cmds = std::mem::take(&mut self.commands);
         if !cmds.is_empty() {
             self.mark(Phase::Commands(cmds.len()));
@@ -193,68 +350,79 @@ impl Simulation {
         }
 
         // CGameState::MicroUpdate (0x253cf0): movement, combat
-        self.mark(Phase::Micro);
-        self.phase("micro", "update", false);
+        self.pending.push_back(Unit::Micro);
         // CGameState::ProcessAI (0x264600): decisions become commands for the next tick
         if phase == 4 {
-            self.mark(Phase::Ai);
-            self.phase("ai", "process", false);
+            self.pending.push_back(Unit::Ai);
         }
         if day {
+            // MicroUpdate and ProcessAI do not move the date: the month and the year compared now
+            // are those HandleTurnTick compares after them
             let (old_month, old_year) = (self.cached_month, self.cached_year);
             self.cached_month = self.date().month_index();
             self.cached_year = self.date().year();
-            self.daily_update();
+            // CGameState::DailyUpdate (0x25cde0)
+            self.pending.extend(DAILY_PHASES.iter().map(|&n| Unit::Daily(n)));
             if self.cached_month != old_month {
-                self.monthly_update();
+                // CGameState::MonthlyUpdate (0x261620)
+                self.pending.extend(MONTHLY_PHASES.iter().map(|&n| Unit::Monthly(n)));
             }
             if self.cached_year != old_year {
-                self.yearly_update();
-            }
-        }
-        self.ticks += 1;
-    }
-
-    pub fn run_ticks(&mut self, n: u64) {
-        for _ in 0..n {
-            self.tick();
-        }
-    }
-
-    pub fn run_days(&mut self, days: u64) {
-        self.run_ticks(days * 10);
-    }
-
-    /// `CGameState::DailyUpdate` (`0x25cde0`).
-    fn daily_update(&mut self) {
-        for name in DAILY_PHASES {
-            self.mark(Phase::Daily(name));
-            if name == "random_pool" {
-                self.pool = self.runtime.rng.borrow_mut().draw_pool(DAILY_POOL_SIZE);
-                *self.runtime.daily_pool.borrow_mut() = self.pool.clone();
-            } else {
-                self.phase("daily", name, PARALLEL.contains(&name));
+                // CGameState::YearlyUpdate
+                self.pending.extend(YEARLY_PHASES.iter().map(|&n| Unit::Yearly(n)));
             }
         }
     }
 
-    /// `CGameState::MonthlyUpdate` (`0x261620`): first the month's pool of 1,000 draws (`0x26169a`),
-    /// read by the colonies' demography (docs/pops.md), then the phases.
-    fn monthly_update(&mut self) {
-        let pool = self.runtime.rng.borrow_mut().draw_pool(MONTHLY_POOL_SIZE);
-        *self.runtime.monthly_pool.borrow_mut() = pool;
-        for name in MONTHLY_PHASES {
-            self.mark(Phase::Monthly(name));
-            self.phase("monthly", name, name == "modifiers");
-        }
-    }
-
-    /// `CGameState::YearlyUpdate`.
-    fn yearly_update(&mut self) {
-        for name in YEARLY_PHASES {
-            self.mark(Phase::Yearly(name));
-            self.phase("yearly", name, false);
-        }
+    /// A unit's start: its mark, the pools drawn where the game draws them, the forbidden zone of a
+    /// parallel phase, and the phase's coroutine (run by [`Simulation::step_until`]).
+    fn start_unit(&mut self, unit: Unit) {
+        let parallel = match unit {
+            Unit::Micro => {
+                self.mark(Phase::Micro);
+                false
+            }
+            Unit::Ai => {
+                self.mark(Phase::Ai);
+                false
+            }
+            Unit::Daily(name) => {
+                self.mark(Phase::Daily(name));
+                if name == "random_pool" {
+                    self.pool = self.runtime.rng.borrow_mut().draw_pool(DAILY_POOL_SIZE);
+                    *self.runtime.daily_pool.borrow_mut() = self.pool.clone();
+                    let old = self.runtime.rng.borrow().is_forbidden();
+                    self.current = Some(Running { unit, thread: None, started: true, old_forbidden: old, secs: 0.0 });
+                    return;
+                }
+                PARALLEL.contains(&name)
+            }
+            Unit::Monthly(name) => {
+                // MonthlyUpdate first draws the month's pool of 1,000 (0x26169a), read by the
+                // colonies' demography (docs/pops.md)
+                if name == MONTHLY_PHASES[0] {
+                    let pool = self.runtime.rng.borrow_mut().draw_pool(MONTHLY_POOL_SIZE);
+                    *self.runtime.monthly_pool.borrow_mut() = pool;
+                }
+                self.mark(Phase::Monthly(name));
+                name == "modifiers"
+            }
+            Unit::Yearly(name) => {
+                self.mark(Phase::Yearly(name));
+                false
+            }
+        };
+        let old_forbidden = self.runtime.rng.borrow_mut().set_forbidden(parallel);
+        let thread = match self.runtime.phase_thread() {
+            Ok(t) => Some(t),
+            Err(e) => {
+                if self.errors.len() < 20 {
+                    self.errors.push(format!("{}: {e}", unit.label()));
+                }
+                None
+            }
+        };
+        self.current = Some(Running { unit, thread, started: false, old_forbidden, secs: 0.0 });
     }
 
     /// The day's pool of random draws (taken in `random_pool`), for the parallel phases.

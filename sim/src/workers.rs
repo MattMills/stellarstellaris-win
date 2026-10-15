@@ -28,6 +28,9 @@ pub struct Pool {
     workers: Vec<Worker>,
     done: Receiver<(usize, Result<String, String>)>,
     _store: Arc<Store>,
+    /// a job posted ([`Pool::post`]): the answers still to come, and those in
+    outstanding: std::cell::Cell<usize>,
+    answers: std::cell::RefCell<Vec<Result<String, String>>>,
 }
 
 fn worker_main(
@@ -57,19 +60,60 @@ fn worker_main(
             return;
         }
     };
+    crate::cadence::fine_timers();
+    // the heap's growth faulted in before the jobs, when the jobs will run in slices
+    // (crate::runtime::prefault_heap)
+    if crate::runtime::slices_ahead() {
+        crate::runtime::prefault_heap(384, "STELLAR_PREFAULT_WORKER_MB");
+    }
+    let log = crate::cadence::register(&format!("lua-worker-{index}"));
+    let mut earliest = 0.0;
+    let mut pinned = false;
     while let Ok(msg) = rx.recv() {
         match msg {
             Msg::Stop => break,
             Msg::Run(func, arg) => {
                 let r = (|| -> mlua::Result<String> {
                     let f: mlua::Function = w.get(func.as_str())?;
-                    let out: Option<String> = f.call(arg)?;
-                    Ok(out.unwrap_or_default())
+                    let Some(cadence) = crate::cadence::current() else {
+                        let out: Option<String> = f.call(arg)?;
+                        return Ok(out.unwrap_or_default());
+                    };
+                    // the job in slices of the cadence, as the simulation's own thread: a
+                    // coroutine the VM stops at each slice's deadline (crate::preempt), on a core
+                    // of the worker's own
+                    if !pinned {
+                        crate::cadence::pin(2 + index);
+                        pinned = true;
+                    }
+                    let th = lua.create_thread(f)?;
+                    let mut first = Some(arg);
+                    loop {
+                        let (slot_end, deadline) = cadence.wait_for_slice(earliest);
+                        let start = crate::runtime::clock();
+                        crate::preempt::arm(&lua, deadline);
+                        let r = match first.take() {
+                            Some(a) => th.resume::<Option<String>>(a),
+                            None => th.resume::<Option<String>>(()),
+                        };
+                        crate::preempt::disarm(&lua);
+                        let end = crate::runtime::clock();
+                        log.lock().unwrap().record(start, end, slot_end);
+                        earliest = cadence.next_start(end);
+                        if th.status() != mlua::ThreadStatus::Resumable {
+                            return Ok(r?.unwrap_or_default());
+                        }
+                        crate::cadence::sleep_until(earliest);
+                    }
                 })();
+                if crate::cadence::current().is_some() {
+                    crate::preempt::keep_stalls(&format!("lua-worker-{index}"));
+                }
                 let _ = done.send((index, r.map_err(|e| e.to_string())));
             }
         }
     }
+    crate::preempt::release();
     drop(lua);
 }
 
@@ -89,7 +133,13 @@ impl Pool {
                 .map_err(|e| e.to_string())?;
             workers.push(Worker { tx, handle: Some(handle) });
         }
-        let pool = Pool { workers, done, _store: store };
+        let pool = Pool {
+            workers,
+            done,
+            _store: store,
+            outstanding: std::cell::Cell::new(0),
+            answers: std::cell::RefCell::new(Vec::new()),
+        };
         let mut errors = Vec::new();
         for _ in 0..n {
             match pool.done.recv() {
@@ -110,18 +160,85 @@ impl Pool {
 
     /// `engine.store.worker[func](arg)` on every worker; their results in worker order.
     pub fn run(&self, func: &str, arg: &str) -> Vec<Result<String, String>> {
+        self.post(func, arg);
+        loop {
+            if let Some(out) = self.poll(std::time::Duration::from_secs(3600)) {
+                return out;
+            }
+        }
+    }
+
+    /// Starts `engine.store.worker[func](arg)` on every worker and returns at once; the results
+    /// come from [`Pool::poll`]. A job still running is waited for first.
+    pub fn post(&self, func: &str, arg: &str) {
+        while self.outstanding.get() > 0 {
+            if self.poll(std::time::Duration::from_secs(3600)).is_some() {
+                break;
+            }
+        }
+        *self.answers.borrow_mut() = (0..self.workers.len()).map(|_| Err("no answer".to_string())).collect();
+        self.outstanding.set(self.workers.len());
         for w in &self.workers {
             let _ = w.tx.send(Msg::Run(func.to_string(), arg.to_string()));
         }
-        let mut out: Vec<Result<String, String>> = (0..self.workers.len()).map(|_| Err("no answer".to_string())).collect();
-        for _ in 0..self.workers.len() {
-            match self.done.recv() {
-                Ok((i, r)) => out[i] = r,
-                Err(_) => break,
+    }
+
+    /// The posted job's results in worker order once every worker has answered, waiting at most
+    /// `wait` for them; None while some are still working.
+    pub fn poll(&self, wait: std::time::Duration) -> Option<Vec<Result<String, String>>> {
+        let until = std::time::Instant::now() + wait;
+        while self.outstanding.get() > 0 {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            let r = if cfg!(windows) && left < std::time::Duration::from_millis(20) {
+                // (Windows: a channel's timed wait wakes at the system timer's granularity, a
+                // millisecond at best; a short wait, a slice's, looks every 0.1 ms between high
+                // resolution sleeps instead)
+                match self.done.try_recv() {
+                    Ok(x) => Ok(x),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(std::sync::mpsc::RecvTimeoutError::Disconnected),
+                    Err(std::sync::mpsc::TryRecvError::Empty) if left.is_zero() => Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        std::thread::sleep(left.min(std::time::Duration::from_micros(100)));
+                        continue;
+                    }
+                }
+            } else {
+                self.done.recv_timeout(left)
+            };
+            note_overshoot(std::time::Instant::now().saturating_duration_since(until).as_secs_f64());
+            match r {
+                Ok((i, r)) => {
+                    self.answers.borrow_mut()[i] = r;
+                    self.outstanding.set(self.outstanding.get() - 1);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return None,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    self.outstanding.set(0);
+                }
             }
         }
-        out
+        Some(std::mem::take(&mut *self.answers.borrow_mut()))
     }
+}
+
+// How late [`Pool::poll`]'s waits came back past the time they were given: the waits that came back
+// more than 0.1 ms late, and the latest (seconds). The thread sleeps in them, and a thread woken late
+// runs its slice past the deadline.
+static POLL_LATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static POLL_LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn note_overshoot(secs: f64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if secs > 1e-4 {
+        POLL_LATE.fetch_add(1, Relaxed);
+    }
+    POLL_LATEST.fetch_max(secs.to_bits(), Relaxed);
+}
+
+/// [`Pool::poll`]'s waits that came back more than 0.1 ms late, and the latest (seconds).
+pub fn poll_lateness() -> (u64, f64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (POLL_LATE.load(Relaxed), f64::from_bits(POLL_LATEST.load(Relaxed)))
 }
 
 impl Drop for Pool {

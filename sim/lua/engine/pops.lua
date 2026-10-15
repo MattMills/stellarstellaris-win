@@ -37,6 +37,7 @@ local world = require("engine.world")
 local defs = require("engine.defs")
 local eval = require("simscript.eval")
 local script = require("engine.pops.script")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local pops = {
     stats = {
@@ -217,6 +218,7 @@ local function colony_groups(c)
     local out = {}
     for _, t in ipairs(world.list(world.field(c, "pop_groups"))) do
         local id = tonumber(t)
+        slice.tick("pops groups")
         local g = id and world.object("pop_groups", id)
         if g and world.field(g, "killed") ~= "yes" then
             out[#out + 1] = id
@@ -1108,6 +1110,7 @@ end
 local function next_group_id()
     local max = -1
     for _, id in ipairs(world.all("pop_groups")) do
+        slice.tick("pops.lua:1111")
         local index = id % 16777216
         if index > max then max = index end
     end
@@ -1509,6 +1512,7 @@ local function update_colony_tables()
     end
     local n = 0
     for _, cid in ipairs(world.all("colony")) do
+        slice.tick("pops.lua:1512")
         local c = world.object("colony", cid)
         if c and entry(c, "produces") then
             local t = tables[cid] or { income = {}, expenses = {} }
@@ -1563,11 +1567,14 @@ end
 function pops.daily(host, date)
     local own_colonies = colonies_module() == nil
     for _, cid in ipairs(world.all("colony")) do
+        slice.tick("pops.lua:1566")
         local c = world.object("colony", cid)
+        slice.tick("pops colony")
         if c and entry(c, "housing_usage") then
             local total = ZERO
             for _, gid in ipairs(colony_groups(c)) do
                 local g = world.object("pop_groups", gid)
+                slice.tick("pops housing")
                 local u = pops.housing_usage(gid, int(world.field(g, "size")))
                 total = total + u
                 if entry(g, "housing_usage") then
@@ -1602,6 +1609,7 @@ end
 local function remove_killed()
     local list = {}
     for _, id in ipairs(world.all("pop_groups")) do
+        slice.tick("pops.lua:1606")
         local g = world.object("pop_groups", id)
         if g and world.field(g, "killed") == "yes" and int(world.field(g, "size")) == 0 then
             list[#list + 1] = id
@@ -1630,6 +1638,7 @@ monthly = function(host, date)
     local pool = monthly_pool()
     local colonies = {}
     for _, cid in ipairs(world.all("colony")) do
+        slice.tick("pops.lua:1634")
         local c = world.object("colony", cid)
         if c and world.colony_planet[cid] then
             colonies[#colonies + 1] = cid
@@ -1644,6 +1653,7 @@ monthly = function(host, date)
     s.tables = (s.tables or 0) + update_colony_tables()
     local demo = {}
     for _, cid in ipairs(colonies) do
+        slice.check("pops demography")
         demo[cid] = demography(cid, pool[(cid + 266) % 1000 + 1])
         pops.last[cid] = demo[cid]
         if demo[cid].skipped then
@@ -1655,6 +1665,7 @@ monthly = function(host, date)
     end
     -- the serial part
     for _, cid in ipairs(colonies) do
+        slice.check("pops growth")
         grow_colonists(host, cid, pool[(cid + 6601) % 1000 + 1])
         apply_growth(host, cid, demo[cid])
         apply_assembly(host, cid, demo[cid])
@@ -1664,6 +1675,7 @@ monthly = function(host, date)
     local col = colonies_module()
     for _, cid in ipairs(colonies) do
         local c = world.object("colony", cid)
+        slice.tick("pops caches")
         if touched[cid] then
             update_colony_caches(cid, c)
             -- the game recomputes a colony's cached values after a size change

@@ -1,0 +1,20 @@
+[package]
+name = "luajit-src"
+version = "210.6.6+707c12b"
+authors = ["Aleksandr Orlenko <zxteam@protonmail.com>"]
+edition = "2021"
+repository = "https://github.com/mlua-rs/luajit-src-rs"
+keywords = ["lua", "luajit"]
+readme = "README.md"
+license = "MIT"
+description = """
+Sources of LuaJIT 2.1 and logic to build it.
+"""
+exclude = ["/luajit2/doc", "/luajit2/etc"]
+
+[workspace]
+members = ["testcrate"]
+
+[dependencies]
+cc = "1.2"
+which = "8.0"

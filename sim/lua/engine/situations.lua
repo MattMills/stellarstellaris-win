@@ -46,6 +46,7 @@
 -- section weights (RebuildStageDurations), the dead_situation store.
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local defs = require("engine.defs")
 
 world.KINDS.situation = world.KINDS.situation or "situations"
@@ -379,6 +380,7 @@ end
 function situations.monthly_progress(host, date)
     situations.stats.months = situations.stats.months + 1
     for _, sid in ipairs(world.all("situation")) do
+        slice.tick("situations.lua:381")
         local s = world.object("situation", sid)
         local t = s and stype(world.field(s, "type"))
         if t and not yes(world.field(s, "to_be_killed")) and not yes(world.field(s, "locked"))
@@ -434,6 +436,7 @@ end
 local function of_country(country)
     local out = {}
     for _, sid in ipairs(world.all("situation")) do
+        slice.tick("situations.lua:436")
         if tonumber(world.field(world.object("situation", sid), "country")) == country then
             out[#out + 1] = sid
         end

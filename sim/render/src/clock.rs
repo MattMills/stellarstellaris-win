@@ -11,6 +11,12 @@
 //!
 //! Commands go one way, over a channel: run N days (the reply when they are done: `step`),
 //! pause, the speed, the system to watch.
+//!
+//! The days run in 1 ms slices with every other millisecond unused (stellar_sim's cadence; the
+//! worker pool's jobs too), the Lua VM stopping the engine's code at each slice's deadline
+//! (stellar_sim::preempt, docs/frame_timing.md): the simulation never holds a CPU for longer. By
+//! default on Linux; on Windows each day runs whole ([`slices_wanted`]; STELLAR_RENDER_CLOCK=sliced
+//! or =thread chooses). The snapshot is read between days, whole.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -20,6 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use stellar_sim::cadence::{self, Cadence};
 use stellar_sim::mlua::Table;
 use stellar_sim::{Runtime, Simulation};
 
@@ -124,6 +131,13 @@ pub struct Status {
     pub day_ms: f64,
     pub snapshot_ms: f64,
     pub load_s: f64,
+    /// in slices: the slices run, those longer than 1 ms, the longest (ms)
+    pub slices: u64,
+    pub slices_over: u64,
+    pub slice_max_ms: f64,
+    /// the simulation's Lua heap after the last day (MB), and the most it has been
+    pub lua_mb: f64,
+    pub lua_max_mb: f64,
 }
 
 enum Cmd {
@@ -169,6 +183,13 @@ impl Clock {
                         return;
                     }
                 };
+                let cadence = match sliced(&runtime) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("simulation: not in slices: {e}");
+                        None
+                    }
+                };
                 let mut w = Worker {
                     sim: Simulation::new(runtime),
                     game_dir,
@@ -179,6 +200,8 @@ impl Clock {
                     generation: 0,
                     paused,
                     speed: speed.clamp(1, SPEEDS),
+                    cadence,
+                    earliest: 0.0,
                 };
                 if let Err(e) = w.publish() {
                     eprintln!("simulation: the first snapshot: {e}");
@@ -266,6 +289,40 @@ impl Drop for Clock {
     }
 }
 
+/// Whether the days run in slices: STELLAR_RENDER_CLOCK=sliced or =thread (whole days); by
+/// default in slices on Linux and whole on Windows. On Windows a thread woken from a sleep starts
+/// about half a millisecond late (its timers' best), so a slice began half-way through its
+/// millisecond, and the simulation ran at a sixth of its speed in slices on the laptop where
+/// whole days keep 84% of Normal (docs/render.md section 12); there a precise millisecond needs
+/// the unused ones spent waiting.
+fn slices_wanted() -> bool {
+    match std::env::var("STELLAR_RENDER_CLOCK").as_deref() {
+        Ok("thread") => false,
+        Ok("sliced") => true,
+        _ => !cfg!(windows),
+    }
+}
+
+/// The simulation's thread set to run in slices ([`slices_wanted`]): fine timers, a core of its
+/// own (Linux), the VM's preemption on, the cadence set for it and the worker pool (stellar_sim:
+/// cadence, preempt; docs/frame_timing.md). Its heap's growth is not faulted in ahead
+/// (runtime::prefault_heap: 2 GB on this thread and 384 MB on each worker, which the frame timing
+/// harness takes to keep every slice within its millisecond): here the frames are what must keep
+/// their time, and a slice late by a page fault does not touch them.
+fn sliced(runtime: &Runtime) -> Result<Option<Cadence>, String> {
+    if !slices_wanted() {
+        return Ok(None);
+    }
+    cadence::fine_timers();
+    cadence::pin(1);
+    runtime.set_preempt(true).map_err(|e| e.to_string())?;
+    let _ = runtime.eval::<()>("require('engine.slice').reset()");
+    let c = Cadence { slot: 0.001, margin: 0.0001 };
+    cadence::set(Some(c));
+    eprintln!("simulation: in 1 ms slices, every other millisecond unused");
+    Ok(Some(c))
+}
+
 struct Worker {
     sim: Simulation,
     game_dir: String,
@@ -276,6 +333,9 @@ struct Worker {
     generation: u64,
     paused: bool,
     speed: u8,
+    /// the slices' cadence (None: the days run whole), and when the next slice may begin
+    cadence: Option<Cadence>,
+    earliest: f64,
 }
 
 impl Worker {
@@ -344,23 +404,64 @@ impl Worker {
         }
     }
 
-    /// Runs days, then publishes the world.
+    /// Runs days, in slices (or whole), then publishes the world.
     fn days(&mut self, days: u64) -> Result<String, String> {
         let t0 = Instant::now();
-        self.sim.run_days(days);
+        match self.cadence {
+            Some(c) => self.run_sliced(days, c),
+            None => self.sim.run_days(days),
+        }
         let ran = t0.elapsed().as_secs_f64();
         let t1 = Instant::now();
         self.publish()?;
         let published = t1.elapsed().as_secs_f64();
         let date = format!("{:?}", self.sim.date());
         let errors = self.sim.errors.len();
+        let lua_mb = self.rt().eval::<f64>("return collectgarbage('count') / 1024").unwrap_or(0.0);
         {
             let mut s = self.shared.status.lock().unwrap();
+            s.lua_mb = lua_mb;
+            s.lua_max_mb = s.lua_max_mb.max(lua_mb);
             s.days += days;
             s.day_ms = ran * 1000.0 / days.max(1) as f64;
             s.snapshot_ms = published * 1000.0;
         }
         Ok(format!("{days} days in {ran:.1} s to {date}; {errors} errors so far"))
+    }
+
+    /// `days` days in slices: each in a work millisecond, no earlier than a millisecond after the
+    /// last one ended, the engine's units run to the slice's deadline (the VM stops the one running
+    /// there), then asleep.
+    fn run_sliced(&mut self, days: u64, c: Cadence) {
+        let target = self.sim.ticks + days * 10;
+        let (mut n, mut over, mut longest) = (0u64, 0u64, 0.0f64);
+        while self.sim.ticks < target || self.sim.mid_tick() {
+            let (slot_end, deadline) = c.wait_for_slice(self.earliest);
+            self.sim.runtime.set_frame_end(slot_end);
+            let start = stellar_sim::runtime::clock();
+            loop {
+                if (self.sim.ticks >= target && !self.sim.mid_tick()) || stellar_sim::runtime::clock() >= deadline {
+                    break;
+                }
+                if !self.sim.step_until(deadline).done {
+                    break;
+                }
+            }
+            let end = stellar_sim::runtime::clock();
+            n += 1;
+            if end - start > c.slot {
+                over += 1;
+            }
+            longest = longest.max(end - start);
+            self.earliest = c.next_start(end);
+            if self.sim.ticks < target || self.sim.mid_tick() {
+                cadence::sleep_until(self.earliest);
+            }
+        }
+        let mut s = self.shared.status.lock().unwrap();
+        s.slices += n;
+        s.slices_over += over;
+        s.slice_max_ms = s.slice_max_ms.max(longest * 1000.0);
     }
 
     /// Reads the world into a snapshot and makes it the newest.

@@ -34,6 +34,7 @@
 -- is empty); the weighted pick; CanActivate again; CCountryActivateAscensionPerkCommand.
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local cmds = require("engine.ai.commands")
 local defs = require("engine.defs")
 local eval = require("simscript.eval")
@@ -57,6 +58,7 @@ local function budget_entries(resource)
         list = {}
         local all = {}
         for name, d in pairs(defs.folder("common/ai_budget")) do
+            slice.tick("ai/traditions.lua:59")
             all[#all + 1] = { name = name, def = d }
         end
         table.sort(all, function(a, b)
@@ -64,6 +66,7 @@ local function budget_entries(resource)
             return (a.def.line or 0) < (b.def.line or 0)
         end)
         for _, e in ipairs(all) do
+            slice.tick("ai/traditions.lua:66")
             local b = e.def.block
             if defs.field(b, "resource") == resource and defs.field(b, "type") == "expenditure" then
                 list[#list + 1] = { name = e.name, block = b, file = e.def.file, category = defs.field(b, "category") }
@@ -93,6 +96,7 @@ end
 function M.expenditure_budget(country, resource)
     local W, MIN, MAX, order, total = {}, {}, {}, {}, 0
     for _, e in ipairs(budget_entries(resource)) do
+        slice.tick("ai/traditions.lua:95")
         local c = eval.new_ctx(eval.S("country", country), nil, nil, e.file)
         local potential = defs.field(e.block, "potential")
         local ok, holds = true, true
@@ -114,6 +118,7 @@ function M.expenditure_budget(country, resource)
     local S = traditions.stockpile(country, resource)
     local out, frac, sum = {}, {}, 0
     for _, cat in ipairs(order) do
+        slice.tick("ai/traditions.lua:116")
         out[cat] = 0
         if (W[cat] > 0 or MIN[cat] > 0) and S > 0 then
             -- (a total of 0 makes the share the raw 0xffffffff, as the game's zero-extended -1)
@@ -127,6 +132,7 @@ function M.expenditure_budget(country, resource)
         end
     end
     for _, cat in ipairs(order) do
+        slice.tick("ai/traditions.lua:129")
         local f = frac[cat]
         if f and f > 0 then
             local ratio = sum ~= 0 and f / sum or 42949.67295
@@ -155,6 +161,7 @@ local function can_afford_expenditure(country, category, cost)
         return b.can_afford_expenditure(country, category, cost)
     end
     for r, v in pairs(cost) do
+        slice.tick("ai/traditions.lua:157")
         if v ~= 0 then
             local budget = M.expenditure_budget(country, r)[category] or 0
             if (budget >= 0 or v > 0) and budget < v then
@@ -195,6 +202,7 @@ end
 local function pick(weights, r)
     local total = 0
     for i = 1, #weights do
+        slice.tick("ai/traditions.lua:197")
         if weights[i] > 0 then total = total + weights[i] end
     end
     if total <= 0 then
@@ -230,6 +238,7 @@ function M.handle_traditions(country, today, commands, host)
     local cats = traditions.categories_of(country)
     local all_completed = true
     for _, cat in ipairs(cats) do
+        slice.tick("ai/traditions.lua:232")
         if not traditions.completed_category(country, cat) then
             all_completed = false
         end
@@ -248,6 +257,7 @@ function M.handle_traditions(country, today, commands, host)
     for i = 1, #types do weights[i] = 0 end
     local cost
     for i, t in ipairs(types) do
+        slice.tick("ai/traditions.lua:250")
         local c = not adopted[t.name] and t.category and traditions.category(t.category)
         if c then
             local idx = cat_index[c.name]
@@ -303,6 +313,7 @@ function M.handle_perks(country, today, commands, host)
     M.stats.perk_months = M.stats.perk_months + 1
     local list, weights = {}, {}
     for _, t in ipairs(traditions.perk_types()) do
+        slice.tick("ai/traditions.lua:305")
         if traditions.can_activate(country, t.name, true) then
             local w = fixed(weight_of(defs.field(t.block, "ai_weight"), country, t.file))
             if w > 0 then

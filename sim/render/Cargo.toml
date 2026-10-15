@@ -29,3 +29,7 @@ wgpu = { version = "=30.0.1", default-features = false, features = ["std", "park
 
 [profile.release]
 debug = 1
+
+# the same patched LuaJIT as stellar-sim (sim/vendor/README.md)
+[patch.crates-io]
+luajit-src = { path = "../vendor/luajit-src" }

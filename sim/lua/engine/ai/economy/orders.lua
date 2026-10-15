@@ -17,6 +17,7 @@
 --               fields = { {key, value, quoted} ... }, cost = { res = v }, build_time = n } -> item id
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local fp = require("engine.ai.economy.fixed")
 
 local orders = { stats = { added = 0, paid = {} } }
@@ -33,6 +34,7 @@ local function init_free()
     free, gen_of, live = {}, {}, {}
     local holder = world.store_blocks[ITEMS]
     for _, e in ipairs(holder or {}) do
+        slice.tick("ai/economy/orders.lua:35")
         if e.op and e.key then
             local id = tonumber(e.key.text)
             if id then
@@ -54,12 +56,14 @@ local function collect_freed()
     local store = world.stores[ITEMS] or {}
     local gone = {}
     for id in pairs(live) do
+        slice.tick("ai/economy/orders.lua:56")
         if store[id] == nil then
             gone[#gone + 1] = id
         end
     end
     table.sort(gone)
     for _, id in ipairs(gone) do
+        slice.tick("ai/economy/orders.lua:62")
         live[id] = nil
         local index = id % GEN
         gen_of[index] = math.floor(id / GEN)
@@ -67,6 +71,7 @@ local function collect_freed()
     end
     -- items others created (not through here) are live too
     for id in pairs(store) do
+        slice.tick("ai/economy/orders.lua:69")
         if not live[id] then
             live[id] = true
         end
@@ -82,6 +87,7 @@ local function allocate()
         -- no free slot: past the highest index (TPdxRefDatabase::ReserveLookup)
         local max = -1
         for i in pairs(gen_of) do
+            slice.tick("ai/economy/orders.lua:84")
             if i > max then max = i end
         end
         index = max + 1
@@ -120,6 +126,7 @@ function orders.can_pay(country, cost)
         return false
     end
     for r, v in pairs(cost or {}) do
+        slice.tick("ai/economy/orders.lua:122")
         if v > 0 and (tonumber(world.field(stock, r)) or 0) < v then
             return false
         end
@@ -142,6 +149,7 @@ function orders.add(o)
     world.append(item, "progress_needed", o.build_time or 0)
     local res = {}
     for _, r in ipairs(o.cost_order or {}) do
+        slice.tick("ai/economy/orders.lua:144")
         if o.cost[r] and o.cost[r] ~= 0 then
             world.append(res, r, fp.to(fp.from(o.cost[r])))
         end
@@ -149,6 +157,7 @@ function orders.add(o)
     world.append(item, "resources", res)
     local b = {}
     for _, f in ipairs(o.fields) do
+        slice.tick("ai/economy/orders.lua:151")
         world.append(b, f[1], f[2], f[3])
     end
     world.append(item, "buildable_" .. o.kind, b)
@@ -163,6 +172,7 @@ function orders.add(o)
     -- TakeResources: the cost from the paying country's stockpile
     if stock then
         for r, v in pairs(o.cost or {}) do
+            slice.tick("ai/economy/orders.lua:165")
             if v ~= 0 then
                 local now = fp.from(tonumber(world.field(stock, r)) or 0)
                 world.set(stock, r, fp.to(now - fp.from(v)))
@@ -177,6 +187,7 @@ end
 function orders.report()
     local parts = {}
     for r, v in pairs(orders.stats.paid) do
+        slice.tick("ai/economy/orders.lua:179")
         parts[#parts + 1] = string.format("%s %.0f", r, v)
     end
     table.sort(parts)

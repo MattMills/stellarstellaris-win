@@ -34,6 +34,7 @@
 -- section 9): what holds them back is not found yet.
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local cmds = require("engine.ai.commands")
 local defs = require("engine.defs")
 local rng = require("engine.ai.rng")
@@ -113,6 +114,7 @@ local function strategy_index(ai)
     end
     local map = {}
     for _, e in ipairs(ai) do
+        slice.tick("strategy index")
         if e.op and e.key and e.key.text == "strategy" and type(e.value) == "table" then
             local k = tostring(world.field(e.value, "type")) .. "/" .. tostring(world.field(e.value, "id"))
             local list = map[k]
@@ -364,6 +366,7 @@ function M.shipyards(country, size)
     local types = construction_types(size)
     local out = {}
     for _, sbid in ipairs(world.all("starbases")) do
+        slice.tick("ai/shipbuilding.lua:366")
         local sb = world.object("starbases", sbid)
         local q = tonumber(world.field(sb, "shipyard_build_queue"))
         local ct = unq(world.field(sb, "construction_type"))
@@ -387,6 +390,7 @@ local function count_ships(country)
     local owned, queued = {}, {}
     local C = create()
     for _, sid in ipairs(world.all("ships")) do
+        slice.tick("ai/shipbuilding.lua:389")
         local s = world.object("ships", sid)
         local f = tonumber(world.field(s, "fleet"))
         if f and world.fleet_owner[f] == country then
@@ -553,6 +557,7 @@ local function planet_queue(planet, ty)
     if queue_index == nil then
         queue_index = {}
         for _, qid in ipairs(world.all(QUEUES)) do
+            slice.tick("ai/shipbuilding.lua:555")
             local q = world.object(QUEUES, qid)
             local loc = world.field(q, "location")
             if type(loc) == "table" and tonumber(world.field(loc, "type")) == 2 then
@@ -563,6 +568,7 @@ local function planet_queue(planet, ty)
     return queue_index[tostring(planet) .. "/" .. ty]
 end
 M.planet_queue = planet_queue
+M.db_index = db_index   -- (engine.load parses its folders with the load)
 
 local function army_command(country, colony, planet, army_type, species, cost)
     return {
@@ -608,6 +614,7 @@ end
 
 local function at_war(country)
     for _, wid in ipairs(world.all("war")) do
+        slice.tick("ai/shipbuilding.lua:610")
         local w = world.object("war", wid)
         for _, side in ipairs({ "attackers", "defenders" }) do
             for _, d in ipairs(world.blocks(world.field(w, side))) do

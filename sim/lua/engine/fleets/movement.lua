@@ -34,6 +34,7 @@ local world = require("engine.world")
 local defs = require("engine.defs")
 local path = require("engine.fleets.path")
 local live = require("engine.store.live")   -- the store's copy of the fleet (docs/data_layer.md)
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local FP, NO_ID = path.FP, path.NO_ID
 local raw, text = path.raw, path.text
@@ -144,6 +145,7 @@ local function read_state(fid)
     local nodes = {}
     for _, n in ipairs(world.fields(p, "node")) do
         if type(n) == "table" then
+            slice.tick("fleet path read")
             local c = read_coord(world.field(n, "coordinate")) or path.copy(NULL)
             c.method = METHOD_OF[tostring(world.field(n, "ftl"))] or 0
             c.bypass = tonumber(world.field(n, "bypass"))
@@ -186,6 +188,7 @@ movement.read_state = read_state
 local function path_block(st)
     local b = {}
     for _, n in ipairs(st.path) do
+        slice.tick("fleet path write")
         local nb = {}
         world.append(nb, "coordinate", coord_block(n))
         world.append(nb, "ftl", METHOD_NAMES[n.method or 0] or "jump_hyperlane")
@@ -352,27 +355,16 @@ end
 local file_vars, global_vars = {}, nil
 local function vars_of(file, into)
     into = into or {}
+    -- the file's own as simscript.db reads them (one parse of each file, the definitions' made
+    -- with the load: engine.defs)
     pcall(function()
-        local db = require("simscript.db")
-        local source = require("stellar.script.source")
-        for _, e in ipairs(source.parse(db.fs, file) or {}) do
-            if e.op and e.key and e.key.text:sub(1, 1) == "@" and e.value.text then
-                into[e.key.text] = e.value.text
-            end
+        for k, v in pairs(require("simscript.db").filevars(file) or {}) do
+            into["@" .. k] = v
         end
     end)
     return into
 end
-local function scripted(v, file)
-    if type(v) ~= "string" or v:sub(1, 1) ~= "@" then
-        return v
-    end
-    if file and file_vars[file] == nil then
-        file_vars[file] = vars_of(file)
-    end
-    if file and file_vars[file][v] then
-        return file_vars[file][v]
-    end
+local function globals()
     if not global_vars then
         global_vars = {}
         pcall(function()
@@ -383,7 +375,20 @@ local function scripted(v, file)
             end
         end)
     end
-    return global_vars[v]
+    return global_vars
+end
+movement.scripted_globals = globals   -- (engine.load reads them with the load)
+local function scripted(v, file)
+    if type(v) ~= "string" or v:sub(1, 1) ~= "@" then
+        return v
+    end
+    if file and file_vars[file] == nil then
+        file_vars[file] = vars_of(file)
+    end
+    if file and file_vars[file][v] then
+        return file_vars[file][v]
+    end
+    return globals()[v]
 end
 
 -- the ship's design's base speed: its growth stage's ship size's max_speed times SHIP_SPEED_SCALE
@@ -1195,6 +1200,7 @@ end
 
 local function scan()
     for _, fid in ipairs(world.all("fleet")) do
+        slice.tick("fleets/movement.lua:1198")
         local f = fleet_block(fid)
         if f then
             repair(fid, f)
@@ -1228,6 +1234,7 @@ function movement.tick(host, date)
     end
     local ids = {}
     for _, fid in ipairs(world.all("fleet")) do
+        slice.tick("fleets/movement.lua:1231")
         if active[fid] then
             ids[#ids + 1] = fid
         end
@@ -1235,6 +1242,7 @@ function movement.tick(host, date)
     local states = {}
     for _, fid in ipairs(ids) do
         local f = fleet_block(fid)
+        slice.tick("fleet state")
         local st = f and not in_combat(f) and read_state(fid)
         if st then
             states[#states + 1] = st
@@ -1249,6 +1257,7 @@ function movement.tick(host, date)
     end
     for _, st in ipairs(states) do
         write_state(st)
+        slice.tick("fleet ships")
         local lag = update_ships(st)
         if not busy(st) and not lag then
             active[st.fid] = nil

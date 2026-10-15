@@ -33,6 +33,13 @@
 local C = { stats = { trigger_blocks = 0, value_blocks = 0, weights = 0, texts = 0, chains = 0, script_values = 0,
     statements = 0, fallbacks = 0, compile_seconds = 0 } }
 
+-- engine.slice's tick: a phase run in pieces may stop between two blocks or two items of an
+-- iterator (docs/frame_timing.md); nothing without the engine
+local tick = (function()
+    local ok, slice = pcall(require, "engine.slice")
+    return ok and slice.tick or function() end
+end)()
+
 function C.install(M)
     local I = M._internal
     local S, NONE, E, db, state, stats = I.S, I.NONE, I.E, I.db, I.state, I.stats
@@ -435,6 +442,7 @@ function C.install(M)
     -- the walker's trigger(b, ctx, skip) while compiled
     local function trigger_c(b, ctx, skip)
         if REF then return trigger_tree(b, ctx, skip) end
+        tick("compiled trigger")
         local cache, seen = tcache(skip)
         local f = cache[b]
         if f then return f(ctx) end
@@ -843,6 +851,7 @@ function C.install(M)
             memo_def = def
         end
         return function(ctx, def)
+            tick("compiled scripted trigger")
             if def ~= memo_def then prepare(def) end
             if only then
                 -- `pop_amount > 10`: a scripted trigger whose body is one count iterator
@@ -875,6 +884,7 @@ function C.install(M)
                 local list = list_of(lname, value, ctx, e)
                 if list then
                     for _, s2 in ipairs(list) do
+                        tick("compiled iterator")
                         if sub(push(ctx, s2)) then return true end
                     end
                     return false
@@ -1052,6 +1062,7 @@ function C.install(M)
         end
     end
     compile_stmt = function(e)
+        tick("compiling")
         local ok, f = pcall(compile_stmt_raw, e)
         if ok then return f end
         fallback(f)
@@ -1090,6 +1101,7 @@ function C.install(M)
             end
         end
         return function(ctx)
+            tick("compiled block")
             for i = 1, n do
                 if not fs[i](ctx) then return false end
             end
@@ -1101,6 +1113,7 @@ function C.install(M)
         CS.trigger_blocks = CS.trigger_blocks + 1
         local fs, kinds, chained = {}, {}, false
         for _, e in ipairs(b) do
+            tick("compiling")
             if e.op and e.key then
                 local lk = e.key.text:lower()
                 if not (skip and skip[lk]) then

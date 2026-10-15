@@ -362,13 +362,104 @@ pub struct Renderer {
     clear: [f32; 3],
 }
 
+/// The mip levels below the image's own (level 0 is the image: not copied).
 fn mip_chain(img: &Image) -> Vec<Image> {
-    let mut levels = vec![img.clone()];
-    while levels.last().map_or(false, |l| l.width > 1 || l.height > 1) {
-        let next = levels.last().unwrap().half();
+    let mut levels: Vec<Image> = Vec::new();
+    loop {
+        let last = levels.last().unwrap_or(img);
+        if last.width <= 1 && last.height <= 1 {
+            return levels;
+        }
+        let next = last.half();
         levels.push(next);
     }
-    levels
+}
+
+/// A GPU resource a scene uses: a texture or a cube map (its index in the scene's textures), or a
+/// mesh.
+pub enum Res<'a> {
+    Texture(usize),
+    Cube(usize),
+    Mesh(&'a Arc<MeshData>),
+}
+
+/// Every GPU resource `scene` uses, as [`Renderer::upload`] takes them.
+pub fn scene_resources(scene: &Scene) -> Vec<Res<'_>> {
+    let mut v = Vec::new();
+    if let Some(m) = scene.maps {
+        v.extend(m.iter().map(|&i| Res::Texture(i)));
+    }
+    v.extend(scene.batches.iter().map(|b| Res::Texture(b.texture)));
+    if let Some((i, _)) = scene.env {
+        v.push(Res::Cube(i));
+    }
+    for m in &scene.meshes {
+        v.push(Res::Mesh(&m.mesh));
+        v.extend(m.textures.iter().map(|&t| Res::Texture(t)));
+        if let Some(c) = m.cube {
+            v.push(Res::Cube(c));
+        }
+    }
+    if let Some(s) = &scene.sky {
+        v.push(Res::Cube(s.cube));
+        v.extend(s.lut.map(Res::Texture));
+    }
+    if let Some(p) = &scene.post {
+        v.extend(p.lut.map(Res::Texture));
+    }
+    v
+}
+
+/// The mip chains made ahead of their upload (the UI thread makes them: ui.rs), by the image's
+/// address: the image (weak, so that the address is known to be its), and the chain until the
+/// render thread takes it. A texture's mip chain is made on the CPU (a 2048x2048 one in 25 ms):
+/// made there, its upload takes the render thread only the copy.
+struct Premip {
+    image: std::sync::Weak<Image>,
+    mips: Option<Arc<Vec<Image>>>,
+}
+static PREMIPS: std::sync::Mutex<Option<HashMap<usize, Premip>>> = std::sync::Mutex::new(None);
+
+/// The mip chain of `img` made now, for its upload later on another thread (small images are left
+/// to the upload). Once per image.
+pub fn premip(img: &Arc<Image>) {
+    if (img.width as usize) * (img.height as usize) < 128 * 128 {
+        return;
+    }
+    let key = Arc::as_ptr(img) as usize;
+    {
+        let guard = PREMIPS.lock().unwrap();
+        if let Some(p) = guard.as_ref().and_then(|m| m.get(&key)) {
+            if p.image.upgrade().is_some_and(|i| Arc::ptr_eq(&i, img)) {
+                return;
+            }
+        }
+    }
+    let mips = Arc::new(mip_chain(img));
+    let mut guard = PREMIPS.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    // the images gone are forgotten, their chains with them: an image the render thread never
+    // took (a scene it skipped for a newer one, as a day's map textures at the fastest speed) left
+    // its chain here (16 MB and more for the borders' map), 150 MB a second at the fastest speed
+    if map.len() > 32 {
+        map.retain(|_, p| p.image.strong_count() > 0);
+    }
+    map.insert(key, Premip { image: Arc::downgrade(img), mips: Some(mips) });
+}
+
+/// The mip chain of `img`: the one made ahead if there is one (taken), else made now.
+fn mips_of(img: &Arc<Image>) -> Arc<Vec<Image>> {
+    let key = Arc::as_ptr(img) as usize;
+    if let Some(map) = PREMIPS.lock().unwrap().as_mut() {
+        if let Some(p) = map.get_mut(&key) {
+            if p.image.upgrade().is_some_and(|i| Arc::ptr_eq(&i, img)) {
+                if let Some(m) = p.mips.take() {
+                    return m;
+                }
+            }
+        }
+    }
+    Arc::new(mip_chain(img))
 }
 
 impl Renderer {
@@ -754,18 +845,21 @@ impl Renderer {
         if self.textures.get(name).is_some_and(|t| Arc::ptr_eq(&t.source, img)) {
             return;
         }
-        let levels = mip_chain(img);
+        let t0 = std::time::Instant::now();
+        let levels = mips_of(img);
+        crate::prof(&format!("upload: {name} {}x{} mips", img.width, img.height), t0);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(name),
             size: wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 },
-            mip_level_count: levels.len() as u32,
+            mip_level_count: levels.len() as u32 + 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        for (level, l) in levels.iter().enumerate() {
+        // (level 0 the image itself, the chain the levels below it)
+        for (level, l) in std::iter::once(&**img).chain(levels.iter()).enumerate() {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: level as u32, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
                 &l.rgba,
@@ -785,6 +879,7 @@ impl Renderer {
         // a replaced texture: the mesh bind groups that used it are made again
         self.mesh_binds.retain(|k, _| k.0 != name && k.1 != name && k.2 != name);
         self.textures.insert(name.to_string(), GpuTexture { source: img.clone(), _texture: texture, view, bind });
+        crate::prof(&format!("upload: {name} in all"), t0);
     }
 
     /// A cube map (dds::load_cube: six faces stacked) as a cube texture, one mip.
@@ -844,6 +939,51 @@ impl Renderer {
 
     /// Uploads a scene for a target of its view's size: the view, the textures and meshes it uses
     /// (those not uploaded yet), its quads, lines and mesh draws, and a depth buffer of its size.
+    /// The resources of `scene` not uploaded yet, about `budget` bytes of them in this call (the
+    /// first one whatever its size); whether all it uses are uploaded now, so that
+    /// [`Renderer::upload`] uploads no more than the scene's own buffers. The render thread calls
+    /// it each frame for a scene newly published, and draws the one before until it is ready: a
+    /// frame never uploads more than the budget (docs/render.md section 12).
+    pub fn preload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, textures: &Textures, budget: usize) -> bool {
+        let mut spent = 0usize;
+        let mut ready = true;
+        for r in scene_resources(scene) {
+            let bytes = match &r {
+                Res::Texture(i) => {
+                    let (name, img) = (&textures.names[*i], &textures.images[*i]);
+                    if self.textures.get(name).is_some_and(|t| Arc::ptr_eq(&t.source, img)) {
+                        continue;
+                    }
+                    img.rgba.len() * 4 / 3
+                }
+                Res::Cube(i) => {
+                    let (name, img) = (&textures.names[*i], &textures.images[*i]);
+                    if self.cubes.get(name).is_some_and(|c| Arc::ptr_eq(&c.0, img)) {
+                        continue;
+                    }
+                    img.rgba.len()
+                }
+                Res::Mesh(m) => {
+                    if self.meshes.get(&m.key).is_some_and(|g| Arc::ptr_eq(&g.source, m)) {
+                        continue;
+                    }
+                    m.vertices.len() * std::mem::size_of::<MeshVertex>() + m.indices.len() * 4
+                }
+            };
+            if spent > 0 && spent + bytes > budget {
+                ready = false;
+                continue;
+            }
+            spent += bytes;
+            match r {
+                Res::Texture(i) => self.texture(device, queue, &textures.names[i], &textures.images[i]),
+                Res::Cube(i) => self.cube(device, queue, &textures.names[i], &textures.images[i]),
+                Res::Mesh(m) => self.mesh(device, queue, m),
+            }
+        }
+        ready
+    }
+
     pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, textures: &Textures) {
         let v = &scene.view;
         let view = ViewUniform {
@@ -1370,6 +1510,31 @@ impl Offscreen {
     /// Uploads a scene (see Renderer::upload).
     pub fn upload(&mut self, scene: &Scene, textures: &Textures) {
         self.renderer.upload(&self.device, &self.queue, scene, textures);
+    }
+
+    /// Draws the uploaded scene's layers in `mask` into a `width` x `height` target and waits for
+    /// the GPU to finish, as a window's frame does before its present (no read-back): `bench`'s
+    /// frame. `target` keeps the target texture from one frame to the next.
+    pub fn draw_frame(&self, width: u32, height: u32, mask: u32, target: &mut Option<(u32, u32, wgpu::Texture)>) -> Result<(), String> {
+        if !target.as_ref().is_some_and(|t| t.0 == width && t.1 == height) {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("bench"),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: OFFSCREEN_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            *target = Some((width, height, texture));
+        }
+        let view = target.as_ref().unwrap().2.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("bench") });
+        self.renderer.draw(&mut encoder, &view, mask);
+        self.queue.submit([encoder.finish()]);
+        self.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("poll: {e}"))?;
+        Ok(())
     }
 
     /// Renders the uploaded scene's layers in `mask` into a `width` x `height` RGBA8 image (rows

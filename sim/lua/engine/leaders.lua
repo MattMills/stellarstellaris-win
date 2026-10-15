@@ -26,6 +26,7 @@
 -- special projects, archaeology and effects (add_experience goes through leaders.add_experience).
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local defs = require("engine.defs")
 local eval = require("simscript.eval")
 
@@ -75,6 +76,7 @@ local function council_of()
     if council == nil then
         council, rulers = {}, {}
         for _, country in ipairs(world.all("country")) do
+            slice.tick("leaders.lua:77")
             local c = world.object("country", country)
             local gov = world.field(c, "government")
             if type(gov) == "table" then
@@ -236,6 +238,7 @@ function leaders.monthly()
     council, penalty_cache, change_cache = nil, {}, nil
     local d = defines()
     for _, country in ipairs(world.all("country")) do
+        slice.tick("leaders.lua:238")
         local c = world.object("country", country)
         local gov = world.field(c, "government")
         local ruler = tonumber(world.field(c, "ruler"))

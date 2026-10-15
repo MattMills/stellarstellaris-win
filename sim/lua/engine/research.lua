@@ -47,6 +47,7 @@
 local world = require("engine.world")
 local defs = require("engine.defs")
 local eval = require("simscript.eval")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local research = {
     AREAS = { "physics", "society", "engineering" },
@@ -307,6 +308,7 @@ local function head_of_research(country)
         local d = defines()
         local store = world.stores.council_positions
         for _, id in ipairs(world.all("council_positions")) do
+            slice.tick("research.lua:310")
             local p = store[id]
             if p and d.RESEARCH_POSITIONS[world.field(p, "type") or ""] then
                 local leader = tonumber(world.field(p, "leader"))
@@ -882,10 +884,13 @@ function research.daily(host, date)
     end
     today = date and date.year and string.format("%d.%02d.%02d", date.year, date.month, date.day) or nil
     for _, country in ipairs(world.all("country")) do
+        slice.tick("research.lua:885")
         local c = world.object("country", country)
+        slice.check("research country")
         local status = c and world.field(c, "tech_status")
         if type(status) == "table" then
             for _, area in ipairs(research.AREAS) do
+                slice.check("research area")
                 area_day(host, country, status, area, day)
             end
         end

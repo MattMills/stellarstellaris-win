@@ -41,6 +41,7 @@ local eval = require("simscript.eval")
 local db = require("simscript.db")
 local source = require("stellar.script.source")
 local graph_economy = require("stellar.graph.economy")
+local slice = require("engine.slice")
 
 local economy = {
     TABLES = { produces = "income", upkeep = "expenses" },
@@ -395,6 +396,7 @@ function economy.unit(country, t, s, M, ctx, label, category, factors)
     if t == nil or country == nil then
         return
     end
+    slice.tick("economic unit")
     category = category or t.category
     for kind, side in pairs(economy.TABLES) do
         local base = base_table(t, kind, ctx)
@@ -454,6 +456,7 @@ function economy.compute()
     economy.timings = {}
     require("engine.economy.script").with(function()
         for _, kind in ipairs(units.order) do
+            slice.check("economy " .. kind)
             local t0 = RUST.clock()
             units[kind](economy)
             economy.current_colony = nil
@@ -548,6 +551,7 @@ function economy.monthly()
     economy.compute()
     economy.before_growth = before
     for _, country in ipairs(world.all("country")) do
+        slice.check("stockpile")
         local c = world.object("country", country)
         local module = world.path(c, "modules", "standard_economy_module")
         local stock = type(module) == "table" and world.child(module, "resources")
@@ -612,6 +616,7 @@ function economy.check(rel)
     ensure()
     local entries = {}
     for _, country in ipairs(world.all("country")) do
+        slice.tick("economy.lua:618")
         local want = save_budget(country)
         if want then
             local got = budgets[country] or { income = {}, expenses = {} }

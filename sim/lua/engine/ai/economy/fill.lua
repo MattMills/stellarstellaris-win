@@ -7,6 +7,7 @@
 -- designations, the new district's zones in its modifiers.
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local defs = require("engine.defs")
 local eval = require("simscript.eval")
 local rng = require("engine.ai.rng")
@@ -80,6 +81,7 @@ end
 
 local function add_block(M, block, ctx, factor)
     for _, e in ipairs(type(block) == "table" and block or {}) do
+        slice.tick("ai/economy/fill.lua:82")
         if e.op and e.key and e.value.text then
             local k = e.key.text
             if k ~= "potential" and k ~= "modifier" then
@@ -92,6 +94,7 @@ end
 -- `key = { mods }` and `triggered_key = { potential = { } modifier = { mods } | mods }`
 local function collect(M, d, key, ctx, factor)
     for _, e in ipairs(expanded(d)) do
+        slice.tick("ai/economy/fill.lua:94")
         if e.op and e.key and e.value.text == nil then
             local k = e.key.text
             if k == key then
@@ -115,10 +118,12 @@ end
 local function canm(M, C, adds, mults, factor)
     local a, m, oa, om = 0, 0, 0, 1
     for _, k in ipairs(adds) do
+        slice.tick("ai/economy/fill.lua:117")
         a = a + (M[k] or 0) * factor
         oa = oa + (C[k] or 0)
     end
     for _, k in ipairs(mults) do
+        slice.tick("ai/economy/fill.lua:121")
         m = m + (M[k] or 0)
         om = om + (C[k] or 0)
     end
@@ -140,6 +145,7 @@ end
 
 local function add_table(out, t, f)
     for r, v in pairs(t or {}) do
+        slice.tick("ai/economy/fill.lua:142")
         out[r] = (out[r] or 0) + v * (f or 1)
     end
 end
@@ -158,12 +164,16 @@ local function job_approx(approx, job, amount, info, ctx)
     collect(Mj, d, "country_modifier", ctx)
     misc_terms(approx, Mj, C, mult)
     for _, t in ipairs(units().templates(economy, "common/pop_jobs", job)) do
+        slice.tick("ai/economy/fill.lua:160")
         for kind, side in pairs({ produces = "prod", upkeep = "upk" }) do
+            slice.tick("ai/economy/fill.lua:161")
             local base = {}
             for _, blk in ipairs(t[kind] or {}) do
+                slice.tick("ai/economy/fill.lua:163")
                 if blk.trigger == nil or holds(blk.trigger, ctx) then
                     local m = blk.mult and economy.value_of(blk.mult, ctx) or 1
                     for _, rv in ipairs(blk.values) do
+                        slice.tick("ai/economy/fill.lua:166")
                         local ok, v = pcall(economy.value_of, rv[2], ctx)
                         if ok and v then base[rv[1]] = (base[rv[1]] or 0) + v * m end
                     end
@@ -181,9 +191,11 @@ local function approximate(b, d, info, ctx)
     local approx = { amen = 0, housing = 0, crime = 0, naval = 0, pop = false, prod = {}, upk = {} }
     -- CalcAIProductionResources: the `ai_resource_production` blocks whose trigger holds
     for _, e in ipairs(expanded(d)) do
+        slice.tick("ai/economy/fill.lua:183")
         if e.op and e.key and e.key.text == "ai_resource_production" and e.value.text == nil then
             if holds(defs.field(e.value, "trigger"), ctx) then
                 for _, x in ipairs(e.value) do
+                    slice.tick("ai/economy/fill.lua:186")
                     if x.op and x.key and x.key.text ~= "trigger" and x.value.text then
                         approx.prod[x.key.text] = (approx.prod[x.key.text] or 0) + num(x.value.text, ctx)
                     end
@@ -208,6 +220,7 @@ local function approximate(b, d, info, ctx)
     local g = M.logistic_growth_mult or 0
     if g >= defines().GROWTH then approx.pop = true end
     for k, v in pairs(M) do
+        slice.tick("ai/economy/fill.lua:210")
         local job = k:match("^job_(.+)_add$")
         if job and v > 0 then
             job_approx(approx, job, v, info, ctx)
@@ -233,6 +246,7 @@ local function resource_weight(t, P, U)
     local acc = 0
     local economy = require("engine.economy")
     for _, r in ipairs(economy.resources) do
+        slice.tick("ai/economy/fill.lua:235")
         local T, F, N, Fo = t.target[r] or 0, t.current[r] or 0, t.needed[r] or 0, t.focus[r] or 0
         local Dd = -F
         local p, u = P[r] or 0, U[r] or 0
@@ -291,6 +305,7 @@ end
 local function decreases_deficits(t, P, U)
     local gain, loss, sp, su = 0, 0, 0, 0
     for _, r in ipairs(require("engine.economy").resources) do
+        slice.tick("ai/economy/fill.lua:293")
         local net = (P[r] or 0) - (U[r] or 0)
         local T, F = t.target[r] or 0, t.current[r] or 0
         sp, su = sp + (P[r] or 0), su + (U[r] or 0)
@@ -305,6 +320,7 @@ end
 local function has_available_pops(info)
     local c = world.object("colony", info.colony)
     for _, jid in ipairs(world.list(world.field(c, "pop_jobs"))) do
+        slice.tick("ai/economy/fill.lua:307")
         local j = world.object("pop_jobs", tonumber(jid))
         local t = j and world.field(j, "type")
         local d = t and defs.get("common/pop_jobs", t)
@@ -323,6 +339,7 @@ local function affinities(info)
     local blk = d and field(d, "ai_building_set_affinity")
     local out = {}
     for _, e in ipairs(type(blk) == "table" and blk or {}) do
+        slice.tick("ai/economy/fill.lua:325")
         if e.op and e.key and e.value.text then out[e.key.text] = tonumber(e.value.text) or 0 end
     end
     return out
@@ -332,6 +349,7 @@ local function list_of(d, key)
     local out = {}
     local blk = field(d, key)
     for _, e in ipairs(type(blk) == "table" and blk or {}) do
+        slice.tick("ai/economy/fill.lua:334")
         if e.text then out[#out + 1] = e.text end
     end
     return out
@@ -341,9 +359,11 @@ end
 local function zone_affinity(aff, zd)
     local best = 1
     for _, s in ipairs(list_of(zd, "included_building_sets")) do
+        slice.tick("ai/economy/fill.lua:343")
         if aff[s] and aff[s] > best then best = aff[s] end
     end
     for _, s in ipairs(list_of(zd, "include")) do
+        slice.tick("ai/economy/fill.lua:346")
         if aff[s] and aff[s] > best then best = aff[s] end
     end
     return best
@@ -379,9 +399,11 @@ function slot_zones_raw(slot_name, ctx)
     for _, s in ipairs(list_of(sd, "exclude")) do excl[s] = true end
     local out = {}
     for name, zd in pairs(defs.folder("common/zones")) do
+        slice.tick("ai/economy/fill.lua:381")
         if not excl[name] then
             local ok = false
             for _, s in ipairs(list_of(zd, "zone_sets")) do
+                slice.tick("ai/economy/fill.lua:384")
                 if sets[s] or sets[name] then ok = true end
             end
             if ok then out[#out + 1] = name end
@@ -395,6 +417,7 @@ fill.slot_zones = slot_zones
 local function zone_can_build(zd, ctx)
     if not holds(field(zd, "potential"), ctx) then return false end
     for _, e in ipairs(expanded(zd)) do
+        slice.tick("ai/economy/fill.lua:397")
         if e.op and e.key and e.key.text == "unlock" and not holds(e.value, ctx) then return false end
     end
     return true
@@ -406,12 +429,15 @@ local function zone_slots_for(info, z, ctx)
     local zd = defs.get("common/zones", z)
     if not zd or not zone_can_build(zd, ctx) then return out end
     for _, dist in ipairs(info.list) do
+        slice.tick("ai/economy/fill.lua:408")
         local dd = defs.get("common/districts", dist.type)
         local slot_names = dd and list_of(dd, "zone_slots") or {}
         for i, sname in ipairs(slot_names) do
+            slice.tick("ai/economy/fill.lua:411")
             local zid = dist.zones[i]
             if (zid == nil or zid == NONE) and dist.level > 0 then
                 for _, cand in ipairs(slot_zones(sname, ctx)) do
+                    slice.tick("ai/economy/fill.lua:414")
                     if cand == z then
                         out[#out + 1] = { district = dist.id, slot = i - 1, level = dist.level }
                     end
@@ -435,19 +461,25 @@ end
 -- whether building type t can go into zone type zd (the zone's include / exclude lists and sets)
 local function zone_accepts(zd, t, bd)
     for _, x in ipairs(list_of(zd, "exclude")) do
+        slice.tick("ai/economy/fill.lua:437")
         if x == t then return false end
     end
     local sets = list_of(bd, "building_sets")
     for _, x in ipairs(list_of(zd, "excluded_building_sets")) do
+        slice.tick("ai/economy/fill.lua:441")
         for _, s in ipairs(sets) do
+            slice.tick("ai/economy/fill.lua:442")
             if s == x then return false end
         end
     end
     for _, x in ipairs(list_of(zd, "include")) do
+        slice.tick("ai/economy/fill.lua:446")
         if x == t or x == "all" then return true end
     end
     for _, x in ipairs(list_of(zd, "included_building_sets")) do
+        slice.tick("ai/economy/fill.lua:449")
         for _, s in ipairs(sets) do
+            slice.tick("ai/economy/fill.lua:450")
             if s == x then return true end
         end
     end
@@ -460,7 +492,9 @@ end
 local function building_slot(info, t, bd)
     local best, bestp = nil, -1
     for _, dist in ipairs(info.list) do
+        slice.tick("ai/economy/fill.lua:462")
         for _, zid in ipairs(dist.zones) do
+            slice.tick("ai/economy/fill.lua:463")
             if zid ~= NONE then
                 local z = world.object("zones", zid)
                 local ztype = z and world.field(z, "type")
@@ -486,6 +520,7 @@ local function building_counts(info)
     local counts, queued_in = {}, {}
     local c = world.object("colony", info.colony)
     for _, bid in ipairs(world.list(world.field(c, "buildings_cache"))) do
+        slice.tick("ai/economy/fill.lua:488")
         local b = world.object("buildings", tonumber(bid))
         local t = b and world.field(b, "type")
         if t then counts[t] = (counts[t] or 0) + 1 end
@@ -493,6 +528,7 @@ local function building_counts(info)
     local p = world.object("planet", info.planet)
     local q = world.object("construction.queue_mgr.queues", tonumber(world.field(p, "build_queue")))
     for _, iid in ipairs(world.list(q and world.field(q, "items"))) do
+        slice.tick("ai/economy/fill.lua:495")
         local item = world.object("construction.item_mgr.items", tonumber(iid))
         local kind, blk = B.item_kind(item or {})
         if kind == "planet_building" then
@@ -514,15 +550,18 @@ local function country_building_counts(country)
     if counts then return counts end
     counts = {}
     for _, pid in ipairs(world.planets_of[country] or {}) do
+        slice.tick("ai/economy/fill.lua:516")
         local col = world.planet_colony[pid]
         local c = col and world.object("colony", col)
         for _, bid in ipairs(world.list(c and world.field(c, "buildings_cache"))) do
+            slice.tick("ai/economy/fill.lua:519")
             local b = world.object("buildings", tonumber(bid))
             local t = b and world.field(b, "type")
             if t then counts[t] = (counts[t] or 0) + 1 end
         end
     end
     for _, it in pairs(world.stores["construction.item_mgr.items"] or {}) do
+        slice.tick("ai/economy/fill.lua:525")
         if tonumber(world.field(it, "paying_country")) == country then
             local kind, blk = B.item_kind(it)
             if kind == "planet_building" then
@@ -562,6 +601,7 @@ end
 local function gates(env, info, b, d, ctx, cost)
     -- cost gate: no income of a resource and not enough of it in stock
     for r, v in pairs(cost) do
+        slice.tick("ai/economy/fill.lua:564")
         if v > 0 and (env.tables.current[r] or 0) <= 0 and (env.stockpile[r] or 0) < v then
             return reject("cost")
         end
@@ -580,6 +620,7 @@ local function gates(env, info, b, d, ctx, cost)
     local essential = field(d, "is_essential") == "yes"
     if not essential then
         for r, u in pairs(approx.upk) do
+            slice.tick("ai/economy/fill.lua:582")
             if u > math.max(env.tables.current[r] or 0, 0) then
                 if not decreases_deficits(env.tables, approx.prod, approx.upk) then
                     return reject("deficit")
@@ -604,6 +645,7 @@ end
 local function estimate_districts(env, info, items)
     local aff = affinities(info)
     for _, name in ipairs(env.district_types) do
+        slice.tick("ai/economy/fill.lua:606")
         local d = defs.get("common/districts", name)
         if slots.has_prerequisites(env.country, expanded(d)) and slots.can_add_district(info, name) then
             fill.stats.candidates = fill.stats.candidates + 1
@@ -618,7 +660,9 @@ local function estimate_districts(env, info, items)
                 local da, has_zone, unzoned = 1, false, false
                 local have = info.districts[name]
                 for i, sname in ipairs(list_of(d, "zone_slots")) do
+                    slice.tick("ai/economy/fill.lua:620")
                     for _, z in ipairs(slot_zones(sname, ctx)) do
+                        slice.tick("ai/economy/fill.lua:621")
                         local zd = defs.get("common/zones", z)
                         if zd then
                             local a = zone_affinity(aff, zd)
@@ -653,6 +697,7 @@ local function estimate_buildings(env, info, items)
     local counts, queued_in = building_counts(info)
     info.queued_buildings = queued_in
     for _, name in ipairs(env.building_types) do
+        slice.tick("ai/economy/fill.lua:655")
         local d = defs.get("common/buildings", name)
         if slots.has_prerequisites(env.country, expanded(d)) then
             local b = { kind = "planet_building", type = name, colony = info.colony, planet = info.planet, owner = env.country }
@@ -669,6 +714,7 @@ local function estimate_buildings(env, info, items)
                         w = w * (field(d, "ai_weight_coefficient") and num(field(d, "ai_weight_coefficient"), ctx) or 1)
                         local sa = 1
                         for _, s in ipairs(list_of(d, "building_sets")) do
+                            slice.tick("ai/economy/fill.lua:671")
                             if aff[s] and aff[s] > sa then sa = aff[s] end
                         end
                         w = w * sa
@@ -687,6 +733,7 @@ end
 local function estimate_zones(env, info, items)
     local aff = affinities(info)
     for _, name in ipairs(env.zone_types) do
+        slice.tick("ai/economy/fill.lua:689")
         local d = defs.get("common/zones", name)
         local b = { kind = "zone", type = name, colony = info.colony, planet = info.planet, owner = env.country }
         local ctx = B.ctx(b)
@@ -714,6 +761,7 @@ local function opportunity_costs(items, infos)
     local Dn = defines()
     local groups, order = {}, {}
     for i, b in ipairs(items) do
+        slice.tick("ai/economy/fill.lua:716")
         if b.group then
             local g = groups[b.group]
             if not g then
@@ -730,6 +778,7 @@ local function opportunity_costs(items, infos)
         end
     end
     for _, key in ipairs(order) do
+        slice.tick("ai/economy/fill.lua:732")
         local g = groups[key]
         local free, factor, falloff, maxfree
         if g.district then
@@ -743,6 +792,7 @@ local function opportunity_costs(items, infos)
         if free <= maxfree then
             local cost = g.second * factor * falloff ^ math.max(free - 1, 0)
             for _, i in ipairs(g.items) do
+                slice.tick("ai/economy/fill.lua:745")
                 if i == g.best then
                     items[i].weight = items[i].weight - cost
                 else
@@ -759,6 +809,7 @@ local function db_order(folder)
     if orders[folder] then return orders[folder] end
     local list = {}
     for name, d in pairs(defs.folder(folder)) do
+        slice.tick("ai/economy/fill.lua:761")
         list[#list + 1] = { name = name, file = d.file or "", line = d.line or 0 }
     end
     table.sort(list, function(a, b)
@@ -776,9 +827,11 @@ end
 local function specialization_draws(env, infos, colonies)
     local kept = 0
     for _, c in ipairs(colonies) do
+        slice.tick("ai/economy/fill.lua:778")
         local info = infos[c.colony]
         local n = 0
         for _, dist in ipairs(info.list) do
+            slice.tick("ai/economy/fill.lua:781")
             local d = defs.get("common/districts", dist.type)
             if d and field(d, "exempt_from_ai_planet_specialization") ~= "yes" and dist.level > 0 then
                 n = n + 1
@@ -798,6 +851,7 @@ function fill.fill(country, plan, tables, listC, listA)
     local stock = world.path(c, "modules", "standard_economy_module", "resources")
     local stockpile = {}
     for _, e in ipairs(type(stock) == "table" and stock or {}) do
+        slice.tick("ai/economy/fill.lua:800")
         if e.op and e.key then stockpile[e.key.text] = tonumber(e.value.text) or 0 end
     end
     local env = {
@@ -810,6 +864,7 @@ function fill.fill(country, plan, tables, listC, listA)
     local items, infos = {}, {}
     slot_cache, empire_counts = {}, {}
     for _, col in ipairs(listC) do
+        slice.tick("ai/economy/fill.lua:812")
         local info = slots.colony(col)
         info.misc = misc_needs(info)
         info.available_pops = has_available_pops(info)

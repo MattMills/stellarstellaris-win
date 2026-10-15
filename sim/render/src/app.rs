@@ -160,7 +160,8 @@ pub struct App {
     hover: Option<String>,
     pressed: Option<String>,
     items: Option<((u32, u32, Screen), Vec<GuiItem>)>,
-    scene: Option<Scene>,
+    /// the scene built (shared with the render thread once published: ui.rs)
+    scene: Option<std::sync::Arc<Scene>>,
     generation: u64,
     /// keys held (the camera's keys move it while held), the cursor (edge scrolling), the time of
     /// the last update
@@ -1320,7 +1321,7 @@ impl App {
 
     /// The scene built and its textures (after [`App::prepare`]).
     pub fn parts(&self) -> Option<(&Scene, &Textures)> {
-        self.scene.as_ref().map(|s| (s, self.textures()))
+        self.scene.as_deref().map(|s| (s, self.textures()))
     }
 
     /// The button states of the screen's GUI (hover, pressed).
@@ -1343,8 +1344,13 @@ impl App {
             if self.screen == Screen::Map {
                 let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0)));
                 if key != self.overlay_key {
+                    let t = Instant::now();
                     self.overlay_items = self.selection_windows();
-                    self.overlay_labels = match self.system_labels() {
+                    crate::prof("scene: selection windows", t);
+                    let t = Instant::now();
+                    let labels = self.system_labels();
+                    crate::prof("scene: system labels", t);
+                    self.overlay_labels = match labels {
                         Ok(l) => l,
                         Err(e) => {
                             self.log.push(format!("labels: {e}"));
@@ -1378,11 +1384,16 @@ impl App {
                     scene::gui_scene(w, h, &items, &self.fonts, &mut self.textures, &mut self.cache.borrow_mut(), &self.game_dir, &states)
                 }
             };
-            self.scene = Some(scene);
+            self.scene = Some(std::sync::Arc::new(scene));
             // a new scene, whoever asked for it (a hit test builds it too)
             self.generation += 1;
         }
-        Ok(self.scene.as_ref().unwrap())
+        Ok(self.scene.as_deref().unwrap())
+    }
+
+    /// The scene built (after [`App::prepare`]), shared: what the UI thread publishes (ui.rs).
+    pub fn scene_shared(&self) -> Option<std::sync::Arc<Scene>> {
+        self.scene.clone()
     }
 
     /// The textures of the current screen's scene.

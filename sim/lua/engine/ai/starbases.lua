@@ -34,6 +34,7 @@
 -- STELLAR_AI_STARBASES=off turns it off.
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local cmds = require("engine.ai.commands")
 local defs = require("engine.defs")
 
@@ -86,6 +87,7 @@ local function queued_items(sb)
 end
 local function upgrading(sb)
     for _, iid in ipairs(queued_items(sb)) do
+        slice.tick("ai/starbases.lua:89")
         local item = world.object("construction.item_mgr.items", tonumber(iid))
         if item and world.field(item, "buildable_starbase_upgrade") then
             return true
@@ -97,6 +99,7 @@ end
 local function own_systems(country)
     local out = {}
     for _, sid in ipairs(world.all("system")) do
+        slice.tick("ai/starbases.lua:99")
         if world.system_owner[sid] == country then out[#out + 1] = sid end
     end
     return out
@@ -109,6 +112,7 @@ local function system_score(country, sid, sb)
     local score = 0
     local colony = false
     for _, pid in ipairs(g.planets_of[sid] or {}) do
+        slice.tick("ai/starbases.lua:113")
         local p = world.object("planet", pid)
         if p and tonumber(world.field(p, "owner")) == country and world.planet_colony[pid] then
             colony = true
@@ -119,6 +123,7 @@ local function system_score(country, sid, sb)
         score = score + d.COLONY
     else
         for _, pid in ipairs(g.planets_of[sid] or {}) do
+            slice.tick("ai/starbases.lua:123")
             if stations().colonizable(pid) then
                 score = score + d.HABITABLE
                 break
@@ -131,6 +136,7 @@ local function system_score(country, sid, sb)
     if #(g.bypasses_of[sid] or {}) > 0 then score = score + d.BYPASS end
     -- a sector's local capital in the system
     for _, sec in ipairs(world.all("sectors")) do
+        slice.tick("ai/starbases.lua:133")
         local s = world.object("sectors", sec)
         local cap = s and tonumber(world.field(s, "local_capital"))
         local pid = cap and world.colony_planet[cap]
@@ -174,6 +180,7 @@ end
 local function build_new_starbases(country, outposts, commands, today)
     local best, best_score
     for _, sb in ipairs(outposts) do
+        slice.tick("ai/starbases.lua:179")
         if not is_upgraded(sb) and not upgrading(sb) then
             local s = world.object("starbases", sb)
             local ld = level_def(world.field(s, "level"))
@@ -181,6 +188,7 @@ local function build_new_starbases(country, outposts, commands, today)
             if nxt then
                 local sid
                 for _, x in ipairs(own_systems(country)) do
+                    slice.tick("ai/starbases.lua:186")
                     if stations().primary_starbase(x) == sb then sid = x break end
                 end
                 local score = sid and system_score(country, sid, sb) or 0
@@ -232,12 +240,14 @@ function M.weekly(country, today, commands, host)
     local used = 0
     local outposts, upgraded = {}, {}
     for _, sid in ipairs(own_systems(country)) do
+        slice.tick("ai/starbases.lua:237")
         local primary = stations().primary_starbase(sid)
         if primary and (is_upgraded(primary) or upgrading(primary)) then
             used = used + 1
         end
         local g = world.object("system", sid)
         for _, v in ipairs(world.list(g and world.field(g, "starbases"))) do
+            slice.tick("ai/starbases.lua:243")
             local sb = tonumber(v)
             if sb and sb ~= NO_ID and world.object("starbases", sb) then
                 if sb == primary and not is_upgraded(sb) then
@@ -260,6 +270,7 @@ end
 function M.log()
     local lines = {}
     for _, d in ipairs(M.decisions) do
+        slice.tick("ai/starbases.lua:265")
         lines[#lines + 1] = string.format("%s %d starbase %d -> %s", d.date or "?", d.country, d.starbase, tostring(d.level))
     end
     return table.concat(lines, "\n")

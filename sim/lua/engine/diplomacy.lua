@@ -21,6 +21,7 @@
 --                  movement's hooks
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local defs = require("engine.defs")
 
 local D = { stats = { access = 0, denied = 0 } }
@@ -244,6 +245,7 @@ function D.associates(f)
     local out = {}
     if not f then return out end
     for _, c in ipairs(world.all("country")) do
+        slice.tick("diplomacy.lua:246")
         if ref(world.field(country(c), "associated_federation")) == f then out[#out + 1] = c end
     end
     return out
@@ -566,6 +568,7 @@ function D.systems_of(cid)
     if not idx then
         idx = {}
         for _, sid in ipairs(world.all("system")) do
+            slice.tick("diplomacy.lua:568")
             local o = so[sid]
             if o then
                 idx[o] = idx[o] or {}

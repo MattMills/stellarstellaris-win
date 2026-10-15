@@ -10,6 +10,7 @@
 --   cats.descendants(cat)            -- cat and every category under it
 
 local defs = require("engine.defs")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local cats = {}
 
@@ -19,6 +20,7 @@ local function list_set(block)
     local set = {}
     if type(block) == "table" then
         for _, e in ipairs(block) do
+            slice.tick("ai/economy/categories.lua:21")
             if e.text then
                 set[e.text] = true
             end
@@ -33,6 +35,7 @@ local function load()
     end
     C = {}
     for name, d in pairs(defs.folder("common/economic_categories")) do
+        slice.tick("ai/economy/categories.lua:35")
         C[name] = {
             name = name,
             parent = defs.field(d.block, "parent"),
@@ -43,6 +46,7 @@ local function load()
         }
     end
     for name, c in pairs(C) do
+        slice.tick("ai/economy/categories.lua:45")
         local p = c.parent and C[c.parent]
         if p then
             p.children[#p.children + 1] = name
@@ -51,6 +55,7 @@ local function load()
         end
     end
     for _, c in pairs(C) do
+        slice.tick("ai/economy/categories.lua:53")
         table.sort(c.children)
     end
     return C
@@ -75,6 +80,7 @@ function cats.to_use(name)
         return name
     end
     for _ = 1, 100 do
+        slice.tick("ai/economy/categories.lua:77")
         local p = c.parent and C[c.parent]
         if not p or p == c then
             break
@@ -93,6 +99,7 @@ end
 local function for_resource(name, res, field)
     local c = load()[name]
     while c do
+        slice.tick("ai/economy/categories.lua:95")
         if not c[field][res] and c.ai then
             return c.name
         end
@@ -119,6 +126,7 @@ function cats.descendants(name, out)
     local c = load()[name]
     out[#out + 1] = name
     for _, child in ipairs(c and c.children or {}) do
+        slice.tick("ai/economy/categories.lua:121")
         cats.descendants(child, out)
     end
     return out

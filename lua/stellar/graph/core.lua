@@ -61,6 +61,14 @@ local band, bor, bnot = bit.band, bit.bor, bit.bnot
 local huge = math.huge
 local abs = math.abs
 
+-- the simulation's engine.slice tick, when there is one (a phase run in pieces may stop inside a
+-- long walk of the graph: nothing else touches the graph until it goes on; sim
+-- docs/frame_timing.md)
+local tick = (function()
+    local ok, slice = pcall(require, "engine.slice")
+    return ok and slice.tick or function() end
+end)()
+
 local M = {}
 
 -- operations
@@ -345,6 +353,7 @@ function M.new(options)
     local function mark(budget)
         local work = 0
         while nfront > 0 and work < budget do
+            tick("graph mark")
             local u = frontier[nfront]
             frontier[nfront] = nil
             nfront = nfront - 1
@@ -474,6 +483,7 @@ function M.new(options)
         visit[n] = epoch
         local list, nl = pull_list, 0
         while ns > 0 do
+            tick("graph pull")
             local x = st[ns]
             ns = ns - 1
             nl = nl + 1
@@ -492,10 +502,42 @@ function M.new(options)
             list[i] = nil
         end
         pull_n = nl
-        if nl > 1 then
+        if nl > 64 then
+            -- a long list by level in buckets (a loop that can stop at a tick, as table.sort's
+            -- comparator cannot; the nodes of one level do not read each other, so their order
+            -- among themselves changes no value)
+            local lo_l, hi_l = huge, -huge
+            for i = 1, nl do
+                local l = level[list[i]]
+                if l < lo_l then lo_l = l end
+                if l > hi_l then hi_l = l end
+            end
+            local count, pos = {}, {}
+            for i = 1, nl do
+                local l = level[list[i]] - lo_l
+                count[l] = (count[l] or 0) + 1
+            end
+            local acc = 0
+            for l = 0, hi_l - lo_l do
+                pos[l] = acc + 1
+                acc = acc + (count[l] or 0)
+            end
+            local out = {}
+            for i = 1, nl do
+                tick("graph pull")
+                local x = list[i]
+                local l = level[x] - lo_l
+                out[pos[l]] = x
+                pos[l] = pos[l] + 1
+            end
+            for i = 1, nl do
+                list[i] = out[i]
+            end
+        elseif nl > 1 then
             table.sort(list, by_level)
         end
         for i = 1, nl do
+            tick("graph pull")
             local x = list[i]
             if band(flags[x], DIRTY) ~= 0 then
                 compute(x)
@@ -563,6 +605,7 @@ function M.new(options)
         local st, ns = need_stack, 1
         st[1] = u
         while ns > 0 do
+            tick("graph needs")
             local x = st[ns]
             ns = ns - 1
             local off = in_off[x]
@@ -628,6 +671,7 @@ function M.new(options)
         local st, ns = level_stack, 1
         st[1] = v
         while ns > 0 do
+            tick("graph levels")
             local x = st[ns]
             ns = ns - 1
             if x == u then

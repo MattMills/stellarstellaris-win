@@ -18,6 +18,7 @@
 --   index = the weighted pick of r (engine.ai.rng.weighted)
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local defs = require("engine.defs")
 local eval = require("simscript.eval")
 local research = require("engine.research")
@@ -51,15 +52,18 @@ local function weight_of(block, ctx)
     end
     local acc = 1
     for _, e in ipairs(block) do
+        slice.tick("ai/research.lua:53")
         local k = e.op and e.key and e.key.text
         if k == "weight" or k == "factor" or k == "base" then
             acc = eval.value(e.value, ctx, e)
         end
     end
     for _, e in ipairs(block) do
+        slice.tick("ai/research.lua:59")
         if e.op and e.key and e.key.text == "modifier" and e.value.text == nil then
             local cond, factor, add = {}, nil, nil
             for _, x in ipairs(e.value) do
+                slice.tick("ai/research.lua:62")
                 local k = x.op and x.key and x.key.text
                 if k == "factor" or k == "weight" then
                     factor = eval.value(x.value, ctx, x)
@@ -97,8 +101,10 @@ local function can_queue(country, status, name)
         return false
     end
     for _, e in ipairs(d) do
+        slice.tick("ai/research.lua:99")
         if e.op and e.key and e.key.text == "prerequisites" and e.value.text == nil then
             for _, p in ipairs(e.value) do
+                slice.tick("ai/research.lua:101")
                 if p.text and not research.level(country, p.text) then
                     return false
                 end
@@ -113,6 +119,7 @@ local function can_queue(country, status, name)
         end
     end
     for _, item in ipairs(select(2, queue_items(status, t.area or ""))) do
+        slice.tick("ai/research.lua:115")
         if world.field(item, "technology") == name then
             return false
         end
@@ -141,6 +148,7 @@ end
 function airesearch.tech_to_research(country, status, area, r)
     local _, items = queue_items(status, area)
     for _, item in ipairs(items) do
+        slice.tick("ai/research.lua:143")
         if world.field(item, "technology") or world.field(item, "special_project") then
             return nil
         end
@@ -152,10 +160,12 @@ function airesearch.tech_to_research(country, status, area, r)
     end
     local max_cost = 0
     for _, name in ipairs(list) do
+        slice.tick("ai/research.lua:154")
         max_cost = math.max(max_cost, research.cost(country, name) or 0)
     end
     local weights = {}
     for i, name in ipairs(list) do
+        slice.tick("ai/research.lua:158")
         if can_queue(country, status, name) then
             weights[i] = rng.fp15(math.max(airesearch.ai_weight(country, name, max_cost), 1))
         else
@@ -188,6 +198,7 @@ end
 function airesearch.daily(country, today, commands)
     local status = world.field(world.object("country", country), "tech_status")
     for _, area in ipairs(research.AREAS) do
+        slice.tick("ai/research.lua:190")
         local r = rng.draw(country)
         airesearch.stats.draws = airesearch.stats.draws + 1
         local name = type(status) == "table" and airesearch.tech_to_research(country, status, area, r) or nil

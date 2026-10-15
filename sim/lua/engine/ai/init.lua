@@ -18,6 +18,7 @@
 
 local world = require("engine.world")
 local defs = require("engine.defs")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local ai = {
     stats = { days = 0, countries = 0, commands = 0, executed = 0 },
@@ -185,6 +186,7 @@ function ai.decide(country, today, due, commands, host)
             if interior then
                 local fn = ({ week = "weekly", month = "monthly", year = "yearly" })[period]
                 for _, name in ipairs(ai.INTERIOR) do
+                    slice.check("ai module")
                     local m = optional("engine.ai." .. name)
                     if m and m[fn] then
                         m[fn](country, today, commands, host)
@@ -269,6 +271,7 @@ function ai.process(host, date)
     ai.stats.days = ai.stats.days + 1
     local list = {}
     for _, country in ipairs(world.all("country")) do
+        slice.tick("ai/init.lua:273")
         if runs(country) then
             ai.stats.countries = ai.stats.countries + 1
             list[#list + 1] = country
@@ -279,6 +282,7 @@ function ai.process(host, date)
         decide_on_workers(list, today, commands)
     else
         for _, country in ipairs(list) do
+            slice.check("ai country")
             ai.decide(country, today, tick_counters(country), commands, host)
         end
     end
@@ -315,6 +319,7 @@ function ai.process(host, date)
     end
     ai.stats.commands = ai.stats.commands + #commands
     for _, cmd in ipairs(commands) do
+        slice.tick("ai command")
         if execute(cmd, today) then
             ai.stats.executed = ai.stats.executed + 1
         end

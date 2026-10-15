@@ -13,6 +13,7 @@
 --   slots.colony(colony) -> { colony, planet, owner, districts = { [type] = { id, level } }, ... }
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local defs = require("engine.defs")
 local eval = require("simscript.eval")
 
@@ -49,6 +50,7 @@ function slots.has_prerequisites(country, block)
     end
     local research = require("engine.research")
     for _, e in ipairs(pre) do
+        slice.tick("ai/economy/slots.lua:51")
         if e.text and not research.level(country, e.text) then
             return false
         end
@@ -61,12 +63,14 @@ function slots.colony(c)
     local col = world.object("colony", c.colony)
     local info = { colony = c.colony, planet = c.planet, owner = c.owner, districts = {}, list = {}, levels = 0 }
     for _, did in ipairs(world.list(col and world.field(col, "districts"))) do
+        slice.tick("ai/economy/slots.lua:63")
         local d = world.object("districts", tonumber(did))
         if d then
             local t = world.field(d, "type")
             local level = tonumber(world.field(d, "level")) or 0
             local zones = {}
             for _, z in ipairs(world.list(world.field(d, "zones"))) do
+                slice.tick("ai/economy/slots.lua:69")
                 zones[#zones + 1] = tonumber(z)
             end
             local entry = { id = tonumber(did), type = t, level = level, zones = zones }
@@ -80,6 +84,7 @@ function slots.colony(c)
     local p = world.object("planet", c.planet)
     local q = world.object("construction.queue_mgr.queues", tonumber(world.field(p, "build_queue")))
     for _, iid in ipairs(world.list(q and world.field(q, "items"))) do
+        slice.tick("ai/economy/slots.lua:82")
         local item = world.object("construction.item_mgr.items", tonumber(iid))
         local B = require("engine.ai.economy.buildables")
         local kind, b = B.item_kind(item or {})

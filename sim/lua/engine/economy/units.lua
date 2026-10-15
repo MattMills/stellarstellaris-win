@@ -4,6 +4,7 @@
 -- units and adds them to the budgets with economy.unit(country, template, scale, M, ctx, label).
 
 local defs = require("engine.defs")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local world = require("engine.world")
 
 local units = {}
@@ -81,6 +82,7 @@ units.templates = templates
 local function colonies()
     local out = {}
     for _, pid in ipairs(world.all("planet")) do
+        slice.tick("economy/units.lua:83")
         local p = world.object("planet", pid)
         local c = world.field(p, "colony")
         if c ~= nil then
@@ -231,6 +233,7 @@ kind("pop_groups", function(economy)
         owner_of[col.colony] = col.owner
     end
     for _, gid in ipairs(world.all("pop_group")) do
+        slice.tick("economy/units.lua:233")
         local g = world.object("pop_group", gid)
         local colony = tonumber(world.field(g, "planet"))
         local owner = colony and owner_of[colony]
@@ -294,6 +297,7 @@ kind("countries", function(economy)
         end
     end
     for _, cid in ipairs(world.all("country")) do
+        slice.tick("economy/units.lua:296")
         local c = world.object("country", cid)
         local M = economy.modifiers("country", cid)
         local ctype = world.field(c, "type")
@@ -312,6 +316,7 @@ end)
 
 kind("leaders", function(economy)
     for _, cid in ipairs(world.all("country")) do
+        slice.tick("economy/units.lua:314")
         local c = world.object("country", cid)
         for _, lid in ipairs(ids(world.field(c, "owned_leaders"))) do
             local l = world.object("leader", lid)
@@ -334,6 +339,7 @@ end)
 local function fleet_owners()
     local out = {}
     for _, cid in ipairs(world.all("country")) do
+        slice.tick("economy/units.lua:336")
         local c = world.object("country", cid)
         local owned = world.path(c, "fleets_manager", "owned_fleets")
         for _, e in ipairs(type(owned) == "table" and owned or {}) do
@@ -358,6 +364,7 @@ units.ship_owner = ship_owner
 kind("deposits", function(economy)
     local owners = fleet_owners()
     for _, did in ipairs(world.all("deposit")) do
+        slice.tick("economy/units.lua:360")
         local dep = world.object("deposit", did)
         local holder = world.field(dep, "deposit_holder")
         local htype, hid = world.field(holder, "type"), tonumber(world.field(holder, "id"))
@@ -389,6 +396,7 @@ end)
 kind("starbases", function(economy)
     local owners = fleet_owners()
     for _, sbid in ipairs(world.all("starbase")) do
+        slice.tick("economy/units.lua:391")
         local sb = world.object("starbase", sbid)
         local owner = ship_owner(owners, tonumber(world.field(sb, "station")))
         if owner then
@@ -484,6 +492,7 @@ kind("ships", function(economy)
     local comps = components(economy)
     local over = {}
     for _, sid in ipairs(world.all("ship")) do
+        slice.tick("economy/units.lua:486")
         local s = world.object("ship", sid)
         local owner = ship_owner(owners, sid)
         local fleet = world.object("fleet", tonumber(world.field(s, "fleet")))
@@ -550,6 +559,7 @@ end)
 -- armies: the army type's table, the army's modifiers, in its scope
 kind("armies", function(economy)
     for _, aid in ipairs(world.all("army")) do
+        slice.tick("economy/units.lua:552")
         local a = world.object("army", aid)
         local owner = tonumber(world.field(a, "owner"))
         local atype = world.field(a, "type")
@@ -584,6 +594,7 @@ kind("diplomacy", function(economy)
     end
     local once, per = entries("once"), entries("per_relation")
     for _, cid in ipairs(world.all("country")) do
+        slice.tick("economy/units.lua:586")
         local M = economy.modifiers("country", cid)
         for _, u in ipairs(once) do
             local ctx = eval.new_ctx(eval.S("country", cid), nil, nil, u.file)
@@ -646,6 +657,7 @@ end)
 kind("trade_policy", function(economy)
     local category = economy.TRADE_POLICY_CATEGORY
     for _, cid in ipairs(world.all("country")) do
+        slice.tick("economy/units.lua:648")
         local c = world.object("country", cid)
         local b = economy.budget_of(cid)
         local net = 0

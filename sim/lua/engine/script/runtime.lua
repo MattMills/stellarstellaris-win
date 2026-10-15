@@ -5,6 +5,7 @@
 -- what the save writes; what it cannot read is said there, not invented.
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local R = {}
 
@@ -442,6 +443,7 @@ end
 function R.controlled_fleets(country)
     local out = {}
     for _, cid in ipairs(world.all("country")) do
+        slice.tick("script/runtime.lua:444")
         for _, e in ipairs(R.owned_fleet_entries(cid)) do
             local f = ref(world.field(e, "fleet"))
             if f and obj("fleet", f) then
@@ -554,6 +556,7 @@ end
 -- ::GetStarbaseThruLookup), or nil
 function R.starbase_of_station(sid)
     for _, sb in ipairs(world.all("starbase")) do
+        slice.tick("script/runtime.lua:556")
         if tonumber(world.field(obj("starbase", sb), "station")) == sid then return sb end
     end
     return nil
@@ -580,6 +583,7 @@ end
 function R.country_starbases(country)
     local out = {}
     for _, sid in ipairs(world.all("system")) do
+        slice.tick("script/runtime.lua:582")
         for _, v in ipairs(world.list(world.field(obj("system", sid), "starbases"))) do
             local sb = ref(v)
             if sb and obj("starbase", sb) and R.starbase_owner(sb) == country then out[#out + 1] = sb end
@@ -613,6 +617,7 @@ end
 function R.starbase_capacity(country)
     local systems = 0
     for _, sid in ipairs(world.all("system")) do
+        slice.tick("script/runtime.lua:615")
         if R.system_owner(sid) == country then systems = systems + 1 end
     end
     local c = obj("country", country)
@@ -631,6 +636,7 @@ end
 function R.upgrading_outposts(country)
     local n = 0
     for _, sid in ipairs(world.all("system")) do
+        slice.tick("script/runtime.lua:633")
         local sb = R.primary_starbase(sid)
         if sb and R.starbase_owner(sb) == country then
             local level = R.starbase_level(sb)
@@ -1095,6 +1101,7 @@ end
 function R.pop_factions(country)
     local out = {}
     for _, id in ipairs(world.all("pop_factions")) do
+        slice.tick("script/runtime.lua:1097")
         if tonumber(world.field(obj("pop_factions", id), "country")) == country then out[#out + 1] = id end
     end
     return out
@@ -1234,6 +1241,7 @@ function R.site_at(kind, id)
     local t = kind and SPATIAL[kind]
     if t == nil or id == nil then return nil end
     for _, sid in ipairs(world.all("archaeological_site")) do
+        slice.tick("script/runtime.lua:1236")
         local loc = world.field(obj("archaeological_site", sid), "location")
         if type(loc) == "table" and tonumber(world.field(loc, "type")) == t and tonumber(world.field(loc, "id")) == id then
             return sid

@@ -66,6 +66,15 @@ function db.filevars(file)
     return v or nil
 end
 
+-- db.set_filevars(file, vars): a file's variables from a parse made elsewhere (engine.defs.load,
+-- through stellar.script.source.definitions), as db.filevars would read them (false: the file does
+-- not parse), so that the first read of one does not parse the file again
+function db.set_filevars(file, vars)
+    if filevars_cache[file] == nil then
+        filevars_cache[file] = vars
+    end
+end
+
 local function doc_names(path, into)
     local text = path and read_file(path)
     if not text then

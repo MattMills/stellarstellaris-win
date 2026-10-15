@@ -23,6 +23,7 @@ local X = require("engine.store.exploration")
 local world = require("engine.world")
 local defs = require("engine.defs")
 local ffi = require("ffi")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local Bm = { stats = { days = 0, passes = 0, sync = 0, inputs = 0, parts = { a = 0, b = 0, c = 0 }, merge = 0,
     worker = { a = 0, b = 0, c = 0 }, rebuilt = 0, built = 0, seconds = 0, setup = 0, rule_errors = 0, prof = {}, sync_by = {} } }
@@ -94,6 +95,7 @@ end
 -- same (the same count, keys and kinds), else built again; returns the block id (bid or a new one)
 local sync_block
 local function sync_entries(bid, t)
+    slice.tick("store sync block")
     local r = BL[bid]
     local n = #t
     if r.count ~= n then return rebuilt() end
@@ -109,6 +111,7 @@ local function sync_entries(bid, t)
         end
     end
     for j = 1, n do
+        slice.tick("store sync entries")
         local x = t[j]
         local e = E[first + j - 1]
         local v = x.op and x.value or x
@@ -153,6 +156,7 @@ end
 -- the entries [off, off + #vals) of block bid synced to (kids, vals), in place: true, or nil
 -- when the shape differs (nothing changed)
 local function sync_values(bid, kids, vals, off)
+    slice.tick("store sync values")
     local r = BL[bid]
     local n = #vals
     if r.count ~= off + n then return rebuilt() end
@@ -162,6 +166,7 @@ local function sync_values(bid, kids, vals, off)
         if e.op == 0 or e.key ~= kids[j] then return rebuilt() end
     end
     for j = 1, n do
+        slice.tick("store sync entries")
         local e = E[first + j - 1]
         local v = vals[j]
         if type(v) == "string" then
@@ -308,6 +313,7 @@ function Bm.sync()
         local changed, n = false, 0
         local live_ids = {}
         for _, id in ipairs(ids) do
+            slice.tick("store sync")
             local t = store[id]
             if t then
                 n = n + 1
@@ -496,6 +502,7 @@ function Bm.inputs()
     local sys = world.all("system")
     local sf = {}
     for _, s in ipairs(sys) do
+        slice.tick("exploration system rules")
         local f = 0
         if rule("system_blocks_sensors", "system", s) then f = f + 1 end
         if rule("can_force_see_fleets_in_system", "system", s) then f = f + 2 end
@@ -506,6 +513,7 @@ function Bm.inputs()
     local cids = world.all("country")
     local cf = {}
     for _, c in ipairs(cids) do
+        slice.tick("exploration country rules")
         cf[c] = rule("has_full_sensor_range", "country", c) and 1 or 0
     end
     A.publish_map("x_country_flags", cf)
@@ -531,6 +539,7 @@ function Bm.inputs()
     end
     local new = false
     for _, id in ipairs(world.all("ship")) do
+        slice.tick("exploration ships")
         if SHIP_S[id] == nil then
             local m = mods("ship", id)
             SHIP_S[id], SHIP_H[id] = mod_int(m, "ship_sensor_range_add"), mod_int(m, "ship_hyperlane_range_add")
@@ -545,10 +554,12 @@ function Bm.inputs()
     local cs, ch = {}, {}
     for _, c in ipairs(cids) do
         local o = world.object("country", c)
+        slice.check("exploration colonies")
         for _, key in ipairs({ "owned_planets", "controlled_colonies" }) do
             local b = world.field(o, key)
             if type(b) == "table" then
                 for _, e in ipairs(b) do
+                    slice.tick("exploration colony")
                     local v = e.text and tonumber(e.text)
                     if v and v >= 0 and cs[v] == nil then
                         local m = mods("colony", v)
@@ -587,6 +598,7 @@ end
 -- parses a part's outputs: { countries = { [cid] = { mask, add = {}, remove = {} } }, deferred = { } }
 local function parse(text, out)
     for line in text:gmatch("[^\n]+") do
+        slice.tick("exploration parse")
         local tag = line:sub(1, 1)
         if tag == "C" then
             local cid, mask, adds, removes = line:match("^C (%d+) (%d+) ([^|]*)|(.*)$")
@@ -644,7 +656,21 @@ function Bm.pass(with_visited, write)
     for _, part in ipairs({ "a", "b", "c" }) do
         local t0 = RUST.clock()
         if workers() > 0 then
-            local results = RUST.pool_run("part", part .. arg_v .. arg_w)
+            -- posted, then waited for: a phase run in pieces gives the frame back while the
+            -- workers run (engine.slice, docs/frame_timing.md); else as pool_run
+            local results
+            if RUST.pool_post then
+                local slice = require("engine.slice")
+                RUST.pool_post("part", part .. arg_v .. arg_w)
+                results = RUST.pool_poll(math.max(0, slice.left()))
+                while not results do
+                    slice.wait("exploration pool " .. part)
+                    results = RUST.pool_poll(math.max(0, slice.left()))
+                end
+            else
+                results = RUST.pool_run("part", part .. arg_v .. arg_w)
+            end
+            slice.check("exploration results")
             for _, r in ipairs(results) do parse(r, out) end
         else
             local was = S.serial
@@ -662,6 +688,7 @@ function Bm.pass(with_visited, write)
         return a[2] < b[2]
     end)
     for _, d in ipairs(out.deferred) do
+        slice.tick("exploration lists")
         local c = O.get("country", d[1])
         if c then X.set_list(c, d[2], d[3] or {}) end
     end
@@ -713,6 +740,7 @@ function Bm.merge(out)
     for cid in pairs(out.countries) do cids[#cids + 1] = cid end
     table.sort(cids)
     for _, cid in ipairs(cids) do
+        slice.check("exploration merge")
         local o = out.countries[cid]
         local tc = world.object("country", cid)
         local sc = O.get("country", cid)
@@ -764,6 +792,8 @@ local function start()
     end
 end
 
+-- engine.load: the store's statics and the worker pool made with the load, not in the first day
+Bm.prepare = start
 local loaded = false
 function Bm.countries_daily(host, date)
     local t0 = RUST.clock()
@@ -951,6 +981,7 @@ function Bm.check(days, nworkers, mirror)
         -- compared
         local same_n, diff_n, bad = 0, 0, {}
         for _, cid in ipairs(world.all("country")) do
+            slice.tick("store/bridge.lua:975")
             local tc, sc = world.object("country", cid), O.get("country", cid)
             local ok = true
             for _, key in pairs(LISTS) do

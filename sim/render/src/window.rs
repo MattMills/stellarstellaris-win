@@ -8,6 +8,9 @@
 //! too, Shift+Up and Shift+Down) change its speed, `.` runs one day. Escape goes back (the
 //! selection, then system -> galaxy -> menu); C on the menu continues the newest save; Q on the
 //! menu closes. `frames` closes the window after that many frames (for tests).
+//!
+//! The window's thread does nothing but render (ui.rs): the app runs on the UI thread, the input
+//! goes to it as jobs, and each frame, 120 a second, draws the newest scene it published.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -18,9 +21,10 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use crate::app::App;
+use crate::app::{App, Screen};
 use crate::render::{self, Renderer};
 use crate::scene::ALL;
+use crate::ui::{self, Ui};
 
 struct Shown {
     window: Arc<Window>,
@@ -29,12 +33,18 @@ struct Shown {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     renderer: Renderer,
-    /// the generation of the scene uploaded
+    /// the generation of the scene uploaded (u64::MAX: none yet)
     uploaded: u64,
+    /// the last frame's submission: the next frame waits for it (one frame in flight)
+    in_flight: Option<wgpu::SubmissionIndex>,
 }
 
 struct Win {
-    app: App,
+    ui: Ui,
+    /// the app's screen, as its newest scene has it
+    screen: Screen,
+    /// when the next frame is due
+    next_frame: Instant,
     backend: render::Backend,
     want: Option<String>,
     frames: Option<u32>,
@@ -86,7 +96,7 @@ impl Win {
     fn open(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
         // the size asked for; the default one made to fit the screen (85% of its width, 80% of its
         // height at most, leaving room for the title bar and the taskbar)
-        let (mut w, mut h) = self.app.size;
+        let (mut w, mut h) = self.ui.call(|app| app.size)?;
         if self.fit {
             if let Some(m) = event_loop.primary_monitor() {
                 let ms = m.size();
@@ -117,9 +127,13 @@ impl Win {
         surface.configure(&device, &config);
         eprintln!("surface: {:?} {}x{}, {:?}", config.format, config.width, config.height, config.present_mode);
         let renderer = Renderer::new(&device, config.format);
-        self.app.resize(config.width, config.height);
+        let (cw, ch) = (config.width, config.height);
+        self.ui.post(move |app| {
+            app.resize(cw, ch);
+            Ok(())
+        });
         window.request_redraw();
-        self.shown = Some(Shown { window, surface, device, queue, config, renderer, uploaded: 0 });
+        self.shown = Some(Shown { window, surface, device, queue, config, renderer, uploaded: u64::MAX, in_flight: None });
         Ok(())
     }
 
@@ -129,20 +143,35 @@ impl Win {
         event_loop.exit();
     }
 
-    fn flush_log(&mut self) {
-        for l in self.app.log.drain(..) {
-            eprintln!("{l}");
-        }
+    /// A job for the app (the input), on its thread.
+    fn post(&self, f: impl FnOnce(&mut App) -> Result<(), String> + Send + 'static) {
+        self.ui.post(f);
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
         let Some(s) = self.shown.as_mut() else { return Ok(()) };
-        self.app.resize(s.config.width, s.config.height);
-        let generation = self.app.prepare()?;
-        if generation != s.uploaded {
-            let (scene, textures) = self.app.parts().ok_or("no scene")?;
-            s.renderer.upload(&s.device, &s.queue, scene, textures);
-            s.uploaded = generation;
+        match self.ui.ended() {
+            Some(Ok(())) => {
+                event_loop.exit();
+                return Ok(());
+            }
+            Some(Err(e)) => return Err(e),
+            None => {}
+        }
+        // the frame before finished on the GPU first: one frame in flight (with a mailbox present
+        // nothing else holds the frames back, and the GPU's queue and the resources the scenes
+        // replaced, freed when the device is polled, grew until the GPU ran out of memory)
+        if let Some(idx) = s.in_flight.take() {
+            let _ = s.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: Some(Duration::from_millis(250)) });
+        }
+        // the newest scene: its resources up within the frame's budget, then drawn; until then
+        // the one before (ui.rs)
+        if let Some(frame) = self.ui.latest() {
+            self.screen = frame.screen;
+            ui::take(&mut s.renderer, &s.device, &s.queue, &frame, &mut s.uploaded);
+        }
+        if s.uploaded == u64::MAX {
+            return Ok(());
         }
         let texture = match s.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
@@ -172,12 +201,12 @@ impl Win {
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = s.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         s.renderer.draw(&mut encoder, &view, ALL);
-        s.queue.submit([encoder.finish()]);
+        s.in_flight = Some(s.queue.submit([encoder.finish()]));
         s.window.pre_present_notify();
         s.queue.present(texture);
         self.drawn += 1;
         if self.drawn == 1 {
-            eprintln!("first frame drawn ({:?})", self.app.screen);
+            eprintln!("first frame drawn ({:?})", self.screen);
             self.first_frame = Some(std::time::Instant::now());
         }
         if std::env::var("RENDER_TRACE").is_ok() {
@@ -185,58 +214,27 @@ impl Win {
         }
         if let Some(n) = self.frames {
             if self.drawn >= n {
-                eprintln!("{} frames drawn ({:?})", self.drawn, self.app.screen);
+                eprintln!("{} frames drawn ({:?})", self.drawn, self.screen);
                 event_loop.exit();
-            } else {
-                s.window.request_redraw();
             }
         }
         Ok(())
     }
-
-    /// After an input: redraw if it changed something, close if the app is done.
-    fn after(&mut self, event_loop: &ActiveEventLoop, changed: Result<bool, String>) {
-        self.flush_log();
-        match changed {
-            Err(e) => self.fail(event_loop, e),
-            Ok(changed) => {
-                if self.app.exit {
-                    event_loop.exit();
-                } else if changed {
-                    if let Some(s) = &self.shown {
-                        s.window.request_redraw();
-                    }
-                }
-            }
-        }
-    }
 }
 
 impl ApplicationHandler for Win {
-    /// The camera's glide, the held keys, the edge scrolling and the simulation's snapshots:
-    /// while any of them is going on, the app is updated about every 16 ms and redrawn when the
-    /// picture changed; else the window waits for events. For the first seconds after the first
-    /// frame it is redrawn every 100 ms (a frame presented before the window shows can be lost).
-    /// RENDER_TRACE=1 logs each frame and each surface state that gave none.
+    /// A frame every 1/120 s: the newest scene the UI thread published (the camera's glide, the
+    /// held keys, the edge scrolling and the simulation's snapshots are the UI thread's). With a
+    /// display slower than that the surface's present paces the frames. RENDER_TRACE=1 logs each
+    /// frame and each surface state that gave none.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let Some(s) = &self.shown else { return };
-        let window = s.window.clone();
-        if self.app.update() {
-            window.request_redraw();
+        let now = Instant::now();
+        if now >= self.next_frame {
+            s.window.request_redraw();
+            self.next_frame = (self.next_frame + ui::PERIOD).max(now);
         }
-        self.flush_log();
-        let early = match self.first_frame {
-            None => true,
-            Some(t) => t.elapsed() < Duration::from_secs(3),
-        };
-        if self.app.animating() {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(16)));
-        } else if early {
-            window.request_redraw();
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(100)));
-        } else {
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
-        }
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(self.next_frame));
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -255,13 +253,16 @@ impl ApplicationHandler for Win {
                 let shift = self.modifiers.state().shift_key();
                 let Some(key) = key_name(&logical_key, &physical_key, shift) else { return };
                 if state == ElementState::Released {
-                    self.app.key_up(&key);
-                    if key.starts_with("shift+") {
-                        self.app.key_up(key.trim_start_matches("shift+"));
-                    }
+                    self.post(move |app| {
+                        app.key_up(&key);
+                        if key.starts_with("shift+") {
+                            app.key_up(key.trim_start_matches("shift+"));
+                        }
+                        Ok(())
+                    });
                     return;
                 }
-                let on_map = self.app.screen == crate::app::Screen::Map;
+                let on_map = self.screen == Screen::Map;
                 if key == "q" && !on_map {
                     event_loop.exit();
                     return;
@@ -270,15 +271,17 @@ impl ApplicationHandler for Win {
                 if repeat && matches!(key.as_str(), "space" | "." | "kp_plus" | "kp_minus" | "+" | "=" | "-" | "shift+up" | "shift+down") {
                     return;
                 }
-                let r = self.app.key(&key);
-                self.after(event_loop, r);
+                self.post(move |app| app.key(&key).map(|_| ()));
             }
-            WindowEvent::CursorLeft { .. } => self.app.mouse_left(),
+            WindowEvent::CursorLeft { .. } => self.post(|app| {
+                app.mouse_left();
+                Ok(())
+            }),
             WindowEvent::CursorMoved { position, .. } => {
                 let (px, py) = self.cursor;
                 self.cursor = (position.x as f32, position.y as f32);
                 let (dx, dy) = (self.cursor.0 - px, self.cursor.1 - py);
-                let on_map = self.app.screen == crate::app::Screen::Map;
+                let on_map = self.screen == Screen::Map;
                 let cursor = self.cursor;
                 let mut drag = None;
                 if let Some((button, start, moved)) = self.held.as_mut() {
@@ -293,21 +296,21 @@ impl ApplicationHandler for Win {
                     // grabbed point stays under the cursor); a left drag is its box selection
                     // (not drawn)
                     match button {
-                        MouseButton::Right => {
-                            self.app.set_holding(true);
-                            self.app.rotate(dx, dy);
-                        }
-                        MouseButton::Middle => {
-                            self.app.set_holding(true);
-                            self.app.drag(Some(cursor));
-                        }
+                        MouseButton::Right => self.post(move |app| {
+                            app.set_holding(true);
+                            app.rotate(dx, dy);
+                            Ok(())
+                        }),
+                        MouseButton::Middle => self.post(move |app| {
+                            app.set_holding(true);
+                            app.drag(Some(cursor));
+                            Ok(())
+                        }),
                         _ => {}
                     }
-                    self.after(event_loop, Ok(true));
                     return;
                 }
-                let r = self.app.mouse_move(self.cursor.0, self.cursor.1);
-                self.after(event_loop, r);
+                self.post(move |app| app.mouse_move(cursor.0, cursor.1).map(|_| ()));
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let (x, y) = self.cursor;
@@ -315,31 +318,35 @@ impl ApplicationHandler for Win {
                     ElementState::Pressed => {
                         self.held = Some((button, (x, y), false));
                         if button == MouseButton::Left {
-                            let r = self.app.mouse_down(x, y);
-                            self.after(event_loop, r);
+                            self.post(move |app| app.mouse_down(x, y).map(|_| ()));
                         }
                         if button == MouseButton::Middle {
                             // the plane's point under the cursor is grabbed
-                            self.app.drag(None);
-                            self.app.drag(Some((x, y)));
+                            self.post(move |app| {
+                                app.drag(None);
+                                app.drag(Some((x, y)));
+                                Ok(())
+                            });
                         }
                     }
                     ElementState::Released => {
                         let dragged = self.held.take().is_some_and(|h| h.2);
-                        self.app.set_holding(false);
-                        self.app.drag(None);
+                        self.post(|app| {
+                            app.set_holding(false);
+                            app.drag(None);
+                            Ok(())
+                        });
                         if button == MouseButton::Left && !dragged {
                             let double = self
                                 .last_click
                                 .is_some_and(|(t, (cx, cy))| t.elapsed() < Duration::from_millis(400) && (cx - x).abs() + (cy - y).abs() < 6.0);
                             self.last_click = Some((Instant::now(), (x, y)));
-                            let r = if double {
+                            if double {
                                 self.last_click = None;
-                                self.app.double_click(x, y)
+                                self.post(move |app| app.double_click(x, y).map(|_| ()));
                             } else {
-                                self.app.mouse_up(x, y)
-                            };
-                            self.after(event_loop, r);
+                                self.post(move |app| app.mouse_up(x, y).map(|_| ()));
+                            }
                         }
                     }
                 }
@@ -349,8 +356,10 @@ impl ApplicationHandler for Win {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
-                self.app.wheel(dy);
-                self.after(event_loop, Ok(true));
+                self.post(move |app| {
+                    app.wheel(dy);
+                    Ok(())
+                });
             }
             WindowEvent::Resized(size) => {
                 if let Some(s) = self.shown.as_mut() {
@@ -359,6 +368,11 @@ impl ApplicationHandler for Win {
                         s.config.height = size.height;
                         s.surface.configure(&s.device, &s.config);
                         s.window.request_redraw();
+                        let (w, h) = (size.width, size.height);
+                        self.ui.post(move |app| {
+                            app.resize(w, h);
+                            Ok(())
+                        });
                     }
                 }
             }
@@ -372,13 +386,23 @@ impl ApplicationHandler for Win {
     }
 }
 
-/// Shows the app in a window until it is closed (or `frames` frames are drawn); `fit`: make the
-/// window (the app's size) fit the screen. The cameras glide in the window.
-pub fn run(mut app: App, backend: render::Backend, want: Option<String>, frames: Option<u32>, fit: bool) -> Result<(), String> {
-    app.smooth = true;
+/// Shows the app `make` makes (on the UI thread: ui.rs) in a window until it is closed (or
+/// `frames` frames are drawn); `fit`: make the window (the app's size) fit the screen. The
+/// cameras glide in the window.
+pub fn run<F>(make: F, backend: render::Backend, want: Option<String>, frames: Option<u32>, fit: bool) -> Result<(), String>
+where
+    F: FnOnce() -> Result<App, String> + Send + 'static,
+{
+    let ui = Ui::start(move || {
+        let mut app = make()?;
+        app.smooth = true;
+        Ok(app)
+    })?;
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     let mut win = Win {
-        app,
+        ui,
+        screen: Screen::Menu,
+        next_frame: Instant::now(),
         backend,
         want,
         frames,
@@ -394,7 +418,6 @@ pub fn run(mut app: App, backend: render::Backend, want: Option<String>, frames:
         last_click: None,
     };
     event_loop.run_app(&mut win).map_err(|e| format!("event loop: {e}"))?;
-    win.flush_log();
     match win.error {
         Some(e) => Err(e),
         None => Ok(()),

@@ -18,6 +18,8 @@
 //! - `select system|fleet|planet|ship ID`, `select none`: the selection (marked; `state` names it)
 //! - `key NAME down|up`, `mouse X Y [left|right down|up]`, `scroll DY`
 //! - `frame PATH.png` (renders the view, writes the PNG: `ok frame PATH W H MS`), `frame -`
+//! - `bench SECONDS [FPS]`: frames drawn back to back at FPS (120) as a window draws them, the
+//!   clock running as it is; what each frame took against the frame's time
 //! - `state` (JSON: screen, view, camera, date, size), `quit`
 
 use std::io::{BufRead, BufReader, Write};
@@ -35,6 +37,29 @@ pub struct Engine {
     pub off: Offscreen,
     pub frames: u64,
     mouse: (f32, f32),
+    /// `bench`'s target texture
+    target: Option<(u32, u32, wgpu::Texture)>,
+}
+
+/// A frame of `bench`: its parts, seconds: the app's update (the camera, the simulation's
+/// snapshot taken), the scene built (when something changed), its upload, the GPU's frame; and
+/// whether a new snapshot came in it.
+#[derive(Clone, Copy, Default)]
+struct BenchFrame {
+    update: f64,
+    prepare: f64,
+    upload: f64,
+    gpu: f64,
+    snapshot: bool,
+}
+
+impl BenchFrame {
+    fn total(&self) -> f64 {
+        self.update + self.prepare + self.upload + self.gpu
+    }
+    fn cpu(&self) -> f64 {
+        self.update + self.prepare + self.upload
+    }
 }
 
 /// A reply: its line, the bytes that follow it (`frame -`), and whether the session ends.
@@ -59,7 +84,104 @@ impl Engine {
         let app = App::new(game_dir, size)?;
         let off = Offscreen::new(backend, adapter)?;
         eprintln!("rendering on: {}", off.adapter);
-        Ok(Engine { app, off, frames: 0, mouse: (0.0, 0.0) })
+        Ok(Engine { app, off, frames: 0, mouse: (0.0, 0.0), target: None })
+    }
+
+    /// Frames drawn back to back at `fps` for `secs` seconds as a window draws them (the app
+    /// updated, the scene built when something changed and uploaded, the GPU's frame waited for;
+    /// no read-back), with the clock running as it is: what each frame took against the frame's
+    /// time (docs/frame_timing.md, the 120 FPS standard). A frame that ends late starts the next
+    /// at once.
+    fn bench(&mut self, secs: f64, fps: f64) -> Result<String, String> {
+        let period = 1.0 / fps.max(1.0);
+        let days0 = self.app.map.as_ref().and_then(|m| m.clock.as_ref()).map_or(0, |c| c.status().days);
+        let date0 = self.app.map.as_ref().map_or(String::new(), |m| m.date());
+        let mut uploaded = u64::MAX;
+        let mut frames: Vec<BenchFrame> = Vec::new();
+        let start = std::time::Instant::now();
+        let mut next = start;
+        while start.elapsed().as_secs_f64() < secs {
+            // the frame's start: slept to, the last 2 ms spun (a sleep wakes late, 15 ms on Windows)
+            loop {
+                let left = next.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                if left > std::time::Duration::from_millis(2) {
+                    std::thread::sleep(left - std::time::Duration::from_millis(2));
+                } else {
+                    std::hint::spin_loop();
+                }
+            }
+            let t0 = std::time::Instant::now();
+            let gen0 = self.app.map.as_ref().and_then(|m| m.snapshot.as_ref()).map_or(0, |s| s.generation);
+            self.app.update();
+            let gen1 = self.app.map.as_ref().and_then(|m| m.snapshot.as_ref()).map_or(0, |s| s.generation);
+            let t1 = std::time::Instant::now();
+            let generation = self.app.prepare()?;
+            let t2 = std::time::Instant::now();
+            if generation != uploaded {
+                let (scene, textures) = self.app.parts().ok_or("no scene")?;
+                self.off.upload(scene, textures);
+                uploaded = generation;
+            }
+            let t3 = std::time::Instant::now();
+            let (w, h) = self.app.size;
+            self.off.draw_frame(w, h, ALL, &mut self.target)?;
+            let t4 = std::time::Instant::now();
+            frames.push(BenchFrame {
+                update: (t1 - t0).as_secs_f64(),
+                prepare: (t2 - t1).as_secs_f64(),
+                upload: (t3 - t2).as_secs_f64(),
+                gpu: (t4 - t3).as_secs_f64(),
+                snapshot: gen1 != gen0,
+            });
+            self.frames += 1;
+            next += std::time::Duration::from_secs_f64(period);
+            if next < t4 {
+                next = t4;
+            }
+        }
+        let wall = start.elapsed().as_secs_f64();
+        let days = self.app.map.as_ref().and_then(|m| m.clock.as_ref()).map_or(0, |c| c.status().days) - days0;
+        let date = self.app.map.as_ref().map_or(String::new(), |m| m.date());
+        let ms = |s: f64| s * 1000.0;
+        let pct = |v: &mut Vec<f64>, p: f64| {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            if v.is_empty() { 0.0 } else { v[((v.len() - 1) as f64 * p).round() as usize] }
+        };
+        let mut total: Vec<f64> = frames.iter().map(|f| f.total()).collect();
+        let mut cpu: Vec<f64> = frames.iter().map(|f| f.cpu()).collect();
+        let mut gpu: Vec<f64> = frames.iter().map(|f| f.gpu).collect();
+        let over = frames.iter().filter(|f| f.total() > period).count();
+        let cpu_over = frames.iter().filter(|f| f.cpu() > period).count();
+        let snaps: Vec<&BenchFrame> = frames.iter().filter(|f| f.snapshot).collect();
+        let worst = frames.iter().copied().fold(BenchFrame::default(), |a, f| if f.total() > a.total() { f } else { a });
+        let worst_cpu = frames.iter().copied().fold(BenchFrame::default(), |a, f| if f.cpu() > a.cpu() { f } else { a });
+        let snap_max = snaps.iter().map(|f| f.cpu()).fold(0.0, f64::max);
+        Ok(format!(
+            "{} frames in {wall:.1} s at {fps} FPS ({:.2} ms a frame); frame ms p50 {:.2} p99 {:.2} max {:.2}, over the frame's time {over}; the CPU's part (update, scene, upload) p50 {:.2} p99 {:.2} max {:.2}, over {cpu_over}; the GPU's p50 {:.2} p99 {:.2} max {:.2}; the worst frame update {:.2} scene {:.2} upload {:.2} gpu {:.2}; the worst CPU part update {:.2} scene {:.2} upload {:.2}; {} frames took a new snapshot, their CPU part at most {:.2} ms; {days} days run, {date0} to {date}",
+            frames.len(),
+            ms(period),
+            ms(pct(&mut total, 0.5)),
+            ms(pct(&mut total, 0.99)),
+            ms(pct(&mut total, 1.0)),
+            ms(pct(&mut cpu, 0.5)),
+            ms(pct(&mut cpu, 0.99)),
+            ms(pct(&mut cpu, 1.0)),
+            ms(pct(&mut gpu, 0.5)),
+            ms(pct(&mut gpu, 0.99)),
+            ms(pct(&mut gpu, 1.0)),
+            ms(worst.update),
+            ms(worst.prepare),
+            ms(worst.upload),
+            ms(worst.gpu),
+            ms(worst_cpu.update),
+            ms(worst_cpu.prepare),
+            ms(worst_cpu.upload),
+            snaps.len(),
+            ms(snap_max),
+        ))
     }
 
     /// Renders the current view: the RGBA pixels and the milliseconds it took (the scene's
@@ -363,6 +485,12 @@ impl Engine {
                 }
                 verify::write_png(rest, w, h, &px)?;
                 Ok(Reply::ok(format!("frame {rest} {w} {h} {ms:.0}")))
+            }
+            "bench" => {
+                let secs: f64 = num(a.first(), "seconds")?;
+                let fps: f64 = if a.len() > 1 { num(a.get(1), "fps")? } else { 120.0 };
+                let r = self.bench(secs.clamp(0.1, 600.0), fps)?;
+                Ok(Reply::ok(format!("bench {r}")))
             }
             "state" => Ok(Reply::ok(self.state())),
             "quit" => Ok(Reply { line: "ok quit".into(), bytes: None, quit: true }),

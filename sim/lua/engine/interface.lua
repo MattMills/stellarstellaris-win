@@ -8,6 +8,7 @@
 -- is counted by keyword.
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 E = E or {}
 
@@ -715,6 +716,7 @@ end
 E.owned_starbases = function(country, nonprimary)
     local out = {}
     for _, sid in ipairs(world.all("system")) do
+        slice.tick("interface.lua:717")
         for i, sb in ipairs(world.list(world.field(obj("system", sid), "starbases"))) do
             local s = tonumber(sb)
             if s and obj("starbase", s) and (not nonprimary or i > 1) and E.owner_of("starbase", s) == country then
@@ -731,6 +733,7 @@ world.KINDS.situation = world.KINDS.situation or "situations"
 E.situations = function(country)
     local out = {}
     for _, id in ipairs(world.all("situation")) do
+        slice.tick("interface.lua:733")
         if tonumber(world.field(obj("situation", id), "country")) == country then
             out[#out + 1] = id
         end
@@ -747,6 +750,7 @@ end
 E.systems_within_border = function(country)
     local out = {}
     for _, sid in ipairs(world.all("system")) do
+        slice.tick("interface.lua:749")
         if world.system_owner and world.system_owner[sid] == country then
             out[#out + 1] = sid
         end
@@ -955,6 +959,7 @@ end
 E.megastructures = function(country)
     local out = {}
     for _, id in ipairs(world.all("megastructure")) do
+        slice.tick("interface.lua:957")
         local m = obj("megastructure", id)
         if m and tonumber(world.field(m, "owner")) == country then
             out[#out + 1] = id
@@ -1183,6 +1188,7 @@ E.exploitable_planets = function(country)
     local st = require("engine.fleets.stations")
     local n = 0
     for _, sid in ipairs(world.all("system")) do
+        slice.tick("interface.lua:1185")
         if world.system_owner[sid] == country then
             for _, v in ipairs(world.fields(obj("system", sid), "planet")) do
                 local pid = tonumber(v)

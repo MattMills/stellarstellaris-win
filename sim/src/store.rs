@@ -201,7 +201,11 @@ impl Store {
         let str_off = zeroed(cap.strings as usize * 4, &mut layouts)? as *mut u32;
         let str_len = zeroed(cap.strings as usize * 4, &mut layouts)? as *mut u32;
         let bytes = zeroed(cap.bytes as usize, &mut layouts)?;
-        let interner = Box::into_raw(Box::new(Interner { map: Mutex::new(HashMap::new()) })) as *mut c_void;
+        // the interner's map made as large as the strings can be: it never grows, so no intern
+        // stops to move every string into a larger table (a frame cannot hold that once the
+        // strings are many; docs/frame_timing.md). Its buckets are touched only as they fill.
+        let map = HashMap::with_capacity(cap.strings as usize);
+        let interner = Box::into_raw(Box::new(Interner { map: Mutex::new(map) })) as *mut c_void;
         let header = Box::into_raw(Box::new(Header {
             entries,
             // record 0 of every region is "none"
@@ -258,6 +262,34 @@ impl Store {
             h.n_bytes.load(Ordering::Acquire),
         )
     }
+
+    /// The next `mb` MB of each region past what is in use faulted in now (a zero written in each
+    /// page, which the region holds there already): the regions are mapped as they are first
+    /// touched, and a page fault is a step the VM cannot stop at a slice's deadline (the bridge's
+    /// sync building blocks, docs/frame_timing.md). Only while no other thread writes the store
+    /// (before the slices: the workers idle).
+    pub fn prefault(&self, mb: usize) {
+        let h = unsafe { &*self.header };
+        let ahead = mb << 20;
+        let regions: [(*mut u8, usize, usize); 7] = [
+            (h.entries, h.n_entries.load(Ordering::Acquire) as usize * 16, h.cap_entries as usize * 16),
+            (h.blocks, h.n_blocks.load(Ordering::Acquire) as usize * 16, h.cap_blocks as usize * 16),
+            (h.index as *mut u8, h.n_index.load(Ordering::Acquire) as usize * 4, h.cap_index as usize * 4),
+            (h.str_off as *mut u8, h.n_str.load(Ordering::Acquire) as usize * 4, h.cap_str as usize * 4),
+            (h.str_len as *mut u8, h.n_str.load(Ordering::Acquire) as usize * 4, h.cap_str as usize * 4),
+            (h.str_bytes, h.n_str_bytes.load(Ordering::Acquire) as usize, h.cap_str_bytes as usize),
+            (h.bytes, h.n_bytes.load(Ordering::Acquire) as usize, h.cap_bytes as usize),
+        ];
+        for (base, used, cap) in regions {
+            // (from the first page past the one in use: nothing written there yet)
+            let from = (used + 4095) & !4095;
+            let to = cap.min(used + ahead);
+            for off in (from..to).step_by(4096) {
+                // SAFETY: within the region's allocation (off < cap), past the records in use
+                unsafe { std::ptr::write_volatile(base.add(off), 0) };
+            }
+        }
+    }
 }
 
 impl Drop for Store {
@@ -298,6 +330,17 @@ pub fn install(lua: &mlua::Lua) -> mlua::Result<Handle> {
                 sh.store = Some(std::sync::Arc::new(st));
             }
             Ok(mlua::LightUserData(sh.store.as_ref().unwrap().header().0 as *mut c_void))
+        })?,
+    )?;
+    // RUST.store_prefault(mb): Store::prefault, before the slices
+    let s = shared.clone();
+    rust.set(
+        "store_prefault",
+        lua.create_function(move |_, mb: usize| {
+            if let Some(st) = &s.borrow().store {
+                st.prefault(mb);
+            }
+            Ok(())
         })?,
     )?;
     let s = shared.clone();
@@ -350,6 +393,37 @@ pub fn install(lua: &mlua::Lua) -> mlua::Result<Handle> {
                 }
             }
             Ok(t)
+        })?,
+    )?;
+    // RUST.pool_post(fn, arg) starts a job on every worker and returns at once; RUST.pool_poll(wait)
+    // gives its results (as pool_run's) once all are in, waiting at most `wait` seconds, else nil:
+    // a phase run in pieces waits for the workers across frames (engine.slice, docs/frame_timing.md)
+    let s = shared.clone();
+    rust.set(
+        "pool_post",
+        lua.create_function(move |_, (func, arg): (String, Option<String>)| {
+            let sh = s.borrow();
+            let pool = sh.pool.as_ref().ok_or_else(|| mlua::Error::RuntimeError("pool_post: no pool".into()))?;
+            pool.post(&func, arg.as_deref().unwrap_or(""));
+            Ok(())
+        })?,
+    )?;
+    let s = shared.clone();
+    rust.set(
+        "pool_poll",
+        lua.create_function(move |lua, wait: Option<f64>| {
+            let sh = s.borrow();
+            let pool = sh.pool.as_ref().ok_or_else(|| mlua::Error::RuntimeError("pool_poll: no pool".into()))?;
+            let wait = std::time::Duration::from_secs_f64(wait.unwrap_or(3600.0).clamp(0.0, 3600.0));
+            let Some(results) = pool.poll(wait) else { return Ok(mlua::Value::Nil) };
+            let t = lua.create_table()?;
+            for (i, r) in results.into_iter().enumerate() {
+                match r {
+                    Ok(s) => t.set(i + 1, s)?,
+                    Err(e) => return Err(mlua::Error::RuntimeError(format!("worker {i}: {e}"))),
+                }
+            }
+            Ok(mlua::Value::Table(t))
         })?,
     )?;
     let s = shared.clone();

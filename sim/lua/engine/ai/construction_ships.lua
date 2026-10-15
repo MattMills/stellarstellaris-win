@@ -34,6 +34,7 @@
 -- STELLAR_AI_CONSTRUCTION=off turns the decisions off.
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local cmds = require("engine.ai.commands")
 local defs = require("engine.defs")
 
@@ -118,6 +119,7 @@ local function can_build_class(f, class)
     end
     local st = stations()
     for _, s in ipairs(world.list(world.field(f, "ships"))) do
+        slice.tick("ai/construction_ships.lua:121")
         local ship = world.object("ship", tonumber(s))
         local sdi = ship and world.field(ship, "ship_design_implementation")
         local did = type(sdi) == "table" and tonumber(world.field(sdi, "design"))
@@ -179,6 +181,7 @@ local function fleets_in(sid, today)
     if by_key ~= key then
         by_key, by_system = key, {}
         for _, fid in ipairs(world.all("fleet")) do
+            slice.tick("ai/construction_ships.lua:181")
             local f = fleet(fid)
             local s = f and exploration().system_of(f)
             if s then
@@ -202,7 +205,9 @@ local function path_clear(us, from, to, today)
         return false
     end
     for _, sid in ipairs(p) do
+        slice.tick("ai/construction_ships.lua:206")
         for _, fid in ipairs(fleets_in(sid, today)) do
+            slice.tick("ai/construction_ships.lua:207")
             local f = fleet(fid)
             if f and not prop(f, "civilian") and (tonumber(world.field(f, "military_power")) or 0) > 0
                 and hostile(us, world.fleet_owner[fid]) then
@@ -221,6 +226,7 @@ local function minus_gain(upkeep, gains)
     local out = {}
     for r, v in pairs(upkeep) do out[r] = v end
     for r, v in pairs(gains) do
+        slice.tick("ai/construction_ships.lua:225")
         out[r] = (out[r] or 0) - v * d.GAIN
     end
     return out
@@ -248,12 +254,14 @@ local function find_deposit_holder(us, f, fid, taken, constructors, today)
     local from = exploration().system_of(f)
     local best, best_class, best_score
     for _, e in ipairs(strategy().entries(us, strategy().TYPES.BUILD_ORBITAL_STATION)) do
+        slice.tick("ai/construction_ships.lua:252")
         local pid, class = e.id, e.target
         if pid and not taken["0:" .. pid] and world.object("planet", pid) and not station_on(pid)
             and class ~= 14 and can_build_class(f, class) then
             local sid = strategy().galaxy().system_of[pid]
             local other = false
             for _, cf in ipairs(constructors) do
+                slice.tick("ai/construction_ships.lua:258")
                 if cf ~= fid then
                     local cfl = fleet(cf)
                     if cfl and can_build_class(cfl, class) and executing_target_system(cfl) == sid then
@@ -313,6 +321,7 @@ local function find_planet_for_starbase(us, c, f, taken, high_prio_only, today)
     local from = exploration().system_of(f)
     local best, best_score = nil, 0
     for _, e in ipairs(strategy().entries(us, strategy().TYPES.EXPAND_BORDERS)) do
+        slice.tick("ai/construction_ships.lua:317")
         local pid = e.id
         local sid = pid and g.system_of[pid]
         if sid and not (st.primary_starbase(sid) and world.system_owner[sid] == us) and not taken["0:" .. pid]
@@ -321,6 +330,7 @@ local function find_planet_for_starbase(us, c, f, taken, high_prio_only, today)
             and path_clear(us, from, sid, today) then
             local gains = {}
             for _, p in ipairs(g.planets_of[sid] or {}) do
+                slice.tick("ai/construction_ships.lua:325")
                 for r, v in pairs(st.known_orbital_resources(p, us)) do gains[r] = (gains[r] or 0) + v end
             end
             if budget().can_afford_upkeep(us, category, minus_gain(upkeep0, gains)) then
@@ -431,8 +441,10 @@ local TAKEN = {
 local function taken_of(fleets)
     local taken = {}
     for _, fid in ipairs(fleets) do
+        slice.tick("ai/construction_ships.lua:435")
         local f = fleet(fid)
         for _, o in ipairs(f and exploration().order_chain(f) or {}) do
+            slice.tick("ai/construction_ships.lua:437")
             if TAKEN[o.kind] then
                 local dh = world.field(o.body, "deposit_holder")
                 local t = type(dh) == "table" and tonumber(world.field(dh, "type"))
@@ -491,6 +503,7 @@ function M.weekly(country, today, commands, host)
     local taken = taken_of(fleets)
     local constructors = {}
     for _, fid in ipairs(fleets) do
+        slice.tick("ai/construction_ships.lua:495")
         local f = fleet(fid)
         if f and world.field(f, "ship_class") == "shipclass_constructor" then
             constructors[#constructors + 1] = fid
@@ -499,6 +512,7 @@ function M.weekly(country, today, commands, host)
     local counted, needs = 0, false
     local dirty = world.field(ai, "dirty_expand_strategy") == "yes"
     for _, fid in ipairs(constructors) do
+        slice.tick("ai/construction_ships.lua:503")
         local f = fleet(fid)
         local mm = world.field(f, "movement_manager")
         local between = type(mm) == "table" and world.field(mm, "state") == "move_galaxy"
@@ -523,6 +537,7 @@ end
 function M.log()
     local lines = {}
     for _, d in ipairs(M.decisions) do
+        slice.tick("ai/construction_ships.lua:527")
         lines[#lines + 1] = string.format("%s %d fleet %d %s%s%s", d.date or "?", d.country, d.fleet, d.kind,
             d.target and (" " .. d.target) or "", d.class and (" " .. d.class) or "")
     end

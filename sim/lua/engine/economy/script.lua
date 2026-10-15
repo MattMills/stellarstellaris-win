@@ -16,6 +16,7 @@
 --   leader (has_ethic: of a pop group too) and of a country go to it.
 
 local defs = require("engine.defs")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local world = require("engine.world")
 local eval = require("simscript.eval")
 
@@ -44,6 +45,7 @@ local function planet_of_colony(c)
     if not scanned then
         colony_planet = {}
         for _, id in ipairs(world.all("planet")) do
+            slice.tick("economy/script.lua:46")
             local col = world.field(world.object("planet", id), "colony")
             if col ~= nil then colony_planet[tonumber(col)] = id end
         end

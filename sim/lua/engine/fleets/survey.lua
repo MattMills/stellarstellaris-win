@@ -22,6 +22,7 @@
 
 local world = require("engine.world")
 local defs = require("engine.defs")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local eval = require("simscript.eval")
 local live = require("engine.store.live")   -- the store's copy of the country (docs/data_layer.md)
 
@@ -228,6 +229,7 @@ end
 local function in_list(country, ty, id)
     local b = holders(country, false)
     for _, h in ipairs(world.blocks(b)) do
+        slice.tick("survey list")
         if tonumber(world.field(h, "type")) == ty and tonumber(world.field(h, "id")) == id then
             return true
         end

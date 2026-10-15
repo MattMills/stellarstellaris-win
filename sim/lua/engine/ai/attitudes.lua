@@ -28,6 +28,7 @@
 local world = require("engine.world")
 local defs = require("engine.defs")
 local op = require("engine.ai.opinion")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 
 local attitudes = {
     stats = { days = 0, updates = 0, relations = 0, changed = 0, appended = 0, errors = 0, seconds = 0 },
@@ -428,6 +429,7 @@ local function update_country(us, today, year, out)
     local by, list = op.relations_of(us)
     local appended = {}
     for _, rel in ipairs(list or {}) do
+        slice.tick("attitude relation")
         local other = tonumber(world.field(rel, "country"))
         if other and other ~= NO_ID and country(other) and op.rflag(rel, "contact") then
             local e = entry_for(us, other)
@@ -528,6 +530,7 @@ end
 local function due(day)
     local out = {}
     for _, id in ipairs(world.all("country")) do
+        slice.tick("ai/attitudes.lua:532")
         if ai_block(id) and op.type_flag(id, "relations") then
             if (id + day) % 4294967296 % 10 == 0 then
                 out[#out + 1] = id
@@ -620,6 +623,7 @@ function attitudes.daily(host, date)
         merge(parallel.run("attitudes", today .. " " .. date.year .. " " .. table.concat(ids, ",")), list, out)
     else
         for _, us in ipairs(list) do
+            slice.check("attitudes country")
             attitudes.stats.updates = attitudes.stats.updates + 1
             local ok, err = pcall(update_country, us, today, date.year, out)
             if not ok then

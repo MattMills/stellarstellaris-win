@@ -15,6 +15,7 @@
 
 local gmod = require("stellar.graph.modifiers")
 local modifiers = require("engine.modifiers")
+local tick = require("engine.slice").tick   -- a phase in pieces (docs/frame_timing.md)
 
 local M = {}
 
@@ -176,6 +177,7 @@ function M.values(wg, category, owner)
     wg.types = wg.types or types_fn(wg.defs)
     local out = {}
     for t in pairs(wg.types(h)) do
+        tick("modifier values")
         local name = wg.defs:name(t)
         local v = wg.tree:get(h, name)
         if v ~= 0 then

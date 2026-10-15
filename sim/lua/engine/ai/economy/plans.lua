@@ -16,6 +16,7 @@
 --       last_valid_resource_targets / floors
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local defs = require("engine.defs")
 local eval = require("simscript.eval")
 local fp = require("engine.ai.economy.fixed")
@@ -50,6 +51,7 @@ end
 local function resource_table(block, file)
     local t = {}
     for _, e in ipairs(type(block) == "table" and block or {}) do
+        slice.tick("ai/economy/plans.lua:52")
         if e.op and e.key then
             t[e.key.text] = (t[e.key.text] or 0) + value_of(e.value, file)
         end
@@ -60,6 +62,7 @@ end
 local function read_plan(block, file, name)
     local p = { name = name, file = file, income = {}, focus = {}, pops = 0, naval_cap = 0, subplans = {} }
     for _, e in ipairs(block) do
+        slice.tick("ai/economy/plans.lua:62")
         if e.op and e.key then
             local k = e.key.text
             if k == "ai_weight" then
@@ -85,6 +88,7 @@ local function read_plan(block, file, name)
                 -- a subplan with a name already there replaces it (the last one moved in its place)
                 local dup
                 for i, o in ipairs(p.subplans) do
+                    slice.tick("ai/economy/plans.lua:87")
                     if o.name == s.name then dup = i end
                 end
                 if dup then
@@ -107,6 +111,7 @@ function plans.all()
     local source = require("stellar.script.source")
     local list = {}
     for name, d in pairs(defs.folder("common/economic_plans")) do
+        slice.tick("ai/economy/plans.lua:109")
         list[#list + 1] = { name = name, d = d }
     end
     table.sort(list, function(a, b)
@@ -115,6 +120,7 @@ function plans.all()
     end)
     PLANS = {}
     for _, x in ipairs(list) do
+        slice.tick("ai/economy/plans.lua:117")
         local block = source.expand(db.fs, x.d.block, {}, 0, "file: " .. tostring(x.d.file))
         PLANS[#PLANS + 1] = read_plan(block, x.d.file, x.name)
         PLANS[#PLANS].key = x.name
@@ -136,6 +142,7 @@ end
 local function subplans(p, ctx, scaling, optional)
     local out = {}
     for _, s in ipairs(p.subplans) do
+        slice.tick("ai/economy/plans.lua:138")
         if (s.scaling or false) == scaling and (s.optional or false) == optional and potential(s, ctx) then
             out[#out + 1] = s
         end
@@ -145,12 +152,14 @@ end
 
 local function add_into(out, t, times)
     for r, v in pairs(t) do
+        slice.tick("ai/economy/plans.lua:147")
         out[r] = (out[r] or 0) + v * (times or 1)
     end
 end
 
 local function covered(forecast, out)
     for r, v in pairs(out) do
+        slice.tick("ai/economy/plans.lua:153")
         if v > 0 and (forecast[r] or 0) < v then
             return false
         end
@@ -163,17 +172,21 @@ function plans.income_target(p, ctx, forecast, no_scale)
     local out = {}
     add_into(out, p.income)
     for _, s in ipairs(subplans(p, ctx, false, false)) do
+        slice.tick("ai/economy/plans.lua:165")
         add_into(out, plans.income_target(s, ctx, forecast, no_scale))
     end
     local passes = 0
     if not no_scale and forecast and next(forecast) then
         local added = true
         while covered(forecast, out) and added and passes < 10000 do
+            slice.tick("ai/economy/plans.lua:171")
             added = false
             for _, s in ipairs(subplans(p, ctx, true, false)) do
+                slice.tick("ai/economy/plans.lua:173")
                 local t = plans.income_target(s, ctx, forecast, false)
                 local any = false
                 for _, v in pairs(t) do
+                    slice.tick("ai/economy/plans.lua:176")
                     if v > 0 then any = true end
                 end
                 if any then
@@ -185,10 +198,12 @@ function plans.income_target(p, ctx, forecast, no_scale)
         end
     end
     for _, s in ipairs(subplans(p, ctx, false, true)) do
+        slice.tick("ai/economy/plans.lua:187")
         add_into(out, plans.income_target(s, ctx, forecast, no_scale))
     end
     if not no_scale then
         for _, s in ipairs(subplans(p, ctx, true, true)) do
+            slice.tick("ai/economy/plans.lua:191")
             add_into(out, plans.income_target(s, ctx, forecast, false), passes)
         end
     end
@@ -199,6 +214,7 @@ function plans.focus(p, ctx)
     local out = {}
     add_into(out, p.focus)
     for _, s in ipairs(p.subplans) do
+        slice.tick("ai/economy/plans.lua:201")
         if potential(s, ctx) then
             add_into(out, plans.focus(s, ctx))
         end
@@ -212,6 +228,7 @@ local function amount(p, ctx, field, current)
     local n = p[field] or 0
     local scal = {}
     for _, s in ipairs(p.subplans) do
+        slice.tick("ai/economy/plans.lua:214")
         if potential(s, ctx) then
             local v = amount(s, ctx, field, current)
             if v ~= 0 then
@@ -220,9 +237,11 @@ local function amount(p, ctx, field, current)
         end
     end
     for _, s in ipairs(scal) do
+        slice.tick("ai/economy/plans.lua:222")
         local v = amount(s, ctx, field, current)
         local guard = 0
         while current > n and v > 0 and guard < 100000 do
+            slice.tick("ai/economy/plans.lua:225")
             n = n + v
             guard = guard + 1
         end
@@ -245,8 +264,11 @@ function plans.last_balance(country)
     local lm = require("engine.ai.budget").last_month(country)
     local out = {}
     for side, sign in pairs({ income = 1, expenses = -1 }) do
+        slice.tick("ai/economy/plans.lua:247")
         for _, t in pairs(lm[side] or {}) do
+            slice.tick("ai/economy/plans.lua:248")
             for r, v in pairs(t) do
+                slice.tick("ai/economy/plans.lua:249")
                 out[r] = (out[r] or 0) + sign * v
             end
         end
@@ -269,8 +291,11 @@ function plans.current_balance(country)
     local cm = plans.current_page(country)
     local out = {}
     for side, sign in pairs({ income = 1, expenses = -1 }) do
+        slice.tick("ai/economy/plans.lua:271")
         for _, t in pairs(cm and cm[side] or {}) do
+            slice.tick("ai/economy/plans.lua:272")
             for r, v in pairs(t) do
+                slice.tick("ai/economy/plans.lua:273")
                 out[r] = (out[r] or 0) + sign * v
             end
         end
@@ -282,6 +307,7 @@ end
 function plans.current_expenses(country, res)
     local v = 0
     for _, t in pairs(plans.current_page(country).expenses or {}) do
+        slice.tick("ai/economy/plans.lua:284")
         v = v + (t[res] or 0)
     end
     return v
@@ -291,6 +317,7 @@ function plans.is_fulfilled(p, ctx, country)
     local t = plans.income_target(p, ctx, nil, true)
     local any = false
     for _, v in pairs(t) do
+        slice.tick("ai/economy/plans.lua:293")
         if v ~= 0 then any = true end
     end
     if not any and #p.subplans == 0 then
@@ -298,6 +325,7 @@ function plans.is_fulfilled(p, ctx, country)
     end
     local inc = plans.last_balance(country)
     for r, v in pairs(t) do
+        slice.tick("ai/economy/plans.lua:300")
         if v > 0 and (inc[r] or 0) < v then
             return false
         end
@@ -313,6 +341,7 @@ function plans.best(country)
     local ctx = eval.new_ctx(eval.S("country", country), nil, nil, "common/economic_plans")
     local best, bestw, low, loww
     for _, p in ipairs(plans.all()) do
+        slice.tick("ai/economy/plans.lua:315")
         if potential(p, ctx) then
             local ok, w = pcall(eval.weight, p.weight or {}, ctx, 1)
             w = ok and fp.from(w) or 0
@@ -340,6 +369,7 @@ function plans.tables(p, country)
     local T = plans.income_target(p, ctx, F, false)
     local t = { target = T, current = F, needed = {}, focus = plans.focus(p, ctx), deficit = {} }
     for _, r in ipairs(resources()) do
+        slice.tick("ai/economy/plans.lua:342")
         t.needed[r] = (T[r] or 0) - (F[r] or 0)
         t.deficit[r] = -(F[r] or 0)
     end
@@ -370,6 +400,7 @@ end
 local function read_table(block)
     local t = {}
     for _, e in ipairs(type(block) == "table" and block or {}) do
+        slice.tick("ai/economy/plans.lua:372")
         if e.op and e.key and e.value.text then
             t[e.key.text] = fp.from(tonumber(e.value.text) or 0)
         end
@@ -386,6 +417,7 @@ local function write_table(ai, key, t, after)
         block = {}
         local pos
         for i, e in ipairs(ai) do
+            slice.tick("ai/economy/plans.lua:388")
             if e.op and e.key and e.key.text == after then pos = i end
         end
         if pos then
@@ -396,6 +428,7 @@ local function write_table(ai, key, t, after)
     end
     world.replace(block, {})
     for _, r in ipairs(resources()) do
+        slice.tick("ai/economy/plans.lua:398")
         local v = t[r]
         if v and v ~= 0 then
             world.append(block, r, fp.to(v))
@@ -406,6 +439,7 @@ end
 local function read_dates(block, n)
     local out = {}
     for _, e in ipairs(type(block) == "table" and block or {}) do
+        slice.tick("ai/economy/plans.lua:408")
         if e.text then out[#out + 1] = e.text end
     end
     if #out ~= n then
@@ -423,6 +457,7 @@ local function write_dates(ai, key, dates)
     end
     local items = {}
     for _, d in ipairs(dates) do
+        slice.tick("ai/economy/plans.lua:425")
         items[#items + 1] = { text = d, quoted = true }
     end
     world.replace(block, items)
@@ -442,6 +477,7 @@ function plans.update_records(country, target, today)
     local fd = read_dates(world.field(ai, "last_valid_resource_floors"), n)
     local now = months(today)
     for i, r in ipairs(res) do
+        slice.tick("ai/economy/plans.lua:444")
         local T = fp.from(target[r] or 0)
         local R = rec[r] or 0
         if R > 0 or T > 0 then

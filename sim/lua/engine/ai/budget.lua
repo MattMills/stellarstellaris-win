@@ -29,6 +29,7 @@
 -- with costs as { [res] = number }.
 
 local world = require("engine.world")
+local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
 local defs = require("engine.defs")
 local eval = require("simscript.eval")
 local fp = require("engine.ai.economy.fixed")
@@ -51,6 +52,7 @@ local function entries()
     end
     local list = {}
     for name, d in pairs(defs.folder("common/ai_budget")) do
+        slice.tick("ai/budget.lua:53")
         local b = d.block
         local ty = defs.field(b, "type")
         list[#list + 1] = {
@@ -131,9 +133,11 @@ local function save_page(country, page)
         local s = world.field(p, pair[1])
         if type(s) == "table" then
             for cat, v in world.statements(s) do
+                slice.tick("ai/budget.lua:133")
                 if type(v) == "table" then
                     local t = out[pair[2]][cat] or {}
                     for res, x in world.statements(v) do
+                        slice.tick("ai/budget.lua:136")
                         t[res] = (t[res] or 0) + (type(x) ~= "table" and tonumber(x) or 0)
                     end
                     out[pair[2]][cat] = t
@@ -158,7 +162,9 @@ end
 local function summed(side)
     local out = {}
     for _, t in pairs(side or {}) do
+        slice.tick("ai/budget.lua:160")
         for r, v in pairs(t) do
+            slice.tick("ai/budget.lua:161")
             out[r] = (out[r] or 0) + v
         end
     end
@@ -173,9 +179,11 @@ local function split(country, kind, ctx, out)
     local income = kind == UPKEEP and summed(budget.last_month(country).income) or nil
     local economy = require("engine.economy")
     for _, res in ipairs(resources()) do
+        slice.tick("ai/budget.lua:175")
         local W, MAX, MIN, order = {}, {}, {}, {}
         local total = 0
         for _, e in ipairs(list) do
+            slice.tick("ai/budget.lua:178")
             if e.type == kind and e.resource == res and e.category and cats.get(e.category) and potential(e, ctx) then
                 local cat = e.category
                 if W[cat] == nil then
@@ -196,6 +204,7 @@ local function split(country, kind, ctx, out)
             local cap = economy.capacity(country, res)
             local F, f = 0, {}
             for _, cat in ipairs(order) do
+                slice.tick("ai/budget.lua:198")
                 f[cat] = W[cat]
                 if W[cat] > 0 or MIN[cat] > 0 then
                     if S <= 0 then
@@ -220,6 +229,7 @@ local function split(country, kind, ctx, out)
                 end
             end
             for _, cat in ipairs(order) do
+                slice.tick("ai/budget.lua:222")
                 local t = out[cat]
                 if t == nil then
                     t = {}
@@ -247,13 +257,17 @@ local function cached_upkeep(country)
     local queued = package.loaded["engine.ai.economy"]
     queued = queued and queued.queued_upkeep and queued.queued_upkeep(country) or {}
     for name, c in pairs(cats.all()) do
+        slice.tick("ai/budget.lua:249")
         if c.ai then
             local t = {}
             for _, sub in ipairs(cats.descendants(name)) do
+                slice.tick("ai/budget.lua:252")
                 for r, v in pairs(expenses[sub] or {}) do
+                    slice.tick("ai/budget.lua:253")
                     t[r] = (t[r] or 0) + fp.from(v)
                 end
                 for r, v in pairs(queued[sub] or {}) do
+                    slice.tick("ai/budget.lua:256")
                     t[r] = (t[r] or 0) + fp.from(v)
                 end
             end
@@ -283,6 +297,7 @@ end
 
 local function nonzero(cost)
     for _, v in pairs(cost or {}) do
+        slice.tick("ai/budget.lua:285")
         if v ~= 0 then return true end
     end
     return false
@@ -300,6 +315,7 @@ function budget.can_afford_expenditure(country, category, cost)
     end
     local cat = cats.to_use(category)
     for r, c in pairs(cost) do
+        slice.tick("ai/budget.lua:302")
         local bc = cats.for_expenditure(cat, r)
         local have = (b.expenditure[bc] or {})[r] or 0
         local want = fp.from(c)
@@ -326,6 +342,7 @@ function budget.can_afford_upkeep(country, category, upkeep)
     local cached = b.cached_upkeep[cat] or {}
     local any = false
     for r, u in pairs(upkeep) do
+        slice.tick("ai/budget.lua:328")
         if u > 0 then
             any = true
         end
@@ -334,6 +351,7 @@ function budget.can_afford_upkeep(country, category, upkeep)
         return true
     end
     for r, u in pairs(upkeep) do
+        slice.tick("ai/budget.lua:336")
         local U = fp.from(u)
         if U ~= 0 then
             U = U + (cached[r] or 0)
@@ -357,6 +375,7 @@ function budget.withdraw(country, category, cost)
     end
     local cat = cats.to_use(category)
     for r, c in pairs(cost or {}) do
+        slice.tick("ai/budget.lua:359")
         local bc = cats.for_expenditure(cat, r)
         local t = b.expenditure[bc]
         if t == nil then

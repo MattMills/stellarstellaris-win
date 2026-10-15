@@ -18,6 +18,7 @@ local engine = {}
 if os.getenv("STELLAR_WORLD") == "store" then
     require("engine.store.engine_world").install()
 end
+engine.slice = require("engine.slice")
 engine.defs = require("engine.defs")
 engine.world = require("engine.world")
 require("engine.interface")
@@ -72,6 +73,50 @@ function engine.load(game_dir, gamestate, docs_dir)
             elseif not built then
                 lines[#lines + 1] = "economy: no modifier source (no modifier types for the world graph, STELLAR_CAPTURE unset): the budget phase does nothing"
             end
+            -- what the first day would make otherwise, made with the load (nothing of the world
+            -- read or changed, no draws): the shared store's statics and the worker pool that
+            -- exploration's pass runs on (engine.store.bridge), so no frame has to hold them
+            -- (docs/frame_timing.md)
+            if require("engine.store.live").on and os.getenv("STELLAR_EXPLORATION") ~= "off" then
+                require("engine.store.bridge").prepare()
+            end
+            -- and the phases on the workers (STELLAR_PARALLEL): the world's copy and the workers'
+            -- engines (seconds of work) made with the load, not in the first phase that asks
+            local parallel = require("engine.store.parallel")
+            if next(parallel.on) then
+                parallel.start()
+                lines[#lines + 1] = "parallel: " .. (parallel.started and string.format("the workers' engines in %.1f s",
+                    parallel.stats.start_seconds) or ("not started: " .. tostring(parallel.failed)))
+            end
+            -- the engine's modules the phases load on first use, loaded now
+            local function have(m) return package.searchpath(m, package.path) ~= nil end
+            for _, m in ipairs({ "engine.ai.attitudes", "engine.ethics", "engine.exploration", "engine.colonies",
+                "engine.construction", "engine.first_contact", "engine.research", "engine.situations",
+                "engine.ai.strategy", "engine.leaders", "engine.pops", "engine.fleets.orders", "engine.fleets.movement",
+                "engine.ai", "engine.ai.research", "engine.ai.budget", "engine.ai.shipbuilding", "engine.diplomacy",
+                "engine.traditions" }) do
+                if have(m) then require(m) end
+            end
+            for _, name in ipairs((package.loaded["engine.ai"] or {}).INTERIOR or {}) do
+                if have("engine.ai." .. name) then require("engine.ai." .. name) end
+            end
+            -- and the files read on first use, parsed now (caches of the files alone)
+            require("engine.economy.units").components()
+            local create = require("engine.fleets.create")
+            create.components()
+            create.sections()
+            create.scripted_globals()
+            require("engine.fleets.movement").scripted_globals()
+            require("engine.fleets.path").defines()
+            require("engine.script.creation").special_project_def("")
+            require("engine.research").project_type("")
+            local shipbuilding = require("engine.ai.shipbuilding")
+            shipbuilding.db_index("common/ship_sizes")
+            shipbuilding.db_index("common/armies")
+            -- the load's garbage collected with it (about a second): the collector's next cycle,
+            -- which marks the whole heap a step at a time in the frames, comes only once the heap
+            -- has doubled again, not straight away (docs/frame_timing.md)
+            collectgarbage("collect")
         end
     end
     return table.concat(lines, "\n")
@@ -85,12 +130,17 @@ function engine.load_world(gamestate)
 end
 
 -- engine.phase(kind, name, year, month, day) -> whether something models it: one phase of the
--- tick, then the barrier (the engine effects queued in it applied)
+-- tick, then the barrier (the engine effects queued in it applied). The platform may run it as a
+-- coroutine that yields at engine.slice's checks (docs/frame_timing.md).
 function engine.phase(kind, name, year, month, day)
+    local key = kind .. "." .. name
+    engine.slice.begin(key)
     local ran = engine.systems.phase(kind, name, host, { year = year, month = month, day = day })
     if E.pending() > 0 then
+        engine.slice.check("barrier " .. key)
         E.flush()
     end
+    engine.slice.finish(key)
     return ran
 end
 

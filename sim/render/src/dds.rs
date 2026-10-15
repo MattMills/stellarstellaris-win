@@ -106,17 +106,17 @@ pub fn load(path: &str) -> Result<Image, String> {
 /// Textures by path, loaded once; the formats seen, for reports.
 #[derive(Default)]
 pub struct Cache {
-    pub images: HashMap<String, Result<Image, String>>,
+    pub images: HashMap<String, Result<std::sync::Arc<Image>, String>>,
 }
 
 impl Cache {
     /// The texture at `relative` (a path in the game directory, as the game's files write it).
-    pub fn get(&mut self, game_dir: &str, relative: &str) -> Result<&Image, String> {
+    pub fn get(&mut self, game_dir: &str, relative: &str) -> Result<&std::sync::Arc<Image>, String> {
         let key = relative.replace('\\', "/");
         if !self.images.contains_key(&key) {
             let path = find_case_insensitive(game_dir, &key).unwrap_or_else(|| format!("{game_dir}/{key}"));
             // a texture the game names may be a .tga; only .dds is read here
-            self.images.insert(key.clone(), load(&path));
+            self.images.insert(key.clone(), load(&path).map(std::sync::Arc::new));
         }
         self.images[&key].as_ref().map_err(|e| e.clone())
     }
@@ -199,12 +199,12 @@ pub fn cube_levels(img: &Image) -> u32 {
 
 impl Cache {
     /// A cube map at `relative` (see load_cube) with at most `levels` mip levels, loaded once.
-    pub fn get_cube(&mut self, game_dir: &str, relative: &str, levels: u32) -> Result<&Image, String> {
+    pub fn get_cube(&mut self, game_dir: &str, relative: &str, levels: u32) -> Result<&std::sync::Arc<Image>, String> {
         let rel = relative.replace('\\', "/");
         let key = format!("cube{levels}:{rel}");
         if !self.images.contains_key(&key) {
             let path = find_case_insensitive(game_dir, &rel).unwrap_or_else(|| format!("{game_dir}/{rel}"));
-            self.images.insert(key.clone(), load_cube(&path, levels));
+            self.images.insert(key.clone(), load_cube(&path, levels).map(std::sync::Arc::new));
         }
         self.images[&key].as_ref().map_err(|e| e.clone())
     }

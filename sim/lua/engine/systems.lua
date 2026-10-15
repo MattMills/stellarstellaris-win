@@ -10,8 +10,9 @@
 --   checked against the game's next save. A phase nothing models yet is counted.
 
 local world = require("engine.world")
+local slice = require("engine.slice")
 
-local systems = { effects = {}, phases = {}, ran = {}, not_modelled = {} }
+local systems ={ effects = {}, phases = {}, ran = {}, not_modelled = {} }
 
 -- ---------------------------------------------------------------------------------------------
 -- effects
@@ -68,6 +69,7 @@ end
 
 local function each_country(f)
     for _, id in ipairs(world.all("country")) do
+        slice.check("country")
         f(id)
     end
 end
@@ -135,6 +137,7 @@ local function each_object(stores, f)
         for _, id in ipairs(world.ids[name] or {}) do
             local obj = store[id]
             if obj then
+                slice.tick(name)
                 f(obj)
             end
         end
@@ -167,10 +170,23 @@ local function optional(name)
     end
     return present[name] and require(name) or nil
 end
--- a function of an optional module, called when it is there
+-- a function of an optional module, called when it is there (after a check named by both: what
+-- the call takes before its own first check is learned there, docs/frame_timing.md)
+local sites = {}
 local function call_optional(name, fn, ...)
     local m = optional(name)
     if m and m[fn] then
+        local by = sites[name]
+        if not by then
+            by = {}
+            sites[name] = by
+        end
+        local site = by[fn]
+        if not site then
+            site = name .. "." .. fn
+            by[fn] = site
+        end
+        slice.check(site)
         return true, m[fn](...)
     end
     return false
@@ -227,7 +243,9 @@ end
 -- (engine.colonies, once it is there)
 P["daily.colonies_serial"] = function(host, date)
     for _, id in ipairs(world.all("planet")) do
+        slice.tick("systems.lua:232")
         if world.pop_groups_of[id] then
+            slice.check("planet events")
             host.scope_daily_events("planet", id)
         end
     end
