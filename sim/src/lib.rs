@@ -18,11 +18,15 @@
 //! - [`scheduler`]: `HandleTurnTick`, `MicroUpdate`, `DailyUpdate`, `MonthlyUpdate`, `YearlyUpdate`
 //! - [`modcheck`]: the modifier model against a capture of the game's modifier nodes
 //! - [`frametime`]: the simulation inside a rendered game's frames, timed (docs/frame_timing.md)
+//! - [`preempt`]: the Lua VM stopping a coroutine past a deadline (a count hook that yields)
+//! - [`cadence`]: the simulation's threads in 1 ms slices, every other millisecond unused
 
+pub mod cadence;
 pub mod date;
 pub mod fixed;
 pub mod frametime;
 pub mod modcheck;
+pub mod preempt;
 pub mod rng;
 pub mod runtime;
 pub mod save;

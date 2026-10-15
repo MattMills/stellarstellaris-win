@@ -48,11 +48,24 @@ pub struct Config {
     pub days: u64,
     /// thread: seconds of frames without the simulation first, to compare with
     pub baseline_s: f64,
+    /// sliced: a slice, ms; the simulation's threads work in every other slot of this length
+    pub slice_ms: f64,
+    /// sliced: a slice's deadline is its slot's end less this, ms
+    pub slice_margin_ms: f64,
 }
 
 impl Default for Config {
     fn default() -> Config {
-        Config { fps: 120.0, render_ms: 4.0, margin_ms: 1.0, speed: 3, days: 35, baseline_s: 3.0 }
+        Config {
+            fps: 120.0,
+            render_ms: 4.0,
+            margin_ms: 1.0,
+            speed: 3,
+            days: 35,
+            baseline_s: 3.0,
+            slice_ms: 1.0,
+            slice_margin_ms: 0.1,
+        }
     }
 }
 
@@ -62,9 +75,10 @@ fn env<T: std::str::FromStr>(name: &str) -> Option<T> {
 
 impl Config {
     /// The defaults (120 FPS, 4 ms of render work, a 1 ms margin, Normal speed, 35 days, a 3 s
-    /// baseline), each overridden by its variable: `STELLAR_FRAME_FPS`, `STELLAR_FRAME_RENDER_MS`,
-    /// `STELLAR_FRAME_MARGIN_MS`, `STELLAR_FRAME_SPEED`, `STELLAR_FRAME_DAYS`,
-    /// `STELLAR_FRAME_BASELINE_S`.
+    /// baseline, 1 ms slices with a 0.1 ms margin), each overridden by its variable:
+    /// `STELLAR_FRAME_FPS`, `STELLAR_FRAME_RENDER_MS`, `STELLAR_FRAME_MARGIN_MS`,
+    /// `STELLAR_FRAME_SPEED`, `STELLAR_FRAME_DAYS`, `STELLAR_FRAME_BASELINE_S`,
+    /// `STELLAR_FRAME_SLICE_MS`, `STELLAR_FRAME_SLICE_MARGIN_MS`.
     pub fn from_env() -> Config {
         let d = Config::default();
         Config {
@@ -74,7 +88,14 @@ impl Config {
             speed: env::<u8>("STELLAR_FRAME_SPEED").unwrap_or(d.speed).clamp(1, 5),
             days: env("STELLAR_FRAME_DAYS").unwrap_or(d.days),
             baseline_s: env("STELLAR_FRAME_BASELINE_S").unwrap_or(d.baseline_s),
+            slice_ms: env("STELLAR_FRAME_SLICE_MS").unwrap_or(d.slice_ms),
+            slice_margin_ms: env("STELLAR_FRAME_SLICE_MARGIN_MS").unwrap_or(d.slice_margin_ms),
         }
+    }
+
+    /// sliced: the cadence the simulation's threads follow.
+    pub fn cadence(&self) -> crate::cadence::Cadence {
+        crate::cadence::Cadence { slot: self.slice_ms / 1000.0, margin: self.slice_margin_ms / 1000.0 }
     }
 
     /// A frame's time, seconds.
@@ -330,10 +351,67 @@ impl Units {
     }
 }
 
+/// sliced: one of the simulation's threads, its slices.
+#[derive(Clone, Debug, Default)]
+pub struct SliceStats {
+    pub thread: String,
+    pub slices: usize,
+    pub p50_ms: f64,
+    pub p99_ms: f64,
+    pub p999_ms: f64,
+    pub max_ms: f64,
+    /// slices longer than a slot
+    pub over: usize,
+    /// slices that ended after their slot's end
+    pub late: usize,
+    /// the shortest gap between two slices, ms
+    pub min_gap_ms: f64,
+    /// the share of its time from its first slice to its last that the thread worked
+    pub busy: f64,
+}
+
+impl SliceStats {
+    fn of(s: &crate::cadence::Slices, slot: f64) -> SliceStats {
+        let l = sorted(&s.lengths);
+        let span = match (s.first, s.last_end) {
+            (Some(a), Some(b)) if b > a => b - a,
+            _ => 0.0,
+        };
+        SliceStats {
+            thread: s.thread.clone(),
+            slices: l.len(),
+            p50_ms: percentile(&l, 0.5) * 1000.0,
+            p99_ms: percentile(&l, 0.99) * 1000.0,
+            p999_ms: percentile(&l, 0.999) * 1000.0,
+            max_ms: l.last().copied().unwrap_or(0.0) * 1000.0,
+            over: l.iter().filter(|&&x| x > slot).count(),
+            late: s.late,
+            min_gap_ms: s.gaps.iter().copied().fold(f64::INFINITY, f64::min) * 1000.0,
+            busy: if span > 0.0 { s.busy / span } else { 0.0 },
+        }
+    }
+
+    fn text(&self, slot_ms: f64) -> String {
+        format!(
+            "  {:<14} {:>7} slices, ms p50 {:.3} p99 {:.3} p99.9 {:.3} max {:.2}; longer than {slot_ms:.2} ms: {} ({:.3}%); the shortest gap {:.3} ms; busy {:.0}%\n",
+            self.thread,
+            self.slices,
+            self.p50_ms,
+            self.p99_ms,
+            self.p999_ms,
+            self.max_ms,
+            self.over,
+            100.0 * self.over as f64 / self.slices.max(1) as f64,
+            if self.min_gap_ms.is_finite() { self.min_gap_ms } else { 0.0 },
+            100.0 * self.busy
+        )
+    }
+}
+
 /// What a run measured.
 #[derive(Clone, Debug, Default)]
 pub struct Report {
-    /// "inline" or "thread"
+    /// "inline", "thread" or "sliced"
     pub mode: &'static str,
     pub config: Config,
     /// game days run
@@ -363,11 +441,26 @@ pub struct Report {
     /// the end state: date, ticks, the generator's position, a hash of the world as saved
     pub fingerprint: String,
     pub error: Option<String>,
+    /// sliced: each of the simulation's threads, its slices
+    pub threads: Vec<SliceStats>,
+    /// sliced: the VM's yields (the count hook's) and its looks past a deadline where it could not
+    pub vm_yields: (u64, u64),
 }
 
 impl Report {
     pub fn budget_ms(&self) -> f64 {
         self.config.budget() * 1000.0
+    }
+
+    /// sliced: every thread's slices within a slot (at least 999 in 1,000, none over two slots),
+    /// and every gap at least a slot.
+    pub fn slices_fit(&self) -> bool {
+        let slot = self.config.slice_ms;
+        self.error.is_none()
+            && !self.threads.is_empty()
+            && self.threads.iter().all(|t| {
+                t.over * 1000 <= t.slices && t.max_ms <= 2.0 * slot && (t.slices < 2 || t.min_gap_ms >= slot * 0.999)
+            })
     }
 
     /// The game days a second ran are at least 95% of what the speed asks for.
@@ -414,6 +507,12 @@ impl Report {
         if self.mode == "inline" {
             out += &format!(" + margin {:.2} ms: {:.2} ms a frame for the simulation", c.margin_ms, c.room() * 1000.0);
         }
+        if self.mode == "sliced" {
+            out += &format!(
+                "; the simulation's threads in {:.2} ms slices, every other {:.2} ms unused (deadline {:.2} ms before a slot's end, the VM stops the Lua code)",
+                c.slice_ms, c.slice_ms, c.slice_margin_ms
+            );
+        }
         out += "\n";
         if let Some(e) = &self.error {
             out += &format!("  error: {e}\n");
@@ -444,8 +543,19 @@ impl Report {
         }
         let (b50, b99, bmax, bend) = self.backlog;
         out += &format!("  ticks posted and not run at a frame's end: p50 {b50} p99 {b99} max {bmax}, at the last {bend}\n");
-        if self.mode == "thread" {
+        if self.mode != "inline" {
             out += &format!("  the render thread's longest wait for the published state: {:.3} ms\n", self.lock_wait_max_ms);
+        }
+        if !self.threads.is_empty() {
+            out += &format!(
+                "  the simulation's threads, their slices (VM yields {}, looks past a deadline that could not yield {}); slices fit: {}\n",
+                self.vm_yields.0,
+                self.vm_yields.1,
+                yes(self.slices_fit())
+            );
+            for t in &self.threads {
+                out += &t.text(c.slice_ms);
+            }
         }
         let room = c.room() * 1000.0;
         let over = self.units_over_room();
@@ -625,6 +735,7 @@ struct ThreadResult {
     load_s: f64,
     slices: String,
     fingerprint: String,
+    vm_yields: (u64, u64),
 }
 
 /// The simulation on a thread of its own: `load` makes it there (a simulation's Lua state stays
@@ -633,6 +744,23 @@ struct ThreadResult {
 /// seconds of frames with no simulation, then frames while the thread loads (the game paused),
 /// then frames while it runs.
 pub fn run_threaded<F>(cfg: &Config, load: F) -> Report
+where
+    F: FnOnce() -> Result<Simulation, String> + Send + 'static,
+{
+    run_on_threads(cfg, load, false)
+}
+
+/// As [`run_threaded`], the render thread doing nothing but render, and the simulation's threads
+/// (its own and the worker pool's) in slices of `cfg.slice_ms`, every other slot unused
+/// ([`crate::cadence`]): the VM stops the Lua code at a slice's deadline ([`crate::preempt`]).
+pub fn run_sliced<F>(cfg: &Config, load: F) -> Report
+where
+    F: FnOnce() -> Result<Simulation, String> + Send + 'static,
+{
+    run_on_threads(cfg, load, true)
+}
+
+fn run_on_threads<F>(cfg: &Config, load: F, sliced: bool) -> Report
 where
     F: FnOnce() -> Result<Simulation, String> + Send + 'static,
 {
@@ -650,7 +778,9 @@ where
     });
     let sh = shared.clone();
     let target = cfg.days * 10;
-    let end_name = format!("thread-speed{}", cfg.speed);
+    let mode = if sliced { "sliced" } else { "thread" };
+    let end_name = format!("{mode}-speed{}", cfg.speed);
+    let cadence = cfg.cadence();
     let handle = std::thread::Builder::new()
         .name("simulation".into())
         .spawn(move || {
@@ -658,9 +788,28 @@ where
                 let t0 = Instant::now();
                 let mut sim = load()?;
                 let load_s = t0.elapsed().as_secs_f64();
+                let log = if sliced {
+                    crate::cadence::fine_timers();
+                    sim.runtime.set_preempt(true).map_err(|e| e.to_string())?;
+                    let _ = sim.runtime.eval::<()>("require('engine.slice').reset()");
+                    crate::cadence::clear_logs();
+                    crate::cadence::set(Some(cadence));
+                    Some(crate::cadence::register("simulation"))
+                } else {
+                    None
+                };
+                let vm0 = crate::preempt::counts();
                 sh.loaded.store(true, Ordering::Release);
                 let start_ticks = sim.ticks;
                 let mut units = Units::default();
+                let mut earliest = 0.0;
+                let publish = |sim: &Simulation| {
+                    let done = sim.ticks - start_ticks;
+                    if sim.tick_count() == 0 {
+                        *sh.published.lock().unwrap() = (done, format!("{:?}", sim.date()));
+                    }
+                    sh.done.store(done, Ordering::Release);
+                };
                 loop {
                     let done = sim.ticks - start_ticks;
                     if done >= target && !sim.mid_tick() {
@@ -670,23 +819,56 @@ where
                         std::thread::park_timeout(Duration::from_millis(2));
                         continue;
                     }
-                    let u = sim.upcoming();
-                    let t = Instant::now();
-                    let step = sim.step();
-                    units.piece(u, t.elapsed().as_secs_f64(), true, false);
-                    if step.tick_done {
-                        let done = sim.ticks - start_ticks;
-                        if sim.tick_count() == 0 {
-                            *sh.published.lock().unwrap() = (done, format!("{:?}", sim.date()));
+                    let Some(log) = &log else {
+                        let u = sim.upcoming();
+                        let t = Instant::now();
+                        let step = sim.step();
+                        units.piece(u, t.elapsed().as_secs_f64(), true, false);
+                        if step.tick_done {
+                            publish(&sim);
                         }
-                        sh.done.store(done, Ordering::Release);
+                        continue;
+                    };
+                    // a slice: in a work slot, no earlier than a slot after the last one ended,
+                    // units in pieces up to the deadline (the VM stops the one running there)
+                    let (slot_end, deadline) = cadence.wait_for_slice(earliest);
+                    sim.runtime.set_frame_end(slot_end);
+                    let start = crate::runtime::clock();
+                    loop {
+                        let done = sim.ticks - start_ticks;
+                        if !sim.mid_tick() && (done >= target || done >= sh.due.load(Ordering::Acquire)) {
+                            break;
+                        }
+                        if crate::runtime::clock() >= deadline {
+                            break;
+                        }
+                        let u = sim.upcoming();
+                        let t = crate::runtime::clock();
+                        let step = sim.step_until(deadline);
+                        units.piece(u, crate::runtime::clock() - t, step.done, false);
+                        if step.tick_done {
+                            publish(&sim);
+                        }
+                        if !step.done {
+                            break;
+                        }
                     }
+                    let end = crate::runtime::clock();
+                    log.lock().unwrap().record(start, end, slot_end);
+                    earliest = cadence.next_start(end);
+                    crate::cadence::sleep_until(earliest);
+                }
+                let vm1 = crate::preempt::counts();
+                if sliced {
+                    crate::cadence::set(None);
+                    let _ = sim.runtime.set_preempt(false);
                 }
                 Ok(ThreadResult {
                     units: units.list(),
                     load_s,
                     slices: sim.runtime.slice_report(),
                     fingerprint: end_state(&sim, Some(end_name)),
+                    vm_yields: (vm1.0 - vm0.0, vm1.1 - vm0.1),
                 })
             };
             let r = run();
@@ -730,8 +912,16 @@ where
     let done = shared.done.load(Ordering::Acquire);
     let result = handle.join().map_err(|_| "the simulation's thread panicked".to_string()).and_then(|r| r);
     let days = done as f64 / 10.0;
+    let threads = if sliced {
+        crate::cadence::set(None);
+        let slot = cfg.slice_ms / 1000.0;
+        crate::cadence::logs().iter().filter(|s| !s.lengths.is_empty()).map(|s| SliceStats::of(s, slot)).collect()
+    } else {
+        Vec::new()
+    };
     let mut report = Report {
-        mode: "thread",
+        mode,
+        threads,
         config: cfg.clone(),
         days,
         wall_s: wall,
@@ -750,6 +940,7 @@ where
             report.load_s = r.load_s;
             report.slices = r.slices;
             report.fingerprint = r.fingerprint;
+            report.vm_yields = r.vm_yields;
         }
         Err(e) => report.error = Some(e),
     }
@@ -783,7 +974,7 @@ mod tests {
             c.speed = i as u8 + 1;
             assert!((c.nominal_days_per_s() - w).abs() < 1e-9, "speed {}: {}", c.speed, c.nominal_days_per_s());
         }
-        assert!((c.room() * 1000.0 - (1000.0 / 120.0 - 4.5)).abs() < 1e-9);
+        assert!((c.room() * 1000.0 - (1000.0 / 120.0 - 5.0)).abs() < 1e-9);
     }
 
     #[test]

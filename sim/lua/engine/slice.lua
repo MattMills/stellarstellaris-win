@@ -57,6 +57,7 @@ local crossed = {}             -- "from > to" -> { n, max }: the stretches that 
 local piece_start = 0          -- when the frame's first piece began (the platform's set_deadline)
 local last, last_site = now(), "start"
 local last_ticked = false      -- whether the last check came from slice.tick
+local passive = false          -- the VM stops the pieces; the checks only keep their record
 
 -- the stretch that follows each site of slice.check, and the time of a call at each site of
 -- slice.tick: the longest seen, fading (by DECAY at each shorter one), so that a check can yield
@@ -136,7 +137,7 @@ local function check(site, ticked, calls)
         else
             e = after[site] or 0
         end
-        if (t >= deadline or (t + e > deadline and piece_start + e <= deadline)) and isyieldable() then
+        if not passive and (t >= deadline or (t + e > deadline and piece_start + e <= deadline)) and isyieldable() then
             slice.yields = slice.yields + 1
             yield()
             t = now()
@@ -145,6 +146,12 @@ local function check(site, ticked, calls)
         left = deadline - t
         near = left < NEAR
     end
+end
+
+-- slice.passive(on): the VM itself stops a piece past its deadline (sim/src/preempt.rs): the
+-- checks keep their record and yield no more; slice.wait still yields
+function slice.passive(on)
+    passive = on and true or false
 end
 
 -- slice.check(site): between two objects of a loop. Past the deadline, the phase yields.
@@ -218,7 +225,7 @@ function slice.begin(key)
     -- a phase whose first stretch will not fit in what the frame has left waits for the next
     if deadline ~= math.huge then
         local e = after[site] or 0
-        if (t >= deadline or (t + e > deadline and piece_start + e <= deadline)) and isyieldable() then
+        if not passive and (t >= deadline or (t + e > deadline and piece_start + e <= deadline)) and isyieldable() then
             slice.yields = slice.yields + 1
             yield()
             t = now()

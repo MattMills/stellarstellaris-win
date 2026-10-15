@@ -42,9 +42,17 @@ fn failures(r: &frametime::Report) -> Vec<String> {
             if r.mode == "inline" && !over.is_empty() { format!("; units with a piece longer than a frame's room: {}", over.join(", ")) } else { String::new() }
         ));
     }
-    // inline, the game goes as fast as what each frame leaves holds (the frames are the limit; a
-    // game whose simulation needs more slows down, as the game does): its pace is reported only
-    if r.mode != "inline" && !r.keeps_pace() {
+    if r.mode == "sliced" && !r.slices_fit() {
+        for t in &r.threads {
+            v.push(format!(
+                "{}: {} of {} slices longer than {:.2} ms, the longest {:.2} ms, the shortest gap {:.3} ms",
+                t.thread, t.over, t.slices, r.config.slice_ms, t.max_ms, t.min_gap_ms
+            ));
+        }
+    }
+    // inline and sliced, the game goes as fast as its time allows (what each frame leaves, every
+    // other millisecond): its pace is reported only
+    if r.mode == "thread" && !r.keeps_pace() {
         v.push(format!("{:.2} game days a second, the speed asks for {:.2}", r.achieved_days_per_s, r.nominal_days_per_s));
     }
     v
@@ -82,4 +90,22 @@ fn on_a_thread_of_its_own() {
     print!("{}", r.text());
     let f = failures(&r);
     assert!(f.is_empty(), "on its own thread at {} FPS, speed {}: {}", cfg.fps, cfg.speed, f.join("; "));
+}
+
+// The render thread doing nothing but render, and the simulation's threads (its own and the worker
+// pool's) in 1 ms slices, every other millisecond unused, the Lua VM stopping the code at each
+// slice's deadline (sim/src/preempt.rs, sim/src/cadence.rs).
+#[test]
+#[ignore]
+fn in_slices_on_its_threads() {
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((game_dir, save_path)) = inputs() else {
+        eprintln!("skipped: no Stellaris install or no save");
+        return;
+    };
+    let cfg = frametime::Config::from_env();
+    let r = frametime::run_sliced(&cfg, move || frametime::load(&game_dir, &save_path));
+    print!("{}", r.text());
+    let f = failures(&r);
+    assert!(f.is_empty(), "in {:.2} ms slices at {} FPS, speed {}: {}", cfg.slice_ms, cfg.fps, cfg.speed, f.join("; "));
 }

@@ -60,14 +60,40 @@ fn worker_main(
             return;
         }
     };
+    crate::cadence::fine_timers();
+    let log = crate::cadence::register(&format!("lua-worker-{index}"));
+    let mut earliest = 0.0;
     while let Ok(msg) = rx.recv() {
         match msg {
             Msg::Stop => break,
             Msg::Run(func, arg) => {
                 let r = (|| -> mlua::Result<String> {
                     let f: mlua::Function = w.get(func.as_str())?;
-                    let out: Option<String> = f.call(arg)?;
-                    Ok(out.unwrap_or_default())
+                    let Some(cadence) = crate::cadence::current() else {
+                        let out: Option<String> = f.call(arg)?;
+                        return Ok(out.unwrap_or_default());
+                    };
+                    // the job in slices of the cadence, as the simulation's own thread: a
+                    // coroutine the VM stops at each slice's deadline (crate::preempt)
+                    let th = lua.create_thread(f)?;
+                    let mut first = Some(arg);
+                    loop {
+                        let (slot_end, deadline) = cadence.wait_for_slice(earliest);
+                        let start = crate::runtime::clock();
+                        crate::preempt::arm(&lua, deadline);
+                        let r = match first.take() {
+                            Some(a) => th.resume::<Option<String>>(a),
+                            None => th.resume::<Option<String>>(()),
+                        };
+                        crate::preempt::disarm(&lua);
+                        let end = crate::runtime::clock();
+                        log.lock().unwrap().record(start, end, slot_end);
+                        earliest = cadence.next_start(end);
+                        if th.status() != mlua::ThreadStatus::Resumable {
+                            return Ok(r?.unwrap_or_default());
+                        }
+                        crate::cadence::sleep_until(earliest);
+                    }
                 })();
                 let _ = done.send((index, r.map_err(|e| e.to_string())));
             }

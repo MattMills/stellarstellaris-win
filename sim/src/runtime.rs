@@ -90,6 +90,11 @@ pub fn new_lua() -> mlua::Result<Lua> {
             "maxsnap=2000", "sizemcode=1024", "maxmcode=524288", "hotloop=56", "hotexit=10")"#,
     )
     .exec()?;
+    // STELLAR_JIT=off: the interpreter only (a trace of compiled code runs no hooks, so the VM
+    // cannot stop it at a deadline: sim/src/preempt.rs)
+    if std::env::var("STELLAR_JIT").as_deref() == Ok("off") {
+        lua.load("jit.off()").exec()?;
+    }
     // the collector's pause (percent of the live heap to allocate before a new cycle): the heap is
     // mostly the world and the definitions, which live for the whole run, so every cycle walks them
     // again. 180 days from 2210.01.01: 238 ms a day and 4.1 GB at LuaJIT's 200, 209 ms and 6.0 GB at
@@ -135,6 +140,8 @@ pub struct Runtime {
     /// the end of the frame the pieces run in ([`Runtime::set_frame_end`]), for engine.slice's
     /// record of the stretches that cross it
     frame_end: Cell<f64>,
+    /// whether the VM itself stops a piece past its deadline ([`Runtime::set_preempt`])
+    preempt: Cell<bool>,
     pub date: Rc<Cell<Date>>,
     pub rng: Rc<RefCell<NoiseRandom>>,
     /// The month's pool of random draws (`CGameState::MonthlyUpdate` draws 1,000 at its start, read
@@ -211,7 +218,18 @@ impl Runtime {
         let engine: Table = lua.load("return require('engine')").set_name("engine").eval()?;
         let slice: Table = engine.get("slice")?;
         let set_deadline: Function = slice.get("set_deadline")?;
-        Ok(Runtime { lua, engine, set_deadline, frame_end: Cell::new(f64::INFINITY), date, rng, monthly_pool, daily_pool, shared })
+        Ok(Runtime {
+            lua,
+            engine,
+            set_deadline,
+            frame_end: Cell::new(f64::INFINITY),
+            preempt: Cell::new(false),
+            date,
+            rng,
+            monthly_pool,
+            daily_pool,
+            shared,
+        })
     }
 
     /// Reads the vanilla file set from `game_dir` (the Stellaris install, in place) and the world
@@ -247,6 +265,16 @@ impl Runtime {
         self.frame_end.set(t);
     }
 
+    /// Whether the VM itself stops a phase's piece past its deadline ([`crate::preempt`]: a count
+    /// hook that yields, wherever the Lua code is), in place of engine.slice's checks, which then
+    /// only keep their record (`slice.passive`); engine.slice still yields where a phase waits for
+    /// the worker pool.
+    pub fn set_preempt(&self, on: bool) -> mlua::Result<()> {
+        self.preempt.set(on);
+        let f: Function = self.engine.get::<Table>("slice")?.get("passive")?;
+        f.call(on)
+    }
+
     /// A phase of the tick as a coroutine, to run in pieces with [`Runtime::resume_phase`].
     pub fn phase_thread(&self) -> mlua::Result<mlua::Thread> {
         let f: Function = self.engine.get("phase")?;
@@ -254,10 +282,15 @@ impl Runtime {
     }
 
     /// Runs a phase's coroutine (the first time with the phase's arguments: its kind and name)
-    /// until it finishes, or, past `deadline` on the platform's [`clock`], until it yields at one
-    /// of engine.slice's checks; whether it finished (an error finishes it).
+    /// until it finishes, or, past `deadline` on the platform's [`clock`], until it yields (the VM
+    /// stops it with [`Runtime::set_preempt`], else at one of engine.slice's checks); whether it
+    /// finished (an error finishes it).
     pub fn resume_phase(&self, thread: &mlua::Thread, first: Option<(&str, &str)>, deadline: f64) -> mlua::Result<bool> {
         self.set_deadline.call::<()>((deadline, self.frame_end.get()))?;
+        let preempt = self.preempt.get() && deadline.is_finite();
+        if preempt {
+            crate::preempt::arm(&self.lua, deadline);
+        }
         let r = match first {
             Some((kind, name)) => {
                 let d = self.date.get();
@@ -265,6 +298,9 @@ impl Runtime {
             }
             None => thread.resume::<mlua::MultiValue>(()),
         };
+        if preempt {
+            crate::preempt::disarm(&self.lua);
+        }
         // outside the pieces nothing yields: commands, saves and tools run whole
         self.set_deadline.call::<()>(f64::INFINITY)?;
         r?;

@@ -12,7 +12,59 @@ ways and measures the frames, the game's pace and the phases; `examples/frametim
 whole report, `tests/frame_timing.rs` is the pass or fail check. `lua/engine/slice.lua` is what
 lets a phase run inline: it cuts the phase into pieces a frame can hold.
 
-## In short
+## The target now: 1 ms slices on the simulation's threads (the prototype)
+
+The render thread does nothing but render. The simulation runs on its own threads (its thread
+and the worker pool's), each in slices of 1 ms, with every other millisecond unused: time is cut
+into milliseconds on one clock for all of them, the odd ones for work and the even ones left idle
+(the threads asleep, not spinning). `frametime::run_sliced`, `STELLAR_FRAME_MODE=sliced`, the test
+case `in_slices_on_its_threads`.
+
+**The VM stops the code, not the scripts.** A slice is a coroutine resumed with a deadline
+(`sim/src/preempt.rs`): while it runs, the VM's own thread keeps a count hook on the VM (every 1,000
+instructions), which reads the clock and, past the deadline, yields the coroutine wherever it is
+(`lua_yield` from a hook: LuaJIT adds a continuation frame and the code goes on at the same
+instruction at the next slice). The engine's scripts take no part (`engine.slice`'s checks are
+passive in this mode). The worker pool's jobs run the same way, each a coroutine on its worker's VM
+(`workers.rs`). `sim/src/cadence.rs` is the clock: a slice may start in a work millisecond, no
+earlier than a millisecond after the thread's last slice ended, and its deadline is the millisecond's
+end less 0.1 ms; then the thread sleeps.
+
+**What the VM cannot stop**: a call into C or Rust in progress (a `table.sort` with a Lua comparator,
+the engine's Rust functions), a step of the collector, code where a coroutine cannot yield (a
+function called from C), and **a trace of compiled code**: LuaJIT's traces run no hooks, so with the
+JIT on a hot loop runs to its end (a unit test: 104 ms in one slice; interpreted, 227 slices of at most
+1.02 ms).
+
+**Results** (10.5.0.24, 35 days from 2210.01.01 at Normal, 4 worker threads):
+
+| | JIT off | JIT on |
+|---|---|---|
+| the simulation's thread: slices, p50, p99, p99.9, longest | 20,650: 0.902, 0.919, 1.093, 3.72 ms | 8,638: 0.934, 2.10, 3.44, 14.0 ms |
+| its slices over 1 ms | 0.13% | 24% |
+| each worker's slices over 1 ms (p99, longest) | 0.21 to 0.36% (0.94 ms, 1.9 to 2.8 ms) | (not run) |
+| the shortest gap between two slices of a thread | 1.006 ms | 1.006 ms |
+| the render thread's frames | none over 8.33 ms, 4.0 ms | none over, 4.0 ms |
+| game days a second (Normal asks 2.67) | 0.84 (32%) | 1.59 (60%, workers not sliced) |
+
+The run in slices ends with the same save as a whole run, but for the one value that differs between
+any two runs (section 5): stopping the engine at any instruction changes nothing.
+
+**What it shows.** Scheduling at the VM holds the slices to the millisecond in interpreted code, with
+no part of the engine written for it: the 0.1 to 0.4% over 1 ms are calls the VM cannot stop. With the
+JIT the code is about 50% faster, and a quarter of the slices overrun, by the compiled traces. And
+every other millisecond idle halves what a thread can do: the simulation's own thread works 45% of
+its time and is the limit (the workers, 7 to 8%, wait for it); Normal needs about three times this
+pace. What is open:
+
+- the JIT: a compiled trace that polls for a deadline, as LuaJIT's profiler makes traces check its
+  flag (`IR_PROF`), needs a patched LuaJIT; without it, the JIT off;
+- the pace: more of the engine on the worker threads (the AI, the colonies and pops, the monthly
+  strategy: docs/data_layer.md section 12), and the engine's own speed;
+- the calls the VM cannot stop: found by the hook's looks that could not yield (23 in 35 days), and
+  the slices that ended late with what ran in them.
+
+## In short (the earlier targets)
 
 - **The frame loop**: the render thread draws 120 frames a second (4 ms of render work by default, a
   busy wait) and is the game's clock: two ticks every `gGameSpeedTurnTimes[speed]`, as
