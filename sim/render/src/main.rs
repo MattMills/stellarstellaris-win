@@ -40,6 +40,7 @@ mod system;
 mod font;
 mod galaxy;
 mod galaxymap;
+mod mapnames;
 mod gui;
 mod render;
 mod scene;
@@ -111,6 +112,10 @@ pub struct Map {
     /// the newest snapshot of the simulation taken, and its map textures
     pub snapshot: Option<Arc<Snapshot>>,
     images: Option<Arc<MapImages>>,
+    /// the blobs with a symbol (mapnames.rs), made with the map textures, and the map's names
+    /// localised for them (keyed by the blobs' and the galaxy's addresses)
+    blobs: Option<Arc<Vec<mapnames::Blob>>>,
+    map_names: Option<(usize, Arc<mapnames::MapNames>)>,
     /// the system whose bodies the simulation sends (the one shown)
     watched: Option<u32>,
     /// the top bar laid out (for its size, the clock's state and the snapshot)
@@ -155,6 +160,8 @@ impl Map {
             button_states: HashMap::new(),
             snapshot: None,
             images: None,
+            blobs: None,
+            map_names: None,
             watched: None,
             topbar_cache: None,
             system_cache: None,
@@ -289,6 +296,7 @@ impl Map {
                 self.textures.add("@border_edge", i.edge.clone()),
                 self.textures.add("@border_fill", i.fill.clone()),
             ]);
+            self.blobs = Some(i.blobs.clone());
             self.images = Some(i);
         }
         self.snapshot = Some(snap);
@@ -415,8 +423,10 @@ impl Map {
         }
         let t0 = std::time::Instant::now();
         let ti = galaxymap::terra_incognita(&self.galaxy);
-        let (sdf, edge, fill) = galaxymap::borders(&self.galaxy);
-        eprintln!("galaxy maps: terra incognita and borders in {:.2} s", t0.elapsed().as_secs_f64());
+        let owner = galaxymap::owner_grid(&self.galaxy);
+        let (sdf, edge, fill) = galaxymap::borders_of(&self.galaxy, &owner);
+        self.blobs = Some(Arc::new(mapnames::blobs(&owner)));
+        eprintln!("galaxy maps: terra incognita, borders and their blobs in {:.2} s", t0.elapsed().as_secs_f64());
         let m = [
             self.textures.add("@terra_incognita", Arc::new(ti)),
             self.textures.add("@border_sdf", Arc::new(sdf)),
@@ -425,6 +435,50 @@ impl Map {
         ];
         self.maps = Some(m);
         m
+    }
+
+    /// The map's names (mapnames.rs) for the blobs of the map textures, localised: the blobs'
+    /// countries' names, the player's sectors' names at their capitals; with the font they are
+    /// drawn in. None before the map textures are made.
+    fn map_names(&mut self) -> Result<Option<Arc<mapnames::MapNames>>, String> {
+        let Some(blobs) = self.blobs.clone() else { return Ok(None) };
+        let key = (Arc::as_ptr(&blobs) as usize) ^ (Arc::as_ptr(&self.galaxy) as usize).rotate_left(17);
+        if let Some((k, n)) = &self.map_names {
+            if *k == key {
+                return Ok(Some(n.clone()));
+            }
+        }
+        let fonts = self.fonts.get_or_insert_with(HashMap::new);
+        if !fonts.contains_key(mapnames::FONT) {
+            match Font::load(&self.game_dir, mapnames::FONT, mapnames::FONT_FILE) {
+                Ok(f) => {
+                    fonts.insert(mapnames::FONT.to_string(), f);
+                }
+                Err(e) => eprintln!("map names: {e}"),
+            }
+        }
+        let g = self.galaxy.clone();
+        let sectors: Vec<(f32, f32, &galaxy::Name)> = g
+            .sectors
+            .iter()
+            .filter_map(|(sid, n)| {
+                let sys = g.sector_capitals.get(sid)?;
+                let s = g.systems.iter().find(|s| s.id == *sys)?;
+                Some((s.x, s.y, n))
+            })
+            .collect();
+        let mut list: Vec<&galaxy::Name> = blobs.iter().map(|b| &g.countries[b.owner].name_block).collect();
+        list.extend(sectors.iter().map(|s| s.2));
+        let texts = gui::format_names(&self.runtime, &list)?;
+        let (empires, rest) = texts.split_at(blobs.len().min(texts.len()));
+        let names = Arc::new(mapnames::MapNames {
+            blobs: blobs.to_vec(),
+            empires: empires.to_vec(),
+            sectors: sectors.iter().zip(rest).map(|(s, t)| (t.clone(), s.0, s.1)).collect(),
+        });
+        eprintln!("map names: {} blobs with a symbol, {} sectors", names.blobs.len(), names.sectors.len());
+        self.map_names = Some((key, names.clone()));
+        Ok(Some(names))
     }
 
     /// The scene for a target of `width` x `height` (the top bar is laid out for that screen):
@@ -436,6 +490,7 @@ impl Map {
         let t = std::time::Instant::now();
         let maps = if camera.is_some() { Some(self.galaxy_maps()) } else { None };
         prof("frame: galaxy maps", t);
+        let names = if camera.is_some() { self.map_names()? } else { None };
         let inputs = scene::Inputs {
             galaxy: &self.galaxy,
             borders: &self.borders,
@@ -447,6 +502,7 @@ impl Map {
             game_dir: &self.game_dir,
             states: &self.button_states,
             overlay,
+            map_names: names.as_deref(),
         };
         let t = std::time::Instant::now();
         let mut scene = scene::build(&inputs, &mut self.textures, &mut self.cache.borrow_mut(), width, height, camera);

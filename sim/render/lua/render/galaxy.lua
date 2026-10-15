@@ -504,7 +504,13 @@ function galaxy.extract(game_dir)
                 for _, v in ipairs(world.list(world.field(s, "systems"))) do
                     systems[tonumber(v)] = true
                 end
-                sectors[#sectors + 1] = { id = sid, name = galaxy.name_block(world.field(s, "name")) }
+                -- the capital's system (the map's sector name sits there: GenerateSectorNames):
+                -- local_capital is a colony, on a planet
+                local lc = tonumber(world.field(s, "local_capital"))
+                local cp = lc and world.colony_planet and world.colony_planet[lc]
+                local cpo = cp and world.object("planet", cp)
+                local capital = cpo and tonumber(world.path(cpo, "coordinate", "origin"))
+                sectors[#sectors + 1] = { id = sid, name = galaxy.name_block(world.field(s, "name")), capital = capital }
                 for _, p in ipairs(planets) do
                     if systems[p.system] then
                         local col = world.planet_colony and world.planet_colony[p.id]

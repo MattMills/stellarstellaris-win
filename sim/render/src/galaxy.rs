@@ -2,6 +2,8 @@
 //! (`stellar_sim::Runtime::load_world`), then read with the query in `lua/render/galaxy.lua`,
 //! with the game files it is drawn with (star classes, colours, defines).
 
+use std::collections::HashMap;
+
 use stellar_sim::mlua::{self, Table};
 use stellar_sim::{save, Runtime};
 
@@ -95,6 +97,8 @@ pub struct Galaxy {
     /// colonies by sector) and the player's sectors
     pub outliner: Vec<OutlinerEntry>,
     pub sectors: Vec<(u32, Name)>,
+    /// the player's sectors' capital systems (sector id -> system id)
+    pub sector_capitals: HashMap<u32, u32>,
 }
 
 impl Galaxy {
@@ -428,6 +432,23 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
             sectors: match g.get::<Option<Table>>("sectors")? {
                 Some(t) => t.sequence_values::<Table>().map(|s| -> mlua::Result<(u32, Name)> { let s = s?; Ok((s.get("id")?, Name::read(s.get("name")?)?)) }).collect::<mlua::Result<_>>()?,
                 None => Vec::new(),
+            },
+            sector_capitals: match g.get::<Option<Table>>("sectors")? {
+                Some(t) => t
+                    .sequence_values::<Table>()
+                    .filter_map(|s| -> Option<mlua::Result<(u32, u32)>> {
+                        let s = match s {
+                            Ok(s) => s,
+                            Err(e) => return Some(Err(e)),
+                        };
+                        match (s.get::<u32>("id"), s.get::<Option<u32>>("capital")) {
+                            (Ok(id), Ok(Some(c))) => Some(Ok((id, c))),
+                            (Err(e), _) | (_, Err(e)) => Some(Err(e)),
+                            _ => None,
+                        }
+                    })
+                    .collect::<mlua::Result<_>>()?,
+                None => HashMap::new(),
             },
             alerts: match g.get::<Option<Table>>("alerts")? {
                 Some(t) => t

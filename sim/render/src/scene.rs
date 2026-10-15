@@ -27,6 +27,7 @@ use crate::dds::{Cache, Image};
 use crate::font::Font;
 use crate::galaxy::Galaxy;
 use crate::gui::{GuiItem, Topbar};
+use crate::mapnames::{self, MapNames};
 use crate::math::{M4, V3};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -708,6 +709,59 @@ pub struct Inputs<'a> {
     pub states: &'a HashMap<String, ButtonState>,
     /// the selection and the windows over the view
     pub overlay: &'a Overlay,
+    /// the galaxy map's names and flags (mapnames.rs), localised
+    pub map_names: Option<&'a MapNames>,
+}
+
+/// Whether the camera's eye is at least BORDER_NAMES_FADEOUT_ZOOM (BORDER_FLAG_FADEOUT_ZOOM) of
+/// the game's world above the plane: the countries' flags and names show, else the sectors'
+/// names (CGraphicalMap::Render and CBordersGraphics::Render compare the eye's height,
+/// CGameCamera +0x184). The game fades them over 1/4 s (BORDER_NAMES_FADEOUT_SPEED 4, real
+/// time); a still frame shows the settled state.
+fn names_far(camera: &OrbitCamera) -> bool {
+    camera.eye().1 * 2.0 >= mapnames::FADEOUT_ZOOM
+}
+
+/// The countries' flags on their blobs (mapnames.rs; CBordersGraphics::Render, pass 0: after the
+/// border target is drawn the frame's own target is set back and the flags go there, before the
+/// galaxy's nebulae, dust and stars, which cover them): first in the background.
+fn map_flags_3d(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, camera: &OrbitCamera, batches: &mut Vec<Batch>) {
+    let Some(names) = inp.map_names else { return };
+    let g = inp.galaxy;
+    if names_far(camera) {
+        for b in &names.blobs {
+            let c = &g.countries[b.owner];
+            // the flag's `map` emblem alone (flags/<category>/map/<file>: white on clear), no
+            // background **[I]**: the map flag texture's making not read; the game's frames show
+            // the emblem over the territory with no colours
+            let Some(flag) = &c.flag else { continue };
+            let (cat, file) = &flag.icon;
+            let Some(t) = tex.game(cache, inp.game_dir, &format!("flags/{cat}/map/{file}")) else { continue };
+            push(batches, Layer::Background, Blend::Alpha, t, Quad::plane(b.flag_rect(), [1.0, 1.0, 1.0, mapnames::FLAG_ALPHA], 0.0));
+        }
+    }
+}
+
+/// The galaxy map's names (mapnames.rs; RenderNames from CGraphicalMap::Render, after the galaxy):
+/// the countries' names under their flags from far, the player's sectors' names closer in; flat
+/// on the plane, alpha blended after the stars, not greyed by terra incognita.
+fn map_names_3d(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, camera: &OrbitCamera, batches: &mut Vec<Batch>) {
+    let Some(names) = inp.map_names else { return };
+    let far = names_far(camera);
+    let Some(font) = inp.fonts.get(mapnames::FONT) else { return };
+    let Some(ft) = tex.game(cache, inp.game_dir, &font.texture) else { return };
+    let list: Vec<(&str, f32, f32, f32)> = if far {
+        names.blobs.iter().zip(&names.empires).map(|(b, t)| (t.as_str(), b.x, b.name_y, b.name_width(t))).collect()
+    } else {
+        names.sectors.iter().map(|(t, x, y)| (t.as_str(), *x, *y, mapnames::sector_name_width(t))).collect()
+    };
+    for (text, x, y, w) in list {
+        for (rect, uv) in mapnames::text_quads(font, text, x, y, w) {
+            let mut q = Quad::plane(rect, [1.0, 1.0, 1.0, mapnames::NAME_ALPHA], 0.0);
+            q.uv = uv;
+            push(batches, Layer::Stars, Blend::Alpha, ft, q);
+        }
+    }
 }
 
 /// The galaxy view in 3D as the game draws it (CGalaxyGraphics and gfx/FX galaxy_*.shader,
@@ -898,7 +952,9 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
     let mut stars = Vec::new();
     let mut scene_maps = None;
     if let (true, Some(maps), Some(c)) = (game3d, inp.maps, camera) {
+        map_flags_3d(inp, tex, cache, c, &mut batches);
         scene_maps = galaxy_3d(inp, maps, tex, cache, c, &view, &mut batches, &mut lines, &mut stars);
+        map_names_3d(inp, tex, cache, c, &mut batches);
     } else {
     // ---- background: dust coloured by the galaxy's colour map, the centre, the nebulae
     let radius = g.systems.iter().map(|s| (s.x * s.x + s.y * s.y).sqrt()).fold(1.0f32, f32::max) * 1.05;

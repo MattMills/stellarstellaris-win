@@ -563,7 +563,8 @@ pub fn flag_sprite(runtime: &Runtime, name: &str) -> Option<crate::flag::FlagSpr
     })
 }
 
-/// Names from the save, localised (render.names, in the front end's runtime: its localisation).
+/// Names from the save, localised (render.names, with the front end's localisation; a runtime
+/// that has none, a save loaded without the front end, loads the English one first).
 pub fn format_names(runtime: &Runtime, names: &[&crate::galaxy::Name]) -> Result<Vec<String>, String> {
     let read = || -> mlua::Result<Vec<String>> {
         let lua = &runtime.lua;
@@ -572,8 +573,14 @@ pub fn format_names(runtime: &Runtime, names: &[&crate::galaxy::Name]) -> Result
             list.push(n.to_lua(lua)?)?;
         }
         lua.globals().set("RENDER_NAMES", list)?;
-        lua.load("local f = require('render.names').format local out = {} for i, n in ipairs(RENDER_NAMES) do out[i] = f(RENDER_LOC, n) end return out")
-            .eval()
+        lua.load(
+            "if not RENDER_LOC and RENDER_GAME_DIR then
+                RENDER_LOC = require('engine.localisation')
+                if (RENDER_LOC.keys or 0) == 0 then RENDER_LOC.load(RENDER_GAME_DIR, 'english') end
+            end
+            local f = require('render.names').format local out = {} for i, n in ipairs(RENDER_NAMES) do out[i] = f(RENDER_LOC, n) end return out",
+        )
+        .eval()
     };
     read().map_err(|e| format!("render.names: {e}"))
 }
