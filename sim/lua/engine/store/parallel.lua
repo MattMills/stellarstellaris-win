@@ -45,6 +45,21 @@ function P.start()
     end
 end
 
+-- a job on every worker, its answers in worker order: posted, then waited for; in a phase run in
+-- pieces the wait yields (engine.slice), so the thread gives its slice back while the workers run
+-- (docs/frame_timing.md), where pool_run would hold it
+local function on_workers(job, arg)
+    if not RUST.pool_post then return RUST.pool_run(job, arg) end
+    local slice = require("engine.slice")
+    RUST.pool_post(job, arg)
+    local results = RUST.pool_poll(math.max(0, slice.left()))
+    while not results do
+        slice.wait("parallel " .. job)
+        results = RUST.pool_poll(math.max(0, slice.left()))
+    end
+    return results
+end
+
 -- P.run(job, arg) -> each worker's answer to engine.store.worker[job](arg), after the copy's sync
 function P.run(job, arg)
     local t0 = RUST.clock()
@@ -52,8 +67,8 @@ function P.run(job, arg)
     require("engine.store.modifiers").sync()
     P.stats.sync_seconds = (P.stats.sync_seconds or 0) + (RUST.clock() - t0)
     local world = require("engine.world")
-    RUST.pool_run("date", tostring(world.meta.date) .. " " .. string.format("%.17g", RUST.date()))
-    local res = RUST.pool_run(job, arg)
+    on_workers("date", tostring(world.meta.date) .. " " .. string.format("%.17g", RUST.date()))
+    local res = on_workers(job, arg)
     P.stats.runs = P.stats.runs + 1
     P.stats.seconds = P.stats.seconds + (RUST.clock() - t0)
     return res

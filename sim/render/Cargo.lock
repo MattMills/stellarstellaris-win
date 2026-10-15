@@ -801,8 +801,6 @@ dependencies = [
 [[package]]
 name = "luajit-src"
 version = "210.6.6+707c12b"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a86cc925d4053d0526ae7f5bc765dbd0d7a5d1a63d43974f4966cb349ca63295"
 dependencies = [
  "cc",
  "which",

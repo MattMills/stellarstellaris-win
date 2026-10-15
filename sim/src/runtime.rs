@@ -77,8 +77,78 @@ extern "C" fn clock_ffi() -> f64 {
     clock()
 }
 
+/// glibc's allocator set for the simulation's heaps (once per process; the Lua states allocate
+/// through it, mlua's allocator being the global one). By default a thread's arena grows its heap
+/// by a page or so at a time with mprotect and gives memory back as soon as 128 KB are free at its
+/// top, so the collector's frees and the next allocations faulted the same pages in again (35 days
+/// from the 2210 save: 278,000 mprotect calls on the simulation's thread, each taking the process's
+/// memory map lock, which the other threads' page faults then waited for); and freeing a block of 64
+/// KB or more walked the arena's fastbins, the many small blocks the collector freed (sweep steps of
+/// 1-2 ms). Here: memory kept (trim threshold 1 GB), heaps grown 64 MB at a time, blocks up to 32
+/// MB from the heap, no fastbins. 35 days sliced: 2.25 game days a second against 1.92, the slices
+/// longer than 1 ms from 54 to 19 (docs/frame_timing.md). STELLAR_MALLOC=default leaves glibc's
+/// defaults.
+pub fn tune_malloc() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if std::env::var("STELLAR_MALLOC").as_deref() == Ok("default") {
+            return;
+        }
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        unsafe {
+            extern "C" {
+                fn mallopt(param: i32, value: i32) -> i32;
+            }
+            const M_MXFAST: i32 = 1;
+            const M_TRIM_THRESHOLD: i32 = -1;
+            const M_TOP_PAD: i32 = -2;
+            const M_MMAP_THRESHOLD: i32 = -3;
+            mallopt(M_MXFAST, 0);
+            mallopt(M_TRIM_THRESHOLD, 1 << 30);
+            mallopt(M_TOP_PAD, 64 << 20);
+            mallopt(M_MMAP_THRESHOLD, 32 << 20);
+        }
+    });
+}
+
+/// Memory for this thread's heap faulted in now, `mb` MB of it (the environment variable `env`
+/// overrides it; 0: none): blocks allocated, a byte written in each page, and freed. With
+/// [`tune_malloc`]'s settings glibc keeps them in the thread's arena, so the heap's growth while
+/// the simulation runs takes pages already there: a first touch is a page fault, which no hook stops
+/// (35 days sliced from the 2210 save: 1.2 GB of new pages on the simulation's thread, bursts of 100
+/// faults and more making a piece up to 1 ms late; 64,000 faults still with 1.5 GB faulted in, none
+/// to speak of with 2 GB). Run on the thread that will run the Lua state, before its slices
+/// (glibc's arena is the thread's).
+pub fn prefault_heap(mb: usize, env: &str) {
+    let mb = std::env::var(env).ok().and_then(|v| v.parse().ok()).unwrap_or(mb);
+    if mb == 0 || cfg!(not(all(target_os = "linux", target_env = "gnu"))) {
+        return;
+    }
+    // (blocks under glibc's mmap threshold, 32 MB with tune_malloc, so they come from the arena)
+    const BLOCK: usize = 16 << 20;
+    let layout = std::alloc::Layout::from_size_align(BLOCK, 16).unwrap();
+    let mut blocks = Vec::new();
+    for _ in 0..(mb << 20) / BLOCK {
+        // SAFETY: a fresh allocation of `BLOCK` bytes, written within its bounds and freed below
+        unsafe {
+            let p = std::alloc::alloc(layout);
+            if p.is_null() {
+                break;
+            }
+            for off in (0..BLOCK).step_by(4096) {
+                std::ptr::write_volatile(p.add(off), 0);
+            }
+            blocks.push(p);
+        }
+    }
+    for p in blocks {
+        unsafe { std::alloc::dealloc(p, layout) };
+    }
+}
+
 /// A LuaJIT state with the require paths and the `RUST.list_files` / `RUST.clock` helpers.
 pub fn new_lua() -> mlua::Result<Lua> {
+    tune_malloc();
     // SAFETY: the full LuaJIT library (ffi included), as the game's runtime has it; the Lua code is
     // this repository's.
     let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::new()) };
@@ -90,11 +160,20 @@ pub fn new_lua() -> mlua::Result<Lua> {
             "maxsnap=2000", "sizemcode=1024", "maxmcode=524288", "hotloop=56", "hotexit=10")"#,
     )
     .exec()?;
-    // STELLAR_JIT=off: the interpreter only (a trace of compiled code runs no hooks, so the VM
-    // cannot stop it at a deadline: sim/src/preempt.rs)
+    // STELLAR_JIT=off: the interpreter only (to compare: the VM stops compiled code at a deadline
+    // too, sim/vendor/README.md)
     if std::env::var("STELLAR_JIT").as_deref() == Ok("off") {
         lua.load("jit.off()").exec()?;
     }
+    // table.sort in Lua, the C function's algorithm and order: a comparator called from C cannot
+    // yield, so the VM could not stop a sort at a deadline (sim/src/preempt.rs)
+    let sort: Function = lua.load(include_str!("table_sort.lua")).set_name("=table.sort (sim/src/table_sort.lua)").eval()?;
+    lua.globals().get::<Table>("table")?.set("sort", sort)?;
+    // require in Lua for the same reason: a module's first load (its chunk, run to its end) would
+    // otherwise be one call the VM cannot stop
+    let (require, precompile): (Function, Function) =
+        lua.load(include_str!("require.lua")).set_name("=require (sim/src/require.lua)").eval()?;
+    lua.globals().set("require", require)?;
     // the collector's pause (percent of the live heap to allocate before a new cycle): the heap is
     // mostly the world and the definitions, which live for the whole run, so every cycle walks them
     // again. 180 days from 2210.01.01: 238 ms a day and 4.1 GB at LuaJIT's 200, 209 ms and 6.0 GB at
@@ -128,6 +207,14 @@ pub fn new_lua() -> mlua::Result<Lua> {
     )?;
     lua.globals().set("RUST", rust)?;
     lua.globals().set("E", lua.create_table()?)?;
+    // the simulation's modules compiled now, the first three templates of the path above (a
+    // module's compile at its first require would be a step the VM cannot stop)
+    let templates = lua.create_sequence_from([
+        lua.create_sequence_from([format!("{repo}/sim/lua"), "?.lua".to_string()])?,
+        lua.create_sequence_from([format!("{repo}/sim/lua"), "?/init.lua".to_string()])?,
+        lua.create_sequence_from([format!("{repo}/lib/stellar-lua-pdxscript"), "?.lua".to_string()])?,
+    ])?;
+    precompile.call::<()>(templates)?;
     Ok(lua)
 }
 

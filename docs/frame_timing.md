@@ -21,48 +21,74 @@ into milliseconds on one clock for all of them, the odd ones for work and the ev
 case `in_slices_on_its_threads`.
 
 **The VM stops the code, not the scripts.** A slice is a coroutine resumed with a deadline
-(`sim/src/preempt.rs`): while it runs, the VM's own thread keeps a count hook on the VM (every 1,000
-instructions), which reads the clock and, past the deadline, yields the coroutine wherever it is
-(`lua_yield` from a hook: LuaJIT adds a continuation frame and the code goes on at the same
-instruction at the next slice). The engine's scripts take no part (`engine.slice`'s checks are
-passive in this mode). The worker pool's jobs run the same way, each a coroutine on its worker's VM
-(`workers.rs`). `sim/src/cadence.rs` is the clock: a slice may start in a work millisecond, no
-earlier than a millisecond after the thread's last slice ended, and its deadline is the millisecond's
-end less 0.1 ms; then the thread sleeps.
+(`sim/src/preempt.rs`). While it runs no hook is set, and the interpreter and the compiled code run
+at full speed. A preempter thread sleeps until the earliest deadline of the VMs running a slice,
+spins its last 0.25 ms, and at a VM's deadline sets a count hook of 1 on it. The interpreter runs the
+hook at its next instruction. Compiled code reaches it too: the vendored LuaJIT is built with
+`LUAJIT_ENABLE_CHECKHOOK`, so every trace checks the hooks at its start and at every loop iteration
+and exits to the interpreter when one is set (`sim/vendor/README.md`). The hook yields the coroutine
+wherever it is (`lua_yield` from a hook: LuaJIT adds a continuation frame, and the code goes on at
+the same instruction in the next slice). The engine's scripts take no part (`engine.slice`'s checks
+are passive in this mode, but for its waits on the worker pool, which yield). The worker pool's jobs
+run the same way, each a coroutine on its worker's VM (`workers.rs`). `sim/src/cadence.rs` is the
+clock: a slice may start in a work millisecond, no earlier than a millisecond after the thread's last
+slice ended, and its deadline is the millisecond's end less 0.1 ms; then the thread sleeps. The JIT
+is on.
 
-**What the VM cannot stop**: a call into C or Rust in progress (a `table.sort` with a Lua comparator,
-the engine's Rust functions), a step of the collector, code where a coroutine cannot yield (a
-function called from C), and **a trace of compiled code**: LuaJIT's traces run no hooks, so with the
-JIT on a hot loop runs to its end (a unit test: 104 ms in one slice; interpreted, 227 slices of at most
-1.02 ms).
+**What no hook stops, and how each is kept clear of a deadline.** A slice runs late only by a step
+that runs no Lua instruction. The report records every one (below), and each kind found has been
+dealt with:
 
-**Results** (10.5.0.24, 35 days from 2210.01.01 at Normal, 4 worker threads):
-
-| | JIT off | JIT on |
+| what | found as | what was done |
 |---|---|---|
-| the simulation's thread: slices, p50, p99, p99.9, longest | 20,650: 0.902, 0.919, 1.093, 3.72 ms | 8,638: 0.934, 2.10, 3.44, 14.0 ms |
-| its slices over 1 ms | 0.13% | 24% |
-| each worker's slices over 1 ms (p99, longest) | 0.21 to 0.36% (0.94 ms, 1.9 to 2.8 ms) | (not run) |
-| the shortest gap between two slices of a thread | 1.006 ms | 1.006 ms |
+| a Lua function called from C cannot yield | `table.sort`'s comparators (95,000 looks in 35 days), a module's first `require` | `table.sort` and `require` in Lua (`sim/src/table_sort.lua`: LuaJIT's own sort, the same order of the elements, a parity test; `sim/src/require.lua`: Lua 5.1's), the engine's files compiled with the VM (a module's compile is C) |
+| the JIT's compiler | 1,444 compile steps over 0.1 ms on the simulation's thread | no trace starts in the last 0.4 ms before a deadline; a recording the preempter's hook aborts is not penalized (LuaJIT blacklisted such loops); the machine code is not write-protected while it runs (`LUAJIT_SECURITY_MCODE=0`: two `mprotect` calls a trace, 0.05 ms a trace, up to 0.4); a new machine code area faulted in at once |
+| the collector | the atomic phase, a large table marked | no step in the last 0.25 ms before a deadline (the debt is paid in the next slice) |
+| page faults | a burst of 100 and more made a piece up to 1 ms late; 278,000 `mprotect` calls in 16 s on the simulation's thread, which the other threads' page faults waited for | glibc's allocator set for the heaps (memory kept, grown 64 MB at a time, no fastbins: `runtime::tune_malloc`); each thread's heap growth faulted in before its slices (2 GB on the simulation's thread, 384 MB on each worker: `runtime::prefault_heap`), and the store's (`Store::prefault`) |
+| the system's scheduler | the preempter set a hook up to 2.9 ms late; a thread preempted 2.6 ms; a thread pinned to one CPU woken 3.5 ms late | the preempter spins its last 0.25 ms, asks for a real-time priority (`SCHED_FIFO` where allowed, a time-critical thread on Windows) and never waits on a VM's lock; the simulation's threads, the preempter and the render thread each on a physical core of its own (both of its logical CPUs: `cadence::pin`) |
+
+**Results** (10.5.0.24, 35 days from 2210.01.01 at Normal, 4 worker threads, the JIT on; the test case
+`in_slices_on_its_threads`):
+
+| | before the patched LuaJIT | now |
+|---|---|---|
+| the simulation's thread: slices, p50, p99, p99.9, longest | 8,638: 0.934, 2.10, 3.44, 14.0 ms | 6,900: 0.899, 0.906, 0.953, 1.69 ms |
+| its slices over 1 ms | 24% | 0.072% |
+| each worker's slices over 1 ms (longest) | (not run) | none (0.90 to 0.99 ms) |
+| the shortest gap between two slices of a thread | 1.006 ms | 1.033 ms |
+| the preempter's hooks set within 10 µs of the deadline | | all |
 | the render thread's frames | none over 8.33 ms, 4.0 ms | none over, 4.0 ms |
-| game days a second (Normal asks 2.67) | 0.84 (32%) | 1.59 (60%, workers not sliced) |
+| game days a second (Normal asks 2.67) | 1.59 (60%, workers not sliced) | 2.41 (90%) |
 
-The run in slices ends with the same save as a whole run, but for the one value that differs between
-any two runs (section 5): stopping the engine at any instruction changes nothing.
+Over runs of the same build the simulation's thread has 0.01 to 0.10% of its slices over 1 ms and its
+longest 1.2 to 1.8 ms (one in a dozen runs had one slice of 2.2 ms), and a worker 0 to 2 slices over
+1 ms in about 470. The run in slices ends with the same save as a whole run, but for the one value
+that differs between any two runs (section 5: an alloys amount's last digit), and the 180-day check
+gives the same counts (723,928 / 12,466, 4,723,614 draws). The changes for the slices made the
+simulation faster in every mode: the thread mode keeps Normal's pace (2.66 game days a second),
+inline went from 82% to 86 to 90%, the serial 180 days from 28.2 s to 27.6 s.
 
-**What it shows.** Scheduling at the VM holds the slices to the millisecond in interpreted code, with
-no part of the engine written for it: the 0.1 to 0.4% over 1 ms are calls the VM cannot stop. With the
-JIT the code is about 50% faster, and a quarter of the slices overrun, by the compiled traces. And
-every other millisecond idle halves what a thread can do: the simulation's own thread works 45% of
-its time and is the limit (the workers, 7 to 8%, wait for it); Normal needs about three times this
-pace. What is open:
+**The record** (the sliced report): each thread's steps no hook stops, by kind, from the vendored
+LuaJIT (the collector's phases and the atomic phase's parts, the compiler, each trace's compile by its
+size, the traces and collector steps put off); each piece that ended more than 0.1 ms past its
+deadline, how it ended (the hook late, or the piece by itself), the longest step no hook stops in it,
+its page faults and whether the thread was off the CPU (preempted or blocked), and with
+`STELLAR_PREEMPT_TRACE=1` the Lua stack where the hook yielded late or could not yield; how late the
+preempter set its hooks; and how late the worker pool's waits came back.
 
-- the JIT: a compiled trace that polls for a deadline, as LuaJIT's profiler makes traces check its
-  flag (`IR_PROF`), needs a patched LuaJIT; without it, the JIT off;
-- the pace: more of the engine on the worker threads (the AI, the colonies and pops, the monthly
-  strategy: docs/data_layer.md section 12), and the engine's own speed;
-- the calls the VM cannot stop: found by the hook's looks that could not yield (23 in 35 days), and
-  the slices that ended late with what ran in them.
+**What is open**:
+
+- the pace: 90% of Normal. Every other millisecond idle and a margin of 0.1 ms leave the
+  simulation's own thread 0.9 ms of every 2; its work is about 180 ms a simulated day and must come
+  to about 168. More of it on the workers (the AI, the colonies and pops, the monthly budget:
+  docs/data_layer.md section 12; `STELLAR_PARALLEL` now waits for the workers by yielding, and starts
+  them with the load), and the engine's own speed;
+- what remains past a deadline is the system: a page fault that waits for the memory map's lock,
+  a compile step that faults; about a dozen pieces in 35 days on all five threads;
+- Windows, the game's platform: the allocator's settings, the faulting in and the pinning are written
+  for Linux and glibc (the preempter's priority has a Windows path); Windows needs its own;
+- the cost of the settings: the machine code writable while it runs (the hardening W^X gives against
+  a memory-corruption bug), and 3.5 GB of the heaps' growth taken at the load.
 
 ## In short (the earlier targets)
 

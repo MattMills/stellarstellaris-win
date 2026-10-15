@@ -262,6 +262,34 @@ impl Store {
             h.n_bytes.load(Ordering::Acquire),
         )
     }
+
+    /// The next `mb` MB of each region past what is in use faulted in now (a zero written in each
+    /// page, which the region holds there already): the regions are mapped as they are first
+    /// touched, and a page fault is a step the VM cannot stop at a slice's deadline (the bridge's
+    /// sync building blocks, docs/frame_timing.md). Only while no other thread writes the store
+    /// (before the slices: the workers idle).
+    pub fn prefault(&self, mb: usize) {
+        let h = unsafe { &*self.header };
+        let ahead = mb << 20;
+        let regions: [(*mut u8, usize, usize); 7] = [
+            (h.entries, h.n_entries.load(Ordering::Acquire) as usize * 16, h.cap_entries as usize * 16),
+            (h.blocks, h.n_blocks.load(Ordering::Acquire) as usize * 16, h.cap_blocks as usize * 16),
+            (h.index as *mut u8, h.n_index.load(Ordering::Acquire) as usize * 4, h.cap_index as usize * 4),
+            (h.str_off as *mut u8, h.n_str.load(Ordering::Acquire) as usize * 4, h.cap_str as usize * 4),
+            (h.str_len as *mut u8, h.n_str.load(Ordering::Acquire) as usize * 4, h.cap_str as usize * 4),
+            (h.str_bytes, h.n_str_bytes.load(Ordering::Acquire) as usize, h.cap_str_bytes as usize),
+            (h.bytes, h.n_bytes.load(Ordering::Acquire) as usize, h.cap_bytes as usize),
+        ];
+        for (base, used, cap) in regions {
+            // (from the first page past the one in use: nothing written there yet)
+            let from = (used + 4095) & !4095;
+            let to = cap.min(used + ahead);
+            for off in (from..to).step_by(4096) {
+                // SAFETY: within the region's allocation (off < cap), past the records in use
+                unsafe { std::ptr::write_volatile(base.add(off), 0) };
+            }
+        }
+    }
 }
 
 impl Drop for Store {
@@ -302,6 +330,17 @@ pub fn install(lua: &mlua::Lua) -> mlua::Result<Handle> {
                 sh.store = Some(std::sync::Arc::new(st));
             }
             Ok(mlua::LightUserData(sh.store.as_ref().unwrap().header().0 as *mut c_void))
+        })?,
+    )?;
+    // RUST.store_prefault(mb): Store::prefault, before the slices
+    let s = shared.clone();
+    rust.set(
+        "store_prefault",
+        lua.create_function(move |_, mb: usize| {
+            if let Some(st) = &s.borrow().store {
+                st.prefault(mb);
+            }
+            Ok(())
         })?,
     )?;
     let s = shared.clone();

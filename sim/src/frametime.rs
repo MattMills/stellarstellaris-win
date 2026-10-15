@@ -445,6 +445,19 @@ pub struct Report {
     pub threads: Vec<SliceStats>,
     /// sliced: the VM's yields (the count hook's) and its looks past a deadline where it could not
     pub vm_yields: (u64, u64),
+    /// sliced, STELLAR_PREEMPT_TRACE=1: the stacks where the hook could not yield, sampled
+    pub vm_refusals: Vec<(String, u64)>,
+    /// sliced: the hook's yields more than 0.1 ms past the deadline, by cause and stack (their
+    /// number, the latest in seconds past)
+    pub vm_lates: Vec<(String, u64, f64)>,
+    /// sliced: the hooks the preempter set, by how late (within 10, 25, 50, 100 µs, later), and
+    /// the latest (seconds)
+    pub vm_armed: ([u64; 5], f64),
+    /// sliced: per thread, the steps of its VM no hook can stop, by kind
+    /// ([`crate::preempt::STALL_KINDS`]): seconds in all, the longest, the steps over 0.1 ms
+    pub stalls: Vec<(String, [[f64; 3]; 18])>,
+    /// sliced: the worker pool's waits back more than 0.1 ms late, and the latest (seconds)
+    pub poll_late: (u64, f64),
 }
 
 impl Report {
@@ -555,6 +568,55 @@ impl Report {
             );
             for t in &self.threads {
                 out += &t.text(c.slice_ms);
+            }
+            for (w, n) in self.vm_refusals.iter().take(15) {
+                out += &format!("    could not yield ({n} samples): {w}\n");
+            }
+            let (a, amax) = self.vm_armed;
+            out += &format!(
+                "    the preempter's hooks set within 10 µs of the deadline {}, 25 µs {}, 50 µs {}, 100 µs {}, later {}; the latest {:.3} ms\n",
+                a[0],
+                a[1],
+                a[2],
+                a[3],
+                a[4],
+                amax * 1000.0
+            );
+            for (thread, s) in &self.stalls {
+                out += &format!("    {thread}, its steps no hook can stop (in all, the longest, the steps over 0.1 ms):\n");
+                for (k, v) in s.iter().enumerate() {
+                    if (12..17).contains(&k) {
+                        if v[2] > 0.0 {
+                            out += &format!(
+                                "      {:<32} {:>6} traces, mean {:.3} ms, the longest {:.3} ms\n",
+                                crate::preempt::STALL_KINDS[k],
+                                v[2],
+                                v[0] / v[2] * 1000.0,
+                                v[1] * 1000.0
+                            );
+                        }
+                    } else if k >= 10 {
+                        out += &format!("      {:<32} {:>9}\n", crate::preempt::STALL_KINDS[k], v[0]);
+                    } else if v[0] > 0.0 {
+                        out += &format!(
+                            "      {:<32} {:>9.1} ms  {:>7.3} ms  {:>6}\n",
+                            crate::preempt::STALL_KINDS[k],
+                            v[0] * 1000.0,
+                            v[1] * 1000.0,
+                            v[2]
+                        );
+                    }
+                }
+            }
+            let (pl, platest) = self.poll_late;
+            out += &format!(
+                "    the worker pool's waits back more than 0.1 ms late: {pl}, the latest {:.3} ms\n",
+                platest * 1000.0
+            );
+            let late: u64 = self.vm_lates.iter().map(|l| l.1).sum();
+            out += &format!("    pieces and yields more than 0.1 ms past the deadline: {late}\n");
+            for (w, n, by) in self.vm_lates.iter().take(24) {
+                out += &format!("      {n:>5}, at most {:.3} ms past: {w}\n", by * 1000.0);
             }
         }
         let room = c.room() * 1000.0;
@@ -788,8 +850,13 @@ where
                 let t0 = Instant::now();
                 let mut sim = load()?;
                 let load_s = t0.elapsed().as_secs_f64();
+                // the heap's growth faulted in before the run (crate::runtime::prefault_heap), and
+                // the store's (Store::prefault)
+                crate::runtime::prefault_heap(2048, "STELLAR_PREFAULT_MB");
+                let _ = sim.runtime.eval::<()>("if RUST.store_prefault then RUST.store_prefault(64) end");
                 let log = if sliced {
                     crate::cadence::fine_timers();
+                    crate::cadence::pin(1);
                     sim.runtime.set_preempt(true).map_err(|e| e.to_string())?;
                     let _ = sim.runtime.eval::<()>("require('engine.slice').reset()");
                     crate::cadence::clear_logs();
@@ -860,8 +927,11 @@ where
                 }
                 let vm1 = crate::preempt::counts();
                 if sliced {
+                    crate::preempt::keep_stalls("simulation");
                     crate::cadence::set(None);
                     let _ = sim.runtime.set_preempt(false);
+                    crate::preempt::release();
+                    crate::cadence::unpin();
                 }
                 Ok(ThreadResult {
                     units: units.list(),
@@ -877,6 +947,12 @@ where
         })
         .expect("the simulation's thread");
     let thread = handle.thread().clone();
+    // (sliced: the render thread on a core of its own, as the simulation's threads are on theirs;
+    // after the simulation's thread is made, which would take the render thread's one CPU as its
+    // own, and its worker pool a size of one CPU's)
+    if sliced {
+        crate::cadence::pin_render();
+    }
 
     let (times, missed) = frame_loop(cfg, |_, _| {
         let _ = shared.published.lock().unwrap().0;
@@ -911,6 +987,9 @@ where
     let wall = (end - start).as_secs_f64();
     let done = shared.done.load(Ordering::Acquire);
     let result = handle.join().map_err(|_| "the simulation's thread panicked".to_string()).and_then(|r| r);
+    if sliced {
+        crate::cadence::unpin();
+    }
     let days = done as f64 / 10.0;
     let threads = if sliced {
         crate::cadence::set(None);
@@ -922,6 +1001,11 @@ where
     let mut report = Report {
         mode,
         threads,
+        vm_refusals: if sliced { crate::preempt::refusals() } else { Vec::new() },
+        vm_lates: if sliced { crate::preempt::lates() } else { Vec::new() },
+        vm_armed: if sliced { crate::preempt::armed_lateness() } else { Default::default() },
+        stalls: if sliced { crate::preempt::kept_stalls() } else { Vec::new() },
+        poll_late: crate::workers::poll_lateness(),
         config: cfg.clone(),
         days,
         wall_s: wall,

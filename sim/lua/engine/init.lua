@@ -80,6 +80,14 @@ function engine.load(game_dir, gamestate, docs_dir)
             if require("engine.store.live").on and os.getenv("STELLAR_EXPLORATION") ~= "off" then
                 require("engine.store.bridge").prepare()
             end
+            -- and the phases on the workers (STELLAR_PARALLEL): the world's copy and the workers'
+            -- engines (seconds of work) made with the load, not in the first phase that asks
+            local parallel = require("engine.store.parallel")
+            if next(parallel.on) then
+                parallel.start()
+                lines[#lines + 1] = "parallel: " .. (parallel.started and string.format("the workers' engines in %.1f s",
+                    parallel.stats.start_seconds) or ("not started: " .. tostring(parallel.failed)))
+            end
             -- the engine's modules the phases load on first use, loaded now
             local function have(m) return package.searchpath(m, package.path) ~= nil end
             for _, m in ipairs({ "engine.ai.attitudes", "engine.ethics", "engine.exploration", "engine.colonies",

@@ -129,6 +129,82 @@ pub fn fine_timers() {
     }
 }
 
+// The physical cores, each as its logical CPUs (its SMT siblings), in order, CPU 0's core left out
+// (it takes most of the interrupts); Linux only, none elsewhere.
+fn cores() -> &'static [Vec<usize>] {
+    static CORES: std::sync::OnceLock<Vec<Vec<usize>>> = std::sync::OnceLock::new();
+    CORES.get_or_init(|| {
+        let mut index = std::collections::HashMap::new();
+        let mut out: Vec<Vec<usize>> = Vec::new();
+        for cpu in 0..1024usize {
+            let dir = format!("/sys/devices/system/cpu/cpu{cpu}/topology");
+            let read = |f: &str| std::fs::read_to_string(format!("{dir}/{f}")).ok().map(|s| s.trim().to_string());
+            let (Some(pkg), Some(core)) = (read("physical_package_id"), read("core_id")) else {
+                if cpu > 0 && !std::path::Path::new(&dir).exists() {
+                    break;
+                }
+                continue;
+            };
+            let i = *index.entry((pkg, core)).or_insert_with(|| {
+                out.push(Vec::new());
+                out.len() - 1
+            });
+            out[i].push(cpu);
+        }
+        if !out.is_empty() {
+            out.remove(0);
+        }
+        out
+    })
+}
+
+/// This thread pinned to a physical core of its own (its logical CPUs, so that it can still run on
+/// the other when something else holds one), the `slot`th of those [`cores`] finds (the preempter
+/// 0, the simulation's thread 1, worker i 2 + i), when there is one: the system had at times put two
+/// of the simulation's threads on one CPU, and the one waiting lost a whole scheduler slice (a slice
+/// 2.6 ms late); pinned to one logical CPU, a thread woke late when the system ran something there
+/// (waits back up to 3.5 ms late). Linux only; STELLAR_PIN=off leaves the threads free.
+pub fn pin(slot: usize) {
+    if std::env::var("STELLAR_PIN").as_deref() == Ok("off") {
+        return;
+    }
+    let Some(cpus) = cores().get(slot) else { return };
+    #[cfg(target_os = "linux")]
+    unsafe {
+        extern "C" {
+            fn sched_setaffinity(pid: i32, size: usize, mask: *const u64) -> i32;
+        }
+        let mut mask = [0u64; 16];
+        for &cpu in cpus {
+            mask[cpu / 64] |= 1 << (cpu % 64);
+        }
+        sched_setaffinity(0, std::mem::size_of_val(&mask), mask.as_ptr());
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = cpus;
+}
+
+/// The render thread pinned to the last of the cores [`pin`] uses, away from the simulation's: left
+/// free, the system put it at times on the core of a pinned simulation thread.
+pub fn pin_render() {
+    let n = cores().len();
+    if n > 0 {
+        pin(n - 1);
+    }
+}
+
+/// This thread free to run on any CPU again (it was pinned with [`pin`]).
+pub fn unpin() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        extern "C" {
+            fn sched_setaffinity(pid: i32, size: usize, mask: *const u64) -> i32;
+        }
+        let mask = [u64::MAX; 16];
+        sched_setaffinity(0, std::mem::size_of_val(&mask), mask.as_ptr());
+    }
+}
+
 /// A thread's slices: their lengths, the gaps between them, those that ended after their slot.
 #[derive(Clone, Debug, Default)]
 pub struct Slices {

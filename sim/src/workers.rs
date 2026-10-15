@@ -61,8 +61,11 @@ fn worker_main(
         }
     };
     crate::cadence::fine_timers();
+    // the heap's growth faulted in before the jobs (crate::runtime::prefault_heap)
+    crate::runtime::prefault_heap(384, "STELLAR_PREFAULT_WORKER_MB");
     let log = crate::cadence::register(&format!("lua-worker-{index}"));
     let mut earliest = 0.0;
+    let mut pinned = false;
     while let Ok(msg) = rx.recv() {
         match msg {
             Msg::Stop => break,
@@ -74,7 +77,12 @@ fn worker_main(
                         return Ok(out.unwrap_or_default());
                     };
                     // the job in slices of the cadence, as the simulation's own thread: a
-                    // coroutine the VM stops at each slice's deadline (crate::preempt)
+                    // coroutine the VM stops at each slice's deadline (crate::preempt), on a core
+                    // of the worker's own
+                    if !pinned {
+                        crate::cadence::pin(2 + index);
+                        pinned = true;
+                    }
                     let th = lua.create_thread(f)?;
                     let mut first = Some(arg);
                     loop {
@@ -95,10 +103,14 @@ fn worker_main(
                         crate::cadence::sleep_until(earliest);
                     }
                 })();
+                if crate::cadence::current().is_some() {
+                    crate::preempt::keep_stalls(&format!("lua-worker-{index}"));
+                }
                 let _ = done.send((index, r.map_err(|e| e.to_string())));
             }
         }
     }
+    crate::preempt::release();
     drop(lua);
 }
 
@@ -174,7 +186,9 @@ impl Pool {
         let until = std::time::Instant::now() + wait;
         while self.outstanding.get() > 0 {
             let left = until.saturating_duration_since(std::time::Instant::now());
-            match self.done.recv_timeout(left) {
+            let r = self.done.recv_timeout(left);
+            note_overshoot(std::time::Instant::now().saturating_duration_since(until).as_secs_f64());
+            match r {
                 Ok((i, r)) => {
                     self.answers.borrow_mut()[i] = r;
                     self.outstanding.set(self.outstanding.get() - 1);
@@ -187,6 +201,26 @@ impl Pool {
         }
         Some(std::mem::take(&mut *self.answers.borrow_mut()))
     }
+}
+
+// How late [`Pool::poll`]'s waits came back past the time they were given: the waits that came back
+// more than 0.1 ms late, and the latest (seconds). The thread sleeps in them, and a thread woken late
+// runs its slice past the deadline.
+static POLL_LATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static POLL_LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn note_overshoot(secs: f64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if secs > 1e-4 {
+        POLL_LATE.fetch_add(1, Relaxed);
+    }
+    POLL_LATEST.fetch_max(secs.to_bits(), Relaxed);
+}
+
+/// [`Pool::poll`]'s waits that came back more than 0.1 ms late, and the latest (seconds).
+pub fn poll_lateness() -> (u64, f64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (POLL_LATE.load(Relaxed), f64::from_bits(POLL_LATEST.load(Relaxed)))
 }
 
 impl Drop for Pool {
