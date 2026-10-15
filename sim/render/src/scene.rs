@@ -738,6 +738,15 @@ fn galaxy_3d(
     let colour_map = tex.game(cache, inp.game_dir, "gfx/map/galaxycolor.dds")?;
     let index: HashMap<u32, usize> = g.systems.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
     let height = |s: &crate::galaxy::System| s.height * 0.5;
+    // the core's radius R (CGalaxyGraphics::Init): the save's galaxy core_radius when above 0.01
+    // of the game's world, else the distance from the centre to the nearest system; it sizes the
+    // core's glow and places its dust
+    let r_core = if g.core_radius * 2.0 > 0.01 {
+        g.core_radius
+    } else {
+        g.systems.iter().map(|s| s.x * s.x + s.y * s.y).filter(|&d| d > 0.0).fold(f32::INFINITY, f32::min).sqrt()
+    };
+    let r_core = if r_core.is_finite() { r_core } else { 0.0 };
 
     // the nebulae (galaxy_nebula.shader, CGalaxyGraphics::InitNebulas): a cloud of the nebula's
     // radius at its place, one of (10 + 25 r) at each of its systems, 9 below the plane (the
@@ -773,15 +782,15 @@ fn galaxy_3d(
     }
 
     // the dust (galaxy_dust.shader, CGalaxyGraphics::Init): a cloud at every system and
-    // int(0.1 R) in the core's disc (R its radius in the game's world), of half size
+    // int(0.1 R) in the core's disc (R its radius in the game's world) at r x R and angle 2 pi r'
+    // (uniform in the radius, so denser toward the centre), of half size
     // GALAXY_DUST_SIZE + GALAXY_DUST_SIZE_EXTRA x r, 20 above or below the plane at most, turned
     // by +-2 pi r, tilted (y += (corner x + corner y) x size x 0.1)
     if let Some(dust) = tex.game(cache, inp.game_dir, "gfx/map/dust.dds") {
         let mut points: Vec<(f32, f32)> = g.systems.iter().map(|s| (s.x, s.y)).collect();
-        let r_core = g.core_radius;
         let mut rng = Rng(0x5eed_1234);
         for _ in 0..(0.1 * r_core * 2.0) as usize {
-            let (r, a) = (r_core * rng.next().sqrt(), rng.next() * std::f32::consts::TAU);
+            let (r, a) = (r_core * rng.next(), rng.next() * std::f32::consts::TAU);
             points.push((r * a.cos(), r * a.sin()));
         }
         for (x, y) in points {
@@ -797,11 +806,11 @@ fn galaxy_3d(
         }
     }
 
-    // the core's glow (galaxy_center.shader): center.dds x 0.5 on the plane, its quad x 1.5, added
-    // by ONE, ONE, greyed outside the known space; the quad's half size taken as core_radius of
-    // the game's world [I] (twice that reaches beyond what the game's frames show)
+    // the core's glow (galaxy_center.shader): center.dds x 0.5 on the plane, added by ONE, ONE,
+    // greyed outside the known space; CGalaxyGraphics::Init's quad is +-R of the game's world and
+    // the shader scales it by 1.5
     if let Some(center) = tex.game(cache, inp.game_dir, "gfx/map/center.dds") {
-        let half = 1.5 * g.core_radius;
+        let half = 1.5 * r_core;
         if half > 0.0 {
             let mut q = Quad::plane([-half, -half, half, half], [0.5, 0.5, 0.5, 1.0], 0.0);
             q.height = -0.75;

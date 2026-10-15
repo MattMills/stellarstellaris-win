@@ -197,8 +197,9 @@ fn fs_quad(i: QuadOut) -> @location(0) vec4<f32> {
     let mode = i.fx.x;
     if (mode > 0.5 && mode < 1.5) {
         // a star or the core (galaxy_stars.shader, galaxy_center.shader): greyed outside the
-        // known space (ApplyTerraIncognita: the luminance x 0.15 x brightness)
-        let c = lin3(texel.rgb * i.colour.rgb);
+        // known space (ApplyTerraIncognita: the luminance x 0.15 x brightness); the colour (the
+        // core's x 0.5) scales the texel once it is linear, as the game's shader does
+        let c = lin3(texel.rgb) * i.colour.rgb;
         let grey = dot(c, vec3<f32>(0.2127, 0.7152, 0.0722)) * 0.15 * i.fx.y;
         // fx.w: added by ONE, ONE (the core): alpha 1 for the SRC_ALPHA blend
         let a = select(texel.a * i.colour.a, 1.0, i.fx.w > 0.5);
