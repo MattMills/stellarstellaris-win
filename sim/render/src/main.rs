@@ -101,6 +101,8 @@ pub struct Map {
     /// the GUI drawn (the top bar; a system's orbit lines): `gui off` hides it, as the game's
     /// g_bNoGUI
     pub gui: bool,
+    /// the game's console `observe`: the player an observer (Map::observed)
+    pub observe: bool,
     /// the game's clock as the player set it: paused (a save is loaded paused), the speed 1..5
     pub paused: bool,
     pub speed: u8,
@@ -154,6 +156,7 @@ impl Map {
             models: models::Library::default(),
             particles: particles::Library::default(),
             gui: true,
+            observe: false,
             paused: true,
             speed: clock::DEFAULT_SPEED,
             speed_names: None,
@@ -286,7 +289,12 @@ impl Map {
             return false;
         }
         self.galaxy = snap.galaxy.clone();
-        if !self.images.as_ref().is_some_and(|i| Arc::ptr_eq(i, &snap.images)) {
+        if self.observe {
+            // the simulation's map textures are the player's: the observer's are made here
+            self.galaxy = Arc::new(Map::observed(&snap.galaxy));
+            self.maps = None;
+            self.blobs = None;
+        } else if !self.images.as_ref().is_some_and(|i| Arc::ptr_eq(i, &snap.images)) {
             let i = snap.images.clone();
             self.borders = i.borders.clone();
             self.borders_texture = self.textures.add("@borders", i.borders_image.clone());
@@ -435,6 +443,29 @@ impl Map {
         ];
         self.maps = Some(m);
         m
+    }
+
+    /// The galaxy as an observer sees it (the console's `observe`: OnExecute_Observe gives the
+    /// local human no country): the whole galaxy known (no terra incognita), every country's
+    /// borders, flags and names (no communications to filter them), no sectors (no observed
+    /// country).
+    pub fn observed(g: &Galaxy) -> Galaxy {
+        let mut g = g.clone();
+        g.terra_incognita = None;
+        g.communications = None;
+        g.sectors.clear();
+        g.sector_capitals.clear();
+        g
+    }
+
+    /// `observe`: from now on the observer's galaxy (its map textures, blobs and names made again).
+    pub fn set_observe(&mut self) {
+        self.observe = true;
+        self.galaxy = Arc::new(Map::observed(&self.galaxy));
+        self.maps = None;
+        self.blobs = None;
+        self.map_names = None;
+        self.topbar_cache = None;
     }
 
     /// The map's names (mapnames.rs) for the blobs of the map textures, localised: the blobs'

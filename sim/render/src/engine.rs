@@ -378,6 +378,13 @@ impl Engine {
                 self.app.invalidate();
                 Ok(Reply::ok(format!("gui {}", if on { "on" } else { "off" })))
             }
+            "observe" => {
+                // the game's console `observe` (headless.c serves it too): the player an observer
+                let m = self.app.map.as_mut().ok_or("no map loaded")?;
+                m.set_observe();
+                self.app.invalidate();
+                Ok(Reply::ok("observe: Now observing"))
+            }
             "pause" => {
                 // `pause` (as the game's headless: the clock stopped), `pause off` runs it
                 let on = a.first().copied() != Some("off");

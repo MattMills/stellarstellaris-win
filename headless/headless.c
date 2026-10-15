@@ -1109,6 +1109,10 @@ static _Bool my_CheckTick(void *idler, float dt) {
 //                      +0x228: the eye is target + distance (-cos p sin y, sin p, cos p cos y))
 //   resize W H         the window is fixed at start (view.sh --size): ok if it is W x H
 //   gui off|on         g_bNoGUI (the hide-GUI key's flag)
+//   observe            the console's `observe` (OnExecute_Observe: posts CAddCountryControllerCommand
+//                      giving the local human no country): the player becomes an observer, who
+//                      knows the whole galaxy (no terra incognita) and sees every country's
+//                      borders; the reply is the console's text, the command runs with the frame
 //   frame PATH.png     waits for the picture to settle (from HEADLESS_FRAME_WAIT seconds, 2, and
 //                      HEADLESS_FRAME_MIN frames, 10, on: two captures in a row nearly equal, or
 //                      HEADLESS_FRAME_TIMEOUT seconds, 30), captures the window (X11 XGetImage),
@@ -1144,6 +1148,7 @@ static uintptr_t a_g_bNoGUI;              // bool
 static uintptr_t a_GalacticObjectDb;      // TPdxRef<CGalacticObject>::_pDatabase
 static uintptr_t a_GalaxyScaleMult;       // NDefines::NCamera::GALAXY_SPACE_SCALE_MULT
 static uintptr_t a_SystemScaleMult;       // NDefines::NCamera::SYSTEM_SPACE_SCALE_MULT
+static uintptr_t a_ExecuteObserve;        // OnExecute_Observe(CPdxArray<CString, int> const&)
 
 static struct symreq g_view_syms[] = {
 	{"_ZN11CGameCamera6UpdateEPK9CKeyBoardP6CMousePK18CPdxGameControllerR5CListI11CInputEventEf", &a_GameCameraUpdate},
@@ -1158,6 +1163,7 @@ static struct symreq g_view_syms[] = {
 	{"_ZN7TPdxRefI15CGalacticObjectE10_pDatabaseE", &a_GalacticObjectDb},
 	{"_ZN8NDefines7NCamera23GALAXY_SPACE_SCALE_MULTE", &a_GalaxyScaleMult},
 	{"_ZN8NDefines7NCamera23SYSTEM_SPACE_SCALE_MULTE", &a_SystemScaleMult},
+	{"_Z17OnExecute_ObserveRK9CPdxArrayI7CStringiE", &a_ExecuteObserve},
 	{NULL, NULL},
 };
 
@@ -1772,6 +1778,18 @@ static void view_game(void *gs) {
 	} else if (!strcmp(verb, "gui")) {
 		U8(a_g_bNoGUI) = !strcmp(arg, "off");
 		reply_fmt("ok gui %s", U8(a_g_bNoGUI) ? "off" : "on");
+	} else if (!strcmp(verb, "observe")) {
+		// the console command's handler (its arguments unused: an empty CPdxArray, {vtable, data,
+		// capacity, size}); its result is { bool ok; a string with CPdxCommonStringAllocator at
+		// +0x8 (the allocator +0x8 .. +0x18, data +0x18, size +0x20, inline buffer +0x28) }, made
+		// by the handler itself
+		void *args[3] = {NULL, NULL, NULL};
+		uint8_t res[64];
+		memset(res, 0, sizeof res);
+		((void (*)(void *, void *))a_ExecuteObserve)(res, args);
+		const char *text = *(const char **)(res + 0x18);
+		size_t len = *(size_t *)(res + 0x20);
+		reply_fmt("%s observe: %.*s", res[0] ? "ok" : "error", (int)(len < 200 ? len : 200), text ? text : "");
 	} else if (!strcmp(verb, "resize")) {
 		int w = 0, h = 0, ww = 0, wh = 0;
 		sscanf(arg, "%d %d", &w, &h);
