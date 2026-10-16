@@ -34,28 +34,40 @@ pub struct State {
     pub closed: Vec<String>,
     /// the confirmation dialog open: the command it confirms (`VERB:ARG...`)
     pub dialog: Option<String>,
-    /// the side view's list scrolled down by this many pixels (the wheel over it)
-    pub side_scroll: f32,
+    /// the window's lists scrolled down (the wheel over them): by list (the side view's `side`, a
+    /// list's path), in pixels
+    pub scroll: std::collections::HashMap<String, f32>,
 }
 
-/// The wheel over the side view's list (its area and range from the last layout: the Lua's
-/// side_area): it scrolls, 20 pixels a notch (the game's frames); whether it took the wheel.
+/// The wheel over one of the window's lists (their areas and ranges from the last layout: the
+/// Lua's scroll_areas): it scrolls, 20 pixels a notch (the game's frames: the side view's list);
+/// whether it took the wheel.
 pub fn wheel(app: &mut App, notches: f32) -> bool {
     let Some((x, y)) = app.cursor else { return false };
     if app.selected.is_none() {
         return false;
     }
-    let area: Vec<f32> = app.runtime.lua.load("local a = package.loaded['render.windows.starbase'] and package.loaded['render.windows.starbase'].side_area return a or {}").eval().unwrap_or_default();
-    let [ax, ay, aw, ah, max] = area[..] else { return false };
-    if x < ax || x > ax + aw || y < ay || y > ay + ah {
-        return false;
+    let code = "local m = package.loaded['render.windows.starbase'] local out = {} \
+                for _, a in ipairs(m and m.scroll_areas or {}) do out[#out + 1] = string.format('%s %f %f %f %f %f', a.key, a.x, a.y, a.w, a.h, a.max) end \
+                return out";
+    let areas: Vec<String> = app.runtime.lua.load(code).eval().unwrap_or_default();
+    for a in areas {
+        let f: Vec<&str> = a.split(' ').collect();
+        let [key, ax, ay, aw, ah, max] = f[..] else { continue };
+        let n = |s: &str| s.parse::<f32>().unwrap_or(0.0);
+        let (ax, ay, aw, ah, max) = (n(ax), n(ay), n(aw), n(ah), n(max));
+        if x < ax || x > ax + aw || y < ay || y > ay + ah {
+            continue;
+        }
+        let now = app.starbase.scroll.get(key).copied().unwrap_or(0.0);
+        let s = (now - notches * 20.0).clamp(0.0, max.max(0.0));
+        if s != now {
+            app.starbase.scroll.insert(key.to_string(), s);
+            app.relayout();
+        }
+        return true;
     }
-    let s = (app.starbase.side_scroll - notches * 20.0).clamp(0.0, max.max(0.0));
-    if s != app.starbase.side_scroll {
-        app.starbase.side_scroll = s;
-        app.relayout();
-    }
-    true
+    false
 }
 
 /// The starbases' chunk (render.windows.starbase_data.extract) in the world's runtime; empty when
@@ -87,7 +99,8 @@ pub fn prepare(runtime: &Runtime, galaxy: &Galaxy, state: &State, selected: bool
         t.set("side", state.side.clone())?;
         t.set("closed", state.closed.join(","))?;
         t.set("dialog", state.dialog.clone())?;
-        t.set("side_scroll", state.side_scroll)?;
+        let scroll: Vec<String> = state.scroll.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        t.set("scroll", scroll.join(","))?;
         // the countries the player knows (communications; none: all), for the flags shown
         if let Some(c) = &galaxy.communications {
             let k = lua.create_table()?;
@@ -272,14 +285,14 @@ pub fn act(app: &mut App, action: &str) -> Result<(), String> {
         // ShowTab: the tab's own side view (the Command tab's after a slot is clicked)
         app.starbase.tab = t.parse().map_err(|_| format!("bad action {action}"))?;
         app.starbase.side = None;
-        app.starbase.side_scroll = 0.0;
+        app.starbase.scroll.clear();
         app.relayout();
     } else if let Some(slot) = rest.strip_prefix("slot:") {
         // a grid slot (CStarbaseComponentGridEntry, the tab controller its observer): the side view
         // of that slot (its component, or the buildables), the same slot again closes it [I]
         let slot = format!("{fleet}:{slot}");
         app.starbase.side = if app.starbase.side.as_deref() == Some(slot.as_str()) { None } else { Some(slot) };
-        app.starbase.side_scroll = 0.0;
+        app.starbase.scroll.remove("side");
         app.relayout();
     } else if let Some(key) = rest.strip_prefix("sub:") {
         // a sublist's header: open or closed

@@ -112,17 +112,39 @@ function M.current_tab(e, state)
 end
 
 -- a list's entries (a smoothListBoxType: one under the other, `spacing` apart, as many as fit)
-local function list_entries(ctx, items, report, rect, spacing, entry_h, entries, layout_one)
+-- with a `key`, the list scrolls (the wheel over it: starbase.rs wheel; the state's `scroll`
+-- KEY=PIXELS): its area and range go in M.scroll_areas, the entries that fit at the offset are drawn
+M.scroll_areas = {}
+local function scroll_of(key)
+    for k, v in tostring((RENDER_STARBASE_STATE or {}).scroll or ""):gmatch("([^,=]+)=([^,]+)") do
+        if k == key then
+            return tonumber(v) or 0
+        end
+    end
+    return 0
+end
+M.scroll_of = scroll_of
+
+local function list_entries(ctx, items, report, rect, spacing, entry_h, entries, layout_one, key)
     if not rect then
         return
     end
-    local y = rect.y
+    local off = 0
+    if key then
+        local total = #entries * (entry_h + spacing) - spacing
+        local max = math.max(0, total - rect.h)
+        off = math.min(scroll_of(key), max)
+        M.scroll_areas[#M.scroll_areas + 1] = { key = key, x = rect.x, y = rect.y, w = rect.w, h = rect.h, max = max }
+    end
+    local y = rect.y - off
     for i, ent in ipairs(entries) do
         if y + entry_h > rect.y + rect.h + 0.5 then
             break
         end
-        local ri, rr = layout_one(i, ent, { x = rect.x, y = y, w = rect.w, h = entry_h })
-        gui.merge(items, report, ri, rr)
+        if y >= rect.y - 0.5 then
+            local ri, rr = layout_one(i, ent, { x = rect.x, y = y, w = rect.w, h = entry_h })
+            gui.merge(items, report, ri, rr)
+        end
         y = y + entry_h + spacing
     end
 end
@@ -237,7 +259,7 @@ local function queue_list(ctx, items, report, rect, queue, prefix, e, own)
             },
         })
         return ri, rr
-    end)
+    end, prefix)
 end
 
 
@@ -254,7 +276,7 @@ local function fleet_list(ctx, items, report, rect, fleets, prefix)
             text = { [path .. "/name"] = names.format(ctx.loc, f.name) },
             actions = { [path] = "select:fleet:" .. f.id },
         })
-    end)
+    end, prefix)
 end
 
 -- a modifier's icon (CModifier::InitDefinitionIcons: GFX_mod_<type>, from
@@ -462,7 +484,6 @@ end
 
 local function side_view(ctx, items, report, e, state, tab, win)
     ctx_loc = ctx.loc
-    M.side_area = nil
     local entries, title = side_entries(e, state, tab)
     if not entries or not win then
         return
@@ -496,8 +517,9 @@ local function side_view(ctx, items, report, e, state, tab, win)
         y0 = y0 + h + ((components and ent.kind ~= "current") and 5 or SPACING)
     end
     -- the list's area and how far it scrolls (the wheel over it: starbase.rs wheel)
-    M.side_area = { rect.x, rect.y, rect.w, rect.h, math.max(0, y0 - rect.h) }
-    local scroll = tonumber(state.side_scroll) or 0
+    local max = math.max(0, y0 - rect.h)
+    M.scroll_areas[#M.scroll_areas + 1] = { key = "side", x = rect.x, y = rect.y, w = rect.w, h = rect.h, max = max }
+    local scroll = math.min(scroll_of("side"), max)
     for i, ent in ipairs(entries) do
         local y, h = rect.y + places[i][1] - scroll, places[i][2]
         if y + h > rect.y + rect.h + 0.5 then
@@ -632,6 +654,7 @@ function M.queue(ctx, items, report, rect, e, own)
 end
 
 function M.build(ctx, sel, items, report)
+    M.scroll_areas = {}
     local data = M.data()
     local e = data and data.starbases and data.starbases[sel.id]
     -- a waystation's own window (CInGameIdler::ShowWaystationView: a starbase type is_waystation)
@@ -830,7 +853,7 @@ function M.build(ctx, sel, items, report)
                 disabled = { [path .. "/upgrade"] = true, [path .. "/disband"] = (not own) or nil },
                 actions = a,
             })
-        end)
+        end, W .. "/platforms")
     elseif tab == 2 then
         queue_list(ctx, items, report, rects[tp .. "/build_queue_info/build_queue_list"], e.ship_queue or {}, W .. "/ship_queue", e, own)
         fleet_list(ctx, items, report, rects[tp .. "/fleets_info/fleets_list"], e.fleets or {}, W .. "/fleets")
