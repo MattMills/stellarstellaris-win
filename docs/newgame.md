@@ -572,7 +572,7 @@ not:
 | resource clusters | the draws | `CFixedPoint::Atan2` (not decoded) by `math.atan2`; `GenerateResourceRegions` not done |
 | initializers | 6.2 and 6.3: picks, rolls, uses, trees, neighbours, mandatory neighbours, classes, intervals, coordinates, radii, rings | `usage_odds` modifiers whose triggers the small evaluator does not know are left out (counted in the summary); planet modifiers (one C draw, none picked); deposits (not made); `potential` of planet classes taken as passed; orbital lines |
 | empires | the order of 6.4, the queue, the home planet pick | designs: the prescripted ones with `spawn_enabled` drawn by G, no randomized designs, species or governments; the C++ objects made directly: species, country (the technologies with `start_tech = yes`, the default stockpile), the capital colony with the default origin's pops (standing in for `game_start.12` until the engine runs it), the starbase with its station and fleet; no leader; no fallen empires, marauders or nomads |
-| script | `newgame.start_script()` runs, on the loaded world, the init_effects in order, the empire on_actions, on_game_start and on_game_start_country | most engine effects of these are not modelled by the engine yet (section 8) |
+| script | `newgame.start_script()` runs, on the loaded world, the init_effects in order, the empire on_actions, on_game_start and on_game_start_country, with the engine effects that make the start's objects (script_objects.md) | the effects listed as not ported there |
 | save | `galactic_object`, `planets`, `nebula`, `clusters`, `species_db`, `country`, `colony`, `pop_groups`, `starbase_mgr`, `ships`, `fleet`, `galaxy`, `galaxy_radius`, `flags` | the system `index` (0-63, not traced: a hash of the id); `system_initializer_counter`, `random_name_database`, deposits, leaders, sectors, `rim_galactic_objects` |
 
 `sim/examples/newgame.rs` generates a galaxy from the settings and a seed, writes a .sav with
@@ -618,11 +618,11 @@ of a 600-system sample.
 Load and run (tiny, 3 AI empires and the human, seed 1234): 196 systems, 286 hyperlanes, 2,023
 planets, 4 empires, written as a 1.3 MB gamestate in 0.4 s; `engine.load` reads it (9 stores) and
 runs 30 days (300 ticks) with no errors, and writes it back after the run. The start script runs
-304 init_effects and 17 on_actions (181 script effects, 38 engine effects, no errors); the engine
-applies 21 of them (resources, modifiers, technologies) and lacks, among others,
-`create_ambient_object`, `prevent_anomaly`, `add_deposit`, `create_country`, `create_fleet`,
-`create_species`, `set_policy`, `create_leader`, `spawn_megastructure`, `create_colony`,
-`set_owner`: what pops, ships, deposits, the guardians and the wormholes need.
+304 init_effects and 17 on_actions with no errors and makes the start's objects (script_objects.md
+"Checks"): every empire's capital in the shape of the 2200.01.11 save's (districts, zones,
+buildings, 4,800-5,200 pops), its starport, science ship, constructor and corvettes with their
+leaders, its ruler, governor and policies; 38 countries (pre-FTL, enclaves, guardians, space
+fauna), ambient objects, megastructures; the started save runs 30 days without errors.
 
 Render: `stellar-render --png` draws the tiny galaxy: 194/194 star sprites (the 2 toxoid stars have
 no texture), 286/286 hyperlanes, the 4 empires' borders in their flag colours. Its check of the top
@@ -643,11 +643,10 @@ bar reports two texts it reads differently (the navy and starbase counters), not
   systems), `GenerateResourceRegions`, `GeneratePrecursorCivilizations`, `ProcessNeighbourContact`;
   deposits; planet modifiers; the static galaxy scenarios (`GenerateFromStaticScenario`,
   `static_galaxy_scenario`); shapes other than elliptical were not compared with a save.
-- **The script's part** runs only as far as the engine models its effects. A playable start needs:
-  `create_pop_group` and the pops, `add_building`, `add_district`, `create_fleet` / `create_ship`,
-  `create_leader`, `add_deposit` / `clear_deposits`, `set_policy`, `create_country` /
-  `create_species` (guardians, primitives), `spawn_natural_wormhole` / `link_wormholes`
-  (`game_start.31`), `spawn_megastructure` (gateways), `create_ambient_object`.
+- **The script's part**: the engine effects of a start are in script_objects.md, with what they do
+  not port yet (the pops' jobs, the ship designer, trait picks, the government solver). The
+  generator places some unique initializers more than once (ai_sol_system, toxic_knights_finish)
+  and more pre-FTL systems than the game: the effects then make what those initializers ask for.
 - **Platform helpers** that would help (outside `newgame/`): a `RUST.noise(position, seed)` (the
   Lua does the 32-bit noise with 16-bit halves), and a `world.load_tree(tree)` to hand the
   generated tree to the world without writing and parsing text.

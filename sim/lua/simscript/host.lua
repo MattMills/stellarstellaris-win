@@ -127,10 +127,11 @@ function host.report()
     p("on_actions fired: %s", table.concat(l, ", "))
     p("events fired (top 30):")
     for _, f in ipairs(fired) do p("  %6d  %s", f.count, f.key) end
-    local miss, nmiss = sorted_by_count(stats.missing, 40)
+    local top = tonumber(os.getenv("STELLAR_REPORT_TOP") or "") or 40
+    local miss, nmiss = sorted_by_count(stats.missing, top)
     local hits = 0
     for _, m in pairs(stats.missing) do hits = hits + m.count end
-    p("not implemented, hit while running: %d keywords, %d hits (top 40: kind keyword hits first-location)", nmiss, hits)
+    p("not implemented, hit while running: %d keywords, %d hits (top %d: kind keyword hits first-location)", nmiss, hits, top)
     for _, m in ipairs(miss) do p("  %-12s %-45s %7d  %s", m.kind, m.key, m.count, m.first) end
     local un, nun = sorted_by_count(stats.unmodelled, 25)
     p("engine effects queued without an engine model: %d keywords (top 25)", nun)

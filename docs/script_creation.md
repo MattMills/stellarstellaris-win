@@ -92,9 +92,10 @@ the change would wait until the month's update.
 
 ## Not done, and why
 
-- `create_leader`: the 24-96 calls in the test runs are spurious. The `is_councilor_type` trigger
-  is not implemented (the runtime-trigger area), so paragon.605 fires for gestalt countries. These
-  calls stay queued and unapplied. The real CreateLeader chain (anonymous 0x1768180) is not ported.
+- `create_leader`, `create_fleet` / `create_ship`, `set_owner`, `set_location`, `create_pop_group`, and
+  the other effects that make objects: script_objects.md (the Linux build's CreateLeader is
+  anon 0x36d32a0). The 24-96 create_leader calls the 2210 test runs made are spurious (the
+  `is_councilor_type` trigger is not implemented, so paragon.605 fires for gestalt countries).
 - `add_trait` / `remove_trait` (leaders): reverse-engineered but not implemented:
   - CLeader::AddTrait and IsForceAddLeaderTraitPossible check is_opposite_of, already_exists,
     has_better_version (the `_pNextTier` chain from `replace_traits`), the leader class, and the
@@ -110,8 +111,7 @@ the change would wait until the month's update.
     that first.
   - `ETraitFlags` bit 14 = force_councilor_trait; ELeaderTraitType is basic 0, veteran 1,
     subclass 2, destiny 3, negative 4. `remove_trait = all_negative` removes the type-4 traits.
-- `create_fleet` / `create_ship` / `create_army` / `set_owner` / `set_location`: reverse-engineered
-  only partly:
+- `create_army`, `set_owner` and `set_location` of armies, ships and starbases (fleets: script_objects.md):
   - CCreateFleet::ExecuteActual calls CreateNewFleet (no owner), then SetUpFleet (the name), then
     RunPostCreationEffect. RunPostCreationEffect makes one draw from the scope to build the
     fleet's own scope, runs the `effect` block in it, then InvalidateModifier and
@@ -119,4 +119,5 @@ the change would wait until the month's update.
   - The ship and fleet constructors exist in `engine/fleets/create.lua`. CCreateShipEffect,
     set_location (positions and their draws) and CFleet::ChangeOwner are not ported.
 - MTTH events are not ported (CStandardEventCountryModule's pool stream).
-- Species traits (modify_species), `create_pop_group`, and the random deposit modes are not ported.
+- Species traits (modify_species) and the random deposit modes are not ported (`create_pop_group`:
+  script_objects.md).
