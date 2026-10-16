@@ -869,9 +869,9 @@ colony.sums = colony_sums
 
 -- CColony::AccessOrAddPopGroupAddSize (0x286a7f0) and what create_pop_group does after: n pops of
 -- the key join the colony's first group of it, a new group when there is none. Without a category
--- the key's is the null one and NPlanetJobs::AssignPopsToJobs (0x26b78d0, not ported) moves the
--- colony's pops into the categories of their jobs: the pops go where engine.pops puts new pops
--- (its stand-in: the species' civilian or unemployment group) [I]
+-- the key's is the null one and the jobs update (NPlanetJobs::AssignPopsToJobs, engine.jobs: at the
+-- start script's end) moves the colony's pops into the categories of their jobs: the pops go where
+-- engine.pops puts new pops first (the species' civilian or unemployment group) [I]
 function colony.add_pops(cid, sid, n, cat, ethics)
     local c = world.object("colony", cid)
     if not c or n <= 0 then return nil end

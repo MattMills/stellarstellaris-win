@@ -92,7 +92,7 @@ function engine.load(game_dir, gamestate, docs_dir)
             local function have(m) return package.searchpath(m, package.path) ~= nil end
             for _, m in ipairs({ "engine.ai.attitudes", "engine.ethics", "engine.exploration", "engine.colonies",
                 "engine.construction", "engine.first_contact", "engine.research", "engine.situations",
-                "engine.ai.strategy", "engine.leaders", "engine.pops", "engine.fleets.orders", "engine.fleets.movement",
+                "engine.ai.strategy", "engine.leaders", "engine.pops", "engine.jobs", "engine.fleets.orders", "engine.fleets.movement",
                 "engine.ai", "engine.ai.research", "engine.ai.budget", "engine.ai.shipbuilding", "engine.diplomacy",
                 "engine.traditions" }) do
                 if have(m) then require(m) end
@@ -204,7 +204,7 @@ function engine.report()
     if engine.modifier_source then
         lines[#lines + 1] = engine.modifier_source.report()
     end
-    for _, m in ipairs({ "engine.research", "engine.leaders", "engine.construction", "engine.traditions", "engine.ai", "engine.ai.attitudes", "engine.ai.strategy", "engine.ai.traditions", "engine.pops", "engine.colonies", "engine.ethics", "engine.situations", "engine.first_contact", "engine.script.creation", "engine.script.objects" }) do
+    for _, m in ipairs({ "engine.research", "engine.leaders", "engine.construction", "engine.traditions", "engine.ai", "engine.ai.attitudes", "engine.ai.strategy", "engine.ai.traditions", "engine.pops", "engine.jobs", "engine.colonies", "engine.ethics", "engine.situations", "engine.first_contact", "engine.script.creation", "engine.script.objects" }) do
         local mod = package.loaded[m]
         if type(mod) == "table" and mod.report then
             lines[#lines + 1] = mod.report()

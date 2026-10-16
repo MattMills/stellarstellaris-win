@@ -466,12 +466,26 @@ function newgame.start_script(game)
     creation.defer = nil
     objects.fresh()
     t[5] = clock()
+    -- the jobs update the game runs before the first save (twice a day from the first day,
+    -- CColony::EnsurePopJobsAreUpToDate as colonies change): the colonies' jobs made from their
+    -- buildings, districts and zones, the pops into them (engine.jobs); then the emptied pop
+    -- groups, which the game removes the next day
+    guarded("jobs", function()
+        objects.fresh()
+        local jobs = require("engine.jobs")
+        jobs.update()
+        jobs.update()
+        require("engine.pops").remove_killed()
+        world.index()
+        ran.jobs = jobs.report()
+    end)
     local lines = {
         string.format("start script: %d init_effects and %d on_actions run; %d script effects, %d engine effects queued; %d errors",
             ran.effects, ran.on_actions, stats.script - s0, stats.engine - e0, #errors),
         string.format("  in %.2f s: empires' systems %.2f, empires %.2f, other systems %.2f, game start %.2f",
             t[5] - t[1], t[2] - t[1], t[3] - t[2], t[4] - t[3], t[5] - t[4]),
     }
+    if ran.jobs then lines[#lines + 1] = ran.jobs end
     for i = 1, math.min(8, #errors) do
         lines[#lines + 1] = "  error: " .. errors[i]
     end

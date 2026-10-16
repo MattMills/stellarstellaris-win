@@ -6,7 +6,8 @@
 -- - species: is_infertile (a trait with `infertile = yes`), is_robotic / is_robotic_species (the
 --   archetype's `robotic`), has_species_flag (the species' flags), has_citizenship_type and
 --   has_population_control with `country = ...` (the species' rights in that country), is_sapient
---   (`sapient = no` in the save, or a PRESAPIENT archetype), is_same_species = <scope>,
+--   (`sapient = no` in the save, or a PRESAPIENT archetype), is_same_species = <scope> (a pop
+--   group, species, country: its founder species, or leader),
 --   is_being_integrated_by (no: not in the save);
 -- - custom_tooltip = { ... }: its triggers evaluated (the script layer takes it as true, which made
 --   should_force_decline_species hold for every species);
@@ -37,6 +38,14 @@ local function species_of(sc)
     if sc.kind == "pop_group" then
         local key = world.field(world.object("pop_groups", sc.id), "key")
         return type(key) == "table" and tonumber(world.field(key, "species")) or nil
+    end
+    -- a country's species: its founder species (CCountry +0x1574, founder_species_ref) [I]
+    if sc.kind == "country" then
+        return tonumber(world.field(world.object("country", sc.id), "founder_species_ref"))
+    end
+    -- a leader's: its species
+    if sc.kind == "leader" then
+        return tonumber(world.field(world.object("leaders", sc.id), "species"))
     end
     return nil
 end

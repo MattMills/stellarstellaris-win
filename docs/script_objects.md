@@ -136,8 +136,11 @@ governor; 183 ambient objects there against 178 here on another galaxy). The rea
 have their pops in job categories at day 0 (with pop_jobs) and two or three envoys, and build four
 mining stations and a research station in the first days (the AI, not the script).
 
-Not equal yet: pop categories and jobs (NPlanetJobs is not ported: every pop is a civilian),
-envoys (the leader pool), the ship names' prefix (a generated country has no `ship_prefix`), and the
+Pop categories and jobs: the start ends with the jobs update (engine/jobs.lua, docs/pops.md
+section 11): the capitals' pops in ruler, specialist, worker and civilian groups and their `pop_jobs`
+as the 2200.01.11 save's empires have them.
+
+Not equal yet: envoys (the leader pool), the ship names' prefix (a generated country has no `ship_prefix`), and the
 counts the generator decides: it places some unique initializers more than once (ai_sol_system,
 toxic_knights_finish: 4 UNE empires and 6 Toxic Gods in these runs) and more pre-FTL systems than the
 game (24 pre-FTL countries against the save's 10).
