@@ -111,9 +111,45 @@ local function traits(game_dir)
     if cache.traits then
         return cache.traits
     end
+    -- the named colours (common/named_colors: `name = { color = { r g b a } }`, 0..255)
+    local colours = {}
+    for name, d in pairs(source.definitions(game_dir, "common/named_colors")) do
+        local c = get(d.block, "color")
+        local n = {}
+        for _, e in ipairs(type(c) == "table" and c or {}) do
+            local v = tonumber(e.text or (e.value and e.value.text))
+            if v then
+                n[#n + 1] = v
+            end
+        end
+        if #n >= 3 then
+            colours[name] = { n[1] / 255, n[2] / 255, n[3] / 255, (n[4] or 255) / 255 }
+        end
+    end
+    local fs = source.filesystem(game_dir)
     local out = {}
     for name, d in pairs(source.definitions(game_dir, "common/traits")) do
-        out[name] = { icon = get(d.block, "icon") }
+        local b = source.expand(fs, d.block, {})
+        local icon = get(b, "icon")
+        local layers = {}
+        if type(icon) == "table" then
+            -- the layers in order: `layer = { icon color visible }`, or a sprite alone
+            for _, e in ipairs(icon) do
+                if e.op and e.key and e.key.text == "layer" and type(e.value) == "table" then
+                    local col = get(e.value, "color")
+                    layers[#layers + 1] = {
+                        sprite = (get(e.value, "icon") or ""):gsub('"', ""),
+                        tint = col and colours[col:gsub('"', "")] or nil,
+                        conditional = get(e.value, "visible") ~= nil,
+                    }
+                elseif e.op and e.key and e.key.text == "icon" and e.value and e.value.text then
+                    layers[#layers + 1] = { sprite = e.value.text:gsub('"', "") }
+                end
+            end
+        elseif type(icon) == "string" then
+            layers[1] = { sprite = icon:gsub('"', "") }
+        end
+        out[name] = { layers = layers }
     end
     cache.traits = out
     return out
@@ -242,6 +278,13 @@ local function grey(ctx, from, prefix)
             it.texture = "@grey:" .. it.texture
             if it.button then
                 it.button.action = nil
+            end
+        elseif it.kind == "text" and it.path:sub(1, #prefix) == prefix then
+            -- its text greyed the same way (buttonstate.shader's TextDisable)
+            for _, s in ipairs(it.spans or {}) do
+                local c = s.colour or { 1, 1, 1 }
+                local g = 0.212671 * c[1] + 0.715160 * c[2] + 0.072169 * c[3]
+                s.colour = { (g * 0.85 + c[1] * 0.15) * 0.75, (g * 0.85 + c[2] * 0.15) * 0.75, (g * 0.85 + c[3] * 0.15) * 0.75 }
             end
         end
     end
@@ -437,21 +480,29 @@ local function paragon(ctx, leader, rect, prefix)
     if box then
         local tdefs = traits(ctx.game_dir)
         local x = box.x
+        -- each trait's icon: its layers (common/traits `icon`, the trait/icon inline scripts)
+        -- drawn over each other in their named colours, a square of the box's height; the
+        -- layers shown only by a trigger (`visible`: GFX_trait_disabled for a leader not on
+        -- the council) left out [I]
+        local h = box.h
         for i, t in ipairs(leader.traits or {}) do
             local def = tdefs[t]
-            local s = def and def.icon and ctx.db.sprites[def.icon]
-            if s and s.texture then
-                local tw, th = ctx.texture_size(s.texture)
-                if tw then
-                    local h = box.h
-                    local sw = tw / math.max(1, s.frames) * h / th
+            for k, l in ipairs(def and def.layers or {}) do
+                local name, frame = l.sprite, 1
+                local s = ctx.db.sprites[name]
+                if s and s.sheet and ctx.db.sprites[s.sheet] then
+                    name, frame = s.sheet, s.default_frame or 1
+                    s = ctx.db.sprites[name]
+                end
+                if s and s.texture and not l.conditional then
                     ctx.items[#ctx.items + 1] = {
-                        kind = "sprite", path = lp .. "/traits/" .. i, sprite = def.icon, texture = s.texture,
-                        sprite_kind = s.kind, frame = 1, frames = s.frames, x = x, y = box.y, w = sw, h = h,
+                        kind = "sprite", path = lp .. "/traits/" .. i .. "/" .. k, sprite = name, texture = s.texture,
+                        sprite_kind = s.kind, frame = frame, frames = s.frames or 1, x = x, y = box.y, w = h, h = h,
+                        tint = l.tint,
                     }
-                    x = x + sw + 2
                 end
             end
+            x = x + h + 2
         end
     end
 end
@@ -494,7 +545,7 @@ end
 local function ship_lines(ctx, d, s)
     local loc = ctx.loc
     if not d.communications then
-        return loc_text(loc, "NO_COMMUNICATIONS_VESSEL"), ""
+        return loc_text(loc, d.xenophobe and "NO_COMMUNICATIONS_VESSEL_XENOPHOBE" or "NO_COMMUNICATIONS_VESSEL"), ""
     end
     local sizes = fleet.ship_sizes(ctx.game_dir)
     local c = fleet.CLASS[(sizes[s.size] or {}).class or ""] or 0
@@ -548,7 +599,10 @@ function fleet.fleet_view(ctx, d)
 
     local p = "/fleet_view/fleets/fleet_view_entry"
     local cls = fleet.CLASS[d.class]
-    local name = name_text(loc, d.name)
+    -- without communications: CFleet::GetLocalName's NO_COMMUNICATIONS_FLEET (_XENOPHOBE for a
+    -- xenophobe observer) [I: the keys; the game's frame shows "Alien Menace"]
+    local name = d.communications and name_text(loc, d.name)
+        or loc_text(loc, d.xenophobe and "NO_COMMUNICATIONS_FLEET_XENOPHOBE" or "NO_COMMUNICATIONS_FLEET")
     -- CFleet::GetTypeName [V]: the first ship's size name; none for the classes of the mask
     -- 0x771 (EShipClass 0, 4-6, 8-10) unless the fleet's property bit 9 (mobile [I])
     local type_name = ""
@@ -596,7 +650,7 @@ function fleet.fleet_view(ctx, d)
     local text = {
         [p .. "/top/fleet_name"] = name,
         [p .. "/top/fleet_type"] = d.communications and type_name or "",
-        [p .. "/top/unknown_faction_name"] = d.communications and "" or loc_text(loc, "YELLOW_COLOR", { KEY = name_text(loc, d.owner_name) }),
+        [p .. "/top/unknown_faction_name"] = d.communications and "" or loc_text(loc, "YELLOW_COLOR", { KEY = loc_text(loc, "UNKNOWN_COUNTRY") }),
         [p .. "/bottom/hull_points"] = loc_text(loc, "HULL_STATE", { VALUE = green_red_percent(fraction(hp, hpm)) }),
         [p .. "/bottom/armor_points"] = loc_text(loc, "ARMOR_STATE", { VALUE = green_red_percent(fraction(ar, arm)) }),
         [p .. "/bottom/shield_points"] = loc_text(loc, "SHIELD_STATE", { VALUE = green_red_percent(fraction(sh, shm)) }),
@@ -628,6 +682,7 @@ function fleet.fleet_view(ctx, d)
     -- the disband button's sprite: a leased fleet's, a fleet of command points over 1, others'
     -- (fleet+0x1280 < 100001) [V]
     local disband = used > 1 and "GFX_delete_template_button" or "GFX_fleetview_destroy_fleet"
+    local entry_from = #ctx.items + 1
     local _, er = layout(ctx, FLEET_GUI, "fleet_view_entry", {
         prefix = "/fleet_view/fleets",
         parent = { x = list.x, y = list.y, w = 510, h = entry_h },
@@ -640,6 +695,23 @@ function fleet.fleet_view(ctx, d)
             [p .. "/top/open_fleet_manager"] = "fleet:manager:" .. d.id,
         },
     })
+    -- another's fleet: its disband and fleet manager buttons disabled (CanBeDisbandedBy, the
+    -- template the observer's) [V]; Investigate without an active first contact [I]
+    -- without communications the flag is the unknown one (PRE_COMMUNICATIONS_EMPIRE_FLAG: made by
+    -- fleetwin.rs)
+    if not d.communications then
+        for i = entry_from, #ctx.items do
+            local it = ctx.items[i]
+            if it.path == p .. "/top/flag" and it.kind == "sprite" then
+                it.sprite_kind = "unknownFlag"
+            end
+        end
+    end
+    if not d.player then
+        grey(ctx, entry_from, p .. "/top/disband")
+        grey(ctx, entry_from, p .. "/top/open_fleet_manager")
+        grey(ctx, entry_from, p .. "/precommunications/investigate")
+    end
     -- the leader (portrait_container: CParagonPortraitContainer)
     local pc = er.rects[p .. "/portrait_container"]
     if leader_shown and pc then
@@ -693,7 +765,7 @@ function fleet.fleet_view(ctx, d)
             local n = #g.ships
             local upgradable = false
             for _, s in ipairs(g.ships) do
-                upgradable = upgradable or s.upgradable
+                upgradable = upgradable or (d.player and s.upgradable)
             end
             local count = tostring(n)
             local tcount = d.template_counts and d.template_counts[g.size]
@@ -728,20 +800,30 @@ function fleet.fleet_view(ctx, d)
             text = { [sp .. "/name"] = line1 },
             actions = { [sp .. "/inspect"] = "fleet:ship:" .. s.id },
         })
+        -- the disband button: the observer's fleets only (CanBeDisbandedBy) [V]
+        if not d.player then
+            grey(ctx, from, sp .. "/disband")
+        end
+        -- inspect: CanInspectShip (no communications: not) [I: the game's dimmer icon]
+        if not d.communications then
+            grey(ctx, from, sp .. "/inspect")
+        end
         -- the two lines of the name box (44 high, centred): the second under the first, laid out
         -- as the same element again [I: the renderer draws one line a text]
-        local l2 = rp .. "/line2"
-        layout(ctx, FLEET_GUI, "fleet_view_subentry", {
-            prefix = l2,
-            parent = { x = list.x, y = y, w = 510, h = ROW_H },
-            only = { name = true },
-            text = { [l2 .. "/fleet_view_subentry/name"] = line2 },
-        })
-        for k = from, #ctx.items do
-            local it = ctx.items[k]
-            if it.kind == "text" and (it.path == sp .. "/name" or it.path == l2 .. "/fleet_view_subentry/name") then
-                local second = it.path ~= sp .. "/name"
-                it.valign, it.y, it.h = "top", it.y + (second and 22 or 6), 16
+        if line2 ~= "" then
+            local l2 = rp .. "/line2"
+            layout(ctx, FLEET_GUI, "fleet_view_subentry", {
+                prefix = l2,
+                parent = { x = list.x, y = y, w = 510, h = ROW_H },
+                only = { name = true },
+                text = { [l2 .. "/fleet_view_subentry/name"] = line2 },
+            })
+            for k = from, #ctx.items do
+                local it = ctx.items[k]
+                if it.kind == "text" and (it.path == sp .. "/name" or it.path == l2 .. "/fleet_view_subentry/name") then
+                    local second = it.path ~= sp .. "/name"
+                    it.valign, it.y, it.h = "top", it.y + (second and 22 or 6), 16
+                end
             end
         end
         bar(ctx, sp .. "/health", 100 * fraction(s.hp, s.hp_max))

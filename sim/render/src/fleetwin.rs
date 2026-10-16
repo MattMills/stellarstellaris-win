@@ -161,8 +161,26 @@ impl App {
             derived_textures(m, &items);
             let owner = fleet.and_then(|id| m.galaxy.fleets.iter().find(|f| f.id == id)).and_then(|f| f.owner);
             for it in items.iter_mut() {
-                if let GuiItem::Sprite { path, .. } = it {
-                    if path.starts_with("/fleet_view/") {
+                if let GuiItem::Sprite { path, sprite, kind, texture, .. } = it {
+                    if kind == "unknownFlag" {
+                        // a country the observer has no communications with: the define's
+                        // PRE_COMMUNICATIONS_EMPIRE_FLAG (special/unknown.dds) [V] on a black solid
+                        // background [I: the game's frame]
+                        let name = format!("@flag:unknown:{sprite}");
+                        if m.textures.find(&name).is_none() {
+                            let def = gui::flag_sprite(&m.runtime, sprite);
+                            let flag = crate::galaxy::Flag {
+                                icon: ("special".into(), "unknown.dds".into()),
+                                background: ("backgrounds".into(), "00_solid.dds".into()),
+                                colours: vec![[0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3]],
+                            };
+                            if let Some(img) = def.and_then(|d| crate::flag::compose(&mut m.cache.borrow_mut(), &m.game_dir, &d, &flag, [1.0; 4])) {
+                                m.textures.add(&name, std::sync::Arc::new(img));
+                            }
+                        }
+                        *texture = name;
+                        *kind = "flagSpriteType".into();
+                    } else if path.starts_with("/fleet_view/") {
                         m.flags(std::slice::from_mut(it), owner);
                     }
                 }

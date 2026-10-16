@@ -177,6 +177,17 @@ function fd.fleet(fid, observer)
         observer = observer,
         player = owner == observer,
         communications = communications(observer, owner),
+        -- the observer xenophobe (CCountryEthos::IsXenophobe): "Alien Menace" for the unknown
+        xenophobe = (function()
+            local c = world.object("country", observer)
+            for _, e in ipairs(world.list(c and world.path(c, "ethos", "ethics"))) do
+                local n = unquote(e)
+                if n == "ethic_xenophobe" or n == "ethic_fanatic_xenophobe" then
+                    return true
+                end
+            end
+            return false
+        end)(),
         class = unquote(world.field(f, "ship_class")) or "",
         station = world.path(f, "properties", "station") == "yes",
         civilian = world.path(f, "properties", "civilian") == "yes",

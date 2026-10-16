@@ -71,8 +71,19 @@ fleets with a leader (others' when their orders can be seen); the GUI type
 the files; its size fits and the frame matches]: `leader_class_banner` and `leader_type` frame by
 class (commander 1, official 2, scientist 3 [I: the textures' colours]), `skill_icon` frame = level
 + 1, the council position's icon and name (`councilor_title`), else `leader_class_text`, the name
-(Y). **Not drawn:** the portrait (the species' animated portrait) and the trait icons (layered
-icons: trait/icon inline scripts with named colours).
+(Y); the traits: each trait's layered icon (common/traits `icon`: the trait/icon inline scripts'
+layers in their named colours; layers with a `visible` trigger left out [I]). **Not drawn:** the
+portrait (the species' animated portrait).
+
+**Another empire's fleet** without communications [V: OnUpdate, CShip::GetLocalNameWithType;
+the names' keys I]: `GFX_fleet_view_main_precom_bg`, icon frame 11, the flag of
+PRE_COMMUNICATIONS_EMPIRE_FLAG (special/unknown.dds on black [I]), NO_COMMUNICATIONS_FLEET and
+`unknown_faction_name` YELLOW UNKNOWN_COUNTRY ("Alien Menace", "Unidentified Empire": the
+_XENOPHOBE keys for a xenophobe observer, as the 2210 player), `precommunications` with
+Investigate (disabled without an active first contact [I]), no stats nor orders, the rows
+NO_COMMUNICATIONS_VESSEL(_XENOPHOBE) with inspect and disband disabled, no upgrade arrow (the
+observer's ships only). Compared: fleets 11 and 27 (3 and 10 ships; the 10-ship one taller than
+the screen allows, its list shown from its bottom in both).
 
 **Orders** [V: CFleetView::UpdateOrders]: none without communications; `orders_hero_ship` with a
 hero ship; `orders_large` (5 a row) for a fleet that cannot have a leader, is not a colonizer nor
@@ -172,8 +183,8 @@ as frame 1.
 - The leader's portrait and trait icons (shared with the leader windows); the ship view's 3D
   preview (a model drawn into the GUI).
 - Ship stats: the country's modifiers; ship ranks above Regular; military power of designs.
-- Other empires' fleets are laid out by the rules above (the header, comms) but not compared with
-  the game's frames; observation posts, hero ships, colonizers, transports not checked.
+- Observation posts, hero ships, colonizers, transports, a foreign fleet with communications
+  (the 2210 player has none) not checked against the game.
 - Clicks other than inspect, close, deselect, the fleet manager's buttons, a row's selection:
   the orders and actions log "not done yet".
 - The renderer draws every text after every sprite: a text under a window (a map label) shows
