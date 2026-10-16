@@ -28,24 +28,34 @@ mod app;
 mod border;
 mod camera;
 mod clock;
+mod controls;
 mod dds;
+mod designer;
+mod diplomacy;
 mod effects;
 mod engine;
+mod events;
 mod flag;
+mod fleetwin;
 mod math;
 mod models;
 mod particles;
 mod pdxmesh;
+mod planet;
 mod system;
 mod font;
 mod galaxy;
 mod galaxymap;
+mod outliner;
+mod mapicons;
 mod mapnames;
 mod gui;
 mod render;
 mod scene;
+mod starbase;
 mod ui;
 mod verify;
+mod views;
 mod window;
 mod worldgfx;
 
@@ -281,6 +291,19 @@ impl Map {
         }
     }
 
+    /// The open view's data made now (views.rs): a snapshot published (waited for when `wait`),
+    /// or, the world here (before the simulation runs), the view's data read from it.
+    pub fn refresh_view(&mut self, name: &str, wait: bool) {
+        if let Some(c) = &self.clock {
+            c.publish(wait);
+            self.sync();
+        } else if self.world {
+            if let Some(v) = crate::views::extract_one(&self.runtime, &self.game_dir, name) {
+                Arc::make_mut(&mut self.galaxy).views.insert(name.to_string(), v);
+            }
+        }
+    }
+
     /// Takes the simulation's newest snapshot if there is a new one: the galaxy, the borders and
     /// the map textures, the top bar's texts. Whether something changed.
     pub fn sync(&mut self) -> bool {
@@ -390,6 +413,11 @@ impl Map {
             *texture = name;
             *tint = [1.0; 4];
         }
+    }
+
+    /// Whether this runtime has the save's world (else the simulation's thread has it).
+    pub fn has_world(&self) -> bool {
+        self.world
     }
 
     /// The player's country (an index into the galaxy's countries).

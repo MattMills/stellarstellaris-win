@@ -33,6 +33,12 @@ pub enum GuiItem {
         action: Option<String>,
         /// its colour multiplied in (the relation colour of a map label)
         tint: [f32; 4],
+        /// drawn as the game draws a disabled button (buttonstate.shader's Disable effect: the
+        /// texel greyed, GreyOutLuminosity 0.85, brightness 0.75)
+        disabled: bool,
+        /// the part of its frame drawn, u0..u1 (a progress bar's two textures; the rectangle cut
+        /// the same)
+        clip: [f32; 2],
     },
     Text {
         path: String,
@@ -46,6 +52,8 @@ pub enum GuiItem {
         h: f32,
         format: String,
         valign: String,
+        /// the box's `fixedSize`: its lines are cut at its height (else it grows with them)
+        fixed: bool,
     },
 }
 
@@ -146,7 +154,7 @@ fn colour(t: &Table) -> mlua::Result<[f32; 3]> {
 }
 
 /// The items of a layout table (render.gui's).
-fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
+pub(crate) fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
     let mut out = Vec::new();
     for it in items.sequence_values::<Table>() {
         let it = it?;
@@ -178,6 +186,11 @@ fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
                     Some(t) => [t.get(1)?, t.get(2)?, t.get(3)?, t.get::<Option<f32>>(4)?.unwrap_or(1.0)],
                     None => [1.0; 4],
                 },
+                disabled: it.get::<Option<bool>>("disabled")?.unwrap_or(false),
+                clip: match it.get::<Option<Table>>("clip")? {
+                    Some(c) => [c.get(1)?, c.get(2)?],
+                    None => [0.0, 1.0],
+                },
             });
         } else {
             let mut spans = Vec::new();
@@ -201,6 +214,7 @@ fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
                 h: it.get("h")?,
                 format: it.get("format")?,
                 valign: it.get::<Option<String>>("valign")?.unwrap_or_else(|| "top".into()),
+                fixed: it.get::<Option<bool>>("fixed")?.unwrap_or(true),
             });
         }
     }

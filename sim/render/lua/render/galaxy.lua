@@ -389,174 +389,11 @@ function galaxy.extract(game_dir)
             }
         end
     end
-    -- the player's alerts (CAlertManager::Update; common/alerts.txt: icon, priority), as far as
-    -- read: a research area with nothing researched (ShouldShowTechAlert: no `<area>_queue`)
-    local alerts = {}
-    local alert_defs = {}
-    do
-        local tree = source.parse(game_dir, "common/alerts.txt")
-        local list = tree and field(tree, "alerts")
-        for _, e in ipairs(type(list) == "table" and list or {}) do
-            if e.op and e.key and type(e.value) == "table" then
-                alert_defs[e.key.text] = {
-                    icon = tostring(field(e.value, "icon") or ""):gsub('"', ""),
-                    priority = tostring(field(e.value, "priority") or "LOW"),
-                }
-            end
-        end
-    end
-    local ts = pc and world.field(pc, "tech_status")
-    if type(ts) == "table" then
-        for _, area in ipairs({ "physics", "society", "engineering" }) do
-            local q = world.field(ts, area .. "_queue")
-            if not (type(q) == "table" and #world.blocks(q) > 0) then
-                local key = "alert_" .. area .. "_research"
-                local d = alert_defs[key] or {}
-                alerts[#alerts + 1] = { key = key, icon = d.icon or "", priority = d.priority or "MEDIUM" }
-            end
-        end
-    end
-    -- the outliner's members (COutlinerGroup*: docs/render.md section 12): the player's fleets by
-    -- kind (utility: by ship class, then the owned-fleet order; military; the starbases: with a
-    -- shipyard module for Shipyards, other upgraded ones for Starbases), its sectors and their
-    -- colonies (a sector's systems; the colony's final_designation)
-    local outliner, sectors = {}, {}
-    if pc then
-        local function ship_size(sid)
-            local ship = world.object("ship", tonumber(sid))
-            local did = ship and tonumber(world.path(ship, "ship_design_implementation", "design"))
-            local design = did and world.object("ship_design", did)
-            local stage = design and world.blocks(world.field(design, "growth_stages"))[1]
-            return stage and tostring(world.field(stage, "ship_size") or ""):gsub('"', "") or ""
-        end
-        -- the starbases by their station ship
-        local starbase_of = {}
-        for _, sb in ipairs(world.all("starbase")) do
-            local s = world.object("starbase", sb)
-            local st = s and tonumber(world.field(s, "station"))
-            if st then
-                starbase_of[st] = s
-            end
-        end
-        -- EShipClass order of the utility ships (construction before science, the frame's) [I]
-        local CLASS = { constructor = 1, science = 2, colonizer = 3 }
-        local civilian, military, yards, bases = {}, {}, {}, {}
-        local owned = world.blocks(world.path(pc, "fleets_manager", "owned_fleets"))
-        for k, o in ipairs(owned) do
-            local fid = tonumber(world.field(o, "fleet"))
-            local f = fid and world.object("fleet", fid)
-            local ships = f and world.list(world.field(f, "ships")) or {}
-            if f and #ships > 0 then
-                local mm = world.field(f, "movement_manager")
-                local origin = tonumber(world.path(mm, "coordinate", "origin")) or -1
-                local e = {
-                    id = fid, name = galaxy.name_block(world.field(f, "name")), system = origin,
-                    power = tonumber(world.field(f, "military_power")) or 0, order = k,
-                }
-                if world.path(f, "properties", "station") == "yes" then
-                    local sb = starbase_of[tonumber(ships[1])]
-                    if sb then
-                        local level = tostring(world.field(sb, "level") or ""):gsub('"', "")
-                        local has_yard = false
-                        local mods = world.field(sb, "modules")
-                        if type(mods) == "table" then
-                            for _, m in ipairs(mods) do
-                                if m.value and m.value.text == "shipyard" then
-                                    has_yard = true
-                                end
-                            end
-                        end
-                        e.sub = tostring(world.field(sb, "type") or ""):gsub('"', "")
-                        if has_yard then
-                            e.kind = "shipyard"
-                            yards[#yards + 1] = e
-                        elseif level ~= "starbase_level_outpost" then
-                            e.kind = "starbase"
-                            bases[#bases + 1] = e
-                        end
-                    end
-                elseif world.field(f, "ship_class") == "shipclass_military" or e.power > 0 then
-                    e.kind = "military"
-                    military[#military + 1] = e
-                else
-                    e.kind = "civilian"
-                    e.sub = ship_size(ships[1])
-                    e.class = CLASS[e.sub] or 9
-                    civilian[#civilian + 1] = e
-                end
-            end
-        end
-        table.sort(civilian, function(a, b)
-            if a.class ~= b.class then
-                return a.class < b.class
-            end
-            return a.order < b.order
-        end)
-        for _, list in ipairs({ civilian, military, yards, bases }) do
-            for _, e in ipairs(list) do
-                outliner[#outliner + 1] = e
-            end
-        end
-        for _, sid in ipairs(world.all("sector")) do
-            local s = world.object("sector", sid)
-            if s and tonumber(world.field(s, "owner")) == player then
-                local systems = {}
-                for _, v in ipairs(world.list(world.field(s, "systems"))) do
-                    systems[tonumber(v)] = true
-                end
-                -- the capital's system (the map's sector name sits there: GenerateSectorNames):
-                -- local_capital is a colony, on a planet
-                local lc = tonumber(world.field(s, "local_capital"))
-                local cp = lc and world.colony_planet and world.colony_planet[lc]
-                local cpo = cp and world.object("planet", cp)
-                local capital = cpo and tonumber(world.path(cpo, "coordinate", "origin"))
-                sectors[#sectors + 1] = { id = sid, name = galaxy.name_block(world.field(s, "name")), capital = capital }
-                for _, p in ipairs(planets) do
-                    if systems[p.system] then
-                        local col = world.planet_colony and world.planet_colony[p.id]
-                        local c = col and world.object("colony", col)
-                        outliner[#outliner + 1] = {
-                            kind = "planet", id = p.id, name = p.name, system = p.system, sector = sid, power = 0,
-                            sub = c and tostring(world.field(c, "final_designation") or ""):gsub('"', "") or "",
-                        }
-                    end
-                end
-            end
-        end
-    end
-    if pc then
-        local function alert(key, banner)
-            local d = alert_defs[key] or {}
-            alerts[#alerts + 1] = { key = key, icon = d.icon or "", priority = banner or d.priority or "LOW" }
-        end
-        -- alert_unlock_tradition (CCountry::CanActivateAnyTradition) [I]: the unity for the next
-        -- tradition, (TRADITION_COST_AMOUNTS 300 + (TRADITION_COST_TRADITION 8 x adopted) ^
-        -- TRADITION_COST_TRADITION_EXP 1.8) x (1 + EMPIRE_SIZE_TRADITION_COST_PENALTY 0.002 x
-        -- empire size); the cost modifiers and the empire size's base not applied
-        local adopted = #world.list(world.field(pc, "traditions"))
-        local unity = tonumber(world.path(pc, "modules", "standard_economy_module", "resources", "unity")) or 0
-        local size = tonumber(world.field(pc, "empire_size")) or 0
-        if unity >= (300 + (8 * adopted) ^ 1.8) * (1 + 0.002 * size) then
-            alert("alert_unlock_tradition")
-        end
-        -- alert_first_contact_stage_done: a first contact of the player's (country first_contact
-        -- contacts) in progress with its stage's event pending (sorts MEDIUM, its banner LOW)
-        for _, cid in ipairs(world.list(world.path(pc, "first_contact", "contacts"))) do
-            local c = world.object("first_contact", tonumber(cid))
-            local ev = c and world.field(c, "event")
-            if c and tonumber(world.field(c, "owner")) == player and world.field(c, "status") == "in_progress"
-                and type(ev) == "table" and world.field(ev, "expired") ~= "yes" then
-                alert("alert_first_contact_stage_done", "LOW")
-                break
-            end
-        end
-        -- alert_council_agenda_ready_for_activation (CGovernment::IsAgendaFinished): the agenda's
-        -- progress at its cost (@base_agenda_cost 7000) [I: modifiers to the cost not applied]
-        local progress = tonumber(world.path(pc, "government", "council_agenda_progress"))
-        if progress and progress >= 7000 then
-            alert("alert_council_agenda_ready_for_activation")
-        end
-    end
+    -- the outliner's and the alerts' view of the player's country (render.windows.outliner,
+    -- render.windows.alerts: docs/windows/outliner.md)
+    local view = require("render.windows.outliner").extract(game_dir, { player = player, country = pc, planets = planets })
+    local outliner, sectors = view.members, view.sectors
+    local alerts = require("render.windows.alerts").extract(game_dir, { player = player, country = pc })
     local communications = {}
     local rm = pc and world.field(pc, "relations_manager")
     for _, r in ipairs(rm and world.fields(rm, "relation") or {}) do
@@ -584,6 +421,10 @@ function galaxy.extract(game_dir)
         end
     end
 
+    -- the diplomacy windows' part of the world (render.windows.diplomacy_data, a Lua chunk): the
+    -- countries they list get their flags among the countries too
+    local diplomacy = require("render.windows.diplomacy_data").extract(game_dir, pc and player or nil, add_country)
+
     local hl = numbers(ng.HYPERLANE_DEFAULT_COLOR)
     local classes_used = 0
     for _ in pairs(star_info) do
@@ -604,8 +445,12 @@ function galaxy.extract(game_dir)
         planets = planets,
         alerts = alerts,
         outliner = outliner, sectors = sectors,
+        outliner_view = view,
         capital = capital,
+        diplomacy = diplomacy,
     }
+    -- what the map labels show (render.windows.mapicons)
+    out.mapicons = require("render.windows.mapicons").extract(game_dir, pc and player or nil)
     out.notes = string.format(
         "%d fleets, %d nebulae; " ..
         "%d systems, %d hyperlanes, %d owners; %d star classes used (no texture for: %s); " ..

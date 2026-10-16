@@ -48,14 +48,59 @@ function names.format(loc, n, depth)
         first = first or text
     end
     local engine = key:match("^%%(.+)%%$")
+    if engine == "SEQ" then
+        -- a numbered name (an army's "1st Hardshell Defenders": { key = "%SEQ%" variables = {
+        -- fmt = { key = "MOL4_HARDSHELLDEFENDERS" } num = { key = "1" } } }): fmt's text with
+        -- $ORD$ the number's ordinal (the ORD localisation's rule: 11th..19th, else 1st, 2nd, 3rd,
+        -- else th) and $NUM$ the number [V] the localisation, the game's frame
+        local fmt, num
+        for _, v in ipairs(n.vars or {}) do
+            if v.key == "fmt" and type(v.value) == "table" then
+                fmt = v.value.key
+            elseif v.key == "num" and type(v.value) == "table" then
+                num = tonumber(v.value.key)
+            end
+        end
+        if fmt and num then
+            local text = loc and loc.has(fmt) and loc.raw(fmt) or fmt
+            local suffix = (num % 100 >= 10 and num % 100 <= 19) and "th"
+                or ({ [1] = "st", [2] = "nd", [3] = "rd" })[num % 10] or "th"
+            text = text:gsub("%$ORD%$", num .. suffix):gsub("%$NUM%$", tostring(num))
+            if loc then
+                text = loc.plain(loc.resolve(text))
+            end
+            return text
+        end
+    end
     if engine then
         if engine == "ACRONYM" then
             return acronym(vars.base or first or "")
         end
         if engine == "ADJECTIVE" then
-            -- the adjective and the noun after it ("Uthabulan Order")
+            -- the adjective and the noun after it ("Uthabulan Order"); a word with an ending the
+            -- localisation's adj_NN<ending> keys name takes their form, `*` the word without the
+            -- ending, the longest ending first ("Mandasura": adj_NNa "*an", "Mandasuran")
             local a, noun = vars.adjective or first or "", vars["1"]
+            if loc and vars.adjective then
+                for n = math.min(3, #a - 1), 1, -1 do
+                    local key = "adj_NN" .. a:sub(-n)
+                    if loc.has(key) then
+                        local form = loc.raw(key):match("^(%S*)") or "*"
+                        a = (form:gsub("%*", escape(a:sub(1, -n - 1))))
+                        break
+                    end
+                end
+            end
             return noun and vars.adjective and (a .. " " .. noun) or a
+        end
+        if engine:match("^LEADER_%d+$") then
+            -- a leader's full name: its N parts in order ("%LEADER_2%" with "Oneggon" and
+            -- "Oilskin": "Oneggon Oilskin", the research view's head of research) [I]
+            local parts = {}
+            for i = 1, tonumber(engine:match("%d+")) do
+                parts[#parts + 1] = vars[tostring(i)]
+            end
+            return table.concat(parts, " ")
         end
         if engine == "ADJ" then
             -- its name ("Sacred Uthabulan Order")
