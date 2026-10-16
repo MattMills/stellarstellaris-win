@@ -439,6 +439,28 @@ impl Engine {
                 self.app.invalidate();
                 Ok(Reply::ok(format!("gui {}", if on { "on" } else { "off" })))
             }
+            "open_view" => {
+                // a left bar button's view toggled (headless.c serves it too): views.rs; with KEY
+                // VALUE after the name, the view open with that state (`open_view technology
+                // select physics`: its select_window, as headless.c's CTechnologyView::Show)
+                match (a.first(), a.get(1), a.get(2)) {
+                    (Some(name), Some(key), Some(value)) => {
+                        if self.app.open_view.as_deref() != Some(*name) {
+                            self.app.toggle_view(name);
+                        }
+                        self.app.view_state.clear();
+                        self.app.set_view_state(&[(*key, *value)]);
+                        self.flush_log();
+                        Ok(Reply::ok(format!("open_view {}", a.join(" "))))
+                    }
+                    (Some(name), _, _) => {
+                        let shown = self.app.toggle_view(name);
+                        self.flush_log();
+                        Ok(Reply::ok(format!("open_view {name} {}", if shown { "shown" } else { "hidden" })))
+                    }
+                    _ => Err("open_view NAME [KEY VALUE]".into()),
+                }
+            }
             "open_diplomacy" => {
                 // the diplomacy windows (headless.c serves it too, with the game's own calls):
                 // contacts, country ID, community, federation ID, war ID, close

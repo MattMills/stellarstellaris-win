@@ -1114,6 +1114,10 @@ static _Bool my_CheckTick(void *idler, float dt) {
 //                      giving the local human no country): the player becomes an observer, who
 //                      knows the whole galaxy (no terra incognita) and sees every country's
 //                      borders; the reply is the console's text, the command runs with the frame
+//   tech_view select|researched AREA   the research view (shown if hidden) with its select_window
+//                      (CTechnologyView::Show(ETechArea): the area's offered technologies) or its
+//                      researched_window (OnResearched(ETechArea)) open; AREA physics, society or
+//                      engineering (ETechArea 0, 1, 2). (`open_view NAME`: below)
 //   frame PATH.png     waits for the picture to settle (from HEADLESS_FRAME_WAIT seconds, 2, and
 //                      HEADLESS_FRAME_MIN frames, 10, on: two captures in a row nearly equal, or
 //                      HEADLESS_FRAME_TIMEOUT seconds, 30), captures the window (X11 XGetImage),
@@ -1158,6 +1162,9 @@ static uintptr_t a_GalacticObjectDb;      // TPdxRef<CGalacticObject>::_pDatabas
 static uintptr_t a_GalaxyScaleMult;       // NDefines::NCamera::GALAXY_SPACE_SCALE_MULT
 static uintptr_t a_SystemScaleMult;       // NDefines::NCamera::SYSTEM_SPACE_SCALE_MULT
 static uintptr_t a_ExecuteObserve;        // OnExecute_Observe(CPdxArray<CString, int> const&)
+static uintptr_t a_TechViewShowArea;      // CTechnologyView::Show(ETechArea)
+static uintptr_t a_TechViewOnResearched;  // CTechnologyView::OnResearched(ETechArea)
+static uintptr_t a_TechViewVtable;        // vtable for CTechnologyView
 static uintptr_t a_g_CurrentIdler;        // CGameIdler* (+0xe0: the frame's time, CGameCamera::UpdateZoom's keys)
 static uintptr_t a_SDL_AddEventWatch;     // SDL_AddEventWatch (SDL2 is linked in)
 
@@ -1175,6 +1182,9 @@ static struct symreq g_view_syms[] = {
 	{"_ZN8NDefines7NCamera23GALAXY_SPACE_SCALE_MULTE", &a_GalaxyScaleMult},
 	{"_ZN8NDefines7NCamera23SYSTEM_SPACE_SCALE_MULTE", &a_SystemScaleMult},
 	{"_Z17OnExecute_ObserveRK9CPdxArrayI7CStringiE", &a_ExecuteObserve},
+	{"_ZN15CTechnologyView4ShowE9ETechArea", &a_TechViewShowArea},
+	{"_ZN15CTechnologyView12OnResearchedE9ETechArea", &a_TechViewOnResearched},
+	{"_ZTV15CTechnologyView", &a_TechViewVtable},
 	{"g_CurrentIdler", &a_g_CurrentIdler},
 	{"SDL_AddEventWatch", &a_SDL_AddEventWatch},
 	{NULL, NULL},
@@ -2546,6 +2556,35 @@ static void open_planet_cmd(void *gs, const char *arg) {
 	reply_fmt("ok open_planet %d %s (view tab %d)", id, name[0] ? name : "", I32((char *)view + 0xc3a0));
 }
 
+// `tech_view select|researched AREA`: the research view's side windows, as its area's Select and
+// its Researched button open them. The view is the idler's ETopBarView 3 (+0xd38 + 8 x 3), checked
+// to be the CTechnologyView (its vtable) before its functions are called.
+static void tech_view_cmd(const char *line) {
+	static int resolved;
+	if (!resolved) {
+		if (resolve(g_topbar_view_syms) != 0) {
+			reply_fmt("error tech_view: missing symbols");
+			return;
+		}
+		resolved = 1;
+	}
+	char *idler = *(char **)a_g_CurrentInGameIdler;
+	char sub[32] = "", area[32] = "";
+	sscanf(line, "%31s %31s", sub, area);
+	int a = !strcmp(area, "physics") ? 0 : !strcmp(area, "society") ? 1 : !strcmp(area, "engineering") ? 2 : -1;
+	void *v = idler ? *(void **)(idler + 0xd38 + 8 * 3) : NULL;
+	if (!v || *(uintptr_t *)v != a_TechViewVtable + 16 || a < 0 || (strcmp(sub, "select") && strcmp(sub, "researched"))) {
+		reply_fmt("error tech_view: select|researched physics|society|engineering");
+		return;
+	}
+	if (!((_Bool (*)(void *))(*(void ***)v)[0x78 / 8])(v)) ((char (*)(void *, int))a_ToggleTopBarView)(idler, 3);
+	if (!strcmp(sub, "select"))
+		((void (*)(void *, int))a_TechViewShowArea)(v, a);
+	else
+		((void (*)(void *, int))a_TechViewOnResearched)(v, a);
+	reply_fmt("ok tech_view %s %s", sub, area);
+}
+
 static void view_game(void *gs) {
 	if (g_in_game_frames++ == 0) {
 		hlog("view: in game after %.3f s", now() - g_t0);
@@ -2653,6 +2692,8 @@ static void view_command(void *gs) {
 		const char *text = *(const char **)(res + 0x18);
 		size_t len = *(size_t *)(res + 0x20);
 		reply_fmt("%s observe: %.*s", res[0] ? "ok" : "error", (int)(len < 200 ? len : 200), text ? text : "");
+	} else if (!strcmp(verb, "tech_view")) {
+		tech_view_cmd(arg);
 	} else if (!strcmp(verb, "resize")) {
 		int w = 0, h = 0, ww = 0, wh = 0;
 		sscanf(arg, "%d %d", &w, &h);

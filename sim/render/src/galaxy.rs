@@ -102,6 +102,8 @@ pub struct Galaxy {
     pub sectors: Vec<(u32, Name)>,
     /// the player's sectors' capital systems (sector id -> system id)
     pub sector_capitals: HashMap<u32, u32>,
+    /// the left bar's views' data: each lua/render/windows module's `extract` (views.rs)
+    pub views: HashMap<String, crate::views::Value>,
     /// the outliner's and the observer outliner's view of the world (render.windows.outliner)
     pub outliner_view: crate::outliner::LuaData,
     /// what the map labels show (render.windows.mapicons: mapicons.rs)
@@ -226,7 +228,7 @@ pub struct PlanetInfo {
 }
 
 /// The renderer's Lua directory (`sim/render/lua` under `runtime::repo_dir`), for `package.path`.
-fn lua_dir() -> String {
+pub(crate) fn lua_dir() -> String {
     stellar_sim::runtime::repo_dir().join("sim/render/lua").to_string_lossy().replace('\\', "/")
 }
 
@@ -387,6 +389,7 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
             });
         }
         Ok(Galaxy {
+            views: crate::views::extract(runtime, game_dir),
             date: g.get("date")?,
             systems,
             lanes,

@@ -52,6 +52,7 @@ mod render;
 mod scene;
 mod ui;
 mod verify;
+mod views;
 mod window;
 mod worldgfx;
 

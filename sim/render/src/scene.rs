@@ -1198,7 +1198,7 @@ pub fn add_gui(
 ) {
     for item in items {
         match item {
-            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action, tint } => {
+            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action, tint, clip } => {
                 if kind == "inset" {
                     // an empty batch marks the inset's place (nothing merges into it)
                     batches.push(Batch { layer: Layer::Gui, blend: Blend::Alpha, texture: usize::MAX, quads: Vec::new() });
@@ -1221,7 +1221,9 @@ pub fn add_gui(
                 let (tw, th) = (img.width as f32, img.height as f32);
                 let n = (*frames).max(1);
                 let mut frame = (*frame).max(1);
-                if *button && (2..=4).contains(&n) {
+                // (a button in another frame keeps it: the game's frames show an active button,
+                // NGuiUtil::SetButtonActive's frame 3, unchanged under the mouse)
+                if *button && (2..=4).contains(&n) && frame == 1 {
                     frame = match states.get(path) {
                         Some(ButtonState::Hover) => 2,
                         Some(ButtonState::Pressed) => 3.min(n),
@@ -1231,6 +1233,10 @@ pub fn add_gui(
                 let (nf, f) = (n as f32, (frame.min(n) - 1) as f32);
                 let (u0, u1) = (f / nf, (f + 1.0) / nf);
                 let fw = tw / nf;
+                // a part of the frame (a progress bar's): its u range and the rectangle cut the same
+                let (a, b) = (clip[0].clamp(0.0, 1.0), clip[1].clamp(0.0, 1.0));
+                let (u0, u1, cx, cw) = (u0 + (u1 - u0) * a, u0 + (u1 - u0) * b, x + w * a, w * (b - a));
+                let (x, w) = (&cx, &cw);
                 let visible = {
                     let (a, bx) = ((u0 * tw) as u32, (u1 * tw) as u32);
                     (0..img.height).any(|yy| (a..bx.min(img.width)).any(|xx| img.pixel(xx, yy)[3] > 0))
