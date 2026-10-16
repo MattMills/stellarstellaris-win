@@ -416,6 +416,28 @@ impl Engine {
                 let r = crate::events::command(&mut self.app, rest)?;
                 Ok(Reply::ok(r))
             }
+            "open_view" => {
+                // a left bar button's view toggled (headless.c serves it too): views.rs; with KEY
+                // VALUE after the name, the view open with that state (`open_view technology
+                // select physics`: its select_window, as headless.c's CTechnologyView::Show)
+                match (a.first(), a.get(1), a.get(2)) {
+                    (Some(name), Some(key), Some(value)) => {
+                        if self.app.open_view.as_deref() != Some(*name) {
+                            self.app.toggle_view(name);
+                        }
+                        self.app.view_state.clear();
+                        self.app.set_view_state(&[(*key, *value)]);
+                        self.flush_log();
+                        Ok(Reply::ok(format!("open_view {}", a.join(" "))))
+                    }
+                    (Some(name), _, _) => {
+                        let shown = self.app.toggle_view(name);
+                        self.flush_log();
+                        Ok(Reply::ok(format!("open_view {name} {}", if shown { "shown" } else { "hidden" })))
+                    }
+                    _ => Err("open_view NAME [KEY VALUE]".into()),
+                }
+            }
             "observe" => {
                 // the game's console `observe` (headless.c serves it too): the player an observer
                 let m = self.app.map.as_mut().ok_or("no map loaded")?;

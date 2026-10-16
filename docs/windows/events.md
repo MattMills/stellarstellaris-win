@@ -116,6 +116,8 @@ none; the alert or the Situation Log leads to them). The save's own open event, 
   modifier panels hidden for a contact without an envoy **[I]**.
 - A window background's `position` moves it from the window's corner (render.gui, general **[V]**:
   the chapters frame at -58, -27 matches the frame to the pixel).
+- "Show First Contact" closes the Situation Log (App::close_view) and opens the view, as the
+  game: clicked in both, the whole frames differ by 3.9 / 4.2 / 3.9.
 - Measured: 4.3 / 4.3 / 4.1.
 
 ## Not done
@@ -130,5 +132,3 @@ none; the alert or the Situation Log leads to them). The save's own open event, 
   player has no found anomaly, dig site, rift or situation, so there is no game frame to check
   them against; not laid out.
 - The Empire Focus and Victory tabs; the Discoveries' Collection, Vivarium and Astral Actions tabs.
-- The first contact view leaves the Situation Log open under it (the game closes the top bar view;
-  views.rs' close_view is not in this branch).

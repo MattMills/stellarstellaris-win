@@ -57,6 +57,15 @@ function names.format(loc, n, depth)
             local a, noun = vars.adjective or first or "", vars["1"]
             return noun and vars.adjective and (a .. " " .. noun) or a
         end
+        if engine:match("^LEADER_%d+$") then
+            -- a leader's full name: its N parts in order ("%LEADER_2%" with "Oneggon" and
+            -- "Oilskin": "Oneggon Oilskin", the research view's head of research) [I]
+            local parts = {}
+            for i = 1, tonumber(engine:match("%d+")) do
+                parts[#parts + 1] = vars[tostring(i)]
+            end
+            return table.concat(parts, " ")
+        end
         if engine == "ADJ" then
             -- its name ("Sacred Uthabulan Order")
             return vars["1"] or first or ""
