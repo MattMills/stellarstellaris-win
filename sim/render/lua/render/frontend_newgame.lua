@@ -226,6 +226,19 @@ local function build_setup(ctx, state)
     -- (the portrait is 3D: not drawn)
     opts.hide[SP .. "/portrait_window/portrait"] = true
     local items, report = gui.layout(ctx.game_dir, ctx.db, SETUP_GUI, "gamesetup_setupview", ctx.screen, opts)
+    -- the player's flag: a creator design's empire_flag composed on the element's sprite
+    -- (GFX_empire_flag_128), as the creator's preview composes it (render.empire_preview)
+    local flag = type(e.design) == "table" and e.design.empire_flag
+    if type(flag) == "table" and e.kind ~= "random" then
+        local tex = require("render.empire_preview").flag_texture(ctx, "GFX_empire_flag_128", flag)
+        for _, it in ipairs(tex and items or {}) do
+            if it.path == P .. "/empire_flag" and it.kind == "sprite" then
+                it.texture = tex
+                it.sprite_kind = "flagSpriteType"
+                it.frames, it.frame = 1, 1
+            end
+        end
+    end
     merge(ctx.items, ctx.report, items, report)
 
     -- the AI empires' previews: one per AI empire, advanced and fallen ones after [I]

@@ -53,7 +53,11 @@ impl NewGameSettings {
         let mut s = NewGameSettings::default();
         for w in words {
             let (k, v) = w.split_once('=').ok_or(format!("{w}: KEY=VALUE"))?;
-            if k == "designs" {
+            if k == "empire_file" {
+                // a whole design (`key = { ... }`) from a file: the empire creator's, replayed
+                let text = std::fs::read_to_string(v).map_err(|e| format!("empire_file={v}: {e}"))?;
+                s.empire = Some(text);
+            } else if k == "designs" {
                 let text = std::fs::read_to_string(v).map_err(|e| format!("designs={v}: {e}"))?;
                 s.set("designs_text", &text);
             } else if k == "global_at" {
@@ -193,6 +197,14 @@ impl Progress {
 /// Returns the runtime and what was done.
 pub fn sim_runtime(game_dir: &str, settings: &NewGameSettings, progress: &Arc<Progress>) -> Result<(Runtime, String), String> {
     let t0 = std::time::Instant::now();
+    // STELLAR_NEWGAME_DUMP=FILE: the settings as given (FILE) and the empire's design (FILE.empire:
+    // `newgame ... empire_file=FILE.empire` starts the same game from a command)
+    if let Ok(path) = std::env::var("STELLAR_NEWGAME_DUMP") {
+        let _ = std::fs::write(&path, settings.describe());
+        if let Some(e) = &settings.empire {
+            let _ = std::fs::write(format!("{path}.empire"), e);
+        }
+    }
     let start = Date::from_ymd(2200, 1, 1);
     let runtime = Runtime::new(start, settings.global_seed()).map_err(|e| format!("the Lua runtime: {e}"))?;
     let lua = &runtime.lua;
@@ -237,6 +249,17 @@ pub fn sim_runtime(game_dir: &str, settings: &NewGameSettings, progress: &Arc<Pr
         let script: String = start_script.call(game)?;
         // InitPostGalaxyCreation's terra incognita: the maps, cleared in sensor range
         let post: String = lua.load("return require('engine.newgame.post').run()").eval()?;
+        // STELLAR_NEWGAME_EVAL=FILE: a Lua chunk run on the started world, its result logged (to
+        // look into a new game's world)
+        if let Ok(path) = std::env::var("STELLAR_NEWGAME_EVAL") {
+            match std::fs::read_to_string(&path) {
+                Ok(code) => match lua.load(code).set_name(path.as_str()).eval::<mlua::Value>() {
+                    Ok(v) => eprintln!("newgame eval: {}", v.to_string().unwrap_or_default()),
+                    Err(e) => eprintln!("newgame eval: {e}"),
+                },
+                Err(e) => eprintln!("newgame eval {path}: {e}"),
+            }
+        }
         Ok(format!(
             "{summary}\n{loaded}\n{script}\n{post}\nnew game: generated in {t1:.1} s, loaded in {:.1} s, started in {:.1} s",
             t2 - t1,

@@ -25,6 +25,36 @@ local NONE = save.NONE
 -- ---------------------------------------------------------------------------------------------
 -- definitions
 
+-- a design's name as save.lua's B:name writes it: a text (a prescripted design's `name =
+-- "NAME_..."`) as is; a name block (user_empire_designs' and the empire creator's `name = { key =
+-- "United Nations" literal = yes variables = { { key = "adjective" value = { ... } } } }`) as
+-- { key, literal, variables = { { name, value } } }
+local function name_of(v)
+    if type(v) ~= "table" then
+        return v
+    end
+    local key = field(v, "key")
+    if type(key) ~= "string" then
+        return nil
+    end
+    local n = { key = key, literal = field(v, "literal") == "yes" or nil }
+    local vars = field(v, "variables")
+    if type(vars) == "table" then
+        n.variables = {}
+        for _, item in ipairs(vars) do
+            if type(item) == "table" and not item.op then
+                local k = field(item, "key")
+                local value = name_of(field(item, "value"))
+                if k and value then
+                    n.variables[#n.variables + 1] = { k, value }
+                end
+            end
+        end
+    end
+    return n
+end
+empires.name_of = name_of
+
 local function texts(block)
     local out = {}
     for _, v in ipairs(type(block) == "table" and block or {}) do
@@ -344,11 +374,14 @@ function empires.design(ctx, game, design_name, index)
     local sp = field(b, "species") or {}
     local e = {
         index = index, design = design_name, country = index,
-        name = field(b, "name") or design_name, adjective = field(b, "adjective"),
+        name = name_of(field(b, "name")) or design_name, adjective = name_of(field(b, "adjective")),
         species = {
             class = field(sp, "class") or "MAM", portrait = field(sp, "portrait") or "mam1",
-            name = field(sp, "name") or "SPEC_Human", plural = field(sp, "plural") or "SPEC_Human_pl",
-            adjective = field(sp, "adjective"), name_list = field(sp, "name_list") or "HUMAN1",
+            -- (a user design's species names are species_name / species_plural / species_adjective)
+            name = name_of(field(sp, "name") or field(sp, "species_name")) or "SPEC_Human",
+            plural = name_of(field(sp, "plural") or field(sp, "species_plural")) or "SPEC_Human_pl",
+            adjective = name_of(field(sp, "adjective") or field(sp, "species_adjective")),
+            name_list = field(sp, "name_list") or "HUMAN1",
             traits = fields(sp, "trait"),
         },
         authority = field(b, "authority") or "auth_democratic",
@@ -356,8 +389,8 @@ function empires.design(ctx, game, design_name, index)
         civics = texts(field(b, "civics")),
         ethics = fields(b, "ethic"),
         origin = field(b, "origin") or "origin_default",
-        planet_name = field(b, "planet_name"),
-        system_name = field(b, "system_name"),
+        planet_name = name_of(field(b, "planet_name")),
+        system_name = name_of(field(b, "system_name")),
         initializer = field(b, "initializer"),
         graphical_culture = field(b, "graphical_culture") or "mammalian_01",
         city_graphical_culture = field(b, "city_graphical_culture") or field(b, "graphical_culture") or "mammalian_01",
@@ -438,6 +471,23 @@ function empires.home_planet(ctx, G, game, e)
     end
     e.home = home
     if e.system_name then
+        -- the planets' and moons' names made from the system's (PLANET_NAME_FORMAT's PARENT,
+        -- systems.lua) follow it: "Sol II", not the generated name's [I]
+        local old = sys.name
+        local function rename(n, depth)
+            if type(n) ~= "table" or depth > 4 then return end
+            for _, kv in ipairs(n.variables or {}) do
+                if kv[2] == old then
+                    kv[2] = e.system_name
+                else
+                    rename(kv[2], depth + 1)
+                end
+            end
+        end
+        for _, pid in ipairs(sys.planets) do
+            local p = game.planets[pid]
+            if p then rename(p.name, 0) end
+        end
         sys.name = e.system_name
     end
     if home then

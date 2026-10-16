@@ -73,6 +73,8 @@ pub struct Pending {
     pub started: Instant,
     /// RestoreDeviceObjects' step (0..100) once the game is made
     pub map_gfx: Option<i32>,
+    /// when the map was made (the wait for the capital system's bodies)
+    pub map_at: Option<Instant>,
     /// what the simulation's thread reported when it was done
     pub report: Option<String>,
 }
@@ -1739,6 +1741,7 @@ impl App {
             picture: crate::newgame::background(&self.game_dir, seed),
             started: Instant::now(),
             map_gfx: None,
+            map_at: None,
             report: None,
         });
         self.show(Screen::Loading);
@@ -1779,6 +1782,20 @@ impl App {
                 self.scene = None;
             }
             Some(_) => {
+                // the capital's system as the simulation sends it (its bodies and ships: its
+                // thread reads the models' index first, seconds on a medium galaxy): the load
+                // screen stays at LOAD_MAP_GFX until it has come, as RestoreDeviceObjects makes
+                // the map's graphics before DestroyLoadScreen (at most 60 s)
+                if let (MapView::System(i), Some(map)) = (self.view, self.map.as_mut()) {
+                    let id = map.galaxy.systems[i].id;
+                    map.sync();
+                    let has = map.snapshot.as_ref().and_then(|s| s.system.as_ref()).is_some_and(|(sid, _)| *sid == id);
+                    let p = self.pending.as_mut().unwrap();
+                    let since = *p.map_at.get_or_insert_with(Instant::now);
+                    if !has && since.elapsed() < std::time::Duration::from_secs(60) {
+                        return Ok(false);
+                    }
+                }
                 // DestroyLoadScreen: the game is shown
                 let p = self.pending.take().unwrap();
                 self.log.push(format!("new game ({}) started in {:.1} s", p.settings.describe(), p.started.elapsed().as_secs_f64()));
@@ -1803,7 +1820,7 @@ impl App {
         let t0 = Instant::now();
         while self.screen == Screen::Loading && self.pending.is_some() {
             self.loading(0.016)?;
-            if self.pending.as_ref().is_some_and(|p| p.map_gfx.is_none()) {
+            if self.pending.is_some() {
                 std::thread::sleep(std::time::Duration::from_millis(16));
             }
         }

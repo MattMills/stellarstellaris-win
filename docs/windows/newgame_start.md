@@ -122,7 +122,33 @@ only) and the fleets at Sol, but every generated ship's design gives sensor rang
 starbase's station fleet (fleet 0) has no `movement_manager.coordinate.origin`, so nothing reaches
 past Sol: the start objects' data (session ng-effects), not the pass.
 
-## 5. Not done
+## 5. A creator-made empire (render-newgame-1)
+
+Through the empire creator (Done, Yes, Play), three faults, fixed on branch ng-start-fix:
+
+- **Names "nil"**: a user design's names are name blocks (`name = { key = "United Nations" literal
+  = yes }`, `system_name`, `planet_name`, the species' `species_name` / `species_plural` /
+  `species_adjective`); empires.lua passed the parsed block to save.lua's `B:name`, which wants
+  `{ key, literal, variables }`, so every key was written `"nil"`. `empires.name_of` converts them
+  (a prescripted design's texts pass as they are). The renamed home system's planets and moons
+  follow its name ("Sol IIa", not the generated name's) [I].
+- **An empty home system**: the world was right (system 9 with its 20 planets), but the first frame
+  showed 0 bodies: the map asks the simulation's thread for the system and waits a second, and
+  that thread reads the models' index first (1.5 s on a medium galaxy). The load screen now stays
+  at LOAD_MAP_GFX until the capital's system has come (at most 60 s): the first frame has its
+  bodies and ships.
+- **No flag in Game Details** for a custom design: the setup view's `empire_flag` now gets the
+  design's `empire_flag` composed on GFX_empire_flag_128 (render.empire_preview.flag_texture).
+  (`render.newgame_design`, which frontend_newgame.lua requires for the preview's texts, does not
+  exist: the empire's name and species texts there stay empty.)
+
+Tools: `newgame ... empire_file=FILE` (a whole design from a file), `STELLAR_NEWGAME_DUMP=FILE`
+(the settings a start was given, and FILE.empire its design), `STELLAR_NEWGAME_EVAL=FILE` (a Lua
+chunk run on the started world, its result logged). Checked on .24 (/root/ngf): the creator flow,
+its design replayed by command, the tiny parity run (the game's known systems, 10 days) and medium
+seed 7 (30 days), 0 errors; cargo test 24 passed.
+
+## 6. Not done
 
 - The game's own frames of its load screen (the headless path writes gamestates, not frames): the
   load screen's picture scaling and the status window's place are unverified against a game
