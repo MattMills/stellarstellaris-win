@@ -43,13 +43,27 @@ pub struct EventsUi {
     pub first_contact: Option<i64>,
     /// the data chunk loaded into the runtime last (to load it again only when it changed)
     chunk: String,
+    /// the message settings open (an event window's settings button): the message type they are
+    /// filtered to
+    pub msg_type: Option<String>,
+    /// the message settings changed (message type -> notification, toast, popup, pause -> on),
+    /// over common/message_types' defaults (the renderer's; the game keeps them in its settings)
+    pub msg: HashMap<String, HashMap<String, bool>>,
+    /// the settings when the window opened (Cancel and Discard Changes go back to them)
+    msg_before: HashMap<String, HashMap<String, bool>>,
+    /// an event fired whose message type auto-pauses: the game to pause (App takes it)
+    want_pause: bool,
+    /// the tracked entries' systems of the data loaded, and whether they changed (the map's
+    /// scene to build again: App takes it)
+    trackers: Vec<i64>,
+    trackers_changed: bool,
 }
 
 /// The actions these windows' buttons carry: the event windows' (`event:`), the popups'
 /// (`popup:`), the first contact view's (`fc:`), and the Situation Log's that move the camera
 /// (`sitlog:`). (Discoveries' artifact actions are `cmd:discoveries:artifact:KEY`, views.rs.)
 pub fn handles(action: &str) -> bool {
-    ["event:", "popup:", "fc:", "sitlog:"].iter().any(|p| action.starts_with(p))
+    ["event:", "popup:", "fc:", "sitlog:", "msgset:"].iter().any(|p| action.starts_with(p))
 }
 
 /// A command of a windows module run in the simulation between days (views.rs' frame: the
@@ -72,7 +86,9 @@ fn focus_system(app: &mut App, system: i64) -> Result<(), String> {
 fn galaxy_focus(app: &mut App, system: i64) -> Result<(), String> {
     let (x, y) = app.map.as_ref().and_then(|m| m.galaxy.systems.iter().find(|s| s.id as i64 == system).map(|s| (s.x, s.y))).ok_or(format!("no system {system}"))?;
     app.show_galaxy();
-    if let Some(mut c) = app.camera {
+    // the camera's goal: with a smooth camera (the window) show_galaxy starts the camera at
+    // distance 0.001 and flies it out to the goal
+    if let Some(mut c) = app.camera_goal.or(app.camera) {
         c.target = crate::math::V3(x, 0.0, y);
         app.set_camera(c);
     }
@@ -116,7 +132,10 @@ pub fn key(app: &App, key: &str) -> Option<String> {
 /// (ESCAPE: popup.gui's invisible button), the first contact view's close (ESCAPE). The event window's
 /// close has no shortcut. Whether it closed something.
 pub fn escape(app: &mut App) -> bool {
-    let a = if !app.events.popups.is_empty() {
+    let a = if app.events.msg_type.is_some() {
+        // the settings window's close button: ESCAPE
+        "msgset:cancel".to_string()
+    } else if !app.events.popups.is_empty() {
         format!("popup:decline:{}", app.events.popups.len())
     } else if app.events.first_contact.is_some() {
         "fc:close".to_string()
@@ -203,6 +222,24 @@ impl EventsUi {
                     self.open.retain(|e| *e != id);
                 }
             }
+            // the message settings: opened on an event's type, closed (Back, Apply, the close
+            // button), reset (their defaults), a checkbox set
+            ["event", "settings", t] => {
+                self.msg_type = Some(t.to_string());
+                self.msg_before = self.msg.clone();
+            }
+            // Apply & Close keeps them; Cancel (and Escape) puts them back and closes; Discard
+            // Changes puts them back; Reset Default clears them
+            ["msgset", "close"] => self.msg_type = None,
+            ["msgset", "cancel"] => {
+                self.msg = self.msg_before.clone();
+                self.msg_type = None;
+            }
+            ["msgset", "discard"] => self.msg = self.msg_before.clone(),
+            ["msgset", "reset"] => self.msg.clear(),
+            ["msgset", "set", t, k, v] => {
+                self.msg.entry(t.to_string()).or_default().insert(k.to_string(), *v == "1");
+            }
             ["popup", _, k] => {
                 if let Ok(k) = k.parse::<usize>() {
                     if k >= 1 && k <= self.popups.len() {
@@ -215,16 +252,64 @@ impl EventsUi {
     }
 
     /// The world's data read: the events it no longer has close; one the simulation opened since
-    /// the last read opens its window.
-    fn update(&mut self, events: &[(i64, String, bool)]) {
+    /// the last read opens its window when its message type's popup is on, and pauses the game
+    /// when its auto-pause is (`decide`: the type's popup and pause).
+    fn update(&mut self, events: &[(i64, String, bool, String)], decide: impl Fn(&str) -> (bool, bool)) {
         let ids: HashSet<i64> = events.iter().map(|e| e.0).collect();
         self.open.retain(|e| ids.contains(e));
-        for (id, _, fired) in events {
+        for (id, _, fired, ty) in events {
             if self.seen.insert(*id) && self.started && *fired {
-                self.open.push(*id);
+                let (popup, pause) = decide(ty);
+                if popup {
+                    self.open.push(*id);
+                }
+                self.want_pause |= pause;
             }
         }
         self.started = true;
+    }
+
+    /// Whether the trackers changed since the last call (the galaxy's scene to build again).
+    pub fn take_trackers_changed(&mut self) -> bool {
+        std::mem::take(&mut self.trackers_changed)
+    }
+
+    /// Whether an event fired that pauses the game (once).
+    pub fn take_pause(&mut self) -> bool {
+        std::mem::take(&mut self.want_pause)
+    }
+}
+
+/// The trackers of the Situation Log's tracked entries on the galaxy (CPingMapManager: a
+/// CPingMapInstance per tracked entry, gfx/pingmap's first_contact_tracker, situation_tracker ...:
+/// `galaxy_entity = project_tracker_galaxy_effect_entity`, whose particle is
+/// project_tracker_galaxy_effect_particle, an orange hexagon and its growing halo), at each
+/// tracked entry's system, the entity's scale 1 in the game's galaxy world (2 x the map's units:
+/// half of it here) [I]. The systems: the windows' data (RENDER_EVENTS_DATA.trackers). Not in a
+/// system's view (its system_entity is not placed) [I].
+pub fn draw_trackers(scene: &mut crate::scene::Scene, ui_runtime: &Runtime, map: &mut crate::Map, view: crate::app::MapView, game_dir: &str) {
+    if view != crate::app::MapView::Galaxy {
+        return;
+    }
+    let systems = tracker_systems(&ui_runtime.lua);
+    if systems.is_empty() {
+        return;
+    }
+    let effect = match map.particles.effect(&map.runtime, game_dir, "project_tracker_galaxy_effect_particle") {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("events: the tracker's particle: {e}");
+            return;
+        }
+    };
+    let cache = map.cache.clone();
+    let mut cache = cache.borrow_mut();
+    for sys in systems {
+        let Some(s) = map.galaxy.systems.iter().find(|s| s.id as i64 == sys) else { continue };
+        let m = crate::math::M4::translation(crate::math::V3(s.x, 0.0, s.y)).mul(&crate::math::M4::scaling(0.5));
+        for (layer, blend, t, q) in crate::particles::billboards(&effect, &m, sys as u32, &mut map.textures, &mut cache, game_dir) {
+            crate::scene::push(&mut scene.batches, layer, blend, t, q);
+        }
     }
 }
 
@@ -267,18 +352,31 @@ fn export_metrics(lua: &mlua::Lua, name: &str, font: &Font) -> mlua::Result<()> 
     all.set(name, m)
 }
 
-/// The events of the data loaded (RENDER_EVENTS_DATA): (id, event, fired since the load).
-fn event_list(lua: &mlua::Lua) -> mlua::Result<Vec<(i64, String, bool)>> {
+/// The events of the data loaded (RENDER_EVENTS_DATA): (id, event, fired since the load, its
+/// message type).
+fn event_list(lua: &mlua::Lua) -> mlua::Result<Vec<(i64, String, bool, String)>> {
     let mut out = Vec::new();
     if let Some(d) = lua.globals().get::<Option<Table>>("RENDER_EVENTS_DATA")? {
         if let Some(evs) = d.get::<Option<Table>>("events")? {
             for e in evs.sequence_values::<Table>() {
                 let e = e?;
-                out.push((e.get::<Option<i64>>("id")?.unwrap_or(-1), e.get::<Option<String>>("event")?.unwrap_or_default(), e.get::<Option<bool>>("fired")?.unwrap_or(false)));
+                out.push((
+                    e.get::<Option<i64>>("id")?.unwrap_or(-1),
+                    e.get::<Option<String>>("event")?.unwrap_or_default(),
+                    e.get::<Option<bool>>("fired")?.unwrap_or(false),
+                    e.get::<Option<String>>("message_type")?.unwrap_or_else(|| "EVENT_MESSAGE_TYPE".into()),
+                ));
             }
         }
     }
     Ok(out)
+}
+
+/// The tracked entries' systems of the data loaded (RENDER_EVENTS_DATA.trackers).
+fn tracker_systems(lua: &mlua::Lua) -> Vec<i64> {
+    lua.load("local out = {} for _, t in ipairs((RENDER_EVENTS_DATA or {}).trackers or {}) do out[#out + 1] = t.system end return out")
+        .eval::<Vec<i64>>()
+        .unwrap_or_default()
 }
 
 /// Loads the world's data chunk into the runtime when it changed.
@@ -290,9 +388,36 @@ fn load_data(ui: &mut EventsUi, runtime: &Runtime, chunk: &str) -> Result<(), St
     let data: mlua::Value = if chunk.is_empty() { mlua::Value::Nil } else { lua.load(chunk).eval().map_err(|e| format!("events data: {e}"))? };
     lua.globals().set("RENDER_EVENTS_DATA", data).map_err(|e| e.to_string())?;
     ui.chunk = chunk.to_string();
+    let trackers = tracker_systems(lua);
+    if trackers != ui.trackers {
+        ui.trackers = trackers;
+        ui.trackers_changed = true;
+    }
     let list = event_list(lua).map_err(|e| e.to_string())?;
-    ui.update(&list);
+    let overrides = msg_table(lua, &ui.msg).map_err(|e| e.to_string())?;
+    let decide = |ty: &str| -> (bool, bool) {
+        let f = || -> mlua::Result<(bool, bool)> {
+            let m: Table = lua.load("return require('render.windows.message_settings')").eval()?;
+            let f: mlua::Function = m.get("effective")?;
+            f.call((lua.globals().get::<String>("RENDER_GAME_DIR")?, ty, overrides.clone()))
+        };
+        f().unwrap_or((true, true))
+    };
+    ui.update(&list, decide);
     Ok(())
+}
+
+/// The message settings changed, as a Lua table (type -> { notification = .. popup = .. }).
+fn msg_table(lua: &mlua::Lua, msg: &HashMap<String, HashMap<String, bool>>) -> mlua::Result<Table> {
+    let t = lua.create_table()?;
+    for (ty, m) in msg {
+        let s = lua.create_table()?;
+        for (k, v) in m {
+            s.set(k.as_str(), *v)?;
+        }
+        t.set(ty.as_str(), s)?;
+    }
+    Ok(t)
 }
 
 /// These windows' items over the map, for a screen of `width` x `height`, in the map's runtime
@@ -311,7 +436,7 @@ pub fn items(ui: &mut EventsUi, runtime: &Runtime, game_dir: &str, fonts: &mut H
     for (name, f) in fonts.iter() {
         export_metrics(lua, name, f).map_err(|e| e.to_string())?;
     }
-    if ui.open.is_empty() && ui.popups.is_empty() && ui.first_contact.is_none() {
+    if ui.open.is_empty() && ui.popups.is_empty() && ui.first_contact.is_none() && ui.msg_type.is_none() {
         return Ok(Vec::new());
     }
     let read = || -> mlua::Result<Vec<GuiItem>> {
@@ -328,6 +453,10 @@ pub fn items(ui: &mut EventsUi, runtime: &Runtime, game_dir: &str, fonts: &mut H
         state.set("popups", popups)?;
         if let Some(fc) = ui.first_contact {
             state.set("first_contact", fc)?;
+        }
+        if let Some(t) = &ui.msg_type {
+            state.set("message_type", t.as_str())?;
+            state.set("message_settings", msg_table(lua, &ui.msg)?)?;
         }
         lua.globals().set("RENDER_EVENTS_STATE", state)?;
         let t: Table = lua
@@ -363,12 +492,20 @@ pub fn command(app: &mut App, arg: &str) -> Result<String, String> {
     if arg == "influence" {
         return world_do(app, "events_data", &["influence"]).map(|r| format!("event {r}"));
     }
+    // the simulation's commands of these windows, for the checks (events_commands.lua):
+    // `event effect TEXT` (the game's console `effect`), `event start_situation TYPE`, `event stock
+    // RESOURCE`, `event approach SITUATION KEY`, `event relic KEY`
+    let (verb, rest) = arg.split_once(' ').unwrap_or((arg, ""));
+    if matches!(verb, "effect" | "start_situation" | "stock" | "approach" | "relic" | "modifiers") {
+        let args: Vec<&str> = if verb == "effect" { vec![verb, rest.trim()] } else { std::iter::once(verb).chain(rest.split_whitespace()).collect() };
+        return world_do(app, "events_data", &args).map(|r| format!("event {r}"));
+    }
     if arg.is_empty() {
-        let names: Vec<String> = list.iter().map(|(id, name, _)| format!(" {id}:{name}")).collect();
+        let names: Vec<String> = list.iter().map(|(id, name, _, _)| format!(" {id}:{name}")).collect();
         return Ok(format!("event{}", names.concat()));
     }
     let id: i64 = arg.parse().map_err(|_| format!("event {arg}: an id"))?;
-    let (_, name, _) = list.iter().find(|e| e.0 == id).ok_or(format!("event {id}: no such open player event"))?;
+    let (_, name, _, _) = list.iter().find(|e| e.0 == id).ok_or(format!("event {id}: no such open player event"))?;
     let name = name.clone();
     app.events.act(&format!("event:open:{id}"));
     app.relayout();

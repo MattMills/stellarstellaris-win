@@ -138,27 +138,43 @@ renderer under Xvfb with xdotool, 2210.01.01 from Load Game).
 | event focus button (Q) | NGuiUtil::FocusOnScope of the event's location: the system entered | wired: S, G (`state` view system 142 after the click, both) |
 | event close (X) | the window closed, the event stays open (no shortcut: Escape does not close it [V .gui]) | wired: S |
 | event window background | brought to the front (MoveToFront) | wired: S |
-| message settings button | the message settings popup | not done (its window is not laid out) |
+| message settings button | the message settings on the event's message type (Setup's lambda 0x2d330b0: CMainMenuView::ShowMessageSearchFilter, the type's setting name): the Settings window's Messages tab filtered to it (message_settings.lua); its checkboxes, Reset, Discard, Apply & Close, Back and Escape; a fired event opens its window only when its type's popup is on and pauses the game when its auto-pause is (events.rs) | wired: S (the window filtered to "Event", Popup and Auto-Pause on; clones.14 fired paused the clock; Auto-Pause off, Apply & Close, the next one did not); not W: no event window opens in the window without the `event` command |
 | Situation Log tabs (Z, X) | Log, Findings | wired: S, W (Empire Focus and Victory: not laid out) |
 | a row | selects the entry | wired: S, W |
 | a category header | folds or unfolds a collapsible category (the arrow's frames 1 / 2) | wired: S, G (same frames), W |
-| a row's pin | the entry to "Priorities" and back (GFX_button_pin_pinned) | wired: S, G (1.7 / 2.3 / 2.0 against the game's frame), W; kept only while the view is open [I] |
-| track | the selected entry tracked (its dot in the list) | UI only: the map's tracking marker not drawn |
-| goto | the galaxy over the entry's system, at the distance the game leaves a system with | wired: S, G (galaxy, target 97.44 162.96 in both) |
+| a row's pin | the entry to "Priorities" and back (GFX_button_pin_pinned), kept by the simulation (`cmd:events_data:pin:KIND:KEY`, events_commands' `pinned`) | wired: S, G (1.7 / 2.3 / 2.0 against the game's frame), W (the test save's Energy Shortages to Priorities) |
+| track | the selected entry tracked (CTrackSituationLogEntryCommand: `cmd:events_data:track:KIND:KEY`, its dot in the list) and its tracker on the galaxy map: gfx/pingmap's project_tracker_galaxy_effect_particle (CPingMapInstance, orange hexagon and halo) over the entry's system (a first contact's location, a situation's planet or system), events.rs `draw_trackers` | wired: S (first contact 19 tracked: the marker at Gallamun), W: the window's scenes carry it (system 142) but it is not seen on the window's surface (Bgra8Unorm), and it is faint offscreen: too dim [I: the particle's colour and alpha curves]; the map's scene is built again when the tracked systems change (events.rs `take_trackers_changed`) |
+| goto | the galaxy over the entry's system, at the distance the game leaves a system with (the camera's goal: with the window's smooth camera show_galaxy starts at distance 0.001) | wired: S, G (galaxy, target 97.44 162.96 in both), W |
 | close (Escape) | the view closed (no side windows: `escape_keys = {}`) | wired: S, W |
 | Show First Contact (RETURN in its subview) | the first contact view; the log closes | wired: S, G, W (the RETURN shortcut not wired) |
 | first contact view option | the contact's open event answered (as an event option), the view closed | wired: S, W |
 | first contact view goto | the galaxy over the contact's system [I: as the log's goto] | wired: S |
 | first contact view close (Escape) | closed | wired: S |
 | first contact view, answered | "Nothing to report" (no_report_icon, no_report_text), no text or options [I] | wired: S |
-| Discoveries row (artifact action) | CArtifactActionCommand: when its potential and allow hold and the stockpile pays it, the cost paid (the stockpile, as empire_commands' pay) and its effect run in the simulation (`cmd:discoveries:artifact:KEY`); otherwise the row takes no click (no button shown) | wired, effect untested: no save has minor artifacts (2210.01.01 to 2212.07.01) |
+| Discoveries row (artifact action) | CArtifactActionCommand: when its potential and allow hold and the stockpile pays it, the cost paid (the stockpile, as empire_commands' pay) and its effect run in the simulation (`cmd:discoveries:artifact:KEY`); otherwise the row takes no click (no button shown) | wired: S (`event effect add_resource = { minor_artifacts = 200 }`, Sell to Private Collectors: artifacts 200 -> 150, energy 9084 -> 9584, the row then off by its cooldown), W (the test save: 200 -> 150, energy 9.0K -> 9.5K) |
 | Discoveries tabs (Z), close (Escape), left bar | as the views frame | wired: S, W |
-| relic slots | activate a relic | not done (no relics in the saves) |
-| popups (OK RETURN, Decline ESCAPE) | closed | wired, but nothing opens a popup yet |
-| situations' approaches | CSituation's approach change | not done: the player has no situation in the saves, the situation subview is not laid out |
+| relic slots | CRelicGridEntry::Activate posts CActivateRelicCommand (no popup): when the relic's `possible` holds and the stockpile pays its activation_cost, the cost paid and its active_effect run (`cmd:events_data:relic:KEY`); the triumph (relic_activation_cooldown) then shown, "Triumph Active For: £time£ N", the slot's frame GFX_relics_frame_active | wired: S (r_khans_throne granted by `event effect add_relic = r_khans_throne`: unity 3131 -> 131, drums_of_war and relic_activation_cooldown 3600 days, a second activation refused), W (the test save's relic: unity 3.1K -> 131, "Triumph Active For: 3600") |
+| popups (OK RETURN, Decline ESCAPE) | closed | wired; no button of these windows opens a popup.gui popup in the game [V: the callers of CPopupMessage's constructors are the planet, fleet order, load/save and federation views and CGameState::HandleTurnTick's debug "Run Finished"], so none is opened here |
+| situations' approaches | a `situation_approach_entry` per approach whose potential holds (165 apart, centred, 4 a row), the current one selected, one not allowed greyed; a click sets it (CSetSituationApproachCommand: `cmd:events_data:approach:SID:KEY`, its cost paid, on_select run) | wired: S (`event start_situation situation_energy_deficit`: situation 12, progress 15, the approach switched), W (the test save's situation 100: Cut Scientific Investment selected) |
 
 Commands added for these checks: `event fire NAME` (the game's console `event NAME`: the event
-fired for the player in the simulation), `event influence`.
+fired for the player in the simulation), `event influence`, and (renderer, the simulation's
+world; events_commands.lua):
+
+| command | |
+|---|---|
+| `event effect TEXT` | an effect run on the player's country (`add_resource = { minor_artifacts = 200 }`, `add_relic = KEY`: the engine has no add_relic, events_commands adds it [I]) |
+| `event start_situation TYPE` | a situation of common/situations started for the player (its start_value or initial_progress, the stages' ends, the default approach; on_start run) |
+| `event stock RES` | the player's stockpile of RES |
+| `event approach SID KEY`, `event relic KEY` | as the buttons |
+| `event modifiers` | the player's timed modifiers (`KEY:DAYS ...`) |
+
+The real-window test save (W, on .24 `/root/ev/saves/sit_test.sav`, listed by Load Game with
+`STELLAR_SAVE` there): 2210.01.01 with a `situation_energy_deficit` situation (100) for the
+player, r_khans_throne in its relics and 200 minor artifacts.
+
+Script gotchas, the views' data: in lockstep (`timestep`) a view's data waits for the
+simulation's snapshot, which may come long after; without `timestep` the commands wait for it.
 
 Script gotchas: in lockstep (`timestep`) a click needs a `move` there a few frames before (the
 button is taken from the hover), and a second click at the same place within 500 ms is a double
@@ -170,9 +186,14 @@ click; after `open_view` the view's data arrives with the next snapshot.
   difficulty's modifiers (the game shows 7 for the save's 5), the roll's time bar, the goto
   button's sprite in the Log tab, the second stage icon's state and the unknown silhouette.
 - The popups (popup.gui `ok_popup_window`, `yes_no_popup_window`) are laid out by events.lua, but
-  nothing in the renderer opens one yet and no game frame of one was taken (CPopupMessage's
-  placement not read) **[I]**.
-- The anomaly, archaeology and astral rift views and the situation subview: the 2210.01.01
-  player has no found anomaly, dig site, rift or situation, so there is no game frame to check
-  them against; not laid out.
+  no game frame of one was taken (CPopupMessage's placement not read) **[I]**; these windows open
+  none (above).
+- The anomaly, archaeology and astral rift views: the 2210.01.01 player has no found anomaly, dig
+  site or rift, so there is no game frame to check them against; not laid out.
+- The situation subview: no game frame (a situation needs a modified save): the progress bar, its
+  pin and the approaches are laid out [I]; the stage icons, the details' effects and the outcomes
+  are not. The month's change is not computed (the simulation does not advance situations).
+- The message settings: the settings are the renderer's, not kept between runs (the game's are
+  in its settings file); the search box is not editable; the notification and toast settings
+  change nothing (no notifications or toasts).
 - The Empire Focus and Victory tabs; the Discoveries' Collection, Vivarium and Astral Actions tabs.
