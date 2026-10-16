@@ -123,6 +123,9 @@ end
 --   opts.positions: element path -> { x, y } (a window at another of its places: hide_position)
 --   opts.sprites: element path -> sprite name (an icon the game sets at run time)
 --   opts.tints: element path -> { r, g, b, a } (a sprite coloured: the map labels' relation colour)
+--   opts.textures: element path -> a texture file, or a sprite's name (an icon the game sets at run
+--                  time: CIconBase::SetTextureFile, NGuiUtil::SetInstantSprite: civics', origins',
+--                  ethics' icons), drawn in the element's sprite's frame size (else the texture's)
 --   opts.progress: element path -> 0..1 (a progressbarType's state: progress.shader draws its
 --                 textureFile1 where u <= the state, its textureFile2 after; an item's `clip` is
 --                 the { u0, u1 } of its frame drawn, its rectangle cut the same)
@@ -383,7 +386,28 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             if (kind ~= "icontype" or (opts.actions and opts.actions[path])) and field("alwaysTransparent") ~= "yes" then
                 button = { name = name, id = field("id"), action = opts.actions and opts.actions[path] }
             end
-            if sprite then
+            local tex = opts.textures and opts.textures[path]
+            -- (an icon's definition may name a sprite instead of a file: the sprite)
+            if tex and db.sprites[tex] then
+                sprite, tex = tex, nil
+            end
+            if tex then
+                local tw, th = opts.texture_size(tex)
+                if tw then
+                    if w == 0 or h == 0 then
+                        w, h = tw * scale, th * scale
+                        report.rects[path] = { x = x, y = y, w = w, h = h }
+                    end
+                    items[#items + 1] = {
+                        kind = "sprite", path = path, sprite = tex, texture = tex, sprite_kind = "spriteType",
+                        frame = 1, frames = 1, x = x, y = y, w = w, h = h, button = button,
+                        tint = opts.tints and opts.tints[path] or nil,
+                    }
+                    report.sprites = report.sprites + 1
+                else
+                    report.missing_sprites[#report.missing_sprites + 1] = tex
+                end
+            elseif sprite then
                 sprite_item(path, sprite, frame, x, y, w, h, button)
             end
             -- its buttonText (or `text`: the galactic community's assign_button shows its
@@ -393,8 +417,12 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             local given = opts.text and opts.text[path]
             if (bt and bt ~= "") or (given and kind ~= "icontype") then
                 local text = given or bt
-                text_item(path .. "/text", field("buttonFont") or field("font"), text, x, y, w, h, "center", "center",
-                    field("text_color_code"))
+                -- in the button's `format` (centred by default) within its borderSize (the leaders
+                -- view's list headers: left, after the expand icon)
+                local bs = field("borderSize")
+                local bx = type(bs) == "table" and number(get(bs, "x"), vars) or 0
+                text_item(path .. "/text", field("buttonFont") or field("font"), text, x + bx, y, w - 2 * bx, h,
+                    (field("format") or "center"):lower(), "center", field("text_color_code"))
             end
         elseif TEXTS[kind] then
             local text = opts.text and opts.text[path]
@@ -402,7 +430,14 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                 text = field("text") or ""
             end
             local valign = field("vertical_alignment")
-            text_item(path, field("font"), tostring(text), x, y, w, h, field("format"),
+            -- a box without fixedSize grows to fit its lines (the game's frames: the species
+            -- view's two-line names in a 30 high box); a fixed one cuts its text (the outliner's
+            -- names) [I: the rule read from the frames]
+            local th = h
+            if field("fixedSize") ~= "yes" and (valign == nil or valign:lower() == "top") then
+                th = h * 8
+            end
+            text_item(path, field("font"), tostring(text), x, y, w, th, field("format"),
                 valign and valign:lower() or "top", field("text_color_code"))
         end
     end
