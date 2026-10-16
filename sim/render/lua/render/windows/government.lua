@@ -44,8 +44,16 @@ function M.data(cid, state)
     d.ruler = ruler and leaders.leader_data(ruler, c) or nil
     d.founder = leaders.species_data(tonumber(world.field(c, "founder_species_ref")))
     -- the founder species' pops (POPS_IN_WORLD's NO: the game's frame, 2.6K of 5.3K)
-    local count = leaders.country_species(c)
+    local count, order = leaders.country_species(c)
     d.founder_pops = d.founder and count[d.founder.id] or d.pops
+    -- the country's species (the pie chart's list), their names and pops
+    d.species = {}
+    for _, sp in ipairs(order) do
+        local s = leaders.species_data(sp)
+        if s then
+            d.species[#d.species + 1] = { id = sp, name = s.name, pops = count[sp] }
+        end
+    end
     return d
 end
 
@@ -187,6 +195,50 @@ function M.build(ctx, d, state)
         local rc = r.rects[G .. "portrait_window/ruler_container"]
         if rc and d.ruler then
             leaders.card(ctx, b, "paragon_portrait_container_ruler_government", rc, d.ruler, { prefix = "/government_ruler", ruler = true })
+        end
+    elseif tab == "demographics" then
+        local P = V .. "/government_window/demographics_window/"
+        -- the founder species' traits (CSpeciesTraitListboxEntry each; CTraitDatabase::SortTraits:
+        -- positive first [I]) in population_window/traits
+        local tr = r.rects[P .. "population_window/traits"]
+        if tr and d.founder then
+            -- (the planet preference first, as the game's frame shows it)
+            local pos, neg = {}, {}
+            for _, t in ipairs(d.founder.traits or {}) do
+                if t:match("^trait_pc_.*_preference$") then
+                    table.insert(pos, 1, t)
+                else
+                    local def = C.defs(ctx, "common/traits")[t]
+                    local cost = tonumber(def and C.field(def, "cost")) or 0
+                    table.insert(cost < 0 and neg or pos, t)
+                end
+            end
+            for _, t in ipairs(neg) do
+                pos[#pos + 1] = t
+            end
+            C.overlap(b, tr, #pos, 29, 4, function(i, x, y)
+                leaders.trait_icon(ctx, b, pos[i], x, y + 2, 29, "/government_traits/" .. i)
+            end)
+        end
+        -- the pie chart's list: one species_piechart_entry per species, 30 apart, in the
+        -- species' database order (their ids) [I: the game's frame lists Qvagh, then Uthabulan];
+        -- the slices' colours (CColorsDatabase::GetSpeciesColor) are not drawn
+        local sl = r.rects[P .. "species_piechart/species_list"]
+        if sl then
+            local list = {}
+            for _, s in ipairs(d.species or {}) do
+                list[#list + 1] = s
+            end
+            table.sort(list, function(a, b2)
+                return a.id < b2.id
+            end)
+            for i, s in ipairs(list) do
+                local prefix = "/government_species/" .. i
+                b:add(FILE, "species_piechart_entry", {
+                    prefix = prefix, parent = { x = sl.x, y = sl.y + (i - 1) * 30, w = 0, h = 0 },
+                    text = { [prefix .. "/species_piechart_entry/name"] = C.name(ctx, s.name) },
+                })
+            end
         end
     end
     return b.items, b.report
