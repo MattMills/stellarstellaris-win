@@ -174,7 +174,11 @@ The side panel in its default mode, Build Queue (empty), only when the manager w
 fleet's template (ShowFleetManagerView: the fleet and ship views' buttons); from the left bar
 (`open_view fleet_manager`, ToggleTopBarView) the game shows none [V: both frames]. Space Fauna and Reinforce All disabled.
 
-**Not computed:** a design's own strength (NCombatRules::CalcMilitaryPower: the row shows the
+**Not computed:** a design's own strength (NCombatRules::CalcMilitaryPower @0x22a2520 [V]: the
+design implementation's stats (+0x10, +0x70, +0x130 hull, armor, shield with the
+MILITARY_POWER_*_WEIGHT defines; +0x110 against 100, evasion [I]; +0x380 damage) give
+scale x (health x damage)^MILITARY_POWER_EXPONENT plus +0x1d0; the stats' own computation (range,
+tracking, penetration weights) not read: no reading of them fits both 163 and 184; the row shows the
 fleet's, "169" where the game shows "163/184"); the upgradable count's icon frame (|2) is drawn
 as frame 1.
 
