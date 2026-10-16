@@ -22,6 +22,8 @@ local trade = {}
 
 -- a view of its own, not a top bar view's token (views.rs: opened by `open_view trade`)
 trade.view = true
+-- Escape closes the window (its close button's ESCAPE): no side windows
+trade.escape_keys = {}
 
 local FILE = "interface/trade_view.gui"
 local V = "/trade_view"
@@ -41,17 +43,17 @@ local CATEGORIES = {
     { key = "allow_to_leave_war", title = "TRADE_CATEGORY_ALLOW_TO_LEAVE_WAR" },
 }
 
--- the categories a country can give: the resources when it has a tradable one in its stockpile
+-- the categories a country can give, with their items: the resources (tradable, in its stockpile)
 -- [I: the others' items (systems, leaders, fleets, agreements, information, loyalty, specimens,
 -- wars) not evaluated: not shown]
 local function categories(world, tradable, c)
-    local has = false
+    local res = {}
     for k, v in world.statements(world.path(c, "modules", "standard_economy_module", "resources") or {}) do
         if tradable[k] and (tonumber(v) or 0) > 0 then
-            has = true
+            res[#res + 1] = { key = k, stock = tonumber(v) }
         end
     end
-    return { resources = has }
+    return { resources = #res > 0 and res or nil }
 end
 
 function trade.extract(game_dir)
@@ -88,6 +90,38 @@ function trade.extract(game_dir)
     return out
 end
 
+-- a comma list of the state as a set and its order
+local function set_of(s)
+    local set, order = {}, {}
+    for x in tostring(s or ""):gmatch("[^,]+") do
+        set[x] = true
+        order[#order + 1] = x
+    end
+    return set, order
+end
+
+-- the list with x toggled in or out, as a state value
+local function toggled(order, set, x)
+    local out = {}
+    for _, y in ipairs(order) do
+        if y ~= x then
+            out[#out + 1] = y
+        end
+    end
+    if not set[x] then
+        out[#out + 1] = x
+    end
+    return table.concat(out, ",")
+end
+
+-- The clicks (CTradeView [V], docs/windows/economy.md): a category's button opens or closes its
+-- items (several open at once; state open_offer / open_demands: the category keys); an item's
+-- button puts it in the side's offer list or takes it out (offer / demands: the items, "res:KEY"),
+-- its button then in its active frame; an offered resource's - and + change its amount (state
+-- amt_SIDE_KEY [I: a step of 1, the game's 10, 100 and 1000 with control and shift not read; the
+-- start 0]), its close button takes it out; Propose, with something offered, posts the proposal
+-- (CDiploActionProposeCommand [not done here: the AI's answer]) and closes the window as the
+-- game does; Cancel and the close button close it (the deal cleared).
 function trade.build(ctx, data, state)
     local names = require("render.names")
     data = data or {}
@@ -103,7 +137,15 @@ function trade.build(ctx, data, state)
     local hide, texts, actions, disabled, sizes, positions = {}, {}, {}, {}, {}, {}
     actions[V .. "/close"] = "view_close"
     actions[V .. "/cancel_button"] = "view_close"
-    disabled[V .. "/confirm_button"] = true
+    local offered = {}
+    offered.offer = { set_of(state.offer) }
+    offered.demands = { set_of(state.demands) }
+    if #offered.offer[2] + #offered.demands[2] > 0 then
+        actions[V .. "/confirm_button"] = "economy:trade_propose:" .. tostring(state.country)
+    else
+        -- (an empty deal is not proposable: ACTION_OFFER_TRADE_DEAL_EMPTY)
+        disabled[V .. "/confirm_button"] = true
+    end
     texts[V .. "/actor_name"] = data.name and names.format(loc, data.name) or ""
     texts[V .. "/recipient_name"] = recipient and recipient.name and names.format(loc, recipient.name) or ""
     -- (the recipient's ruler's portrait not drawn; the AI's acceptance and willingness not
@@ -130,27 +172,79 @@ function trade.build(ctx, data, state)
         texture_size = ctx.texture_size, loc = loc, hide = hide, text = texts, actions = actions,
         disabled = disabled, sizes = sizes, positions = positions,
     })
+    local function layout(window, prefix, x, y, spec)
+        spec.texture_size, spec.loc, spec.prefix = ctx.texture_size, loc, prefix
+        spec.parent = { x = x, y = y, w = 0, h = 0 }
+        local ok, it, rp = pcall(gui.layout, ctx.game_dir, ctx.db, FILE, window, ctx.screen, spec)
+        if ok then
+            gui.merge(items, report, it, rp)
+        end
+    end
+    local function resource_name(key)
+        return "£" .. key .. "£ " .. ((loc and loc.has(key)) and loc.get(key) or key)
+    end
     -- each side's categories down its list: trade_category_entry, 64 high, the list's spacing
-    -- -18 [V gui], collapsed
-    for _, side in ipairs({ { "offer_trade_categories_window", data.categories }, { "demands_trade_categories_window", recipient and recipient.categories } }) do
+    -- -18 [V gui]; an open one's items under it, trade_item_entry 32 high [I: their spacing]
+    for _, side in ipairs({
+        { "offer_trade_categories_window", data.categories, "offer" },
+        { "demands_trade_categories_window", recipient and recipient.categories, "demands" },
+    }) do
         local list = report.rects[V .. "/" .. side[1] .. "/trade_categories_list"]
+        local open_set, open_order = set_of(state["open_" .. side[3]])
+        local off_set, off_order = offered[side[3]][1], offered[side[3]][2]
         if list and side[2] and not hide[V .. "/" .. side[1]] then
             local y = list.y
             for i, cat in ipairs(CATEGORIES) do
-                if side[2][cat.key] then
+                local catitems = side[2][cat.key]
+                if catitems then
                     local prefix = V .. "/" .. side[1] .. "/trade_categories_list/" .. i
                     local p = prefix .. "/trade_category_entry"
-                    local ok, it, rp = pcall(gui.layout, ctx.game_dir, ctx.db, FILE, "trade_category_entry", ctx.screen, {
-                        texture_size = ctx.texture_size, loc = loc, prefix = prefix,
-                        parent = { x = list.x, y = y, w = 0, h = 0 },
+                    local open = open_set[cat.key]
+                    layout("trade_category_entry", prefix, list.x, y, {
                         text = { [p .. "/category_title"] = cat.title },
                         sprites = { [p .. "/trade_category_icon"] = "GFX_trade_cat_" .. cat.key },
                         hide = { [p .. "/dropdown_indicator"] = cat.flat or nil },
+                        actions = { [p .. "/category_button"] = "view_set:open_" .. side[3] .. "=" .. toggled(open_order, open_set, cat.key) },
                     })
-                    if ok then
-                        gui.merge(items, report, it, rp)
-                    end
                     y = y + 64 - 18
+                    if open and type(catitems) == "table" then
+                        for k, it in ipairs(catitems) do
+                            local id = "res:" .. it.key
+                            local ip = prefix .. "/" .. k
+                            local q = ip .. "/trade_item_entry"
+                            layout("trade_item_entry", ip, list.x + 10, y, {
+                                text = { [q .. "/item_title"] = resource_name(it.key) },
+                                frames = { [q .. "/item_button"] = off_set[id] and 3 or nil },
+                                actions = { [q .. "/item_button"] = "view_set:" .. side[3] .. "=" .. toggled(off_order, off_set, id) },
+                            })
+                            y = y + 32
+                        end
+                    end
+                end
+            end
+        end
+        -- the side's offer list (offer_trade_offer_window / demands_trade_offer_window): an
+        -- offered resource's entry with its amount
+        local window = side[3] == "offer" and "offer_trade_offer_window" or "demands_trade_offer_window"
+        local olist = report.rects[V .. "/" .. window .. "/trade_offer_list"]
+        if olist then
+            local y = olist.y + 5
+            for k, id in ipairs(off_order) do
+                local key = id:match("^res:(.+)$")
+                if key then
+                    local ip = V .. "/" .. window .. "/trade_offer_list/" .. k
+                    local q = ip .. "/trade_offer_editable_item_entry"
+                    local akey = "amt_" .. side[3] .. "_" .. key
+                    local amount = tonumber(state[akey]) or 0
+                    layout("trade_offer_editable_item_entry", ip, olist.x, y, {
+                        text = { [q .. "/item_name"] = resource_name(key), [q .. "/value"] = tostring(amount) },
+                        actions = {
+                            [q .. "/close_button"] = "view_set:" .. side[3] .. "=" .. toggled(off_order, off_set, id),
+                            [q .. "/value_minus"] = "view_set:" .. akey .. "=" .. math.max(0, amount - 1),
+                            [q .. "/value_plus"] = "view_set:" .. akey .. "=" .. (amount + 1),
+                        },
+                    })
+                    y = y + 56
                 end
             end
         end

@@ -45,6 +45,7 @@ mod clock;
 mod controls;
 mod creator;
 mod dds;
+mod economy;
 mod designer;
 mod diplomacy;
 mod effects;

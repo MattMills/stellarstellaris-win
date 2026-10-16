@@ -17,6 +17,13 @@ local text = require("render.loctext")
 
 local market = {}
 
+-- the side windows Escape closes before the market (their close buttons' ESCAPE): Sell Slaves
+-- (and its open group, its species), the monthly trade window
+market.escape_keys = {
+    "pool", "pool_open", "pool_species", "pool_selected", "pool_dropdown",
+    "monthly", "monthly_type", "monthly_res", "monthly_amount", "monthly_price",
+}
+
 local FILE = "interface/market_view.gui"
 local V = "/market_view"
 local M = V .. "/market"
@@ -310,7 +317,7 @@ function market.data(cid, game_dir)
         if tradable and r.key ~= currency and (access or (income[r.key] or 0) > 0) then
             local f0 = fx(fluct[r.key] or 0)
             local e = {
-                key = r.key, stock = stock[r.key] or 0,
+                key = r.key, stock = stock[r.key] or 0, market_amount = r.market_amount,
                 unit_buy = price_for(D, r, ONE, true, f0, internal, fee),
                 unit_sell = price_for(D, r, ONE, false, f0, internal, fee),
                 bought = bought[i] or 0, sold = sold[i] or 0,
@@ -323,23 +330,26 @@ function market.data(cid, game_dir)
                 -- buy: the price rounded up, too dear beyond the currency's stockpile; sell:
                 -- rounded down, not possible beyond the resource's stockpile (CanBuyResource,
                 -- CanSellResource)
-                e.buy[#e.buy + 1] = { amount = amount, price = math.ceil(bp / ONE), ok = fx(out.currency_stock) - bp >= 0 }
-                e.sell[#e.sell + 1] = { amount = amount, price = math.floor(sp / ONE), ok = (stock[r.key] or 0) >= amount }
+                e.buy[#e.buy + 1] = { mult = mult, amount = amount, price = math.ceil(bp / ONE), ok = fx(out.currency_stock) - bp >= 0 }
+                e.sell[#e.sell + 1] = { mult = mult, amount = amount, price = math.floor(sp / ONE), ok = (stock[r.key] or 0) >= amount }
             end
             out.resources[#out.resources + 1] = e
         end
     end
     out.slaves = market.slave_data(world, d, c, cid)
-    -- the monthly trades: this country's [I: their save fields, none in the saves read]
+    -- the monthly trades: this country's, in the list's order (monthly_trades = { { trade_data =
+    -- { trade_type resource country } amount price id } }; price: the per unit limit, 0 none)
     for k, v in world.statements(m) do
         if k == "monthly_trades" and type(v) == "table" then
             for _, t in ipairs(world.blocks(v)) do
-                if tonumber(world.field(t, "country")) == cid then
+                local td = world.field(t, "trade_data")
+                if type(td) == "table" and tonumber(world.field(td, "country")) == cid then
                     out.trades[#out.trades + 1] = {
-                        resource = tostring(world.field(t, "resource") or ""),
-                        buy = tostring(world.field(t, "type") or "buy") ~= "sell",
+                        id = tonumber(world.field(t, "id")) or -1,
+                        resource = tostring(world.field(td, "resource") or ""):gsub('"', ""),
+                        buy = tostring(world.field(td, "trade_type") or "market_buy"):gsub('"', "") ~= "market_sell",
                         amount = tonumber(world.field(t, "amount")) or 0,
-                        limit = tonumber(world.field(t, "price_limit")) or 0,
+                        limit = tonumber(world.field(t, "price")) or 0,
                     }
                 end
             end
@@ -396,6 +406,7 @@ function market.slave_data(world, d, c, cid)
             local planet = colony_planet(world, world.object("colony", tonumber(world.field(pg, "planet"))))
             s.on_market[#s.on_market + 1] = {
                 group = g, amount = n,
+                traits = sp and #world.fields(world.field(sp, "traits") or {}, "trait") or 0,
                 species = sp and galaxy.name_block(world.field(sp, "name")),
                 class = sp and unquote(world.field(sp, "class")),
                 habitability = math.floor((tonumber(world.field(pg, "habitability")) or 0) * 100 + 1e-9),
@@ -480,6 +491,258 @@ function market.slave_data(world, d, c, cid)
     -- CanSellSlaves: a colony with slaves and room on the market (SLAVE_MARKET_SIZE_CAP, 100)
     s.can_sell = #s.species > 0 and #s.on_market < 100
     return s
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- what the market's buttons do to the world (docs/windows/economy.md, "The buttons"):
+-- CMarketBuyResourceCommand / CMarketSellResourceCommand, the monthly trade commands. They run
+-- where the world is (economy.rs: the map's runtime, or the simulation's thread).
+
+-- the market's top level block (`market = { ... }`), made when the save has none
+local function market_block(world)
+    local m = world.meta.market
+    if type(m) ~= "table" then
+        m = {}
+        world.meta.market = m
+    end
+    return m
+end
+
+-- a number list block's value i (1-based) set, the block grown with `fill`
+local function set_list(world, block, i, value, fill)
+    local vals = {}
+    for _, e in ipairs(block) do
+        if e.text then
+            vals[#vals + 1] = e
+        end
+    end
+    while #vals < i do
+        local e = { text = tostring(fill) }
+        world.append_entry(block, e)
+        vals[#vals + 1] = e
+    end
+    world.set_entry(block, vals[i], world.number_text(value))
+end
+
+-- the stockpile's value of a resource set (the economy module's resources block)
+local function set_stock(world, c, key, value)
+    local res = world.child(world.child(world.child(c, "modules"), "standard_economy_module"), "resources")
+    world.set(res, key, math.max(0, value))
+end
+
+-- CMarket::RegisterTradeForStatistics: id[index] = the country's id; the country's entry of
+-- resources_bought or resources_sold (by its index; 26 zeros made) += n at the resource's index
+local function register_trade(world, d, m, cid, ri, buy, n)
+    local index = cid % 16777216
+    set_list(world, world.child(m, "id"), index + 1, cid, -1)
+    local list = world.child(m, buy and "resources_bought" or "resources_sold")
+    local amount, current
+    for k, v in world.statements(list) do
+        if k == "country" then
+            current = tonumber(v)
+        elseif k == "amount" and current == index then
+            amount = v
+        end
+    end
+    if not amount then
+        world.append(list, "country", index)
+        amount = {}
+        for _ = 1, #d.resources do
+            amount[#amount + 1] = { text = "0" }
+        end
+        world.append(list, "amount", amount)
+    end
+    local vals = numbers(amount)
+    set_list(world, amount, ri, (vals[ri] or 0) + n, 0)
+end
+
+-- CMarket::UpdateResourcePrice: the fluctuation one step for the lot (the galactic market's
+-- `fluctuations`, else the country's internal_market_fluctuations entry)
+local function update_fluctuation(world, d, m, cid, r, ri, buy, amount, access)
+    local D = d.defines
+    local n = div(amount, fx(r.market_amount))
+    if access then
+        local list = world.child(m, "fluctuations")
+        local f = fx(numbers(list)[ri] or 0)
+        set_list(world, list, ri, next_fluctuation(D, buy, f, n, false) / ONE, 0)
+        return
+    end
+    local imf = world.child(m, "internal_market_fluctuations")
+    local current, resources
+    for k, v in world.statements(imf) do
+        if k == "country" then
+            current = tonumber(v)
+        elseif k == "resources" and current == cid then
+            resources = v
+        end
+    end
+    if not resources then
+        world.append(imf, "country", cid)
+        resources = {}
+        world.append(imf, "resources", resources)
+    end
+    local f = fx(tonumber(world.field(resources, r.key)) or 0)
+    world.set(resources, r.key, next_fluctuation(D, buy, f, n, true) / ONE)
+end
+
+-- market.trade(cid, key, mult, buy, game_dir) -> "ok" | an error: a buy or a sell of mult base
+-- amounts of resource `key`, as the game's commands execute it (IsValid first)
+function market.trade(cid, key, mult, buy, game_dir)
+    local world = require("engine.world")
+    local d = definitions(game_dir)
+    local D = d.defines
+    local c = world.object("country", cid)
+    if not c then
+        return "no country " .. tostring(cid)
+    end
+    -- the resource listed for the country (IsValidResource: the same rule as the grid)
+    local listed
+    for _, e in ipairs(market.data(cid, game_dir).resources) do
+        if e.key == key then
+            listed = e
+        end
+    end
+    local r, ri
+    for i, def in ipairs(d.resources) do
+        if def.key == key then
+            r, ri = def, i
+        end
+    end
+    if not (r and listed) then
+        return "resource " .. tostring(key) .. " not tradable here"
+    end
+    local data = market.data(cid, game_dir)
+    local m = market_block(world)
+    local stock = {}
+    for k, v in world.statements(world.path(c, "modules", "standard_economy_module", "resources") or {}) do
+        stock[k] = tonumber(v) or 0
+    end
+    local currency = D.MARKET_RESOURCE
+    local internal = not data.access
+    -- the fluctuation now (the galactic market's, else the country's internal one)
+    local f0 = 0
+    if data.access then
+        f0 = numbers(world.field(m, "fluctuations"))[ri] or 0
+    else
+        local current
+        for k, v in world.statements(world.field(m, "internal_market_fluctuations") or {}) do
+            if k == "country" then
+                current = tonumber(v)
+            elseif k == "resources" and current == cid then
+                f0 = tonumber(world.field(v, key)) or 0
+            end
+        end
+    end
+    local amount = fx(mult * r.market_amount)
+    local price = price_for(D, r, amount, buy, fx(f0), internal, data.fee)
+    if buy then
+        -- CanBuyResource: the currency's stockpile pays the exact price (the fee in it)
+        if fx(stock[currency] or 0) - price < 0 then
+            return "cannot afford"
+        end
+        -- RemoveResource exact; AddResource the whole units
+        set_stock(world, c, currency, (fx(stock[currency] or 0) - price) / ONE)
+        set_stock(world, c, key, (stock[key] or 0) + math.floor(amount / ONE))
+    else
+        -- CanSellResource: the stockpile has the amount
+        if fx(stock[key] or 0) - amount < 0 then
+            return "not enough " .. key
+        end
+        set_stock(world, c, key, (fx(stock[key] or 0) - amount) / ONE)
+        set_stock(world, c, currency, (stock[currency] or 0) + math.floor(price / ONE))
+    end
+    update_fluctuation(world, d, m, cid, r, ri, buy, amount, data.access)
+    register_trade(world, d, m, cid, ri, buy, math.ceil(amount / ONE))
+    return "ok"
+end
+
+-- the market's monthly trades (`monthly_trades = { { trade_data = { trade_type resource country }
+-- amount price id } }`): market.monthly(cid, op, args...) -> "ok" | an error
+--   op "add" (key, buy, amount, price): CAddMonthlyTradeCommand (IsValid: a resource, amount > 0,
+--      at most MARKET_MAX_BASE_AMOUNTS base amounts; id = next_monthly_trade_item_id++)
+--   op "update" (id, key, buy, amount, price): CUpdateMonthlyTradeCommand
+--   op "remove" (id): CRemoveMonthlyTradeCommand
+function market.monthly(cid, op, a1, a2, a3, a4, a5, game_dir)
+    local world = require("engine.world")
+    local d = definitions(game_dir)
+    local m = market_block(world)
+    local list = world.child(m, "monthly_trades")
+    local function find(id)
+        for _, t in ipairs(world.blocks(list)) do
+            local td = world.field(t, "trade_data")
+            if tonumber(world.field(t, "id")) == id and type(td) == "table" and tonumber(world.field(td, "country")) == cid then
+                return t, td
+            end
+        end
+    end
+    local function check(key, amount)
+        local r
+        for _, def in ipairs(d.resources) do
+            if def.key == key then
+                r = def
+            end
+        end
+        if not r then
+            return "RESOURCE_NOT_SELECTED"
+        end
+        if not amount or amount <= 0 then
+            return "INVALID_AMOUNT"
+        end
+        if div(fx(amount), fx(r.market_amount)) > fx(d.defines.MARKET_MAX_BASE_AMOUNTS) then
+            return "INVALID_AMOUNT"
+        end
+    end
+    if op == "add" then
+        local key, buy, amount, price = a1, a2, a3, a4
+        local err = check(key, amount)
+        if err then
+            return err
+        end
+        local id = tonumber(world.field(m, "next_monthly_trade_item_id")) or 0
+        world.set(m, "next_monthly_trade_item_id", id + 1)
+        local t = {}
+        world.push(list, t)
+        local td = world.child(t, "trade_data")
+        world.set(td, "trade_type", buy and "market_buy" or "market_sell")
+        world.set(td, "resource", key)
+        world.set(td, "country", cid)
+        world.set(t, "amount", math.floor(amount))
+        world.set(t, "price", math.max(0, math.floor(price or 0)))
+        world.set(t, "id", id)
+        return "ok"
+    elseif op == "update" then
+        local id, key, buy, amount, price = a1, a2, a3, a4, a5
+        local t, td = find(id)
+        if not t then
+            return "no monthly trade " .. tostring(id)
+        end
+        local err = check(key, amount)
+        if err then
+            return err
+        end
+        world.set(td, "trade_type", buy and "market_buy" or "market_sell")
+        world.set(td, "resource", key)
+        world.set(t, "amount", math.floor(amount))
+        world.set(t, "price", math.max(0, math.floor(price or 0)))
+        return "ok"
+    elseif op == "remove" then
+        local entries = {}
+        local removed = false
+        for _, e in ipairs(list) do
+            local td = type(e) == "table" and e.text == nil and not e.op and world.field(e, "trade_data")
+            if not removed and td and tonumber(world.field(e, "id")) == a1 and tonumber(world.field(td, "country")) == cid then
+                removed = true
+            else
+                entries[#entries + 1] = e
+            end
+        end
+        if not removed then
+            return "no monthly trade " .. tostring(a1)
+        end
+        world.replace(list, entries)
+        return "ok"
+    end
+    return "bad op " .. tostring(op)
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -581,9 +844,22 @@ function market.slave_tab(ctx, items, report, s, state, access)
     for i, r in ipairs(list) do
         r._i = i
     end
+    -- the sort (OnSetSortType: the same column again turns the order; stable on the market's order):
+    -- name, habitability, traits, cost
+    local sort = state.slave_sort or "name"
+    local desc = state.slave_desc == "1"
+    local KEY = {
+        name = function(r) return r.name end, habitability = function(r) return r.habitability or 0 end,
+        traits = function(r) return r.traits or 0 end, cost = function(r) return r.price or 0 end,
+    }
+    local kf = KEY[sort] or KEY.name
     table.sort(list, function(a, b)
-        if a.name ~= b.name then
-            return a.name < b.name
+        local ka, kb = kf(a), kf(b)
+        if ka ~= kb then
+            if desc then
+                return ka > kb
+            end
+            return ka < kb
         end
         return a._i < b._i
     end)
@@ -598,6 +874,9 @@ function market.slave_tab(ctx, items, report, s, state, access)
                 [p .. "/buy_cancel"] = buy,
             },
             disabled = { [p .. "/buy_cancel"] = (not r.seller and (not sel_colony or not access)) or nil },
+            -- (retract your own, else buy for the destination chosen: CRetractSlaveFromMarketCommand,
+            -- CBuySlaveFromMarketCommand [effects not done here: no galactic market in the saves])
+            actions = { [p .. "/buy_cancel"] = (r.seller and ("economy:slave:retract:" .. r.group)) or ((sel_colony and access) and ("economy:slave:buy:" .. r.group .. ":" .. sel_colony)) or nil },
         }
     end)
     -- the destinations
@@ -636,7 +915,29 @@ function market.slave_pool(ctx, items, report, s, state, access)
         end
     end
     local texts, hide, actions, disabled = {}, {}, {}, {}
-    actions[P .. "/close"] = "view_set:pool="
+    -- (closing clears the selection: CSlavePoolView::Hide)
+    actions[P .. "/close"] = "view_set:pool=;pool_selected=;pool_open=;pool_species=;pool_dropdown="
+    -- the pops selected (pop group ids: the entries' clicks toggle them)
+    local selected, order = {}, {}
+    for id in tostring(state.pool_selected or ""):gmatch("%d+") do
+        selected[tonumber(id)] = true
+        order[#order + 1] = tonumber(id)
+    end
+    local function toggled(id)
+        local out = {}
+        for _, x in ipairs(order) do
+            if x ~= id then
+                out[#out + 1] = x
+            end
+        end
+        if not selected[id] then
+            out[#out + 1] = id
+        end
+        return "view_set:pool_selected=" .. table.concat(out, ",")
+    end
+    -- the species drop-down: its arrow opens it (CSlavePoolSpeciesDropdown)
+    local open_dd = state.pool_dropdown == "1"
+    actions[P .. "/species_dropdown/expand_button"] = "view_set:pool_dropdown=" .. (open_dd and "" or "1")
     if species then
         texts[P .. "/species_dropdown/selected_species"] = species.name and names.format(loc, species.name) or ""
         texts[P .. "/species_dropdown/slave_amount"] = market.stockpile(species.total)
@@ -645,12 +946,59 @@ function market.slave_pool(ctx, items, report, s, state, access)
         hide[P .. "/species_dropdown/slave_amount"] = true
         hide[P .. "/species_dropdown/slave_icon"] = true
     end
-    hide[P .. "/summary_window/cost_summary"] = true
-    disabled[P .. "/put_on_market"] = true
+    -- the summary (SELL_SLAVES_SUMMARY: the pops and their price) and Put on Market, with a
+    -- selection (CPutSlaveOnMarketCommand per group [effect not done here: no galactic market in
+    -- the saves])
+    local n, cost = 0, 0
+    for _, cg in ipairs(s.pool or {}) do
+        for _, g in ipairs(cg.groups) do
+            if selected[g.group] then
+                n, cost = n + g.amount, cost + g.price
+            end
+        end
+    end
+    if n > 0 then
+        texts[P .. "/summary_window/cost_summary"] = text.format(loc, "SELL_SLAVES_SUMMARY", { NUM = tostring(n), COST = "£trade£ " .. cost })
+        actions[P .. "/put_on_market"] = "economy:slave:put:" .. table.concat(order, ",")
+    else
+        hide[P .. "/summary_window/cost_summary"] = true
+        disabled[P .. "/put_on_market"] = true
+    end
     local it, rp = gui.layout(ctx.game_dir, ctx.db, "interface/slave_pool_view.gui", "slave_pool_view", ctx.screen, {
         texture_size = ctx.texture_size, loc = loc, text = texts, hide = hide, actions = actions, disabled = disabled,
+        open = open_dd and { [P .. "/species_dropdown"] = true } or nil,
     })
     gui.merge(items, report, it, rp)
+    -- the drop-down's list (ListSpeciesWithSlavePops: the selected species moved to its end and
+    -- disabled; an entry shows the species and its sellable groups,
+    -- SLAVE_MARKET_DROPDOWN_SPECIES_ENTRY_INFO); a choice sets the species and closes it
+    local dg = open_dd and rp.grids and rp.grids[P .. "/species_dropdown/expanded_window/elements"]
+    if dg then
+        local list = {}
+        for _, sp in ipairs(s.species or {}) do
+            if sp ~= species then
+                list[#list + 1] = sp
+            end
+        end
+        list[#list + 1] = species
+        for i, sp in ipairs(list) do
+            local x, y = gui.grid_slot(dg, i - 1, #list)
+            if x then
+                local prefix = P .. "/species_dropdown/expanded_window/elements/" .. i
+                local p = prefix .. "/dropdown_entry"
+                local name = sp.name and names.format(loc, sp.name) or ""
+                local ok, ei, er = pcall(gui.layout, ctx.game_dir, ctx.db, "interface/slave_pool_view.gui", "dropdown_entry", ctx.screen, {
+                    texture_size = ctx.texture_size, loc = loc, prefix = prefix, parent = { x = x, y = y, w = 0, h = 0 },
+                    text = { [p .. "/species_info"] = text.format(loc, "SLAVE_MARKET_DROPDOWN_SPECIES_ENTRY_INFO", { SPECIES_NAME = name, NUM_SLAVES = "§Y" .. sp.groups .. "§!" }) },
+                    actions = { [p] = sp ~= species and ("view_set:pool_species=" .. sp.id .. ";pool_dropdown=") or nil },
+                    disabled = { [p] = (sp == species) or nil },
+                })
+                if ok then
+                    gui.merge(items, report, ei, er)
+                end
+            end
+        end
+    end
     local list = rp.rects[P .. "/slaves/planet_groups"]
     if not list or not species then
         return
@@ -690,11 +1038,12 @@ function market.slave_pool(ctx, items, report, s, state, access)
                         texture_size = ctx.texture_size, loc = loc, prefix = pp, parent = { x = list.x, y = y, w = 0, h = 0 },
                         -- (the portrait, its planet background and building not drawn)
                         hide = {
-                            [q .. "/selected_overlay"] = true, [q .. "/portrait/portrait"] = true,
+                            [q .. "/selected_overlay"] = (not selected[g.group]) or nil, [q .. "/portrait/portrait"] = true,
                             [q .. "/portrait/pop_background"] = true, [q .. "/portrait/building_icon"] = true,
                             [q .. "/portrait/pop_mod"] = true, [q .. "/disabled_entry"] = access or nil,
                         },
                         frames = { [q .. "/portrait/pop_status"] = 2 },
+                        actions = { [q] = access and toggled(g.group) or nil },
                         text = {
                             [q .. "/portrait/amount"] = tostring(g.amount),
                             [q .. "/species"] = species.name and names.format(loc, species.name) or "",
@@ -712,6 +1061,121 @@ function market.slave_pool(ctx, items, report, s, state, access)
     end
 end
 
+
+-- pairs in key order (deterministic action strings)
+local function pairs_sorted(t)
+    local keys = {}
+    for k in pairs(t) do
+        keys[#keys + 1] = k
+    end
+    table.sort(keys)
+    local i = 0
+    return function()
+        i = i + 1
+        local k = keys[i]
+        if k ~= nil then
+            return k, t[k]
+        end
+    end
+end
+
+-- the monthly trade window (interface/monthly_trade_view.gui, CMonthlyTradeView), open while the
+-- state has `monthly` ("new", or the id of the trade edited: ShowWithData): Buy and Sell choose the
+-- type (the resource unchosen again: SelectBuy / SelectSell); a resource (the market's, after a
+-- type) sets the amount to ceil(market_amount x MARKET_MONTHLY_TRADE_FRACTION 0.1) and the limit to
+-- 0 (SetActiveResource); - and + step the amount and the per unit limit, never below 0
+-- (OnAmountChange / OnPriceChange [I: a step of 1; the shift and control steps, the
+-- TRADE_VIEW_*_CREDIT_CHANGE defines, not read]); the total is limit x amount; Add (or Edit)
+-- enabled when the trade is valid (CAddMonthlyTradeCommand::IsValid) adds or updates it; Cancel
+-- (or Remove, editing) closes, or removes the trade edited
+local MONTHLY_FRACTION = 0.1
+
+function market.monthly_window(ctx, items, report, data, state)
+    local loc = ctx.loc
+    local W = "/monthly_trade_view"
+    local typ = state.monthly_type
+    local key = state.monthly_res
+    local amount = tonumber(state.monthly_amount)
+    local price = tonumber(state.monthly_price)
+    local editing = tonumber(state.monthly)
+    local texts, actions, disabled, frames = {}, {}, {}, {}
+    local function set(pairs)
+        local out = {}
+        for k, v in pairs_sorted(pairs) do
+            out[#out + 1] = k .. "=" .. v
+        end
+        return "view_set:" .. table.concat(out, ";")
+    end
+    actions[W .. "/buy"] = set({ monthly_type = "buy", monthly_res = "", monthly_amount = "", monthly_price = "" })
+    actions[W .. "/sell"] = set({ monthly_type = "sell", monthly_res = "", monthly_amount = "", monthly_price = "" })
+    texts[W .. "/editable_amount/amount"] = amount and tostring(amount) or "-"
+    -- (no limit, 0, shows "-", as the game's frame: the limit and the total)
+    texts[W .. "/editable_price/price"] = (price and price > 0) and tostring(price) or "-"
+    texts[W .. "/total_price_amount/amount"] = (amount and price and price > 0) and tostring(amount * price) or "-"
+    -- the type chosen: its button active (NGuiUtil::SetButtonActive: frame 3, the orange one)
+    if typ == "buy" or typ == "sell" then
+        frames[W .. "/" .. typ] = 3
+    end
+    texts[W .. "/price_text"] = typ == "sell" and "MIN_SELL_PPRICE" or "MAX_BUY_PRICE"
+    if amount then
+        actions[W .. "/editable_amount/decrease_amount"] = set({ monthly_amount = tostring(math.max(0, amount - 1)) })
+        actions[W .. "/editable_amount/increase_amount"] = set({ monthly_amount = tostring(amount + 1) })
+    end
+    if price then
+        actions[W .. "/editable_price/decrease_price"] = set({ monthly_price = tostring(math.max(0, price - 1)) })
+        actions[W .. "/editable_price/increase_price"] = set({ monthly_price = tostring(price + 1) })
+    end
+    -- the resource chosen: its market amount (the base amounts' cap, MARKET_MAX_BASE_AMOUNTS 200)
+    local chosen
+    for _, r in ipairs(data.resources or {}) do
+        if r.key == key then
+            chosen = r
+        end
+    end
+    local valid = (typ == "buy" or typ == "sell") and chosen and amount and amount > 0
+        and amount <= 200 * (chosen.market_amount or 100)
+    if valid then
+        local side = typ
+        if editing then
+            actions[W .. "/add"] = "economy:monthly:update:" .. side .. ":" .. key .. ":" .. amount .. ":" .. (price or 0) .. ":" .. editing
+        else
+            actions[W .. "/add"] = "economy:monthly:add:" .. side .. ":" .. key .. ":" .. amount .. ":" .. (price or 0)
+        end
+    else
+        disabled[W .. "/add"] = true
+    end
+    if editing then
+        actions[W .. "/cancel"] = "economy:monthly:remove:" .. editing
+    else
+        actions[W .. "/cancel"] = set({ monthly = "", monthly_type = "", monthly_res = "", monthly_amount = "", monthly_price = "" })
+    end
+    local it, rp = gui.layout(ctx.game_dir, ctx.db, "interface/monthly_trade_view.gui", "monthly_trade_view", ctx.screen, {
+        texture_size = ctx.texture_size, loc = loc, text = texts, actions = actions, disabled = disabled, frames = frames,
+    })
+    gui.merge(items, report, it, rp)
+    -- the resources (GetValidAndVisibleResources), each choosable once a type is chosen
+    local g = rp.grids and rp.grids[W .. "/monthly_trade_resources_grid"]
+    if g then
+        for i, r in ipairs(data.resources or {}) do
+            local x, y = gui.grid_slot(g, i - 1, #data.resources)
+            if x then
+                local prefix = W .. "/monthly_trade_resources_grid/" .. i
+                local p = prefix .. "/monthly_trade_resource_grid_entry"
+                local a = math.ceil((r.market_amount or 100) * MONTHLY_FRACTION - 1e-9)
+                local ok, ei, er = pcall(gui.layout, ctx.game_dir, ctx.db, "interface/monthly_trade_view.gui", "monthly_trade_resource_grid_entry", ctx.screen, {
+                    texture_size = ctx.texture_size, loc = loc, prefix = prefix, parent = { x = x, y = y, w = 0, h = 0 },
+                    sprites = { [p .. "/resource_icon"] = "GFX_resource_" .. r.key },
+                    hide = { [p .. "/selected_overlay"] = (r.key ~= key) or nil },
+                    actions = { [p] = typ and set({ monthly_res = r.key, monthly_amount = tostring(a), monthly_price = "0" }) or nil },
+                    disabled = { [p] = (not typ) or nil },
+                })
+                if ok then
+                    gui.merge(items, report, ei, er)
+                end
+            end
+        end
+    end
+end
 
 -- market.extract(game_dir): the player's market (views.rs: where the galaxy is read)
 function market.extract(game_dir)
@@ -735,6 +1199,8 @@ function market.build(ctx, data, state)
         hide[V .. "/tab_slave_market_active"] = true
     end
     actions[V .. "/tab_market"] = "view_set:tab=market"
+    -- Add new monthly trade: the monthly trade window, a new trade (CMarketView::OpenMonthlyTrade)
+    actions[M .. "/automatic_trades_box/trades/new_trade_button"] = "view_set:monthly=new;monthly_type=;monthly_res=;monthly_amount=;monthly_price="
     -- (the slave market's tab takes clicks only with the galactic market's access:
     -- CMarketView::Update)
     if data.access then
@@ -792,6 +1258,12 @@ function market.build(ctx, data, state)
     if #(slaves.on_market or {}) > 0 then
         hide[V .. "/slave_market/left_box/slaves_for_sale/no_slaves_for_sale"] = true
     end
+    -- the slave list's sort buttons (OnSetSortType: the same column again turns the order)
+    local ssort, sdesc = state.slave_sort or "name", state.slave_desc == "1"
+    for k, b in pairs({ name = "sort_name", habitability = "sort_habitability", traits = "sort_traits", cost = "sort_cost" }) do
+        local flip = k == ssort and not sdesc
+        actions[V .. "/slave_market/left_box/" .. b] = "view_set:slave_sort=" .. k .. ";slave_desc=" .. (flip and "1" or "0")
+    end
     if slaves.can_sell then
         actions[V .. "/slave_market/left_box/sell_slaves"] = "view_set:pool=1"
     else
@@ -842,6 +1314,8 @@ function market.build(ctx, data, state)
                         sprites = { [p .. "/large_resource_icon"] = "GFX_resource_" .. sel .. "_large" },
                         disabled = { [p] = not e.ok or nil },
                         text = { [p .. "/resource_amount"] = amount, [p .. "/price"] = "£" .. cur .. "£" .. price },
+                        -- (CMarketViewTradeResourcesGridEntry::Click: the command when CanClick)
+                        actions = { [p] = e.ok and ("economy:trade:" .. (side[3] and "buy" or "sell") .. ":" .. sel .. ":" .. e.mult) or nil },
                     }
                 end)
             end
@@ -852,6 +1326,9 @@ function market.build(ctx, data, state)
     if tg then
         grid_entries(ctx, items, report, FILE, "market_monthly_trade_grid_entry", M .. "/automatic_trades_box/trades/trade_grid_box/monthly_trades_grid", data.trades or {}, function(t, p)
             return {
+                -- (a left click edits it in the monthly trade window, ShowMonthlyTradeViewWithData;
+                -- a right click removes it, CRemoveMonthlyTradeCommand)
+                actions = { [p .. "/trade_entry"] = "view_set:monthly=" .. t.id .. ";monthly_type=" .. (t.buy and "buy" or "sell") .. ";monthly_res=" .. t.resource .. ";monthly_amount=" .. math.floor(t.amount) .. ";monthly_price=" .. math.floor(t.limit) .. "||economy:monthly:remove:" .. t.id },
                 sprites = { [p .. "/resource_icon"] = "GFX_resource_" .. t.resource },
                 text = {
                     [p .. "/trade_type"] = t.buy and "MARKET_BUY" or "MARKET_SELL",
@@ -861,6 +1338,9 @@ function market.build(ctx, data, state)
                 },
             }
         end)
+    end
+    if state.monthly then
+        market.monthly_window(ctx, items, report, data, state)
     end
     if state.pool == "1" then
         market.slave_pool(ctx, items, report, data.slaves or {}, state, data.access)
