@@ -144,6 +144,8 @@ pub struct App {
     pub overlay_items: Vec<GuiItem>,
     /// the map labels (mapicons.gui) of what the view shows
     pub overlay_labels: Vec<scene::Label>,
+    /// the planet view's state: the planet and the tab shown (planet.rs)
+    pub planet_view: crate::planet::State,
     /// what the windows were laid out for: the size, view, selection, snapshot, GUI shown, paused,
     /// star names' zoom, observing
     overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool)>,
@@ -231,6 +233,7 @@ impl App {
             overlay_items: Vec::new(),
             overlay_labels: Vec::new(),
             overlay_key: None,
+            planet_view: Default::default(),
             holding: false,
             drag_anchor: None,
             follow: None,
@@ -690,6 +693,17 @@ impl App {
         let map = self.map.as_mut().ok_or("no map loaded")?;
         map.set_speed(speed);
         self.log.push(format!("clock: speed {}", map.speed));
+        self.scene = None;
+        Ok(())
+    }
+
+    /// The planet view of planet `id` on its tab `tab` (planet.rs: summary, management, population,
+    /// armies, corporate): the planet selected.
+    pub fn open_planet(&mut self, id: u32, tab: &str) -> Result<(), String> {
+        self.select(Some(Pickable::Body(id)));
+        self.planet_view.open(id, tab)?;
+        self.log.push(format!("planet view: {id} {tab}"));
+        self.overlay_key = None;
         self.scene = None;
         Ok(())
     }
@@ -1189,10 +1203,14 @@ impl App {
                     selected = Some((if f.station { "starbase" } else { "fleet" }.into(), id));
                 }
             }
-            Some(Pickable::Body(_)) => {
+            Some(Pickable::Body(id)) => {
                 if let Some((id, name, _)) = &body {
                     names.push(name);
                     selected = Some(("planet".into(), *id));
+                } else if map.world {
+                    // any other planet: the planet view names it from its own data (planet.rs)
+                    names.push(&none);
+                    selected = Some(("planet".into(), id));
                 }
             }
             _ => {}
@@ -1249,7 +1267,24 @@ impl App {
             }
         }
         let selected = selected.map(|(kind, id)| gui::SelectedWindow { kind, id, name: next(), sub: String::new() });
-        let layout = gui::windows(&self.runtime, w, h, &outliner, selected.as_ref())?;
+        // the planet view's data and tab (planet.rs), its owner's flag
+        let mut planet_owner = None;
+        match selected.as_ref() {
+            Some(s) if s.kind == "planet" => {
+                let tab = self.planet_view.tab_for(s.id).to_string();
+                planet_owner = crate::planet::prepare(&self.runtime, self.map.as_ref().unwrap(), s.id, &tab)?;
+            }
+            _ => crate::planet::clear(&self.runtime),
+        }
+        let mut layout = gui::windows(&self.runtime, w, h, &outliner, selected.as_ref())?;
+        if let Some(owner) = planet_owner {
+            let map = self.map.as_mut().unwrap();
+            let c = map.galaxy.countries.iter().position(|c| c.id == owner);
+            map.flags(&mut layout.items, c);
+        }
+        if selected.as_ref().is_some_and(|s| s.kind == "planet") {
+            crate::planet::portraits(self.map.as_mut().unwrap(), &mut layout.items, planet_owner.is_none());
+        }
         // the main screen's other windows under the outliner and the selection's window
         let mut items = self.main_screen_items()?;
         items.extend(layout.items);
@@ -1529,6 +1564,12 @@ impl App {
             }
             // the selection's window closed; an outliner row selects its planet or fleet
             Some("close") => self.select(None),
+            // the planet view's tabs (planet.rs)
+            Some(a) if a.starts_with("planet_tab:") => {
+                if let Some(Pickable::Body(id)) = self.selected {
+                    self.open_planet(id, &a["planet_tab:".len()..])?;
+                }
+            }
             Some(a) if a.starts_with("select:") => {
                 let mut it = a.split(':').skip(1);
                 let (kind, id) = (it.next().unwrap_or(""), it.next().and_then(|v| v.parse::<u32>().ok()).ok_or(format!("bad action {a}"))?);

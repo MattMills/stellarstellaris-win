@@ -357,7 +357,9 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             if sprite then
                 sprite_item(path, sprite, frame, x, y, w, h, button)
             end
-            local bt = field("buttonText")
+            -- its label: buttonText, or text (the game shows a button's `text` as its label: the
+            -- planet view's "Build", "Terraform", "Resettle", "Embark All" are `text = ...`)
+            local bt = field("buttonText") or field("text")
             if bt and bt ~= "" then
                 local text = opts.text and opts.text[path] or bt
                 text_item(path .. "/text", field("buttonFont") or field("font"), text, x, y, w, h, "center", "center",

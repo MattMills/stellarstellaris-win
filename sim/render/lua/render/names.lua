@@ -48,6 +48,30 @@ function names.format(loc, n, depth)
         first = first or text
     end
     local engine = key:match("^%%(.+)%%$")
+    if engine == "SEQ" then
+        -- a numbered name (an army's "1st Hardshell Defenders": { key = "%SEQ%" variables = {
+        -- fmt = { key = "MOL4_HARDSHELLDEFENDERS" } num = { key = "1" } } }): fmt's text with
+        -- $ORD$ the number's ordinal (the ORD localisation's rule: 11th..19th, else 1st, 2nd, 3rd,
+        -- else th) and $NUM$ the number [V] the localisation, the game's frame
+        local fmt, num
+        for _, v in ipairs(n.vars or {}) do
+            if v.key == "fmt" and type(v.value) == "table" then
+                fmt = v.value.key
+            elseif v.key == "num" and type(v.value) == "table" then
+                num = tonumber(v.value.key)
+            end
+        end
+        if fmt and num then
+            local text = loc and loc.has(fmt) and loc.raw(fmt) or fmt
+            local suffix = (num % 100 >= 10 and num % 100 <= 19) and "th"
+                or ({ [1] = "st", [2] = "nd", [3] = "rd" })[num % 10] or "th"
+            text = text:gsub("%$ORD%$", num .. suffix):gsub("%$NUM%$", tostring(num))
+            if loc then
+                text = loc.plain(loc.resolve(text))
+            end
+            return text
+        end
+    end
     if engine then
         if engine == "ACRONYM" then
             return acronym(vars.base or first or "")

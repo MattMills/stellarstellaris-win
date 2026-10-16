@@ -421,6 +421,24 @@ impl Engine {
                 self.flush_log();
                 Ok(Reply::ok(format!("select {}", a.join(" "))))
             }
+            "open_planet" => {
+                // the planet view (planet.rs; headless.c serves it too): `open_planet ID [TAB]`,
+                // `open_planet close`
+                if a.first().copied() == Some("close") {
+                    self.app.select(None);
+                    self.flush_log();
+                    return Ok(Reply::ok("open_planet close"));
+                }
+                let id: u32 = num(a.first(), "planet id")?;
+                // without a tab the window keeps its own (the game's `open_planet ID` too)
+                let tab = a.get(1).copied().unwrap_or(self.app.planet_view.tab.as_str()).to_string();
+                let tab = if tab.is_empty() { "summary".to_string() } else { tab };
+                self.app.open_planet(id, &tab)?;
+                // laid out now: what went wrong in the reply
+                self.app.scene()?;
+                let log: Vec<String> = self.flush_log().into_iter().filter(|l| l.starts_with("windows:")).collect();
+                Ok(Reply::ok(format!("open_planet {id} {tab}{}", if log.is_empty() { String::new() } else { format!(" ({})", log.join("; ")) })))
+            }
             "orbit" => {
                 self.app.orbit(num(a.first(), "dyaw")?, num(a.get(1), "dpitch")?);
                 Ok(Reply::ok("orbit"))
