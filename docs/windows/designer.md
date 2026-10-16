@@ -147,8 +147,8 @@ quads write none).
   ship's names and "$CLASS$-class"; without, the size's `pre_communications_name` or
   NO_COMMUNICATIONS_VESSEL(_XENOPHOBE)), the hull, armor and shield rings at round(% x 100) (armor
   and shields hidden without any), the ship class icon (GetShipClassIconFrameFromSize: the size's
-  `ship_class_icon_frame`, else by class **[I]**), `inspect` disabled before contact (its last frame
-  **[I]**), `destroyed`/`disengaged` hidden. The rings are turned 180 degrees about (41, -37) in the
+  `ship_class_icon_frame`, else by class **[I]**), `inspect` disabled before contact (the game greys it
+  with its shader: not done here), `destroyed`/`disengaged` hidden. The rings are turned 180 degrees about (41, -37) in the
   .gui: drawn over (41 - w, 37 - h) .. (41, 37), not turned **[I: by the frame]**.
 - The bar (`progress`, a progressbarType): the left side's share of both sides' hull points,
   round(100 L / (L + R)) in 1..100; its first texture (green) to the share, its second (red) past it

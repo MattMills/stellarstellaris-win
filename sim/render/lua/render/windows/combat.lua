@@ -411,8 +411,8 @@ function combat.build(ctx, data)
                     -- the rings: rotation 3.14159 about their position (41, -37): drawn over
                     -- (41 - w, 37 - h) .. (41, 37) [I: by the frame; not turned here]
                     local ring_at = { 41 - ring_w, 37 - ring_h }
-                    -- inspect: enabled iff CShip::CanInspectShip (contact) [V 0x2bfbefa]; its
-                    -- disabled frame [I: the last of three]
+                    -- inspect: enabled iff CShip::CanInspectShip (contact) [V 0x2bfbefa]; the game
+                    -- greys a disabled one with its shader (buttonstate_onlydisable): not done here
                     local si_items, sr = lay("combat_view_ship_entry", {
                         prefix = sp, parent = { x = list.x, y = y + 140 + 50 * (si - 1), w = 0, h = 0 },
                         hide = shide,
@@ -421,7 +421,6 @@ function combat.build(ctx, data)
                             [path .. "/armor"] = pct(s.armor, s.armor_max),
                             [path .. "/shields"] = pct(s.shield, s.shield_max),
                             [path .. "/ship_class"] = s.frame,
-                            [path .. "/inspect"] = (not s.known) and 3 or nil,
                         },
                         positions = { [path .. "/hitpoints"] = ring_at, [path .. "/armor"] = ring_at, [path .. "/shields"] = ring_at },
                         text = {
