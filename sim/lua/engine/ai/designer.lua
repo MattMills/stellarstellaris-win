@@ -452,7 +452,9 @@ local function find_section(slot_name, d, rng, role)
     for _, sec in ipairs(sections().list) do
         local b = sec.block
         local sizes = set_of(b, "ship_size")
-        if sizes[d.size] and unq(defs.field(b, "fits_on_slot")) == slot_name and has_techs(d.country, list_of(b, "prerequisites"))
+        -- CSectionTemplate::FitsOnSlot (0x1f45a40): one of its fits_on_slot (a key given once per
+        -- slot: the military stations' sections fit north, west and east)
+        if sizes[d.size] and set_of(b, "fits_on_slot")[slot_name] and has_techs(d.country, list_of(b, "prerequisites"))
             and (role == "" or set_of(b, "ai_tags")[role]) then
             first_any = first_any or sec
             local fill = fillable(sec, d)
@@ -740,8 +742,8 @@ function designer.class_name(country, size, r)
     return list[r % #list + 1]
 end
 
--- the design's block in the save's form
-local function design_block(country, stage, name, role)
+-- the design's block in the save's form (an auto-generated one: auto_gen_design = yes)
+local function design_block(country, stage, name, role, auto)
     local c = world.object("country", country)
     local b = {}
     local nb = {}
@@ -749,6 +751,9 @@ local function design_block(country, stage, name, role)
     world.append(b, "name", nb)
     if role and role ~= "" then
         world.append(b, "role", role, true)
+    end
+    if auto then
+        world.append(b, "auto_gen_design", "yes")
     end
     world.append(b, "upgrade_ship_components", "yes")
     world.append(b, "graphical_culture", unq(world.field(c, "graphical_culture")) or "", true)
@@ -775,13 +780,10 @@ local function design_block(country, stage, name, role)
     return b
 end
 
--- CCreateOrUpdateShipDesignCommand::Execute (0x431f9a0): the design added to the country's
--- collection (CShipDesignCollection::CreateOrUpdateShipDesign: one of the same name replaced and
--- its fleet templates retrofitted [not modelled: a new name each time]), then one draw of the
--- synchronized generator for the scope and on_ship_designed (this = the country)
-function designer.execute_create(country, stage, name, role)
+-- a new design in the store and the country's collection
+local function add_design(country, stage, name, role, auto)
     local id, slot = create().allocate("ship_design")
-    create().place("ship_design", id, slot, design_block(country, stage, name, role))
+    create().place("ship_design", id, slot, design_block(country, stage, name, role, auto))
     local c = world.object("country", country)
     local coll = world.field(c, "ship_design_collection")
     if type(coll) ~= "table" then
@@ -792,15 +794,106 @@ function designer.execute_create(country, stage, name, role)
         list = world.child(coll, "ship_design")
     end
     world.append_value(list, id)
+    return id
+end
+
+-- CCreateOrUpdateShipDesignCommand::Execute (0x431f9a0): the design added to the country's
+-- collection (CShipDesignCollection::CreateOrUpdateShipDesign: one of the same name replaced and
+-- its fleet templates retrofitted [not modelled: a new name each time]), then one draw of the
+-- synchronized generator for the scope and on_ship_designed (this = the country)
+function designer.execute_create(country, stage, name, role)
+    local id = add_design(country, stage, name, role, false)
     RUST.rand()
     create().on_action("on_ship_designed", { "country", country }, nil)
     S.created = S.created + 1
     return id
 end
 
+-- the newest of the country's auto-generated designs of the size
+local function latest_auto(country, size)
+    local ids = design_ids(country)
+    for k = #ids, 1, -1 do
+        local d = world.object("ship_design", ids[k])
+        local info = d and world.field(d, "auto_gen_design") == "yes" and create().design_info(ids[k])
+        if info and info.size == size then
+            return ids[k]
+        end
+    end
+    return nil
+end
+
+-- designer.design_for(country, size) -> a design id: CCountry::CreateAndAddDefaultShipDesign
+-- (0x233f230), the default design of a size, with the synchronized generator: r = a draw, the
+-- design from CreateShipDesign(r) (no role: CCrudeRandom(r)'s sections); a second draw for the role
+-- (GetEffectiveRoleForShipSize); with a role, the sections again with seed 0 and two draws more
+-- (AddRandomSectionsToShipDesign's, AddSectionComponentsToShipDesign's). ReplaceAutoGenDesign:
+-- the country's latest auto-generated design of the size when its components are identical, else
+-- the new one (auto_gen_design = yes; its name from the name list by r [I]). A creature size (the
+-- designer template, CDesignerDatabase::GetCreatureDesignerTemplate) is not modelled.
+function designer.design_for(country, size)
+    local sd = defs.get("common/ship_sizes", size)
+    if not sd then
+        return nil
+    end
+    local r = RUST.rand()
+    local stage = designer.generate(country, size, "", crude(r):int())
+    if not stage or (#stage.sections == 0 and #stage.required == 0) then
+        return nil
+    end
+    local role = designer.role_for(country, size, RUST.rand())
+    if role ~= "" then
+        RUST.rand()
+        RUST.rand()
+        stage = designer.generate(country, size, role, 0)
+    end
+    stage = designer.plain(stage)
+    local latest = latest_auto(country, size)
+    if latest and designer.identical(stage_of(latest), stage) then
+        S.reused = S.reused + 1
+        return latest
+    end
+    S.defaults = (S.defaults or 0) + 1
+    return add_design(country, stage, designer.class_name(country, size, r), role, true)
+end
+
+-- designer.set_default_designs(country, stations) -> { [size] = design }: CCountry::
+-- SetDefaultShipDesigns (0x2340cf0) for the country's own designs: each ship size in the
+-- database's order with a default design (`enable_default_design = yes`, the size's flags
+-- (+0xc8 & 0x80040) == 0x40; `is_designable = no` sizes too: the game's constructors get them);
+-- an orbital station or a starbase only with stations,
+-- the game's EUpdateStationDesignsMode) that the country can build (NUtil::CanBuildShipOfSize):
+-- design_for. The game runs it for each empire it makes (InitEmpiresForStaticGalaxy,
+-- GenerateFromRandomScenario, create_country), and for a country whose technologies changed (the
+-- flag +0x2a41 & 0x10 that DoResearchTechnologyCompleted sets) on its day of the month (id % 30;
+-- a player's at once): twice in the 2210 saves' first 180 days (61 draws, profiled); not run
+-- during play here.
+function designer.set_default_designs(country, stations)
+    local navy = require("engine.ai.navy")
+    local E = require("simscript.eval")
+    local ctx = E.new_ctx(E.S("country", country), E.S("country", country), nil, "ship design")
+    local research = require("engine.research")
+    local techs = setmetatable({}, { __index = function(t, k)
+        local v = research.level(country, k) ~= nil
+        rawset(t, k, v)
+        return v
+    end })
+    local out = {}
+    for _, size in ipairs(require("engine.ai.shipbuilding").db_index("common/ship_sizes").names) do
+        local d = defs.get("common/ship_sizes", size)
+        local b = d and d.block
+        if b and defs.field(b, "enable_default_design") == "yes" then
+            local station = defs.field(b, "is_space_station") == "yes" or unq(defs.field(b, "class")) == "shipclass_starbase"
+            if (stations or not station) and navy.can_build_size(country, { def = d }, techs, ctx) then
+                out[size] = designer.design_for(country, size)
+            end
+        end
+    end
+    return out
+end
+
 function designer.report()
-    return string.format("ai designer: %d designs generated, %d existing ones reused, %d posted, %d created, %d slots without a section",
-        S.generated, S.reused, S.posted, S.created, S.no_section)
+    return string.format("ai designer: %d designs generated, %d existing ones reused, %d posted, %d created, %d default designs made, %d slots without a section",
+        S.generated, S.reused, S.posted, S.created, S.defaults or 0, S.no_section)
 end
 
 return designer

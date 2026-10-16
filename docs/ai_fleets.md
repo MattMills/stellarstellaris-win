@@ -221,7 +221,15 @@ fusion reactor and the picket computer, 16777224's screen and constructor, 16777
 The same pipeline with the synchronized generator is `CCountry::CreateAndAddDefaultShipDesign`
 (0x233f230: four `CRandom` draws: the seed, the role, the sections, the components), which
 `CCountry::SetDefaultShipDesigns` (0x2340cf0) runs for each size with a default design (new games,
-and the `auto_gen_design` designs made after research): not ported yet.
+and the `auto_gen_design` designs made after research). Ported as `designer.design_for(country,
+size)` and `designer.set_default_designs(country, stations)` for the new-game effects; not run
+during play (the game refreshed them twice in the 2210 saves' first 180 days, 61 draws). **[V]**
+for the sizes made (`is_designable = no` sizes too: the constructors) and the sections' slots
+(`fits_on_slot` is a repeated key: a military station's sections go west and east); the game's
+designs at load (16779215 constructor, 16779216 military_station_small) have the same structure
+and the same armor/shield alternation. **[I]** which of two equally tagged sections is picked
+(LIGHT_ or MEDIUM_MILITARY_STATION_SECTION) follows the draw, which a probe from a loaded save
+cannot align with the one the game made at the empire's creation.
 
 ## 5. The daily order **[V]**
 
