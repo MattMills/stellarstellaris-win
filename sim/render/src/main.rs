@@ -28,6 +28,7 @@ mod app;
 mod border;
 mod camera;
 mod clock;
+mod controls;
 mod dds;
 mod designer;
 mod effects;

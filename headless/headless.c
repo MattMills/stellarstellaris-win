@@ -788,6 +788,7 @@ static int g_viewmode;
 static int g_view_autoload;
 static void view_menu(void);
 static void view_game(void *gs);
+static void view_command(void *gs);
 
 static void my_FrontendDlcViewUpdate(void *view) {
 	(void)view;
@@ -1118,10 +1119,18 @@ static _Bool my_CheckTick(void *idler, float dt) {
 //                      HEADLESS_FRAME_TIMEOUT seconds, 30), captures the window (X11 XGetImage),
 //                      writes the PNG: `ok frame PATH W H MS FRAMES` ("unsettled" if timed out)
 //   frame -            the same, the PNG's bytes after `ok frame - W H MS BYTES` (listener only)
-//   state [planet ID]  JSON: the date, the view, the camera (its orientation, eye, look-at, up,
-//                      FOV, aspect, near, far, the view and projection matrices as the game keeps
-//                      them: column-major, left-handed); with a planet, its entity scale
-//                      (CPlanet::CalcCurrentEntityScale), display size and world transform
+//   frame PATH now     the frame as the input left it (the camera's update not run while waiting)
+//   key CHORD [down|up|tap], hold CHORD DURATION, mouse X Y [BUTTON [down|up]], move X Y,
+//   button BUTTON down|up [X Y], click X Y [BUTTON] [double], wheel NOTCHES [X Y] (scroll),
+//   drag BUTTON X0 Y0 X1 Y1 [STEPS [FRAMES]]
+//                      real input by XTest ("input" below)
+//   timestep MS|off    lockstep: the camera's frame time MS, no frame between commands
+//   tick N, wait S     N frames run (frames N); S seconds of frames (with a timestep, S / MS frames)
+//   state [planet ID]  JSON: the date, the view, the clock and the input, the camera (its
+//                      orientation, eye, look-at, up, FOV, aspect, near, far, the view and
+//                      projection matrices as the game keeps them: column-major, left-handed);
+//                      with a planet, its entity scale (CPlanet::CalcCurrentEntityScale), display
+//                      size and world transform
 //   quit               exits (no gamestate written)
 //
 // The layouts used (4.5.2 Linux, read from the code):
@@ -1149,6 +1158,8 @@ static uintptr_t a_GalacticObjectDb;      // TPdxRef<CGalacticObject>::_pDatabas
 static uintptr_t a_GalaxyScaleMult;       // NDefines::NCamera::GALAXY_SPACE_SCALE_MULT
 static uintptr_t a_SystemScaleMult;       // NDefines::NCamera::SYSTEM_SPACE_SCALE_MULT
 static uintptr_t a_ExecuteObserve;        // OnExecute_Observe(CPdxArray<CString, int> const&)
+static uintptr_t a_g_CurrentIdler;        // CGameIdler* (+0xe0: the frame's time, CGameCamera::UpdateZoom's keys)
+static uintptr_t a_SDL_AddEventWatch;     // SDL_AddEventWatch (SDL2 is linked in)
 
 static struct symreq g_view_syms[] = {
 	{"_ZN11CGameCamera6UpdateEPK9CKeyBoardP6CMousePK18CPdxGameControllerR5CListI11CInputEventEf", &a_GameCameraUpdate},
@@ -1164,6 +1175,8 @@ static struct symreq g_view_syms[] = {
 	{"_ZN8NDefines7NCamera23GALAXY_SPACE_SCALE_MULTE", &a_GalaxyScaleMult},
 	{"_ZN8NDefines7NCamera23SYSTEM_SPACE_SCALE_MULTE", &a_SystemScaleMult},
 	{"_Z17OnExecute_ObserveRK9CPdxArrayI7CStringiE", &a_ExecuteObserve},
+	{"g_CurrentIdler", &a_g_CurrentIdler},
+	{"SDL_AddEventWatch", &a_SDL_AddEventWatch},
 	{NULL, NULL},
 };
 
@@ -1207,6 +1220,9 @@ static void *planet(void *gs, int id) {
 
 static int g_cam_set;
 static float g_cam[6]; // the game's world units and radians: x y z distance pitch yaw
+static float g_timestep; // `timestep MS`: the camera's frame time in seconds (0: the frame's own)
+static int g_cam_freeze;  // `frame PATH now` waits for the picture: the camera's update not run
+static int g_cam_held;    // a frame held for the input's delivery (below): the camera's update not run
 
 static void apply_camera(void *cam) {
 	float *cur = (float *)((char *)cam + 0x218), *tgt = (float *)((char *)cam + 0x230);
@@ -1214,7 +1230,18 @@ static void apply_camera(void *cam) {
 	((void (*)(void *))a_UpdateInternalCamera)(cam);
 }
 
+// With a timestep the camera's update gets it as the frame's time (CGameIdler::Idle's real one,
+// at most 0.1 s, otherwise), and so does the idler's own (g_CurrentIdler +0xe0, which
+// UpdateZoom @0x2e664f8 multiplies Page Up and Page Down's KEYBOARD_ZOOM_RATE by): the held
+// keys' scrolling and zoom and the camera's smoothing are then the same a frame however long the
+// frame took.
 static void cam_update(void *cam, void *kb, void *mouse, void *pad, void *events, float dt) {
+	if (g_cam_freeze || g_cam_held) return;
+	if (g_timestep > 0) {
+		dt = g_timestep;
+		char *idler = *(char **)a_g_CurrentIdler;
+		if (idler) F32(idler + 0xe0) = g_timestep;
+	}
 	((void (*)(void *, void *, void *, void *, void *, float))a_GameCameraUpdate)(cam, kb, mouse, pad, events, dt);
 	if (g_cam_set) apply_camera(cam);
 }
@@ -1252,6 +1279,18 @@ struct xfns {
 	XImage *(*image)(Display *, Drawable, int, int, unsigned int, unsigned int, unsigned long, int);
 	int (*sync)(Display *, Bool);
 	int (*xfree)(void *);
+	// input (below): the keys' codes, the focus, the window's place
+	KeySym (*string_to_keysym)(const char *);
+	KeyCode (*keysym_to_keycode)(Display *, KeySym);
+	int (*set_input_focus)(Display *, Window, int, Time);
+	Bool (*translate)(Display *, Window, Window, int, int, int *, int *, Window *);
+	int (*autorepeat_off)(Display *);
+	Bool (*query_pointer)(Display *, Window, Window *, Window *, int *, int *, int *, int *, unsigned int *);
+	// libXtst (XTest), real input as the X server's own devices make it
+	Bool (*xtest_query)(Display *, int *, int *, int *, int *);
+	int (*fake_key)(Display *, unsigned int, Bool, unsigned long);
+	int (*fake_button)(Display *, unsigned int, Bool, unsigned long);
+	int (*fake_motion)(Display *, int, int, int, unsigned long);
 };
 static struct xfns X;
 static Display *g_dpy;
@@ -1269,17 +1308,35 @@ static int view_libs(void) {
 	X.image = dlsym(x, "XGetImage");
 	X.sync = dlsym(x, "XSync");
 	X.xfree = dlsym(x, "XFree");
+	X.string_to_keysym = dlsym(x, "XStringToKeysym");
+	X.keysym_to_keycode = dlsym(x, "XKeysymToKeycode");
+	X.set_input_focus = dlsym(x, "XSetInputFocus");
+	X.translate = dlsym(x, "XTranslateCoordinates");
+	X.autorepeat_off = dlsym(x, "XAutoRepeatOff");
+	X.query_pointer = dlsym(x, "XQueryPointer");
+	void *t = dlopen("libXtst.so.6", RTLD_NOW);
+	if (t) {
+		X.xtest_query = dlsym(t, "XTestQueryExtension");
+		X.fake_key = dlsym(t, "XTestFakeKeyEvent");
+		X.fake_button = dlsym(t, "XTestFakeButtonEvent");
+		X.fake_motion = dlsym(t, "XTestFakeMotionEvent");
+	}
+	if (!X.fake_key || !X.fake_button || !X.fake_motion || !X.xtest_query)
+		hlog("view: libXtst.so.6 not found: no input commands (key, mouse, wheel, drag)");
 	z_compress2 = dlsym(z, "compress2");
 	z_bound = dlsym(z, "compressBound");
 	z_crc32 = dlsym(z, "crc32");
-	return X.open && X.root && X.tree && X.attrs && X.image && X.sync && X.xfree && z_compress2 && z_bound && z_crc32 ? 0 : -1;
+	return X.open && X.root && X.tree && X.attrs && X.image && X.sync && X.xfree && X.string_to_keysym &&
+	               X.keysym_to_keycode && X.set_input_focus && X.translate && X.autorepeat_off && z_compress2 && z_bound &&
+	               z_crc32
+	           ? 0
+	           : -1;
 }
 
-// The game's window: the largest mapped top-level window. RGB rows into *out (malloc'd).
-static int capture(uint8_t **out, int *w, int *h) {
-	if (!g_dpy && !(g_dpy = X.open(NULL))) return -1;
-	X.sync(g_dpy, False);
-	Window root = X.root(g_dpy), r, parent, *kids = NULL, best = root;
+// The game's window: the largest mapped top-level window (0 if none), its size.
+static Window game_window(int *w, int *h) {
+	if (!g_dpy && !(g_dpy = X.open(NULL))) return 0;
+	Window root = X.root(g_dpy), r, parent, *kids = NULL, best = 0;
 	unsigned int n = 0;
 	long area = 0;
 	XWindowAttributes a;
@@ -1288,9 +1345,21 @@ static int capture(uint8_t **out, int *w, int *h) {
 			if (X.attrs(g_dpy, kids[i], &a) && a.map_state == IsViewable && (long)a.width * a.height > area) {
 				area = (long)a.width * a.height;
 				best = kids[i];
+				if (w) *w = a.width;
+				if (h) *h = a.height;
 			}
 		if (kids) X.xfree(kids);
 	}
+	return best;
+}
+
+// The game's window captured: RGB rows into *out (malloc'd).
+static int capture(uint8_t **out, int *w, int *h) {
+	if (!g_dpy && !(g_dpy = X.open(NULL))) return -1;
+	X.sync(g_dpy, False);
+	Window best = game_window(NULL, NULL);
+	XWindowAttributes a;
+	if (!best) best = X.root(g_dpy);
 	if (!X.attrs(g_dpy, best, &a)) return -1;
 	XImage *im = X.image(g_dpy, best, 0, 0, a.width, a.height, AllPlanes, ZPixmap);
 	if (!im) return -1;
@@ -1369,6 +1438,7 @@ struct reply {
 	int quit;
 };
 
+static int g_in_game; // the in-game frames run commands (view_game)
 static pthread_mutex_t g_mx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
 static char *g_inbox;            // a listener's command waiting for the main thread
@@ -1383,6 +1453,12 @@ struct cmd {
 	uint8_t *prev; // the last capture (frame)
 	int pw, ph;
 	int stage;
+	// the input commands that take frames (hold, drag, tick, wait): frames (or seconds) to wait,
+	// the step, the chord or button, the path
+	int n, step, steps, button;
+	double secs;
+	char chord[64];
+	int path[4];
 };
 static struct cmd C;
 
@@ -1443,6 +1519,9 @@ static int next_command(void) {
 		}
 	}
 	pthread_mutex_lock(&g_mx);
+	// lockstep (a timestep set, in game): no frame runs between commands, the main thread waits
+	// here for the next one
+	while (g_timestep > 0 && g_in_game && !g_inbox) pthread_cond_wait(&g_cv, &g_mx);
 	if (g_inbox) {
 		memset(&C, 0, sizeof C);
 		snprintf(C.line, sizeof C.line, "%s", g_inbox);
@@ -1486,6 +1565,7 @@ static void *listener(void *arg) {
 			pthread_mutex_lock(&g_mx);
 			g_inbox = strdup(line);
 			g_outbox = NULL;
+			pthread_cond_broadcast(&g_cv);
 			while (!g_outbox) pthread_cond_wait(&g_cv, &g_mx);
 			struct reply *r = g_outbox;
 			g_outbox = NULL;
@@ -1507,6 +1587,377 @@ static void *listener(void *arg) {
 		close(c);
 	}
 	return NULL;
+}
+
+// --- input: real key presses, pointer moves, buttons and wheel notches, made by the X server's
+// XTest devices (libXtst, loaded at run time) as a keyboard and a mouse make them, so the game
+// reads them its own way (SDL's X11 events, its CKeyBoard and CMouse). Injected from CheckTick
+// (frame f), they reach the game when SDL pumps the events at the start of frame f + 1: the
+// camera's update of frame f does not see them, that of f + 1 does. The renderer's controls
+// (sim/render/src/controls.rs) model the same latency in lockstep. Key names are the renderer's
+// (controls.rs `KEYS`): X keysym names lower-cased, with aliases.
+
+struct keyname {
+	const char *name, *keysym;
+	int shift; // typed with Shift on a US layout
+};
+static const struct keyname g_keys[] = {
+	{"space", "space", 0},         {"escape", "Escape", 0},     {"return", "Return", 0},
+	{"tab", "Tab", 0},             {"backspace", "BackSpace", 0}, {"up", "Up", 0},
+	{"down", "Down", 0},           {"left", "Left", 0},         {"right", "Right", 0},
+	{"pageup", "Prior", 0},        {"pagedown", "Next", 0},     {"home", "Home", 0},
+	{"end", "End", 0},             {"insert", "Insert", 0},     {"delete", "Delete", 0},
+	{"kp_plus", "KP_Add", 0},      {"kp_minus", "KP_Subtract", 0}, {"kp_multiply", "KP_Multiply", 0},
+	{"kp_divide", "KP_Divide", 0}, {"kp_enter", "KP_Enter", 0}, {"kp_period", "KP_Decimal", 0},
+	{"plus", "equal", 1},          {"minus", "minus", 0},       {"equal", "equal", 0},
+	{"period", "period", 0},       {"comma", "comma", 0},       {"slash", "slash", 0},
+	{"semicolon", "semicolon", 0}, {"apostrophe", "apostrophe", 0}, {"grave", "grave", 0},
+	{"bracketleft", "bracketleft", 0}, {"bracketright", "bracketright", 0}, {"backslash", "backslash", 0},
+	{"shift", "Shift_L", 0},       {"ctrl", "Control_L", 0},    {"alt", "Alt_L", 0},
+	{"pause", "Pause", 0},         {"print", "Print", 0},       {NULL, NULL, 0},
+};
+static const char *g_key_alias[][2] = {
+	{".", "period"},    {"+", "plus"},       {"=", "equal"},       {"-", "minus"},        {",", "comma"},
+	{"/", "slash"},     {";", "semicolon"},  {"'", "apostrophe"},  {"`", "grave"},        {"[", "bracketleft"},
+	{"]", "bracketright"}, {"\\", "backslash"}, {"esc", "escape"},  {"enter", "return"},   {"pgup", "pageup"},
+	{"prior", "pageup"}, {"pgdn", "pagedown"}, {"next", "pagedown"}, {"del", "delete"},    {"kp_add", "kp_plus"},
+	{"kp_subtract", "kp_minus"}, {"control", "ctrl"}, {"lshift", "shift"}, {"lctrl", "ctrl"}, {"lalt", "alt"},
+	{NULL, NULL},
+};
+
+// The input's delivery: the events injected (each key press or release, button press or release,
+// pointer move to another pixel, wheel notch makes one SDL event) and those the game's SDL took
+// (an event watch: SDL_AddEventWatch). Most reach the frame after the one they were injected in;
+// when the X server or the game was slow some reach a frame later still, and such a frame is
+// held (view_game: the camera's update not run, the frame not counted) until all have come, so
+// that each command sees its frames exactly. HEADLESS_INPUT_TRACE=1 logs each event (SDL2's
+// SDL_Event: type +0, timestamp +4; keys: state +12, repeat +13, scancode +16, sym +20, mod +24;
+// buttons: button +16, state +17, clicks +18, x +20, y +24; motion: x +20, y +24, rel +28 +32;
+// wheel: x +16, y +20).
+
+static int g_frame_no;               // the in-game frames run (CheckTick calls, held ones not) since the load
+static int g_injected, g_delivered;  // input events injected, and taken by the game's SDL
+static int g_held_frames, g_held_total; // frames held for the input's delivery (now, in all)
+static double g_held_since;
+static int g_input_trace;
+
+static int input_watch(void *data, void *ev) {
+	(void)data;
+	uint8_t *e = ev;
+	uint32_t type = *(uint32_t *)e, ts = *(uint32_t *)(e + 4);
+	if (type == 0x300 || type == 0x301 || (type >= 0x400 && type <= 0x403)) g_delivered++;
+	if (!g_input_trace) return 1;
+	if (type == 0x300 || type == 0x301)
+		hlog("sdl frame %d t %u key %s sym %#x scancode %d mod %#x repeat %d", g_frame_no, ts, type == 0x300 ? "down" : "up",
+		     *(int32_t *)(e + 20), *(int32_t *)(e + 16), *(uint16_t *)(e + 24), e[13]);
+	else if (type == 0x401 || type == 0x402)
+		hlog("sdl frame %d t %u button %d %s clicks %d at %d,%d", g_frame_no, ts, e[16], type == 0x401 ? "down" : "up", e[18],
+		     *(int32_t *)(e + 20), *(int32_t *)(e + 24));
+	else if (type == 0x400)
+		hlog("sdl frame %d t %u motion to %d,%d rel %d,%d", g_frame_no, ts, *(int32_t *)(e + 20), *(int32_t *)(e + 24),
+		     *(int32_t *)(e + 28), *(int32_t *)(e + 32));
+	else if (type == 0x403)
+		hlog("sdl frame %d t %u wheel %d,%d", g_frame_no, ts, *(int32_t *)(e + 16), *(int32_t *)(e + 20));
+	return 1;
+}
+
+static Window g_win;
+static int g_win_x, g_win_y, g_input_ok = -1;
+static int g_ptr_x = -1, g_ptr_y = -1, g_buttons; // the pointer as we put it, buttons held (bit per button)
+static char g_keys_down[512];                    // the keys we hold, " name name "
+static unsigned g_released_code;                 // the last key event, a release: its key
+
+// The XTest extension, the game's window and its place, the keyboard's focus on it (SDL takes
+// key events and the window's focus from it), the server's key repeat off (a key held across
+// commands would repeat in real time).
+static int input_init(void) {
+	if (g_input_ok >= 0) return g_input_ok;
+	g_input_ok = 0;
+	int ev, er, maj, min, w, h;
+	Window child;
+	if (!X.fake_key || (!g_dpy && !(g_dpy = X.open(NULL))) || !X.xtest_query(g_dpy, &ev, &er, &maj, &min)) {
+		hlog("view: no XTest: input commands fail");
+		return 0;
+	}
+	if (!(g_win = game_window(&w, &h))) return 0;
+	X.translate(g_dpy, g_win, X.root(g_dpy), 0, 0, &g_win_x, &g_win_y, &child);
+	X.set_input_focus(g_dpy, g_win, RevertToPointerRoot, CurrentTime);
+	X.autorepeat_off(g_dpy);
+	// where the pointer is (a move there makes no event)
+	Window rw, cw;
+	int rx, ry, wx, wy;
+	unsigned int mask;
+	if (X.query_pointer && X.query_pointer(g_dpy, g_win, &rw, &cw, &rx, &ry, &wx, &wy, &mask)) g_ptr_x = wx, g_ptr_y = wy;
+	X.sync(g_dpy, False);
+	hlog("view: input by XTest %d.%d into window %#lx at %d,%d (%dx%d)", maj, min, (unsigned long)g_win, g_win_x, g_win_y, w, h);
+	const char *trace = getenv("HEADLESS_INPUT_TRACE");
+	g_input_trace = trace && *trace == '1';
+	((void (*)(int (*)(void *, void *), void *))a_SDL_AddEventWatch)(input_watch, NULL);
+	return g_input_ok = 1;
+}
+
+static const char *key_canonical(const char *name) {
+	for (int i = 0; g_key_alias[i][0]; i++)
+		if (!strcmp(name, g_key_alias[i][0])) return g_key_alias[i][1];
+	return name;
+}
+
+// The key's X keycode (0 if unknown) and whether Shift types it.
+static unsigned key_code(const char *name, int *shift) {
+	char sym[32];
+	*shift = 0;
+	name = key_canonical(name);
+	const char *ks = NULL;
+	for (int i = 0; g_keys[i].name; i++)
+		if (!strcmp(name, g_keys[i].name)) ks = g_keys[i].keysym, *shift = g_keys[i].shift;
+	if (!ks) {
+		size_t n = strlen(name);
+		if (n == 1 && ((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= '0' && name[0] <= '9')))
+			ks = name;
+		else if (name[0] == 'f' && n <= 3 && atoi(name + 1) >= 1 && atoi(name + 1) <= 24)
+			snprintf(sym, sizeof sym, "F%d", atoi(name + 1)), ks = sym;
+		else if (!strncmp(name, "kp_", 3) && n == 4 && name[3] >= '0' && name[3] <= '9')
+			snprintf(sym, sizeof sym, "KP_%c", name[3]), ks = sym;
+		else
+			return 0;
+	}
+	KeySym s = X.string_to_keysym(ks);
+	return s == NoSymbol ? 0 : X.keysym_to_keycode(g_dpy, s);
+}
+
+static void keys_down_set(const char *name, int down) {
+	char pat[72];
+	snprintf(pat, sizeof pat, " %s ", name);
+	char *at = strstr(g_keys_down, pat);
+	if (down && !at && strlen(g_keys_down) + strlen(pat) < sizeof g_keys_down) {
+		if (!g_keys_down[0]) strcpy(g_keys_down, " ");
+		strcat(g_keys_down, pat + 1);
+	} else if (!down && at) {
+		memmove(at, at + strlen(pat) - 1, strlen(at + strlen(pat) - 1) + 1);
+	}
+}
+
+// A key pressed or released. A press right after the same key's release: SDL's X11 takes a release
+// followed by a press of the same key less than 2 ms later (server time) for the keyboard's repeat
+// and drops the release, so the press comes 5 ms later (XTest's delay).
+static void key_event(unsigned code, int down) {
+	X.fake_key(g_dpy, code, down ? True : False, down && code == g_released_code ? 5 : CurrentTime);
+	g_released_code = down ? 0 : code;
+	g_injected++;
+}
+
+// A chord ("w", "shift+up", "ctrl+shift+backspace", "+") pressed or released: the modifiers
+// first and the key last, released the other way round. 0, or -1 with *err set.
+static int chord(const char *spec, int down, const char **err) {
+	char mods[3][8];
+	int nm = 0;
+	const char *k = spec;
+	for (;;) {
+		const char *names[] = {"shift+", "ctrl+", "control+", "alt+"};
+		int found = 0;
+		for (int i = 0; i < 4 && !found; i++)
+			if (!strncasecmp(k, names[i], strlen(names[i])) && k[strlen(names[i])]) {
+				if (nm < 3) snprintf(mods[nm++], sizeof mods[0], "%s", i == 0 ? "shift" : i == 3 ? "alt" : "ctrl");
+				k += strlen(names[i]);
+				found = 1;
+			}
+		if (!found) break;
+	}
+	char key[48];
+	snprintf(key, sizeof key, "%s", k);
+	for (char *p = key; *p; p++) *p = (char)(*p >= 'A' && *p <= 'Z' ? *p + 32 : *p);
+	int shift;
+	unsigned code = key_code(key, &shift);
+	if (!code) {
+		*err = "unknown key";
+		return -1;
+	}
+	if (shift && nm < 3) snprintf(mods[nm++], sizeof mods[0], "shift");
+	int s;
+	if (down) {
+		for (int i = 0; i < nm; i++) {
+			key_event(key_code(mods[i], &s), 1);
+			keys_down_set(mods[i], 1);
+		}
+		key_event(code, 1);
+		keys_down_set(key_canonical(key), 1);
+	} else {
+		key_event(code, 0);
+		keys_down_set(key_canonical(key), 0);
+		for (int i = nm - 1; i >= 0; i--) {
+			key_event(key_code(mods[i], &s), 0);
+			keys_down_set(mods[i], 0);
+		}
+	}
+	return 0;
+}
+
+static int button_num(const char *b) {
+	if (!strcmp(b, "left")) return 1;
+	if (!strcmp(b, "middle")) return 2;
+	if (!strcmp(b, "right")) return 3;
+	return 0;
+}
+
+static void pointer_to(int x, int y) {
+	if (x == g_ptr_x && y == g_ptr_y) return; // the X server sends no motion for no move
+	X.fake_motion(g_dpy, -1, g_win_x + x, g_win_y + y, CurrentTime);
+	g_ptr_x = x, g_ptr_y = y;
+	g_injected++;
+}
+
+static void button(int b, int down) {
+	X.fake_button(g_dpy, b, down ? True : False, CurrentTime);
+	if (b <= 3) g_buttons = down ? g_buttons | 1 << b : g_buttons & ~(1 << b);
+	// a wheel button's release makes no SDL event
+	if (b <= 3 || down) g_injected++;
+}
+
+// Wheel notches: > 0 away from the user (button 4, the game zooms in), < 0 toward (5).
+static void wheel(int n) {
+	for (int i = 0; i < abs(n); i++) button(n > 0 ? 4 : 5, 1), button(n > 0 ? 4 : 5, 0);
+}
+
+// A duration: "N" or "Nf" frames, "Nms" or "Ns" time; *secs < 0 for frames.
+static int duration(const char *s, int *frames, double *secs) {
+	char *end;
+	double v = strtod(s, &end);
+	if (end == s || v < 0) return -1;
+	*frames = 0, *secs = -1;
+	if (!*end || !strcmp(end, "f"))
+		*frames = (int)v;
+	else if (!strcmp(end, "ms"))
+		*secs = v / 1000;
+	else if (!strcmp(end, "s"))
+		*secs = v;
+	else
+		return -1;
+	// with a timestep a time is that many frames (rounded), as the renderer counts it
+	if (*secs >= 0 && g_timestep > 0) *frames = (int)(*secs / g_timestep + 0.5), *secs = -1;
+	return 0;
+}
+
+// One frame of a command that waits: whether its frames (or its time) are done.
+static int waited(void) {
+	C.frames++;
+	return C.secs >= 0 ? now() - C.t0 >= C.secs : C.frames >= C.n;
+}
+
+
+// The input commands; 1 if the verb is one of them (its reply sent, or C.active kept to go on
+// next frame).
+static int input_command(const char *verb, const char *arg) {
+	static const char *verbs[] = {"key", "hold", "mouse", "move", "button", "click", "wheel", "scroll", "drag", NULL};
+	int is = 0;
+	for (int i = 0; verbs[i]; i++) is |= !strcmp(verb, verbs[i]);
+	if (!is) return 0;
+	if (C.stage == 0 && !input_init()) {
+		reply_fmt("error %s: no input (XTest or the game's window missing)", verb);
+		return 1;
+	}
+	const char *err = NULL;
+	char a[4][64] = {{0}};
+	int n = sscanf(arg, "%63s %63s %63s %63s", a[0], a[1], a[2], a[3]);
+	if (C.stage == 0) g_cam_set = 0; // input moves the camera from where `camera` left it
+	if (!strcmp(verb, "key")) {
+		// key CHORD [down|up|tap]: tap (the default) presses and releases in the same frame
+		if (n < 1) return reply_fmt("error key CHORD [down|up|tap]"), 1;
+		const char *how = n > 1 ? a[1] : "tap";
+		int rc = !strcmp(how, "up") ? chord(a[0], 0, &err) : chord(a[0], 1, &err);
+		if (rc == 0 && !strcmp(how, "tap")) chord(a[0], 0, &err);
+		X.sync(g_dpy, False);
+		if (rc) return reply_fmt("error key %s: %s", a[0], err), 1;
+		reply_fmt("ok key %s %s frame %d", a[0], how, g_frame_no);
+	} else if (!strcmp(verb, "hold")) {
+		// hold CHORD DURATION: pressed, DURATION passes (frames, or time), released
+		if (C.stage == 0) {
+			if (n < 2 || duration(a[1], &C.n, &C.secs)) return reply_fmt("error hold CHORD FRAMES|Nf|Nms|Ns"), 1;
+			if (chord(a[0], 1, &err)) return reply_fmt("error hold %s: %s", a[0], err), 1;
+			snprintf(C.chord, sizeof C.chord, "%s", a[0]);
+			X.sync(g_dpy, False);
+			C.stage = 1;
+			C.t0 = now();
+			if (C.n > 0 || C.secs > 0) return 1;
+		} else if (!waited()) {
+			return 1;
+		}
+		chord(C.chord, 0, &err);
+		X.sync(g_dpy, False);
+		reply_fmt("ok hold %s %d frames frame %d", C.chord, C.frames, g_frame_no);
+	} else if (!strcmp(verb, "mouse") || !strcmp(verb, "move")) {
+		// mouse X Y [BUTTON [down|up]]: the pointer to the pixel; a button alone clicks
+		if (n < 2) return reply_fmt("error %s X Y [left|right|middle [down|up]]", verb), 1;
+		pointer_to(atoi(a[0]), atoi(a[1]));
+		if (n > 2) {
+			int b = button_num(a[2]);
+			if (!b) return reply_fmt("error mouse: button %s", a[2]), 1;
+			if (n < 4 || !strcmp(a[3], "down")) button(b, 1);
+			if (n < 4 || !strcmp(a[3], "up")) button(b, 0);
+		}
+		X.sync(g_dpy, False);
+		reply_fmt("ok %s %d %d frame %d", verb, g_ptr_x, g_ptr_y, g_frame_no);
+	} else if (!strcmp(verb, "button")) {
+		// button BUTTON down|up [X Y]
+		int b = button_num(a[0]);
+		if (n < 2 || !b || (strcmp(a[1], "down") && strcmp(a[1], "up"))) return reply_fmt("error button left|right|middle down|up [X Y]"), 1;
+		if (n >= 4) pointer_to(atoi(a[2]), atoi(a[3]));
+		button(b, !strcmp(a[1], "down"));
+		X.sync(g_dpy, False);
+		reply_fmt("ok button %s %s at %d %d frame %d", a[0], a[1], g_ptr_x, g_ptr_y, g_frame_no);
+	} else if (!strcmp(verb, "click")) {
+		// click X Y [BUTTON] [double]: pressed and released there (twice for double), one frame
+		if (n < 2) return reply_fmt("error click X Y [left|right|middle] [double]"), 1;
+		int b = n > 2 && button_num(a[2]) ? button_num(a[2]) : 1;
+		int twice = (n > 2 && !strcmp(a[2], "double")) || (n > 3 && !strcmp(a[3], "double"));
+		pointer_to(atoi(a[0]), atoi(a[1]));
+		for (int i = 0; i <= twice; i++) button(b, 1), button(b, 0);
+		X.sync(g_dpy, False);
+		reply_fmt("ok click %d %d%s frame %d", g_ptr_x, g_ptr_y, twice ? " double" : "", g_frame_no);
+	} else if (!strcmp(verb, "wheel") || !strcmp(verb, "scroll")) {
+		// wheel NOTCHES [X Y]: > 0 away from the user (zoom in); a notch a frame (UpdateZoom
+		// takes a frame's last notch only)
+		if (C.stage == 0) {
+			if (n < 1) return reply_fmt("error %s NOTCHES [X Y]", verb), 1;
+			if (n >= 3) pointer_to(atoi(a[1]), atoi(a[2]));
+			double nv = atof(a[0]);
+			int notches = (int)(nv < 0 ? nv - 0.5 : nv + 0.5);
+			C.steps = abs(notches), C.button = notches < 0 ? -1 : 1, C.stage = 1;
+		}
+		if (C.step < C.steps) {
+			wheel(C.button);
+			X.sync(g_dpy, False);
+			if (++C.step < C.steps) return 1;
+		}
+		reply_fmt("ok %s %d frame %d", verb, C.steps * C.button, g_frame_no);
+	} else if (!strcmp(verb, "drag")) {
+		// drag BUTTON X0 Y0 X1 Y1 [STEPS [FRAMES]]: down at the start, FRAMES frames, then STEPS
+		// moves along the line each followed by FRAMES frames, released at the end
+		if (C.stage == 0) {
+			int v[6] = {0, 0, 0, 0, 10, 1};
+			int k = sscanf(arg, "%63s %d %d %d %d %d %d", a[0], &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]);
+			C.button = button_num(a[0]);
+			if (k < 5 || !C.button || v[4] < 1 || v[5] < 1) return reply_fmt("error drag BUTTON X0 Y0 X1 Y1 [STEPS [FRAMES]]"), 1;
+			memcpy(C.path, v, sizeof C.path);
+			C.steps = v[4], C.n = v[5], C.secs = -1;
+			pointer_to(v[0], v[1]);
+			button(C.button, 1);
+			X.sync(g_dpy, False);
+			C.stage = 1;
+			return 1;
+		}
+		if (!waited()) return 1;
+		if (C.step < C.steps) {
+			C.step++;
+			pointer_to(C.path[0] + (C.path[2] - C.path[0]) * C.step / C.steps, C.path[1] + (C.path[3] - C.path[1]) * C.step / C.steps);
+			X.sync(g_dpy, False);
+			C.frames = 0;
+			return 1;
+		}
+		button(C.button, 0);
+		X.sync(g_dpy, False);
+		reply_fmt("ok drag to %d %d frame %d", g_ptr_x, g_ptr_y, g_frame_no);
+	}
+	return 1;
 }
 
 // --- the commands themselves (on the main thread, from the main menu or from CheckTick)
@@ -1606,20 +2057,29 @@ static void state_json(void *gs, const char *arg) {
 	float k = space_scale(cam), rad = 180.0f / 3.14159265f;
 	float *cur = (float *)(cam + 0x218), *tgt = (float *)(cam + 0x230);
 	int w = 0, h = 0;
-	if (g_dpy || (g_dpy = X.open(NULL))) {
-		XWindowAttributes a;
-		Window root = X.root(g_dpy), rr, par, *kids = NULL;
-		unsigned int n = 0;
-		long area = 0;
-		if (X.tree(g_dpy, root, &rr, &par, &kids, &n)) {
-			for (unsigned int i = 0; i < n; i++)
-				if (X.attrs(g_dpy, kids[i], &a) && a.map_state == IsViewable && (long)a.width * a.height > area)
-					area = (long)a.width * a.height, w = a.width, h = a.height;
-			if (kids) X.xfree(kids);
-		}
-	}
+	game_window(&w, &h);
 	p += snprintf(p, end - p, "ok {\"screen\":\"game\",\"date\":\"%s\",\"days\":%d,\"ticks\":%d,", date,
 	              I32((char *)gs + 0xc4), total_ticks(gs));
+	// the input as the commands left it: the pointer, the buttons and keys held, the timestep
+	char keys[600] = "";
+	for (char *k = g_keys_down, *q = keys; *k;) {
+		while (*k == ' ') k++;
+		if (!*k) break;
+		size_t n = strcspn(k, " ");
+		q += snprintf(q, keys + sizeof keys - q, "%s\"%.*s\"", q == keys ? "" : ",", (int)n, k);
+		k += n;
+	}
+	// the clock as the keys leave it (the game's own ticks never run here): CInGameIdler +0x594
+	// paused (CPauseGame), +0x590 the speed 0..4 (Increase/DecreaseGameSpeedCommand)
+	char *idler = *(char **)a_g_CurrentInGameIdler;
+	if (idler)
+		p += snprintf(p, end - p, "\"clock\":{\"paused\":%s,\"speed\":%d},", U8(idler + 0x594) ? "true" : "false",
+		              I32(idler + 0x590) + 1);
+	p += snprintf(p, end - p,
+	              "\"input\":{\"pointer\":[%d,%d],\"buttons\":[%s%s%s],\"keys\":[%s],\"timestep\":%.3f,\"lockstep\":%s,\"frame\":%d,\"held_frames\":%d},",
+	              g_ptr_x, g_ptr_y, g_buttons & 2 ? "\"left\"" : "", g_buttons & 4 ? (g_buttons & 2 ? ",\"middle\"" : "\"middle\"") : "",
+	              g_buttons & 8 ? (g_buttons & 6 ? ",\"right\"" : "\"right\"") : "", keys, g_timestep * 1000,
+	              g_timestep > 0 ? "true" : "false", g_frame_no, g_held_total);
 	if (sys == -1)
 		p += snprintf(p, end - p, "\"view\":\"galaxy\",");
 	else
@@ -1697,15 +2157,21 @@ static void step_days(void *gs, int days) {
 }
 
 static int g_frame_min = 10;
+static int g_frame_now;
 static double g_frame_wait = 2.0, g_frame_timeout = 30.0;
 
 // `frame`: from HEADLESS_FRAME_WAIT seconds (default 2: the GUI's fades, the camera's last
 // smoothing) and HEADLESS_FRAME_MIN frames on, a capture a frame; done when two in a row differ by
 // less than 0.25/255 on average (sampled), or after HEADLESS_FRAME_TIMEOUT seconds (default 30).
+// `frame PATH now`: the camera's update is not run meanwhile (the camera stays as the input left
+// it; the game draws fewer frames than it updates, so the last update is drawn some frames
+// later): from 0.3 s and 3 frames on, a capture every 0.1 s until two agree, at most 3 s.
 static void frame_cmd(const char *arg) {
 	C.frames++;
 	double t = now() - C.t0;
-	if (C.frames < g_frame_min || t < g_frame_wait) return;
+	if (C.frames < (g_frame_now ? 3 : g_frame_min) || t < (g_frame_now ? 0.3 : g_frame_wait)) return;
+	if (g_frame_now && C.prev && t - C.secs < 0.1) return;
+	C.secs = t;
 	uint8_t *img;
 	int w, h;
 	if (capture(&img, &w, &h) != 0) {
@@ -1720,7 +2186,7 @@ static void frame_cmd(const char *arg) {
 	}
 	free(C.prev);
 	C.prev = img, C.pw = w, C.ph = h;
-	if (diff > 0.25 && t < g_frame_timeout) return;
+	if (diff > 0.25 && t < (g_frame_now ? 3.0 : g_frame_timeout)) return;
 	size_t len;
 	uint8_t *png = png_encode(img, w, h, &len);
 	double ms = (now() - C.t0) * 1000;
@@ -1740,7 +2206,7 @@ static void frame_cmd(const char *arg) {
 	fwrite(png, 1, len, f);
 	fclose(f);
 	free(png);
-	reply_fmt("ok frame %s %d %d %.0f %d%s", arg, w, h, ms, C.frames, diff > 0.25 ? " unsettled" : "");
+	reply_fmt("ok frame %s %d %d %.0f %d%s", arg, w, h, ms, C.frames, g_frame_now ? " now" : diff > 0.25 ? " unsettled" : "");
 }
 
 // ---------------------------------------------------------------- the ship designer and the combat
@@ -1854,13 +2320,73 @@ static void view_game(void *gs) {
 			*(volatile uint32_t *)a_nRandomCount = (uint32_t)g_rng_pos_set;
 		}
 	}
-	if (g_in_game_frames < g_wait_frames || !next_command()) return;
+	if (g_in_game_frames < g_wait_frames) return;
+	g_in_game = 1;
+	// a frame the input has not all reached yet is held (at most 2 s of them, then given up)
+	if (g_delivered < g_injected) {
+		if (g_held_frames++ == 0) g_held_since = now();
+		if (now() - g_held_since < 2.0) {
+			g_cam_held = 1;
+			g_held_total++;
+			return;
+		}
+		hlog("view: %d input events not taken by the game after %d frames: going on", g_injected - g_delivered, g_held_frames);
+		g_delivered = g_injected;
+	}
+	g_cam_held = 0;
+	g_held_frames = 0;
+	g_frame_no++;
+	// the commands that take no frame run one after another in this frame; one that waits for
+	// frames goes on in the next (in lockstep next_command waits for a command: no frame between)
+	for (int guard = 0; guard < 10000; guard++) {
+		if (!next_command()) return;
+		view_command(gs);
+		if (C.active) return;
+	}
+}
+
+static void view_command(void *gs) {
 	char verb[64] = "", arg[960] = "";
 	sscanf(C.line, "%63s %959[^\n]", verb, arg);
 	char *cam = camera();
 	char date[32];
 	date_str(gs, date, sizeof date);
-	if (!strcmp(verb, "load")) {
+	if (input_command(verb, arg)) {
+		// key, hold, mouse, move, button, click, wheel, scroll, drag
+	} else if (!strcmp(verb, "tick") || !strcmp(verb, "frames")) {
+		// tick N: N frames run (their camera updates, their renders)
+		if (C.stage == 0) {
+			C.n = atoi(arg), C.secs = -1, C.stage = 1;
+			if (C.n > 0) return;
+		} else if (!waited()) {
+			return;
+		}
+		reply_fmt("ok tick %d frame %d", C.n, g_frame_no);
+	} else if (!strcmp(verb, "timestep")) {
+		// timestep MS: the camera's frame time fixed, and lockstep (no frame between commands);
+		// timestep off: the frames' own times, frames run while no command does
+		double ms = atof(arg);
+		if (!strcmp(arg, "off") || ms <= 0) {
+			g_timestep = 0;
+			reply_fmt("ok timestep off");
+		} else {
+			g_timestep = (float)(ms / 1000);
+			reply_fmt("ok timestep %.3f", ms);
+		}
+	} else if (!strcmp(verb, "wait")) {
+		// wait SECONDS: frames run that long (with a timestep: SECONDS / timestep frames)
+		if (C.stage == 0) {
+			char d[64];
+			snprintf(d, sizeof d, "%gs", atof(arg));
+			duration(d, &C.n, &C.secs);
+			C.stage = 1;
+			C.t0 = now();
+			if (C.n > 0 || C.secs > 0) return;
+		} else if (!waited()) {
+			return;
+		}
+		reply_fmt("ok wait %s date %s frame %d", arg, date, g_frame_no);
+	} else if (!strcmp(verb, "load")) {
 		if (!strcmp(arg, g_loaded) || !g_loaded[0])
 			reply_fmt("ok load %s %.1f s", date, now() - g_t0);
 		else
@@ -1973,7 +2499,16 @@ static void view_game(void *gs) {
 	} else if (!strcmp(verb, "open_designer")) {
 		open_designer_cmd(arg);
 	} else if (!strcmp(verb, "frame")) {
+		// frame PATH now: the frame the game presented last, no frame run (the input's frames
+		// exactly); frame PATH: once the picture settles
+		size_t al = strlen(arg);
+		if (al > 4 && !strcmp(arg + al - 4, " now")) {
+			arg[al - 4] = 0;
+			g_frame_now = 1;
+		}
 		frame_cmd(arg[0] ? arg : "frame.png");
+		g_cam_freeze = g_frame_now && C.active;
+		g_frame_now = 0;
 	} else if (!strcmp(verb, "state")) {
 		state_json(gs, arg);
 	} else {
