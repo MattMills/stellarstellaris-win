@@ -1581,6 +1581,12 @@ impl App {
         self.log.push(format!("view: {}", name.unwrap_or("closed")));
         self.open_view = name.map(str::to_string);
         self.view_state.clear();
+        // (a closed view's data no longer read by the simulation)
+        if name.is_none() {
+            if let Some(c) = self.map.as_ref().and_then(|m| m.clock.as_ref()) {
+                c.view(None, false);
+            }
+        }
         self.view_generation += 1;
         self.scene = None;
     }

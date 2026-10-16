@@ -123,6 +123,9 @@ pub struct Snapshot {
     pub topbar: Arc<HashMap<String, String>>,
     /// the Lua errors raised by the simulation's phases so far
     pub errors: usize,
+    /// the open view's data: the request (a Lua chunk returning a string, [`Clock::view`]) and
+    /// what it returned in the simulation's world
+    pub view: Option<Arc<(String, Result<String, String>)>>,
 }
 
 /// The thread's state, for the window and `state`.
@@ -151,6 +154,7 @@ enum Cmd {
     Pause(bool),
     Speed(u8),
     Watch(Option<u32>, Option<Sender<()>>),
+    View(Option<String>, Option<Sender<()>>),
     /// the key `.`: one day at once, then paused again (CJumpToNextDayCommand)
     NextDay,
     Quit,
@@ -201,6 +205,7 @@ impl Clock {
                     game_dir,
                     shared: sh.clone(),
                     watch,
+                    view: None,
                     models: models::Library::default(),
                     images: None,
                     generation: 0,
@@ -269,6 +274,20 @@ impl Clock {
         let _ = self.tx.send(Cmd::NextDay);
     }
 
+    /// The open view's data the snapshots carry: `request`, a Lua chunk evaluated in the
+    /// simulation's world after each day, returns it as a string (economy.rs: the window's
+    /// values as a table constructor); with `wait`, until a snapshot has it (at most a second).
+    pub fn view(&self, request: Option<String>, wait: bool) {
+        if wait && self.status().ready {
+            let (tx, rx) = mpsc::channel();
+            if self.tx.send(Cmd::View(request, Some(tx))).is_ok() {
+                let _ = rx.recv_timeout(Duration::from_secs(1));
+            }
+        } else {
+            let _ = self.tx.send(Cmd::View(request, None));
+        }
+    }
+
     /// The system whose bodies and ships the snapshots carry; with `wait`, until a snapshot has
     /// them (at most a second: a day may be running).
     pub fn watch(&self, system: Option<u32>, wait: bool) {
@@ -334,6 +353,8 @@ struct Worker {
     game_dir: String,
     shared: Arc<Shared>,
     watch: Option<u32>,
+    /// the open view's data request ([`Clock::view`])
+    view: Option<String>,
     models: models::Library,
     images: Option<(u64, Arc<MapImages>)>,
     generation: u64,
@@ -375,6 +396,17 @@ impl Worker {
                 Ok(Cmd::Watch(id, reply)) => {
                     if self.watch != id {
                         self.watch = id;
+                        if let Err(e) = self.publish() {
+                            eprintln!("simulation: snapshot: {e}");
+                        }
+                    }
+                    if let Some(r) = reply {
+                        let _ = r.send(());
+                    }
+                }
+                Ok(Cmd::View(request, reply)) => {
+                    if self.view != request {
+                        self.view = request;
                         if let Err(e) = self.publish() {
                             eprintln!("simulation: snapshot: {e}");
                         }
@@ -492,6 +524,7 @@ impl Worker {
             None => None,
         };
         let topbar = topbar_texts(self.rt()).map_err(|e| format!("render.topbar: {e}"))?;
+        let view = self.view.as_ref().map(|chunk| Arc::new((chunk.clone(), self.rt().lua.load(chunk.as_str()).eval::<String>().map_err(|e| e.to_string()))));
         self.generation += 1;
         let snap = Snapshot {
             generation: self.generation,
@@ -501,6 +534,7 @@ impl Worker {
             system,
             topbar: Arc::new(topbar),
             errors: self.sim.errors.len(),
+            view,
         };
         *self.shared.latest.lock().unwrap() = Some(Arc::new(snap));
         Ok(())

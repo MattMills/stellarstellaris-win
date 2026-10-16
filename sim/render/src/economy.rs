@@ -29,26 +29,37 @@ fn state_table(lua: &stellar_sim::mlua::Lua, state: &HashMap<String, String>) ->
     Ok(t)
 }
 
-/// The view's data from the world, as a Lua table constructor (None without a world).
+/// The view's state as a Lua table constructor.
+fn state_literal(state: &HashMap<String, String>) -> String {
+    let mut keys: Vec<&String> = state.keys().collect();
+    keys.sort();
+    let parts: Vec<String> = keys.iter().map(|k| format!("[{:?}] = {:?}", k, state[*k])).collect();
+    format!("{{ {} }}", parts.join(", "))
+}
+
+/// The view's data from the world, as a Lua table constructor: read in the map's runtime while
+/// it holds the save's world, else in the simulation's (its snapshot carries it: Clock::view);
+/// None without either.
 fn data(app: &App, view: &str) -> Result<Option<String>, String> {
     let Some(map) = app.map.as_ref() else { return Ok(None) };
-    if !map.world {
-        return Ok(None);
+    let chunk = format!(
+        "local m = require('{}') return require('render.windows.serial').dump(m.data({}, {}, {:?}))",
+        module(view),
+        map.galaxy.player,
+        state_literal(&app.view_state),
+        map.game_dir
+    );
+    if map.world {
+        // (the .gfx database the definitions' parser shares, installed with the top bar)
+        let _ = gui::install(&map.runtime, &map.game_dir, &map.cache);
+        return map.runtime.lua.load(chunk.as_str()).eval::<String>().map(Some).map_err(|e| format!("{}.data: {e}", module(view)));
     }
-    let lua = &map.runtime.lua;
-    let read = || -> stellar_sim::mlua::Result<String> {
-        lua.globals().set("RENDER_VIEW_STATE", state_table(lua, &app.view_state)?)?;
-        lua.load(format!(
-            "local m = require('{}') return require('render.windows.serial').dump(m.data({}, RENDER_VIEW_STATE, RENDER_GAME_DIR))",
-            module(view),
-            map.galaxy.player
-        ))
-        .eval()
-    };
-    // the map's runtime has the game's files once the top bar is laid out; RENDER_GAME_DIR for
-    // the definitions the data reads
-    let _ = gui::install(&map.runtime, &map.game_dir, &map.cache);
-    read().map(Some).map_err(|e| format!("{}.data: {e}", module(view)))
+    let Some(clock) = map.clock.as_ref() else { return Ok(None) };
+    clock.view(Some(chunk.clone()), true);
+    match clock.latest().and_then(|s| s.view.clone()) {
+        Some(v) if v.0 == chunk => v.1.clone().map(Some).map_err(|e| format!("{}.data: {e}", module(view))),
+        _ => Ok(None),
+    }
 }
 
 /// The view's window: its items, the save's values in it.
