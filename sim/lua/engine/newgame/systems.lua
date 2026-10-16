@@ -153,10 +153,28 @@ end
 -- triggers of usage_odds modifiers and neighbor_system triggers, on a system: the few the
 -- initializers use; any other is counted (ctx.unknown_triggers) and the modifier is left out
 
+local COMPARE = {
+    ["="] = function(a, b) return a == b end, ["=="] = function(a, b) return a == b end,
+    ["!="] = function(a, b) return a ~= b end, ["<"] = function(a, b) return a < b end,
+    ["<="] = function(a, b) return a <= b end, [">"] = function(a, b) return a > b end,
+    [">="] = function(a, b) return a >= b end,
+}
+
 local function eval(ctx, sys, block, game)
     -- AND of the statements
     for _, e in ipairs(block or {}) do
-        if e.op and e.key then
+        if e.op and e.key and e.key.text == "num_guaranteed_colonies" then
+            -- the galaxy setting (sol_system_initializer's neighbour variants)
+            local n = tonumber(e.value.text)
+            local f = COMPARE[e.op]
+            if n == nil or f == nil or ctx.num_guaranteed_colonies == nil then
+                ctx.unknown_triggers[e.key.text] = (ctx.unknown_triggers[e.key.text] or 0) + 1
+                return nil
+            end
+            if not f(ctx.num_guaranteed_colonies, n) then
+                return false
+            end
+        elseif e.op and e.key then
             local r = systems.trigger(ctx, sys, e.key.text, e.value, game)
             if r == nil then
                 return nil

@@ -133,7 +133,7 @@ local function galaxy_settings(inputs, game)
         { "mid_game_start", 100 },
         { "end_game_start", 200 },
         { "victory_year", 300 },
-        { "num_guaranteed_colonies", 2 },
+        { "num_guaranteed_colonies", game.ctx and game.ctx.num_guaranteed_colonies or 2 },
         { "difficulty_adjusted_ai_modifiers", false },
         { "fallen_empire_strength_scale", 1 },
         { "logistics_fleet_upkeep_costs", 1 },
@@ -267,6 +267,9 @@ function newgame.generate(fs, settings)
     end)
     game.ctx = ctx
     game.defines = scenario.defines(fs).NGameplay or {}
+    -- the galaxy setting, else GUARANTEED_COLONIES_DEFAULT (2)
+    ctx.num_guaranteed_colonies = tonumber(settings.num_guaranteed_colonies)
+        or tonumber(game.defines.GUARANTEED_COLONIES_DEFAULT) or 2
     step("parameters", function()
         game.params = galaxy.parameters(inputs, r)
     end)

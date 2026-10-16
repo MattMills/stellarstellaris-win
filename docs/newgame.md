@@ -722,6 +722,7 @@ of the design validation (8.1, the fake countries) are not made by the Lua. The 
 | hyperlanes of the day-0 gamestate | 196 | 196 |
 | the empire initializers (sol_system_initializer, ocean_paradise_start, random_empire_init_03 and _01) | 4 | 4 |
 | Sol and ocean_paradise_start: every planet (class, orbit, size, coordinate, moons) | 40 | 40 |
+| Sol's neighbour systems and their initializers (sol_neighbor_t1, _t1_first_colony, _t2, _t2_second_colony) | 4 | 4 |
 | the global draws of the empires' systems, in order (each one's call site) | 333 | 1,879 (then the init_effect, 9) |
 
 The draws, per step (G the generator's stream, C the global one):
@@ -735,7 +736,7 @@ The draws, per step (G the generator's stream, C the global one):
 | designs (the human's, three forced) | 3 | 3 | 5,379 | 0 (put at the game's) |
 | resource clusters | 8 | 8 | 0 | 0 |
 | hyperlanes | 0 | 0 | 2 | 2 |
-| the empires' systems | 171 | 175 | 1,879 | 2,095 (the same for the first 333) |
+| the empires' systems | 171 | 164 | 1,879 | 1,837 (the same for the first 333) |
 | the empires (home planets; species, country, ship designs, colony) | 4 | 4 | 66,747 | 0 |
 | fallen empires | 5 | | 0 | |
 | the other systems | 1,500 | ~1,580 | 1,475,723 | ~12,450 |
@@ -756,7 +757,13 @@ the orbit and size intervals, names and rings; the empires' C++ creation 66,747
 (`CCountry::SetDefaultShipDesigns` 65,309 for the four, the home colony and `InitEmpireShared`).
 In the empires' systems the draws are now the same, call site by call site, for the first 333
 (two whole systems: modifiers, deposits with their district caps and blocker passes, names), and
-part at the first init_effect the game runs inside the generation (9).
+part at the first init_effect the game runs inside the generation (9). The neighbor_system
+triggers on `num_guaranteed_colonies` (Sol's neighbours) read the galaxy setting, else
+`GUARANTEED_COLONIES_DEFAULT` (2); taken as passed before, they gave Sol both colony variants
+(two Alpha Centauris). The generator draws (171 against 164) differ only in the
+`GetRandomClassForOrbit` picks (the neighbour rolls and trigger draws are the same, one for one):
+those of the two random_empire_init systems, whose planet counts come from the global stream
+past the init_effect.
 
 ## 9. What differs and what is left
 
