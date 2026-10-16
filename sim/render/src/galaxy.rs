@@ -81,6 +81,9 @@ pub struct Galaxy {
     /// the player's terra incognita: its bitmap (size x size, row by row, 0 unknown, 255 known)
     /// and the systems it has cleared
     pub terra_incognita: Option<TerraIncognita>,
+    /// the terra incognita the hyperlanes were built from, when not the current one: the game builds
+    /// its lane geometry from the player's knowledge and `observe` does not build it again
+    pub lanes_ti: Option<TerraIncognita>,
     /// the save's galaxy.core_radius (map units)
     pub core_radius: f32,
     /// the player's country id
@@ -392,6 +395,7 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
             dust_size: g.get("dust_size")?,
             dust_size_extra: g.get("dust_size_extra")?,
             notes: g.get("notes")?,
+            lanes_ti: None,
             terra_incognita: match g.get::<Option<Table>>("terra_incognita")? {
                 Some(t) => {
                     let size: usize = t.get::<Option<usize>>("size")?.unwrap_or(256);

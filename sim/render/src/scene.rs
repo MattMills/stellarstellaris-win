@@ -613,8 +613,8 @@ pub struct Scene {
     /// cubemap_intensity, for the meshes' reflections
     pub env: Option<(usize, f32)>,
     /// the galaxy view's map textures (galaxymap.rs; indices into the textures): terra incognita,
-    /// the borders' distance, edge and fill colours, the dust's colour map
-    pub maps: Option<[usize; 5]>,
+    /// the borders' distance, edge and fill colours, the dust's colour map, the nebulae's colours
+    pub maps: Option<[usize; 6]>,
 }
 
 impl Scene {
@@ -781,7 +781,7 @@ fn galaxy_3d(
     batches: &mut Vec<Batch>,
     lines: &mut Vec<Line>,
     stars: &mut Vec<PlacedStar>,
-) -> Option<[usize; 5]> {
+) -> Option<[usize; 6]> {
     let g = inp.galaxy;
     // the dust's colour map, stretched over the systems' bounding box with the origin
     let (mut x0, mut y0, mut x1, mut y1) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
@@ -804,20 +804,11 @@ fn galaxy_3d(
 
     // the nebulae (galaxy_nebula.shader, CGalaxyGraphics::InitNebulas): a cloud of the nebula's
     // radius at its place, one of (10 + 25 r) at each of its systems, 9 below the plane (the
-    // game's world), turned by 2 pi r
+    // game's world), turned by 2 pi r; coloured by gfx/map/nebulacolor.dds at the cloud's own UV
+    // (the shader's ColorTexture: a map texture, map.wgsl `nebula_colour`)
+    let nebula_colour = tex.game(cache, inp.game_dir, "gfx/map/nebulacolor.dds").unwrap_or(colour_map);
     if let Some(nebula) = tex.game(cache, inp.game_dir, "gfx/map/nebula.dds") {
-        let mean = tex.game(cache, inp.game_dir, "gfx/map/nebulacolor.dds").map(|i| {
-            let img = &tex.images[i];
-            let n = (img.width * img.height) as f32;
-            let mut acc = [0f32; 4];
-            for p in img.rgba.chunks_exact(4) {
-                for c in 0..4 {
-                    acc[c] += p[c] as f32 / 255.0;
-                }
-            }
-            acc.map(|v| v / n)
-        });
-        let colour = mean.unwrap_or([1.0; 4]);
+        let colour = [1.0; 4];
         let mut rng = Rng(0x0eb1_a5ed);
         for n in &g.nebulae {
             let mut clouds = vec![(n.x, n.y, n.radius)];
@@ -875,9 +866,11 @@ fn galaxy_3d(
 
     // the hyperlanes (hyperlane.shader): HYPERLANE_DEFAULT_COLOR (alpha 0.2 at the default
     // opacity), about a pixel wide, faded outside the known space
-    // (built only when an end lies in the known space: HIDE_HYPERLANES_OUTSIDE_TERRA_INCOGNITA)
+    // (built only when an end lies in the known space: HIDE_HYPERLANES_OUTSIDE_TERRA_INCOGNITA;
+    // the known space they were built from: an observer keeps the player's, as the game's frames
+    // show, with no lanes outside it however far the camera is)
     let known = |s: &crate::galaxy::System| -> bool {
-        let Some(ti) = &g.terra_incognita else { return true };
+        let Some(ti) = g.lanes_ti.as_ref().or(g.terra_incognita.as_ref()) else { return true };
         let n = ti.size as f32;
         let (col, row) = ((s.x * n / 1000.0 + n / 2.0).floor(), (s.y * n / 1000.0 + n / 2.0).floor());
         col >= 0.0 && row >= 0.0 && col < n && row < n && ti.bitmap[row as usize * ti.size + col as usize] > 127
@@ -930,7 +923,7 @@ fn galaxy_3d(
             stars.push(PlacedStar { system: i, rect: [px - hp, py - hp, px + hp, py + hp] });
         }
     }
-    Some([maps[0], maps[1], maps[2], maps[3], colour_map])
+    Some([maps[0], maps[1], maps[2], maps[3], colour_map, nebula_colour])
 }
 
 /// The galaxy map for a target of `width` x `height`: the 2D map (no camera: top-down,

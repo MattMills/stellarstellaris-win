@@ -448,10 +448,11 @@ impl Map {
     /// The galaxy as an observer sees it (the console's `observe`: OnExecute_Observe gives the
     /// local human no country): the whole galaxy known (no terra incognita), every country's
     /// borders, flags and names (no communications to filter them), no sectors (no observed
-    /// country).
+    /// country). The hyperlanes stay those of the player's known space (the game does not build
+    /// their geometry again).
     pub fn observed(g: &Galaxy) -> Galaxy {
         let mut g = g.clone();
-        g.terra_incognita = None;
+        g.lanes_ti = g.lanes_ti.take().or(g.terra_incognita.take());
         g.communications = None;
         g.sectors.clear();
         g.sector_capitals.clear();
