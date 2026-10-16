@@ -220,7 +220,9 @@ local function build_setup(ctx, state)
         [SP .. "/government_authority_icon"] = texts.authority_icon,
         [SP .. "/origin_icon"] = texts.origin_icon,
     }
-    if e.kind == "random" then
+    -- (Random's empire, drawn when Play starts the game, stays the random one here: the game's
+    -- frame shows the random flag and portrait)
+    if e.kind == "random" or e.random then
         opts.hide[P .. "/empire_flag"] = true
         opts.hide[SP .. "/portrait_window/portrait"] = true
     else
@@ -233,7 +235,12 @@ local function build_setup(ctx, state)
     -- the player's flag: a creator design's empire_flag composed on the element's sprite
     -- (GFX_empire_flag_128), as the creator's preview composes it (render.empire_preview)
     local flag = type(e.design) == "table" and e.design.empire_flag
-    if type(flag) == "table" and e.kind ~= "random" then
+    -- a prescripted design's block: its flag as the creator's table (render.creator_rules)
+    if e.kind == "prescripted" and type(e.design) == "table" then
+        local ok, d = pcall(require("render.creator_rules").from_block, e.design, e.key)
+        flag = ok and d and d.empire_flag or nil
+    end
+    if type(flag) == "table" and e.kind ~= "random" and not e.random then
         local tex = require("render.empire_preview").flag_texture(ctx, "GFX_empire_flag_128", flag)
         for _, it in ipairs(tex and items or {}) do
             if it.path == P .. "/empire_flag" and it.kind == "sprite" then
@@ -340,27 +347,85 @@ end
 
 -- ---------------------------------------------------------------- the empire selection
 
+-- the screen's run-time sizes (CSelectEmpireDesignView::Setup, 4.5.2 Linux 0x31527b0) [V]: a
+-- screen at least 1440 wide takes the y of each `*_min_max` positionType, a narrower one its x
+-- (select_empire_design.gui: the list 200 or 280 wide, the fades 229 or 303, the back button at
+-- x -6 or 26); the view is the list's width and 25 by the screen's height (the menu's still
+-- shows beside it), the list the screen's height less empire_list_margin_bottom (130)
+local function select_sizes(ctx)
+    local W, H = ctx.screen.width, ctx.screen.height
+    local function pick(name, dx, dy)
+        local b = find_block(ctx.game_dir, SELECT_GUI, { name })
+        local pos = b and get(b, "position")
+        local x = tonumber(pos and get(pos, "x")) or dx
+        local y = tonumber(pos and get(pos, "y")) or dy
+        return W >= 1440 and y or x, x, y
+    end
+    local list_w = pick("empire_list_width_min_max", 200, 280)
+    local fade_w = pick("empire_list_fade_width", 229, 303)
+    local back_x = pick("back_button_offset_x_min_max", -6, 26)
+    local _, _, margin = pick("empire_list_margin_bottom", 0, 130)
+    return { view_w = list_w + 25, view_h = H, list_w = list_w, list_h = H - margin, fade_w = fade_w, back_x = back_x }
+end
+
 local function build_select(ctx, state)
     local loc = ctx.loc
+    local z = select_sizes(ctx)
+    local V = "/select_empire_design_view"
+    -- the view laid out on the screen (its buttons placed before Setup sizes it, as the game's
+    -- are: SetSize moves no child), its background the size Setup gives the view
     local opts = {
         texture_size = ctx.texture_size, loc = loc,
-        text = {}, hide = {}, sprites = {}, frames = {}, actions = {},
+        text = {}, hide = { [V .. "/background"] = true }, sprites = {}, frames = {}, actions = {},
+        sizes = {
+            [V .. "/list"] = { z.list_w, z.list_h },
+            [V .. "/fade_top"] = { z.fade_w, 18 },
+            [V .. "/fade_bottom"] = { z.fade_w, 18 },
+        },
+        positions = { [V .. "/back"] = { z.back_x, -68 } },
     }
-    local V = "/select_empire_design_view"
     opts.actions[V .. "/back"] = "ng:back"
     opts.actions[V .. "/next"] = "ng:next"
     opts.actions[V .. "/edit"] = "ng:edit"
     opts.hide[V .. "/edit_custom"] = true
     opts.hide[V .. "/quick_start"] = true
     opts.hide[V .. "/close"] = true
+    local bg_items, bg_report = gui.layout(ctx.game_dir, ctx.db, SELECT_GUI, "select_empire_design_view", ctx.screen, {
+        texture_size = ctx.texture_size, loc = loc, only = { background = true },
+        sizes = { [V] = { z.view_w, z.view_h } },
+    })
+    merge(ctx.items, ctx.report, bg_items, bg_report)
+
+    -- the selected design's preview (CSpeciesPreviewWindow, new_game_setup.gui species_preview at
+    -- its list offset, x 115: species_preview_list_offset); Random's is the game's random preview
+    local d = state.designs[state.selected]
+    if d and d.kind ~= "custom" then
+        local ok, preview = pcall(require, "render.empire_preview")
+        if ok then
+            local C = require("render.windows.empire_common")
+            local b = C.builder(ctx)
+            local design = d.kind == "prescripted" and d.block or nil
+            local okb, err = pcall(preview.build, ctx, b, design, { actions = {}, random = d.kind == "random" })
+            if okb then
+                for _, it in ipairs(b.items) do
+                    ctx.items[#ctx.items + 1] = it
+                end
+            else
+                ctx.report.missing_sprites[#ctx.report.missing_sprites + 1] = "species_preview: " .. tostring(err)
+            end
+        end
+    end
+
     local items, report = gui.layout(ctx.game_dir, ctx.db, SELECT_GUI, "select_empire_design_view", ctx.screen, opts)
     merge(ctx.items, ctx.report, items, report)
     local list = report.rects[V .. "/list"]
     if not list then
         return
     end
+    list = { x = list.x, y = list.y, w = z.list_w, h = z.list_h }
     widgets.clip(ctx.items, list)
     local y = list.y - state.scroll.select
+    local total = 0
     for i, d in ipairs(state.designs) do
         local window = d.kind == "random" and "random_empire_design_entry"
             or d.kind == "custom" and (d.user and "user_empire_design_entry" or "custom_empire_design_entry")
@@ -368,9 +433,19 @@ local function build_select(ctx, state)
         local p = "/designs/" .. i
         local base = p .. "/" .. window
         local t = ctx.design_texts_of and ctx.design_texts_of(d) or {}
+        local eh = (d.kind == "random" or (d.kind == "custom" and not d.user)) and 85 or 65
+        -- an entry the list's width, its selected overlay 10 wider, its texts 70 narrower than it
+        -- (CEmpireDesignEntry::CEmpireDesignEntry 0x3156130) [V]
         local eopts = {
             texture_size = ctx.texture_size, loc = loc, prefix = p,
-            parent = { x = list.x, y = y, w = list.w, h = 65 },
+            parent = { x = list.x, y = y, w = z.list_w, h = eh },
+            sizes = {
+                [base] = { z.list_w, eh },
+                [base .. "/selected_overlay"] = { z.list_w + 10, eh + 10 },
+                [base .. "/name"] = { z.list_w - 70, 16 },
+                [base .. "/government"] = { z.list_w - 70, 16 },
+                [base .. "/species_class"] = { z.list_w - 70, 16 },
+            },
             hide = { [base .. "/selected_overlay"] = i ~= state.selected, portrait = true, portrait_substitution_indicator = true, spawn_setting = true },
             text = { [base .. "/name"] = t.name, [base .. "/government"] = t.government, [base .. "/species_class"] = t.species_class },
             actions = { [base] = "ng:design:" .. i },
@@ -378,9 +453,13 @@ local function build_select(ctx, state)
         local it, r = gui.layout(ctx.game_dir, ctx.db, SELECT_GUI, window, ctx.screen, eopts)
         merge(ctx.items, ctx.report, it, r)
         local er = r.rects[base]
-        y = y + (er and er.h or 65) + 5
+        local h = (er and er.h or eh) + 5
+        y = y + h
+        total = total + h
     end
     widgets.unclip(ctx.items)
+    -- the wheel's range (fe.act "wheel")
+    state.scroll.select_max = math.max(0, total - list.h)
 end
 
 -- ---------------------------------------------------------------- the screens
@@ -404,7 +483,8 @@ function fe.build(game_dir, db, screen, texture_size, loc, name)
             return design.texts(game_dir, loc, d)
         end
         -- (the empire chosen: a prescripted design, or the creator's after Done)
-        ctx.design_texts = design.texts(game_dir, loc, state.empire or state.designs[state.selected] or {})
+        local shown = state.empire or state.designs[state.selected] or {}
+        ctx.design_texts = shown.random and {} or design.texts(game_dir, loc, shown)
     end
     still(game_dir, screen, texture_size, ctx.items, ctx.report)
     if name == "select" then

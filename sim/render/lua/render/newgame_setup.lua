@@ -258,7 +258,22 @@ function setup.select(state, i)
     if d.kind == "prescripted" then
         state.empire = { kind = "prescripted", key = d.key, design = d.block }
     elseif d.kind == "random" then
-        state.empire = { kind = "random" }
+        -- the player's empire made at random: the game randomizes a design (not modelled here);
+        -- a playable prescripted design drawn at random stands in for it [I], kept until another
+        -- entry is chosen (the preview stays the game's random one)
+        local pool = {}
+        for _, e in ipairs(state.designs) do
+            if e.kind == "prescripted" then
+                pool[#pool + 1] = e
+            end
+        end
+        -- the front end's own generator, seeded once by the clock (CCrudeRandom's clock seed)
+        if not state.rng_seeded then
+            math.randomseed(os.time() + math.floor((os.clock() % 1) * 1e6))
+            state.rng_seeded = true
+        end
+        local pick = #pool > 0 and pool[math.random(#pool)] or nil
+        state.empire = pick and { kind = "prescripted", key = pick.key, design = pick.block, random = true } or { kind = "random" }
     elseif d.kind == "custom" then
         state.empire = { kind = "custom", design = d.design }
     end
