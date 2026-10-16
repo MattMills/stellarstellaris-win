@@ -425,9 +425,8 @@ function ex.build(game_dir, db, screen, texture_size, loc, data, state)
     local items, report = gui.layout(game_dir, db, FILE, "expansion_planner_view", screen, {
         texture_size = texture_size, loc = loc, frames = frames, actions = actions, text = texts,
     })
-    -- the rows: an expansion_target_entry each down the list, 55 apart from 4 below its top [I:
-    -- measured on the game's frame: the entry's 54 and a spacing of 1; the 4 not read],
-    -- as many as the list shows
+    -- the rows: an expansion_target_entry each down the list, 55 apart [I: measured on the
+    -- game's frame: the entry's 54 and a spacing of 1], as many as the list shows
     local rows = data.rows or {}
     for _, r in ipairs(rows) do
         r.name_text = r.name and names.format(loc, r.name) or ""
@@ -436,9 +435,9 @@ function ex.build(game_dir, db, screen, texture_size, loc, data, state)
     stable_sort(rows, SORTS[sort], reverse)
     local list = report.rects[T .. "/list"]
     if list then
-        local y = list.y + 4
+        local y = list.y
         for i, r in ipairs(rows) do
-            if y + 55 > list.y + list.h + 4 then
+            if y + 55 > list.y + list.h then
                 break
             end
             local prefix = T .. "/list/" .. i

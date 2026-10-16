@@ -400,7 +400,19 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                 button = { name = name, id = field("id"), action = opts.actions and opts.actions[path] }
             end
             if sprite then
-                sprite_item(path, sprite, frame, x, y, w, h, button)
+                -- a plain sprite is drawn at its frame's size (times its scale) whatever the
+                -- element's `size`, which is its box (its text's, its clicks'); a cornered tile
+                -- fills the size (expansion_target_entry's background: the 1158 x 74 frame of
+                -- GFX_button_1134_50_animated under its size 1134 x 50, as the game draws it)
+                local dw, dh = w, h
+                local s = db.sprites[(resolve(sprite))]
+                if type(size) == "table" and not over_size and s and s.kind ~= "corneredTileSpriteType" then
+                    local fw, fh = frame_size(sprite)
+                    if fw then
+                        dw, dh = fw * scale, fh * scale
+                    end
+                end
+                sprite_item(path, sprite, frame, x, y, dw, dh, button)
             end
             local bt = field("buttonText")
             if bt and bt ~= "" then
