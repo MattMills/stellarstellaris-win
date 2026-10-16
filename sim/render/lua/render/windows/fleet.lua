@@ -361,11 +361,9 @@ end
 -- 0-3, 26-28, 30, the ones not fleet-specific) for one fleet the player commands [V: the types,
 -- their sprites; which are potential and enabled: I, as the game's frames show them]
 -- the current order's line (fleet_data's order_line: a key, name blocks, values), else NO_ORDERS
-function fleet.order_text(loc, d)
-    local o = d and d.order_line
-    if type(o) ~= "table" or not o.key then
-        return loc_text(loc, "NO_ORDERS")
-    end
+-- a text given as { key, vars = { VAR = text }, names = { VAR = name block }, nested = { VAR =
+-- such a text } } (fleet_data's order lines, fleet_rightclick's entries)
+local function line_text(loc, o)
     local vars = {}
     for k, v in pairs(o.vars or {}) do
         vars[k] = v
@@ -373,7 +371,18 @@ function fleet.order_text(loc, d)
     for k, n in pairs(o.names or {}) do
         vars[k] = name_text(loc, n)
     end
-    return loc_text(loc, o.key, vars)
+    for k, n in pairs(o.nested or {}) do
+        vars[k] = type(n) == "table" and line_text(loc, n) or ""
+    end
+    return loc_text(loc, o.key or "", vars)
+end
+
+function fleet.order_text(loc, d)
+    local o = d and d.order_line
+    if type(o) ~= "table" or not o.key then
+        return loc_text(loc, "NO_ORDERS")
+    end
+    return line_text(loc, o)
 end
 
 local function header_orders(d)
@@ -1555,6 +1564,113 @@ function fleet.manager_view(ctx, d)
     end
 end
 
+---------------------------------------------------------------- the order selector, its popup
+
+-- a right click's menu and Yes/No popup (render.windows.fleet_rightclick; fleetwin.rs keeps
+-- them): CMainGui's order_selector (main.gui) with an order_window per entry, and popup.gui's
+-- yes_no_popup_window (docs/windows/fleet.md "Right click")
+local MAIN_GUI = "interface/main.gui"
+local POPUP_GUI = "interface/popup.gui"
+
+-- a cost: its resources as icon and amount, in the resources' order (common/strategic_resources:
+-- influence before alloys) [V: the game's frame "(£influence£60 £alloys£90)"]
+local RESOURCE_ORDER = { "energy", "minerals", "food", "physics_research", "society_research", "engineering_research",
+                         "influence", "unity", "consumer_goods", "alloys" }
+local function cost_text(cost)
+    local rank = {}
+    for i, k in ipairs(RESOURCE_ORDER) do
+        rank[k] = i
+    end
+    local keys = {}
+    for k in pairs(cost or {}) do
+        keys[#keys + 1] = k
+    end
+    table.sort(keys, function(a, b)
+        local ra, rb = rank[a] or 99, rank[b] or 99
+        if ra ~= rb then return ra < rb end
+        return a < b
+    end)
+    local parts = {}
+    for _, k in ipairs(keys) do
+        local v = tonumber(cost[k]) or 0
+        parts[#parts + 1] = "£" .. k .. "£" .. (v % 1 == 0 and string.format("%d", v) or string.format("%.1f", v))
+    end
+    return table.concat(parts, " ")
+end
+
+-- an entry's label: its key with its names and values, " (cost)" after a station's; the fail
+-- prefix (TRIGGER_FAIL, CreateTriggerPassFailText(false)) on one not possible [V]
+local function order_label(loc, e)
+    -- (a value may be a key of its own with its names: the home base's "$PLANET$ Station")
+    local t = line_text(loc, e)
+    if e.cost and next(e.cost) then
+        -- (the brackets and amounts in the label's highlight colour [V: the game's frame])
+        t = t .. " §H(" .. cost_text(e.cost) .. ")§!"
+    end
+    if e.possible == false then
+        t = loc_text(loc, "TRIGGER_FAIL") .. t
+    end
+    return t
+end
+
+-- ShowOrderSelector (0x2f3a5c0) [V]: at the cursor, pushed back inside the screen's right and
+-- bottom edges (none at the left and top); the list's height its entries' (28 each). The game's
+-- frames [V, 2210.01.01]: the window 380 x 62 at the cursor (one entry), the list 25 below its
+-- top (the gui), the entry's button (452 wide from x -25) cut to the window
+function fleet.order_menu(ctx, m)
+    local entries = type(m) == "table" and m.menu or nil
+    if type(entries) ~= "table" or #entries == 0 then
+        return
+    end
+    local W = "/order_selector"
+    local w, h = 380, 25 + #entries * 28 + 9
+    local at = m.at or { 0, 0 }
+    local x = math.min(tonumber(at[1]) or 0, ctx.screen.width - w)
+    local y = math.min(tonumber(at[2]) or 0, ctx.screen.height - h)
+    layout(ctx, MAIN_GUI, "order_selector", {
+        parent = { x = x, y = y, w = 0, h = 0 },
+        sizes = { [W] = { w, h }, [W .. "/orders"] = { 253, #entries * 28 } },
+        text = { [W .. "/label"] = loc_text(ctx.loc, "ORDERS") },
+    })
+    for i, e in ipairs(entries) do
+        local p = W .. "/entry/" .. i
+        local ep = p .. "/order_window"
+        local from = #ctx.items + 1
+        layout(ctx, MAIN_GUI, "order_window", {
+            prefix = p,
+            parent = { x = x + 10, y = y + 25 + (i - 1) * 28, w = 0, h = 0 },
+            text = { [ep .. "/text"] = order_label(ctx.loc, e) },
+            actions = { [ep .. "/background"] = "fleet:menu:" .. i },
+        })
+        if e.possible == false then
+            grey(ctx, from, ep .. "/background")
+        end
+        -- the button cut to the window (its part from x to x + w drawn: the item's clip)
+        for j = from, #ctx.items do
+            local it = ctx.items[j]
+            if it.kind == "sprite" and it.path == ep .. "/background" and (it.w or 0) > 0 then
+                local a = math.max(0, (x - it.x) / it.w)
+                local b = math.min(1, (x + w - it.x) / it.w)
+                if a > 0 or b < 1 then
+                    it.clip = { a, b }
+                end
+            end
+        end
+    end
+end
+
+-- the Yes/No popup (yes_no_popup_window: centred; AgreeButton yes, DeclineButton no)
+function fleet.order_popup(ctx, p)
+    if type(p) ~= "table" then
+        return
+    end
+    local W = "/yes_no_popup_window"
+    layout(ctx, POPUP_GUI, "yes_no_popup_window", {
+        text = { [W .. "/title"] = loc_text(ctx.loc, p.title or ""), [W .. "/description"] = loc_text(ctx.loc, p.desc or "") },
+        actions = { [W .. "/AgreeButton"] = "fleet:popup_yes", [W .. "/DeclineButton"] = "fleet:popup_no" },
+    })
+end
+
 ---------------------------------------------------------------- the windows
 
 -- fleet.build(game_dir, db, screen, texture_size, loc, data) -> items, report
@@ -1571,6 +1687,13 @@ function fleet.build(game_dir, db, screen, texture_size, loc, data)
     end
     if data.ship then
         fleet.ship_view(ctx, data.ship)
+    end
+    -- a right click's menu, then its popup, over the windows
+    if data.order_menu then
+        fleet.order_menu(ctx, data.order_menu)
+    end
+    if data.order_popup then
+        fleet.order_popup(ctx, data.order_popup)
     end
     return ctx.items, ctx.report
 end

@@ -367,7 +367,7 @@ map   click left            select           [V] HandleInputEvent @0x1c8609f: Do
 map   click alt+left        ping             [V] @0x1c860b5: CPingMapManager (not done here)
 map   drag_release left     box_select       [V] @0x1c8613f: 16 px squared from the press (not done here)
 map   double left           focus            [V] @0x1c862f4: GetSelectableAt, FocusOn
-map   click right           order            [V] @0x1c862a2: PerformAction / PerformRightClickActionAt unless turning (not done here)
+map   click any+right       order            [V] @0x1c862a2: PerformAction / PerformRightClickActionAt unless turning, any modifiers (Shift queues, Ctrl front, Alt: no class entries; rightclick.rs)
 map   drag right            rotate           [V] UpdateRotation @0x2e66210: over 16 px squared, 0.004 rad a pixel
 map   drag middle           drag_plane       [V] UpdateDragMovement @0x2e65730
 map   drag left+right       drag_plane       [V] UpdateDragMovement: IsPressedLeft and IsPressedRight
@@ -423,6 +423,8 @@ pub fn parse_bindings(text: &str) -> Result<Vec<Binding>, String> {
         };
         let button = |s: &str| -> Result<(ModMatch, Button), String> {
             let (mods, b) = match s.rsplit_once('+') {
+                // `any+BUTTON`: whatever modifiers are held (the right click's Shift / Ctrl / Alt)
+                Some(("any", b)) => (ModMatch::Any, b),
                 Some((m, b)) => (ModMatch::Exact(chord(&format!("{m}+a")).map_err(|e| err(&e))?.mods), b),
                 None => (ModMatch::Exact(Mods::default()), s),
             };

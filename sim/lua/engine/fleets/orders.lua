@@ -479,7 +479,16 @@ function move_order.is_done(o, fid, f)
         end
         if ok and m.is_moving and m.is_moving(fid) then return false end
     end
-    return near(coord(world.field(mm_of(f), "coordinate")), t)
+    local here = coord(world.field(mm_of(f), "coordinate"))
+    if near(here, t) then
+        return true
+    end
+    -- a move from another system ends short of its point (the movement idle there 0.6 off a
+    -- survey's orbit slot: the order never done): the last leg again, in the system [I]
+    if m and m.move_to and t and here and here.origin == t.origin and not (m.is_moving and m.is_moving(fid)) then
+        m.move_to(fid, { x = t.x, y = t.y, origin = t.origin })
+    end
+    return false
 end
 function move_order.tick() end
 function move_order.finish() end
@@ -698,6 +707,9 @@ return_order.start = return_order.tick
 function return_order.finish(o)
     orders.clear_sub_order(o)
 end
+
+-- follow_order (CFollowFleetOrder): engine.fleets.follow (the right click on a fleet)
+TYPES.follow_order = require("engine.fleets.follow").order
 
 -- the orders the engine does not run yet (combat, colonization, archaeology): kept, never done
 local KEPT = { aggressive_stance_fleet_order = true, colonize_planet_order = true,
