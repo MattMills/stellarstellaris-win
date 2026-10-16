@@ -102,6 +102,8 @@ pub struct Galaxy {
     pub sectors: Vec<(u32, Name)>,
     /// the player's sectors' capital systems (sector id -> system id)
     pub sector_capitals: HashMap<u32, u32>,
+    /// what the diplomacy windows show of the world: a Lua chunk (render.windows.diplomacy_data)
+    pub diplomacy: String,
 }
 
 impl Galaxy {
@@ -454,7 +456,8 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                     .collect::<mlua::Result<_>>()?,
                 None => HashMap::new(),
             },
-            alerts: match g.get::<Option<Table>>("alerts")? {
+            diplomacy: g.get::<Option<String>>("diplomacy")?.unwrap_or_default(),
+            alerts:match g.get::<Option<Table>>("alerts")? {
                 Some(t) => t
                     .sequence_values::<Table>()
                     .map(|a| -> mlua::Result<(String, String, String)> {

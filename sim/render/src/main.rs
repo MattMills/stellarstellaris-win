@@ -29,6 +29,7 @@ mod border;
 mod camera;
 mod clock;
 mod dds;
+mod diplomacy;
 mod effects;
 mod engine;
 mod flag;

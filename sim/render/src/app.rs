@@ -169,6 +169,8 @@ pub struct App {
     held: HashSet<String>,
     cursor: Option<(f32, f32)>,
     last_update: Option<Instant>,
+    /// the diplomacy windows (Contacts, a country's diplomacy, ...: diplomacy.rs)
+    pub diplomacy: crate::diplomacy::State,
 }
 
 /// What the cursor is over: a GUI element (its path, e.g. "/maingui/topbar_static/
@@ -246,6 +248,7 @@ impl App {
             held: HashSet::new(),
             cursor: None,
             last_update: None,
+            diplomacy: Default::default(),
         })
     }
 
@@ -1037,6 +1040,7 @@ impl App {
             e.parent = Some([-225.0 + 34.0, 35.0 + 50.0 + 40.0 * i as f32, 0.0, 0.0]);
             e.only = Some(vec!["right_icon".into()]);
             e.sprites.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("GFX_topbar_{v}_button")));
+            e.actions.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("view:{v}")));
             e.prefix = Some(prefix);
             specs.push(e);
         }
@@ -1253,7 +1257,15 @@ impl App {
         // the main screen's other windows under the outliner and the selection's window
         let mut items = self.main_screen_items()?;
         items.extend(layout.items);
+        // the diplomacy window open, over them (diplomacy.rs), its flags composed
+        let observe = self.map.as_ref().is_some_and(|m| m.observe);
+        let (mut diplo, flags) = self.diplomacy.items(&self.runtime, w, h, &g, observe)?;
         let map = self.map.as_mut().unwrap();
+        for (i, id) in flags {
+            let c = map.galaxy.countries.iter().position(|c| c.id == id);
+            map.flags(std::slice::from_mut(&mut diplo[i]), c);
+        }
+        items.extend(diplo);
         gui::fonts(&self.runtime, &self.game_dir, &items, map.fonts.get_or_insert_with(HashMap::new))?;
         Ok(items)
     }
@@ -1506,6 +1518,11 @@ impl App {
         Ok(())
     }
 
+    /// A button's action done as its click does it (the command protocol's window commands).
+    pub fn action(&mut self, action: &str) -> Result<(), String> {
+        self.act("/command", Some(action))
+    }
+
     fn act(&mut self, path: &str, action: Option<&str>) -> Result<(), String> {
         self.log.push(format!("click: {path} -> {}", action.unwrap_or("no action")));
         match action {
@@ -1526,6 +1543,13 @@ impl App {
                 let s = self.map.as_ref().map_or(clock::DEFAULT_SPEED, |m| m.speed);
                 let s = if action == Some("speed_up") { (s + 1).min(clock::SPEEDS) } else { s.saturating_sub(1).max(1) };
                 self.set_speed(s)?;
+            }
+            // the diplomacy windows (diplomacy.rs): Contacts from the left bar, the others from it
+            Some(a) if a == "view:contacts" || a.starts_with("diplo:") => {
+                if self.diplomacy.act(a)? {
+                    self.overlay_key = None;
+                    self.invalidate();
+                }
             }
             // the selection's window closed; an outliner row selects its planet or fleet
             Some("close") => self.select(None),
@@ -1650,6 +1674,7 @@ impl App {
                     self.mode3d = !self.mode3d;
                     self.scene = None;
                 }
+                "escape" if self.diplomacy.open.is_some() => self.act("/key/escape", Some("diplo:close"))?,
                 "escape" if self.selected.is_some() => self.select(None),
                 "escape" if self.view != MapView::Galaxy && self.map.is_some() => {
                     self.log.push(format!("escape: {:?} -> Galaxy", self.view));

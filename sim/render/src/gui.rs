@@ -146,7 +146,7 @@ fn colour(t: &Table) -> mlua::Result<[f32; 3]> {
 }
 
 /// The items of a layout table (render.gui's).
-fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
+pub(crate) fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
     let mut out = Vec::new();
     for it in items.sequence_values::<Table>() {
         let it = it?;

@@ -1800,6 +1800,93 @@ static void open_view_cmd(const char *arg) {
 	reply_fmt("ok open_view %s (current view %d)", arg, I32((char *)idler + 0xdc8));
 }
 
+// ---------------------------------------------------------------- `open_diplomacy`: the diplomacy
+// windows (docs/windows/diplomacy.md) opened with the game's own calls:
+//   open_diplomacy contacts [TAB]   CInGameIdler::ShowGalaxyView (the left bar's contacts button);
+//                                   with TAB (0 contacts, 1 agreements, 2 the shroud) then
+//                                   CGalaxyView::Show(ETabsGalaxyView) on the view (idler +0xd80)
+//   open_diplomacy country ID [TAB] CInGameIdler::ShowDiplomacyView(country, TAB (0), 1, 1), as
+//                                   Contacts' Diplomacy button (CGalaxyView::OnEmpireDiplomacy)
+//   open_diplomacy community [TAB]  CInGameIdler::ShowGalacticCommunityView(TAB (0))
+//   open_diplomacy federation       CFederationView::Show (the player's federation)
+//   open_diplomacy close            CInGameIdler::CloseTopBarViews, CDiplomacyView::Hide
+// The reply comes a few frames later (the views update on the next frames).
+
+static uintptr_t a_ShowGalaxyView, a_GalaxyViewShowTab, a_ShowDiplomacyView, a_ShowCommunityView;
+static uintptr_t a_AccessFederationView, a_FederationViewShow, a_DiploCloseTopBarViews, a_AccessDiplomacyView;
+static uintptr_t a_DiplomacyViewHide, a_CountryDb;
+static struct symreq g_diplo_syms[] = {
+	{"_ZN12CInGameIdler14ShowGalaxyViewEv", &a_ShowGalaxyView},
+	{"_ZN11CGalaxyView4ShowENS_15ETabsGalaxyViewE", &a_GalaxyViewShowTab},
+	{"_ZN12CInGameIdler17ShowDiplomacyViewEPK8CCountry17EDiplomacyTabTypebb", &a_ShowDiplomacyView},
+	{"_ZN12CInGameIdler25ShowGalacticCommunityViewE18ETabsCommunityView", &a_ShowCommunityView},
+	{"_ZN12CInGameIdler20AccessFederationViewEv", &a_AccessFederationView},
+	{"_ZN15CFederationView4ShowEv", &a_FederationViewShow},
+	{"_ZN12CInGameIdler16CloseTopBarViewsEv", &a_DiploCloseTopBarViews},
+	{"_ZN12CInGameIdler19AccessDiplomacyViewEv", &a_AccessDiplomacyView},
+	{"_ZN14CDiplomacyView4HideEv", &a_DiplomacyViewHide},
+	{"_ZN7TPdxRefI8CCountryE10_pDatabaseE", &a_CountryDb},
+	{NULL, NULL},
+};
+
+// a country by id (TPdxRef<CCountry>::_pDatabase: slots at +0x18, 16 bytes each, the object at
+// +8, the count at +0x20; CCountry's id at +0x20, as CGalaxyEmpireItem::Update reads it)
+static void *diplo_country(int id) {
+	char *db = *(char **)a_CountryDb;
+	if (!db || id < 0) return NULL;
+	uint32_t i = (uint32_t)id & 0xffffff;
+	if (i >= *(uint32_t *)(db + 0x20)) return NULL;
+	char *o = *(char **)(*(char **)(db + 0x18) + 16 * (size_t)i + 8);
+	return o && I32(o + 0x20) == id ? o : NULL;
+}
+
+static void open_diplomacy_cmd(const char *arg) {
+	static int resolved;
+	if (!resolved) {
+		if (resolve(g_diplo_syms) != 0) {
+			reply_fmt("error open_diplomacy: missing symbols");
+			return;
+		}
+		resolved = 1;
+	}
+	void *idler = *(void **)a_g_CurrentInGameIdler;
+	if (!idler) {
+		reply_fmt("error open_diplomacy: not in game");
+		return;
+	}
+	if (C.stage == 0) {
+		char what[32] = "";
+		int a = -1, b = -1;
+		sscanf(arg, "%31s %d %d", what, &a, &b);
+		if (!strcmp(what, "contacts")) {
+			((void (*)(void *))a_ShowGalaxyView)(idler);
+			if (a >= 0) ((void (*)(void *, int))a_GalaxyViewShowTab)(*(void **)((char *)idler + 0xd80), a);
+		} else if (!strcmp(what, "country")) {
+			void *c = diplo_country(a);
+			if (!c) {
+				reply_fmt("error open_diplomacy: no country %d", a);
+				return;
+			}
+			((void (*)(void *, void *, int, int, int))a_ShowDiplomacyView)(idler, c, b < 0 ? 0 : b, 1, 1);
+		} else if (!strcmp(what, "community")) {
+			((void (*)(void *, int))a_ShowCommunityView)(idler, a < 0 ? 0 : a);
+		} else if (!strcmp(what, "federation")) {
+			void *v = ((void *(*)(void *))a_AccessFederationView)(idler);
+			if (v) ((void (*)(void *))a_FederationViewShow)(v);
+		} else if (!strcmp(what, "close")) {
+			((void (*)(void *))a_DiploCloseTopBarViews)(idler);
+			void *v = ((void *(*)(void *))a_AccessDiplomacyView)(idler);
+			if (v) ((void (*)(void *))a_DiplomacyViewHide)(v);
+		} else {
+			reply_fmt("error open_diplomacy: contacts [TAB] | country ID [TAB] | community [TAB] | federation | close");
+			return;
+		}
+		C.stage = 1;
+		return;
+	}
+	if (++C.frames >= 4) reply_fmt("ok open_diplomacy %s", arg);
+}
+
 static void view_game(void *gs) {
 	if (g_in_game_frames++ == 0) {
 		hlog("view: in game after %.3f s", now() - g_t0);
@@ -1924,6 +2011,8 @@ static void view_game(void *gs) {
 		} else {
 			reply_fmt("error camera X Y Z YAW PITCH DISTANCE, or camera off");
 		}
+	} else if (!strcmp(verb, "open_diplomacy")) {
+		open_diplomacy_cmd(arg);
 	} else if (!strcmp(verb, "frame")) {
 		frame_cmd(arg[0] ? arg : "frame.png");
 	} else if (!strcmp(verb, "state")) {

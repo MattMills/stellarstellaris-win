@@ -378,6 +378,39 @@ impl Engine {
                 self.app.invalidate();
                 Ok(Reply::ok(format!("gui {}", if on { "on" } else { "off" })))
             }
+            "open_diplomacy" => {
+                // the diplomacy windows (headless.c serves it too, with the game's own calls):
+                // contacts, country ID, community, federation ID, war ID, close
+                // (contacts TAB: 0 contacts, 1 agreements, 2 the shroud, as CGalaxyView::Show)
+                if let ["contacts", tab] = a {
+                    if self.app.diplomacy.open != Some(crate::diplomacy::Open::Contacts) {
+                        self.app.action("view:contacts")?;
+                    }
+                    let name = match *tab {
+                        "1" => "agreements",
+                        "2" => "shroud",
+                        _ => "contacts",
+                    };
+                    self.app.action(&format!("diplo:tab:{name}"))?;
+                    self.flush_log();
+                    return Ok(Reply::ok(format!("open_diplomacy {rest}")));
+                }
+                let action = match a {
+                    ["contacts"] => "view:contacts".to_string(),
+                    ["close"] => "diplo:close".to_string(),
+                    ["community"] => "diplo:community".to_string(),
+                    [what @ ("country" | "federation" | "war"), id] => format!("diplo:{what}:{id}"),
+                    [what @ ("select" | "tab" | "sort"), v] => format!("diplo:{what}:{v}"),
+                    _ => return Err("open_diplomacy contacts|country ID|community|federation ID|war ID|close (or select ID, tab NAME, sort NAME)".into()),
+                };
+                // (the left bar's button toggles Contacts; the command opens it)
+                if action == "view:contacts" && self.app.diplomacy.open == Some(crate::diplomacy::Open::Contacts) {
+                    return Ok(Reply::ok("open_diplomacy contacts"));
+                }
+                self.app.action(&action)?;
+                self.flush_log();
+                Ok(Reply::ok(format!("open_diplomacy {rest}")))
+            }
             "observe" => {
                 // the game's console `observe` (headless.c serves it too): the player an observer
                 let m = self.app.map.as_mut().ok_or("no map loaded")?;
