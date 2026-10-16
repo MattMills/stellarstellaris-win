@@ -274,6 +274,22 @@ local function cached_upkeep(country)
             out[name] = t
         end
     end
+    -- a resource the category pools with a parent (ai_use_parent_for_resources_upkeep: the ships'
+    -- energy goes to the country's budget) has the pool's cache: CanAffordUpkeep then weighs the
+    -- whole pool's upkeep against the pool's budget (the headless game, traced on 2210.01.07:
+    -- country 6's ships energy cache 202.13 = its country category's, over the 193.91 budget)
+    for name, c in pairs(cats.all()) do
+        slice.tick("ai/budget.lua pooled cache")
+        local t = out[name]
+        if t and c.ai then
+            for r in pairs(c.upkeep_parent) do
+                local pool = cats.for_upkeep(name, r)
+                if pool ~= name and out[pool] then
+                    t[r] = out[pool][r]
+                end
+            end
+        end
+    end
     return out
 end
 
