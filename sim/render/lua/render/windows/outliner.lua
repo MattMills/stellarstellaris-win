@@ -85,20 +85,41 @@ local function game_data(game_dir)
     for name, def in pairs(source.definitions(game_dir, "common/zones") or {}) do
         d.zone_slots[name] = num(field(def.block, "max_buildings"))
     end
-    -- deposits: the blockers and the technologies that clear them
-    d.blockers = {}
-    for name, def in pairs(source.definitions(game_dir, "common/deposits") or {}) do
-        if unquote(field(def.block, "category")) == "deposit_cat_blockers" then
-            local pre = {}
-            local p = field(def.block, "prerequisites")
-            for _, e in ipairs(type(p) == "table" and p or {}) do
-                local t = e.value and e.value.text or (e.key and e.key.text)
-                if t then
-                    pre[#pre + 1] = unquote(t)
-                end
+    -- a definition's list of tokens (prerequisites = { "tech_a" "tech_b" })
+    local function tokens(v)
+        local out = {}
+        for _, e in ipairs(type(v) == "table" and v or {}) do
+            local t = e.value and e.value.text or (e.key and e.key.text)
+            if t then
+                out[#out + 1] = unquote(t)
             end
-            d.blockers[name] = pre
         end
+        return out
+    end
+    -- deposits: blockers (their category's `blocker = yes`), what clears them (prerequisites),
+    -- the districts they take (planet_modifier planet_max_districts_add)
+    local blocker_cats = {}
+    for name, def in pairs(source.definitions(game_dir, "common/deposit_categories") or {}) do
+        blocker_cats[name] = field(def.block, "blocker") == "yes"
+    end
+    d.deposits = {}
+    for name, def in pairs(source.definitions(game_dir, "common/deposits") or {}) do
+        local pm = field(def.block, "planet_modifier")
+        d.deposits[name] = {
+            blocker = blocker_cats[unquote(field(def.block, "category")) or ""] or false,
+            pre = tokens(field(def.block, "prerequisites")),
+            districts = num(pm and field(pm, "planet_max_districts_add")) or 0,
+        }
+    end
+    -- planet classes: the growth room a free district gives (carry_cap_per_free_district)
+    d.carry_cap = {}
+    for name, def in pairs(source.definitions(game_dir, "common/planet_classes") or {}) do
+        d.carry_cap[name] = num(field(def.block, "carry_cap_per_free_district"))
+    end
+    -- buildings: what they upgrade to, what a building needs (prerequisites)
+    d.buildings = {}
+    for name, def in pairs(source.definitions(game_dir, "common/buildings") or {}) do
+        d.buildings[name] = { upgrades = tokens(field(def.block, "upgrades")), pre = tokens(field(def.block, "prerequisites")) }
     end
     -- the defines read (any section)
     d.defines = {}
@@ -318,7 +339,7 @@ function M.extract(game_dir, ctx)
     -- a colony's row: its name, the portrait, the designation, the governor's level, the status
     -- icons (COutlinerPlanetStatusController: frame = condition + 1) [V for the rules; I for the
     -- save's fields]
-    local unemployed_colonies, low_stability = 0, 0
+    local unemployed_colonies, low_stability, upgradable_buildings = 0, 0, 0
     local sector_capital = {}
     local function planet_row(p, sector)
         local col = world.planet_colony and world.planet_colony[p.id]
@@ -350,20 +371,74 @@ function M.extract(game_dir, ctx)
             if free then
                 status[#status + 1] = 1
             end
-            -- 1: a blocker the country can clear
-            for _, dep in ipairs(po and world.list(world.field(po, "deposits")) or {}) do
-                local dd = world.object("deposit", tonumber(dep))
-                local pre = dd and gd.blockers[unquote(world.field(dd, "type"))]
-                if pre and ctx.blockers_checked then
-                    local ok = true
-                    for _, t in ipairs(pre) do
-                        ok = ok and techs[t] or false
-                    end
-                    if ok then
-                        status[#status + 1] = 2
-                        break
+            -- 1: a blocker worth clearing (CColonyCarrier::ClearingBlockersIsBeneficial): one
+            -- the country can clear (its prerequisites), and the colony's growth capped (the
+            -- largest species' pops at the room left: carry_cap_per_free_district x the free
+            -- districts + free housing) or its districts all built [V for the rule; I: the
+            -- districts' modifiers only the deposits', the growth curve's terms left out]
+            local techs_ok = function(pre)
+                for _, t in ipairs(pre) do
+                    if not techs[t] then
+                        return false
                     end
                 end
+                return true
+            end
+            local max_districts = tonumber(po and world.field(po, "planet_size")) or 0
+            local clearable = false
+            for _, dep in ipairs(po and world.list(world.field(po, "deposits")) or {}) do
+                local dd = world.object("deposit", tonumber(dep))
+                local def = dd and gd.deposits[unquote(world.field(dd, "type")) or ""]
+                if def then
+                    max_districts = max_districts + def.districts
+                    if def.blocker and techs_ok(def.pre) then
+                        clearable = true
+                    end
+                end
+            end
+            max_districts = math.max(1, max_districts)
+            local districts = 0
+            for _, did in ipairs(world.list(world.field(c, "districts"))) do
+                local dd = world.object("districts", tonumber(did))
+                districts = districts + (tonumber(dd and world.field(dd, "level")) or 0)
+            end
+            local largest = 0
+            local sinfo = world.field(c, "species_information")
+            if type(sinfo) == "table" then
+                for _, e in ipairs(sinfo) do
+                    if e.op and type(e.value) == "table" then
+                        largest = math.max(largest, tonumber(world.field(e.value, "num_pops")) or 0)
+                    end
+                end
+            end
+            local room = (gd.carry_cap[p.class] or 0) * math.max(0, max_districts - districts)
+                + (tonumber(world.field(c, "free_housing")) or 0)
+            if clearable and (largest >= room or districts >= max_districts) then
+                status[#status + 1] = 2
+            end
+            -- 2: a building that can be upgraded (ShouldNotifyPlayerUpgrade): an upgrade whose
+            -- prerequisites the country has [V for the rule; I: potential and allow not evaluated]
+            local upgrade = false
+            for _, did in ipairs(world.list(world.field(c, "districts"))) do
+                local dd = world.object("districts", tonumber(did))
+                for _, zid in ipairs(dd and world.list(world.field(dd, "zones")) or {}) do
+                    local z = world.object("zones", tonumber(zid))
+                    for _, bid in ipairs(z and world.list(world.field(z, "buildings")) or {}) do
+                        local b = world.object("buildings", tonumber(bid))
+                        local def = b and gd.buildings[unquote(world.field(b, "type")) or ""]
+                        for _, up in ipairs(def and def.upgrades or {}) do
+                            local target = gd.buildings[up]
+                            if target and techs_ok(target.pre) then
+                                upgrade = true
+                                upgradable_buildings = upgradable_buildings + 1
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+            if upgrade then
+                status[#status + 1] = 3
             end
             local unemployed = tonumber(world.field(c, "unemploy_pop")) or 0
             local civilians = tonumber(world.field(c, "civilian")) or 0
@@ -481,9 +556,9 @@ function M.extract(game_dir, ctx)
     view.tab_items[2] = #factions
 
     -- the tabs' badges (UpdateTabNotificationCountForTab): Overview, colonies with unemployment
-    -- (+ buildings that can be upgraded [I: not counted]), critical: low stability; Ships,
+    -- + buildings that can be upgraded, critical: low stability; Ships,
     -- fleets that can be repaired, critical: science ships without a leader [V for the rules]
-    view.badges[0] = { regular = unemployed_colonies, critical = low_stability }
+    view.badges[0] = { regular = unemployed_colonies + upgradable_buildings, critical = low_stability }
     view.badges[1] = { regular = repairable, critical = science_without_leader }
     return view
 end

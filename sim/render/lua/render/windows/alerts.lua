@@ -183,10 +183,15 @@ function M.extract(game_dir, ctx)
     -- leader not the ruler, of a class that is not an envoy's, with no location) [V for the rules;
     -- I for the save's fields]
     local ruler = tonumber(world.field(pc, "ruler"))
+    -- (the recruitment pool's candidates are not the country's leaders)
+    local pool = {}
+    for _, v in ipairs(world.list(world.path(pc, "modules", "standard_leader_module", "leaders"))) do
+        pool[tonumber(v)] = true
+    end
     local traits, idle = false, false
     for _, lid in ipairs(world.leaders_of and world.leaders_of[player] or {}) do
         local l = world.object("leader", lid)
-        if l then
+        if l and not pool[lid] then
             if world.field(l, "available_trait") ~= nil then
                 traits = true
             end
