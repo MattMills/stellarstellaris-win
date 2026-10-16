@@ -110,8 +110,11 @@ global_at=hyperlanes=5382,empire_systems=5384`, /root/ngs/t9.txt; side by side
 113), 196 systems (200), a day run with 0 errors. Still different: the top bar's incomes; the
 ships' names (UNS); Sol Station / Sol Starbase.
 
-Terra incognita (post.lua): the game's UNE knows `{ 11 23 112 145 }` at day 0 (Sol and the systems
-one jump out); here `{ 23 }`. The exploration pass sees the capital (sensor range 1: its own system
+Terra incognita (post.lua): the game's UNE knows Sol and its hyperlane neighbours at day 0: `{ 11 23
+112 145 }` in tiny3_g0 (Sol's lanes 112 11 145) and `{ 11 23 112 147 }` in tiny3f_g0, the reference
+with the forced designs (Sol's lanes 147 112 11; the Lua's day-0 lanes equal the game's there);
+here `{ 23 }`. (tiny3_g0 was made with the default, randomized designs: compare a forced-design
+run with tiny3f_g0.) The exploration pass sees the capital (sensor range 1: its own system
 only) and the fleets at Sol, but every generated ship's design gives sensor range 1 and the
 starbase's station fleet (fleet 0) has no `movement_manager.coordinate.origin`, so nothing reaches
 past Sol: the start objects' data (session ng-effects), not the pass.
