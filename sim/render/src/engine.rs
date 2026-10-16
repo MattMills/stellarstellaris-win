@@ -857,7 +857,13 @@ impl Engine {
     }
 
     fn flush_log(&mut self) -> Vec<String> {
-        self.app.log.drain(..).collect()
+        // (into the load screens' console here: these go into the replies, not to stderr, so
+        // eprintln!'s copy does not take them)
+        let lines: Vec<String> = self.app.log.drain(..).collect();
+        for l in &lines {
+            crate::console::push(l);
+        }
+        lines
     }
 
     /// Input for the app: in lockstep kept for the next frame; else taken at once (the polled

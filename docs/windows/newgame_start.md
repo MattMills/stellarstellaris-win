@@ -185,7 +185,10 @@ line with errors in red ("0 errors" is not one). The game has no such panel; it 
 load screen's window and apart from it.
 
 - What it shows (src/console.rs): every line the crate writes with `eprintln!` (main.rs shadows the
-  macro for the whole crate, from every thread), and the app's log as the load screen takes it.
+  macro for the whole crate, from every thread), and so the app's log where it is written out (the
+  window's eprintln! of it); driven by commands, the app's log goes into the replies and
+  `flush_log` adds it. Each line comes once (the load screen took the app's log as well, until a
+  fix: every app log line was shown twice in the window).
   The simulation's thread writes the new game's stages as each ends (the generator's summary and
   steps, the engine's load with its `jobs:` line, the start script, the terra incognita, the
   timings), so they come while the screen is up; then `simulation: loaded in`, the models' index.
