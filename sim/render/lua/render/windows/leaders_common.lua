@@ -75,6 +75,8 @@ function L.leader_data(id, country)
         name = galaxy.name_block(w.field(name, "full_names") or name),
         class = C.strip(w.field(l, "class")),
         level = (tonumber(w.field(l, "level")) or 1) + (tonumber(w.field(l, "bonus_skill_level")) or 0),
+        base_level = tonumber(w.field(l, "level")) or 1,
+        cooldown = tonumber(w.field(l, "cooldown")) or 0,
         age = tonumber(w.field(l, "age")),
         experience = tonumber(w.field(l, "experience")) or 0,
         tier = C.strip(w.field(l, "tier")),
@@ -101,6 +103,20 @@ function L.leader_data(id, country)
             d.capital = p and galaxy.name_block(w.field(p, "name"))
             local gov = w.field(country, "government")
             d.government = C.strip(w.field(gov, "type"))
+            -- (the titles the player gave the ruler: the rename dialog's [I keys])
+            local t, tf = w.field(gov, "ruler_title"), w.field(gov, "ruler_title_female")
+            d.custom_title = type(t) == "table" and galaxy.name_block(t) or nil
+            d.custom_title_female = type(tf) == "table" and galaxy.name_block(tf) or nil
+        end
+        -- (a council position's titles the player gave it: custom_council_titles [I keys])
+        if d.council and d.council.type then
+            for _, e in ipairs(w.blocks(w.field(country, "custom_council_titles"))) do
+                if C.strip(w.field(e, "type")) == d.council.type then
+                    local m, f = w.field(e, "male"), w.field(e, "female")
+                    d.council.custom_male = type(m) == "table" and galaxy.name_block(m) or nil
+                    d.council.custom_female = type(f) == "table" and galaxy.name_block(f) or nil
+                end
+            end
         end
     end
     return d
@@ -247,9 +263,43 @@ function L.trait_icon(ctx, b, trait, x, y, s, path)
     end
 end
 
+-- the ruler's title (the government's ruler_title(_female), or the one the player gave it), and
+-- a council position's (its councillor type's name, or the country's custom_council_titles)
+function L.ruler_title(ctx, d, female)
+    local custom = female and d.custom_title_female or d.custom_title
+    if custom then
+        return C.name(ctx, custom)
+    end
+    local g = C.defs(ctx, "common/governments")[d.government or ""]
+    local key = g and C.strip(C.field(g, female and "ruler_title_female" or "ruler_title"))
+    return key and C.loc(ctx, key)
+end
+
+-- the card's rename buttons (CParagonPortraitContainer::Reload: rename_leader opens the leader's
+-- rename dialog, the ruler's and the heir's with their titles; rename_leader_title the ruler's, or
+-- the council position's): the named actions (render.windows.rename's dialog in the view's state)
+function L.rename_actions(ctx, d)
+    local R = require("render.windows.rename")
+    local name = L.name(ctx, d.name)
+    local gender = d.gender ~= nil and d.gender ~= "" and d.gender ~= "indeterminable"
+    local a = {}
+    if d.ruler then
+        a.rename_leader = R.open("ruler", d.id, name, L.ruler_title(ctx, d, false), L.ruler_title(ctx, d, true), gender)
+        a.rename_leader_title = a.rename_leader
+    else
+        a.rename_leader = R.open("leader", d.id, name)
+        if d.council and d.council.id then
+            local t = d.council.custom_male and C.name(ctx, d.council.custom_male) or C.loc(ctx, d.council.type or "")
+            local tf = d.council.custom_female and C.name(ctx, d.council.custom_female) or t
+            a.rename_leader_title = R.open("position", d.council.id, name, t, tf, gender)
+        end
+    end
+    return a
+end
+
 -- card(ctx, b, template, rect, leader, opts) -> report: the leader's card (a paragon template)
 -- laid out in rect, filled as CParagonPortraitContainer::Update fills it. opts: prefix, hide
--- (more names), actions, selected
+-- (more names), actions, named_actions (by element name: rename_actions), selected
 function L.card(ctx, b, template, rect, d, opts)
     opts = opts or {}
     local p = (opts.prefix or "") .. "/" .. template .. "/"
@@ -268,9 +318,7 @@ function L.card(ctx, b, template, rect, d, opts)
     -- the ruler's title (the government's ruler_title) or the council position's name
     local title
     if d.ruler then
-        local g = C.defs(ctx, "common/governments")[d.government or ""]
-        local key = g and C.strip(C.field(g, d.gender == "female" and "ruler_title_female" or "ruler_title"))
-        title = key and C.loc(ctx, key)
+        title = L.ruler_title(ctx, d, d.gender == "female")
         text.name_with_title_text = title and C.raw(ctx, "NAME_WITH_TITLE_FORMAT"):gsub("%$TITLE%$", (title:gsub("%%", "%%%%"))):gsub("%$NAME%$", (name:gsub("%%", "%%%%"))) or name
         sprites.council_position_icon = "GFX_icon_councilor_ruler"
     else
@@ -278,7 +326,7 @@ function L.card(ctx, b, template, rect, d, opts)
         hide.ruler_icon = true
     end
     if d.council and d.council.type then
-        title = title or C.loc(ctx, d.council.type)
+        title = title or (d.gender == "female" and d.council.custom_female or d.council.custom_male) or C.loc(ctx, d.council.type)
         if not d.ruler then
             local cdef = C.defs(ctx, "common/governments/councilors")[d.council.type]
             local icon = cdef and C.strip(C.field(cdef, "icon"))
@@ -358,7 +406,7 @@ function L.card(ctx, b, template, rect, d, opts)
     local r = b:add_named(PARAGON, template, {
         prefix = opts.prefix, parent = { x = rect.x, y = rect.y, w = rect.w, h = rect.h },
         hide = hide, actions = opts.actions,
-        named = { text = text, frames = frames, sprites = sprites, textures = textures },
+        named = { text = text, frames = frames, sprites = sprites, textures = textures, actions = opts.named_actions },
     })
     -- the traits in their overlapping box (CLeaderTraitListboxEntry: the trait's layered icon)
     local box

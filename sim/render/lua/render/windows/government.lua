@@ -8,6 +8,8 @@
 local world = require("engine.world")
 local C = require("render.windows.empire_common")
 local leaders = require("render.windows.leaders_common")
+local reform = require("render.windows.reform")
+local rename = require("render.windows.rename")
 
 local M = {}
 
@@ -39,7 +41,26 @@ function M.data(cid, state)
         pops = tonumber(world.field(c, "num_sapient_pops")) or 0,
         city = C.strip(world.field(c, "city_graphical_culture")),
         planets = #world.list(world.field(c, "owned_planets")),
+        -- what the Reform Government window reads (CCountry::CanChangeGovernment,
+        -- CalcGovernmentReformCost, CalcTotalCivicPoints)
+        empire_size = tonumber(world.field(c, "empire_size")) or 0,
+        unity = tonumber(world.path(c, "modules", "standard_economy_module", "resources", "unity")) or 0,
+        government_date = C.strip(world.field(c, "government_date")),
+        free_reform = false,
+        civic_points_add = 0,
     }
+    local flags = world.field(c, "flags")
+    d.free_reform = type(flags) == "table" and world.field(flags, "free_government_reform") ~= nil
+    -- (the cooldown: government_date after today; GOVERNMENT_CHANGE_YEARS counts the years'
+    -- numbers apart)
+    local today = (tostring(world.meta.date or ""):gsub('"', ""))
+    local cmd = require("render.windows.empire_commands")
+    if d.government_date and cmd.days(d.government_date) > cmd.days(today) then
+        d.cooldown_years = math.max(1, (tonumber(d.government_date:match("^(%d+)")) or 0) - (tonumber(today:match("^(%d+)")) or 0))
+    end
+    local economy = package.loaded["engine.economy"]
+    local mods = economy and economy.has_modifier_source and economy.has_modifier_source() and economy.modifiers("country", cid)
+    d.civic_points_add = mods and math.floor(tonumber(mods.country_government_civic_points_add) or 0) or 0
     local ruler = tonumber(world.field(c, "ruler"))
     d.ruler = ruler and leaders.leader_data(ruler, c) or nil
     d.founder = leaders.species_data(tonumber(world.field(c, "founder_species_ref")))
@@ -127,7 +148,8 @@ local function empire_tab(ctx, b, d, state, opts)
         text[G .. "origin_window/origin_name"] = d.origin
     end
     text[G .. "diplo_weight_window/diplomacy_weight"] = "§Y" .. diplomatic_weight(ctx, d) .. "§!"
-    opts.actions[G .. "government_reform"] = nil
+    -- Reform Government (ShowGovernmentModWindow: render.windows.reform)
+    opts.actions[G .. "government_reform"] = reform.open_action(d)
 end
 
 function M.build(ctx, d, state)
@@ -145,7 +167,11 @@ function M.build(ctx, d, state)
         hide = { tab_budget = true, tab_budget_active = true, tab_advisor = true, tab_advisor_active = true,
             budget = true, advisor_window = true },
         text = { [V .. "/heading"] = C.name(ctx, d.name) },
-        actions = { [V .. "/close"] = "view_close" },
+        actions = {
+            [V .. "/close"] = "view_close",
+            -- the empire's name (OnRenameEmpire: CEmpireRenameDialog, render.windows.rename)
+            [V .. "/empire_rename_button"] = rename.open("country", d.country, C.name(ctx, d.name)),
+        },
         textures = {}, frames = {}, disabled = {},
     }
     for _, t in ipairs(TABS) do
@@ -202,7 +228,8 @@ function M.build(ctx, d, state)
         -- the ruler's card in ruler_container (NInterface PORTRAIT_GUI_NAME_GOVERNMENT_VIEW_RULER)
         local rc = r.rects[G .. "portrait_window/ruler_container"]
         if rc and d.ruler then
-            leaders.card(ctx, b, "paragon_portrait_container_ruler_government", rc, d.ruler, { prefix = "/government_ruler", ruler = true })
+            leaders.card(ctx, b, "paragon_portrait_container_ruler_government", rc, d.ruler, { prefix = "/government_ruler", ruler = true,
+                named_actions = leaders.rename_actions(ctx, d.ruler) })
         end
     elseif tab == "demographics" then
         local P = V .. "/government_window/demographics_window/"
@@ -249,7 +276,20 @@ function M.build(ctx, d, state)
             end
         end
     end
+    -- the Reform Government window and the rename dialog over the view
+    reform.build(ctx, b, d, state)
+    rename.build(b, ctx, "government", state, nil)
     return b.items, b.report
+end
+
+-- the wheel over the Reform Government window's civics
+function M.wheel(ctx, d, state, notches, x, y)
+    return reform.wheel(ctx, d or {}, state, notches, x, y)
+end
+
+-- its commands in the simulation (views.rs: `cmd:government:VERB:ARG...`): reform, rename
+function M.command(...)
+    return require("render.windows.empire_commands").run(...)
 end
 
 
@@ -261,6 +301,14 @@ end
 
 
 -- Escape (views.rs): the side windows in these state keys close first, else the view closes
-M.escape_keys = {}
+M.escape_keys = { "reform", "rf_auth", "rf_civics", "rf_scroll" }
+-- (the rename dialog first, then the Reform window: their Cancel buttons' ESCAPE)
+function M.escape(state)
+    if state.reform == "1" then
+        return reform.close_action()
+    end
+    return nil
+end
+rename.install(M, "government")
 
 return M

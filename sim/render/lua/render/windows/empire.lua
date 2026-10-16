@@ -9,6 +9,7 @@
 local world = require("engine.world")
 local C = require("render.windows.empire_common")
 local leaders = require("render.windows.leaders_common")
+local rename = require("render.windows.rename")
 
 local M = {}
 
@@ -262,12 +263,14 @@ function M.build(ctx, d, state)
         local expanded = state["expand_" .. s.id] == "1"
         -- a click on the entry expands or collapses it (CEmpireViewSectorEntry::ToggleExpanded); a
         -- core sector can be neither deleted nor made a vassal (CANNOT_DELETE_CORE_SECTOR,
-        -- CREATE_VASSAL_CORE_SECTOR_INVALID): both disabled; edit and rename open windows not
-        -- drawn here [not done here]
+        -- CREATE_VASSAL_CORE_SECTOR_INVALID): both disabled; rename (CEmpireViewSectorEntry::Rename:
+        -- CSectorRenameDialog, render.windows.rename); edit opens a window not drawn here [not done
+        -- here]
         local core = s.type == "core_sector"
-        local er = b:add(FILE, "planet_list_sector_entry", {
+        local er = b:add_named(FILE, "planet_list_sector_entry", {
             prefix = prefix, parent = { x = list.x, y = y, w = 0, h = 0 },
             text = text,
+            named = { actions = { rename_button = rename.open("sector", s.id, C.name(ctx, s.name)) } },
             actions = {
                 [prefix .. "/planet_list_sector_entry"] = "view_set:expand_" .. s.id .. "=" .. (expanded and "" or "1"),
             },
@@ -277,7 +280,8 @@ function M.build(ctx, d, state)
         })
         local pc = er.rects[p .. "leader_portrait_container"]
         if pc and s.governor then
-            leaders.card(ctx, b, "paragon_portrait_container_horizontal", pc, s.governor, { prefix = prefix .. "/governor" })
+            leaders.card(ctx, b, "paragon_portrait_container_horizontal", pc, s.governor, { prefix = prefix .. "/governor",
+                named_actions = leaders.rename_actions(ctx, s.governor) })
         end
         y = y + 100 + 4
         if expanded then
@@ -329,7 +333,14 @@ function M.build(ctx, d, state)
             end
         end
     end
+    -- the rename dialog over the view
+    rename.build(b, ctx, "empire", state, nil)
     return b.items, b.report
+end
+
+-- its commands in the simulation (views.rs: `cmd:empire:VERB:ARG...`): rename
+function M.command(...)
+    return require("render.windows.empire_commands").run(...)
 end
 
 
@@ -342,5 +353,6 @@ end
 
 -- Escape (views.rs): the side windows in these state keys close first, else the view closes
 M.escape_keys = {}
+rename.install(M, "empire")
 
 return M

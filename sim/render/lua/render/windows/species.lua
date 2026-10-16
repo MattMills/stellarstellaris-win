@@ -9,6 +9,7 @@
 local world = require("engine.world")
 local C = require("render.windows.empire_common")
 local leaders = require("render.windows.leaders_common")
+local SM = require("render.windows.species_mod")
 
 local M = {}
 
@@ -21,20 +22,70 @@ function M.data(cid, state)
     if not c then
         return {}
     end
-    local d = { species = {}, founder = tonumber(world.field(c, "founder_species_ref")) }
-    -- pops by species over the country's colonies
-    local count, order = {}, {}
-    for _, k in ipairs(world.list(world.field(c, "controlled_colonies"))) do
-        local col = world.object("colony", tonumber(k))
-        for _, g in ipairs(world.list(col and world.field(col, "pop_groups"))) do
-            local pg = world.object("pop_group", tonumber(g))
-            local sp = pg and tonumber(world.path(pg, "key", "species"))
-            if sp then
-                if not count[sp] then
-                    order[#order + 1] = sp
-                    count[sp] = 0
+    local gov = world.field(c, "government")
+    local d = {
+        species = {}, founder = tonumber(world.field(c, "founder_species_ref")),
+        built = tonumber(world.field(c, "built_species_ref")),
+        -- (the government the template editor's trait rules read)
+        ethics = C.strings(world.path(c, "ethos", "ethics")), authority = C.strip(world.field(gov, "authority")),
+        civics = C.strings(world.field(gov, "civics")), origin = C.strip(world.field(gov, "origin")),
+    }
+    -- pops by species over a country's colonies (CCountry::_ListSpecies: a species met again adds
+    -- its pops), each species' colonies on the player's
+    local count, order, colonies = {}, {}, {}
+    local function list_species(country, own)
+        for _, k in ipairs(world.list(world.field(country, "controlled_colonies"))) do
+            local col = world.object("colony", tonumber(k))
+            local seen = {}
+            for _, g in ipairs(world.list(col and world.field(col, "pop_groups"))) do
+                local pg = world.object("pop_group", tonumber(g))
+                local sp = pg and tonumber(world.path(pg, "key", "species"))
+                if sp then
+                    if not count[sp] then
+                        order[#order + 1] = sp
+                        count[sp] = 0
+                    end
+                    local n = tonumber(world.field(pg, "size")) or 0
+                    count[sp] = count[sp] + n
+                    if own then
+                        colonies[sp] = colonies[sp] or {}
+                        if not seen[sp] then
+                            local p = leaders.colony_planet(tonumber(k))
+                            seen[sp] = { id = tonumber(k), name = p and galaxy.name_block(world.field(p, "name")), class = p and C.strip(world.field(p, "planet_class")), pops = 0 }
+                            colonies[sp][#colonies[sp] + 1] = seen[sp]
+                        end
+                        seen[sp].pops = seen[sp].pops + n
+                    end
                 end
-                count[sp] = count[sp] + (tonumber(world.field(pg, "size")) or 0)
+            end
+        end
+    end
+    list_species(c, true)
+    -- the templates the country made (species_templates_ref) [I: listed with no pops]
+    for _, t in ipairs(world.list(world.field(c, "species_templates_ref"))) do
+        local sp = tonumber(t)
+        if sp and not count[sp] then
+            order[#order + 1] = sp
+            count[sp] = 0
+        end
+    end
+    -- All Species (_ListGalaxySpecies): the species of the countries with communications with the
+    -- player too (their relation toward it: communications = yes)
+    local own_count = {}
+    for k, v in pairs(count) do
+        own_count[k] = v
+    end
+    local galaxy_first = #order + 1
+    local rel = world.path(c, "relations_manager")
+    for _, e in ipairs(type(rel) == "table" and rel or {}) do
+        if e.op and e.key and e.key.text == "relation" and type(e.value) == "table" then
+            local other = world.object("country", tonumber(world.field(e.value, "country")))
+            local back = other and world.path(other, "relations_manager")
+            for _, f in ipairs(type(back) == "table" and back or {}) do
+                if f.op and f.key and f.key.text == "relation" and type(f.value) == "table"
+                    and tonumber(world.field(f.value, "country")) == cid and world.field(f.value, "communications") == "yes" then
+                    list_species(other, false)
+                end
             end
         end
     end
@@ -68,10 +119,24 @@ function M.data(cid, state)
     local default = world.field(mod, "default")
     d.default_rights = default and rights_of(default) or {}
     d.facts = C.facts(world, c)
-    for _, sp in ipairs(order) do
+    local cmd = require("render.windows.empire_commands")
+    local templates = {}
+    for _, t in ipairs(world.list(world.field(c, "species_templates_ref"))) do
+        templates[tonumber(t) or -1] = true
+    end
+    for i, sp in ipairs(order) do
         local s = leaders.species_data(sp)
         if s then
-            s.pops = count[sp]
+            -- (Empire Species: the player's pops; All Species: everyone's listed)
+            s.pops = own_count[sp] or 0
+            s.galaxy_pops = count[sp]
+            s.galaxy_only = i >= galaxy_first or nil
+            s.colonies = colonies[sp] or {}
+            local so0 = world.object("species", sp)
+            s.base = tonumber(so0 and world.field(so0, "base_ref")) or sp
+            s.is_base = s.base == sp
+            s.template = templates[sp] or nil
+            s.is_default = cmd.default_of(c, sp) == sp
             s.rights = rights[sp] or (default and rights_of(default)) or {}
             local so = world.object("species", sp)
             local hb = so and world.field(so, "home_planet")
@@ -163,11 +228,20 @@ local function rights_name(r)
     return r.citizenship or ""
 end
 
+-- NSpeciesViewHelper::CalculateTemplateType: founder, robot default (the built species), default
+-- (CCountry::GetDefaultSpecies), original (a base species), modified [I: pre-sapient and
+-- integrating not told apart]
 local function template_type(d, s)
     if s.id == d.founder then
         return "TEMPLATE_TYPE_FOUNDER"
+    elseif s.id == d.built then
+        return "TEMPLATE_TYPE_BUILT_DEFAULT"
+    elseif s.is_default then
+        return "TEMPLATE_TYPE_DEFAULT"
+    elseif s.is_base then
+        return "TEMPLATE_TYPE_ORIGINAL"
     end
-    return "TEMPLATE_TYPE_DEFAULT"
+    return "TEMPLATE_TYPE_MODIFIED"
 end
 
 local function icons(ctx, b, rect, list, size, spacing, path)
@@ -195,17 +269,23 @@ function M.build(ctx, d, state)
     end
     split_ctx = ctx
     local b = C.builder(ctx)
+    -- Empire Species (mode 0): the player's own (its colonies' species and its templates); All
+    -- Species (mode 1): those of the countries it has communications with too, their pops summed
+    local all = (state.mode or "") == "all"
     local list = {}
     for _, s in ipairs(d.species or {}) do
-        list[#list + 1] = s
+        if all or not s.galaxy_only then
+            s.shown_pops = all and s.galaxy_pops or s.pops
+            list[#list + 1] = s
+        end
     end
     -- SortSpeciesGroups: population, most first (stable)
     for i, s in ipairs(list) do
         s.order = i
     end
     table.sort(list, function(a, b2)
-        if a.pops ~= b2.pops then
-            return a.pops > b2.pops
+        if a.shown_pops ~= b2.shown_pops then
+            return a.shown_pops > b2.shown_pops
         end
         return a.order < b2.order
     end)
@@ -227,14 +307,14 @@ function M.build(ctx, d, state)
         text[S .. "selected_species_name"] = C.name(ctx, selected.name)
         text[S .. "selected_species_type"] = selected.class or ""
         text[S .. "selected_species_home_planet_name"] = C.name(ctx, selected.home_planet)
-        text[S .. "selected_species_amount"] = C.short(selected.pops)
+        text[S .. "selected_species_amount"] = C.short(selected.shown_pops or selected.pops)
         text[S .. "selected_species_trait_points"] = "0"
         text[S .. "selected_species_trait_picks"] = "0"
         text[S .. "selected_species_rights_value"] = rights_name(selected.rights)
         text[S .. "selected_species_template_value"] = template_type(d, selected)
         -- the actions' texts (UpdateSelectedSpecies: a species' own, not a pre-sapient's)
         text[S .. "set_rights_or_policy_button"] = "SET_SPECIES_RIGHTS"
-        text[S .. "modify_button"] = "SPECIES_VIEW_TRAITS_CREATE_TEMPLATE"
+        text[S .. "modify_button"] = (selected.pops or 0) > 0 and "SPECIES_VIEW_TRAITS_CREATE_TEMPLATE" or "SPECIES_VIEW_TRAITS_MODIFY"
         text[S .. "apply_template_or_uplift_button"] = "SPECIES_VIEW_TRAITS_APPLY_TEMPLATE"
         if pref then
             local pdef = C.defs(ctx, "common/traits")[pref]
@@ -273,12 +353,37 @@ function M.build(ctx, d, state)
         named[name] = "view_set:sort=" .. (n - 1) .. ";rev=" .. ((again and state.rev ~= "1") and "1" or "")
     end
     local disabled = {}
-    if selected then
+    if all then
+        -- (ChangeViewMode 1: the trait columns' sorts and the action buttons disabled, the trait
+        -- points and picks hidden)
+        for _, n in ipairs({ "trait_points_button", "trait_picks_button" }) do
+            named[n] = nil
+        end
+        for _, n in ipairs({ "set_rights_or_policy_button", "set_default", "modify_button", "apply_template_or_uplift_button" }) do
+            disabled[S .. n] = true
+        end
+        for _, n in ipairs({ "selected_species_trait_points", "selected_species_trait_picks", "selected_species_template_value" }) do
+            hide[n] = true
+        end
+    elseif selected then
         named.set_rights_or_policy_button = "view_set:rights=" .. selected.id
-        if d.primary == selected.id then
+        -- Set as Default (CSetDefaultSpeciesCommand::IsValid: not its group's default already)
+        if selected.is_default then
             disabled[S .. "set_default"] = true
         else
             named.set_default = "cmd:species:default_species:" .. selected.id
+        end
+        -- Create / Modify Template and Apply This Template (CanCreateTemplateFrom,
+        -- CanApplyTemplate: render.windows.species_mod)
+        if SM.can_create(ctx, d, selected) then
+            named.modify_button = SM.open_editor(selected)
+        else
+            disabled[S .. "modify_button"] = true
+        end
+        if SM.can_apply(ctx, d, selected) then
+            named.apply_template_or_uplift_button = SM.open_apply(selected)
+        else
+            disabled[S .. "apply_template_or_uplift_button"] = true
         end
         if selected.home_planet_id then
             named.selected_species_home_planet_type_button = "select:planet:" .. selected.home_planet_id
@@ -306,9 +411,9 @@ function M.build(ctx, d, state)
             local pref, rest = split_traits(s.traits)
             local et = {
                 [p .. "name"] = "§E" .. C.name(ctx, s.name) .. "§!\n" .. C.loc(ctx, template_type(d, s)),
-                [p .. "species_list_total_pop"] = C.raw(ctx, "SPECIES_VIEW_TOTAL_POP"):gsub("%$VAL|?1?%*?%$", C.short(s.pops)),
+                [p .. "species_list_total_pop"] = C.raw(ctx, "SPECIES_VIEW_TOTAL_POP"):gsub("%$VAL|?1?%*?%$", C.short(s.shown_pops)),
                 [p .. "species_list_variants"] = C.raw(ctx, "SPECIES_VIEW_VARIANTS"):gsub("%$VAL%$", "1"),
-                [p .. "population"] = C.short(s.pops),
+                [p .. "population"] = C.short(s.shown_pops),
                 [p .. "species_list_trait_points"] = "0",
                 [p .. "species_list_trait_picks"] = "0",
                 [p .. "rights"] = rights_name(s.rights),
@@ -316,7 +421,8 @@ function M.build(ctx, d, state)
             local er = b:add(FILE, "species_entry", {
                 prefix = prefix, parent = { x = lr.x, y = y, w = 0, h = 0 },
                 text = et,
-                hide = { selected_entry = s ~= selected or nil, integrating = true, species = true },
+                hide = { selected_entry = s ~= selected or nil, integrating = true, species = true,
+                    species_list_trait_points = all or nil, species_list_trait_picks = all or nil },
                 textures = pref and { [p .. "planet_preference_container/planet_preference_icon"] = trait_icon(ctx, pref) } or nil,
                 actions = { [p .. "species_selection"] = "view_set:species=" .. s.id },
             })
@@ -388,7 +494,14 @@ function M.build(ctx, d, state)
             end
         end
     end
+    -- the template editor and the apply window over the view
+    SM.build(ctx, b, d, state)
     return b.items, b.report
+end
+
+-- the wheel over the template editor's trait lists
+function M.wheel(ctx, d, state, notches, x, y)
+    return SM.wheel(state, notches, x, y)
 end
 
 
@@ -405,6 +518,15 @@ function M.command(...)
 end
 
 -- Escape (views.rs): the side windows in these state keys close first, else the view closes
-M.escape_keys = { "rights" }
+M.escape_keys = { "rights", "sm", "sm_traits", "sm_pos", "sm_neg", "sm_apply", "sm_off" }
+-- (the template windows first, then the rights popup: their close buttons' ESCAPE)
+function M.escape(state)
+    if state.sm or state.sm_apply then
+        return SM.CLOSE
+    elseif state.rights then
+        return "view_set:rights="
+    end
+    return nil
+end
 
 return M

@@ -211,6 +211,46 @@ pub fn wheel(runtime: &Runtime, width: u32, height: u32, name: &str, data: Optio
     Some(pairs)
 }
 
+/// Whether a text box of the open view `name` has the keyboard (its module's `text_focus(state)`:
+/// a rename dialog's edit box).
+pub fn text_focus(runtime: &Runtime, name: &str, state: &HashMap<String, String>) -> bool {
+    let read = || -> mlua::Result<bool> {
+        let m: Table = runtime.lua.load(format!("return require('render.windows.{name}')")).eval()?;
+        let Some(f) = m.get::<Option<mlua::Function>>("text_focus")? else { return Ok(false) };
+        let s = runtime.lua.create_table()?;
+        for (k, v) in state {
+            s.set(k.as_str(), v.as_str())?;
+        }
+        Ok(f.call::<Option<bool>>(s)?.unwrap_or(false))
+    };
+    read().unwrap_or(false)
+}
+
+/// A key typed into the open view's focused text box (its module's `text_key(state, key)`, the key
+/// `text:C` a character or `key:NAME` an editing key): the state's pairs to set and an action to
+/// run, or None (the key not taken).
+pub fn text_key(runtime: &Runtime, name: &str, state: &HashMap<String, String>, key: &str) -> Option<(Vec<(String, String)>, Option<String>)> {
+    let read = || -> mlua::Result<Option<(Vec<(String, String)>, Option<String>)>> {
+        let m: Table = runtime.lua.load(format!("return require('render.windows.{name}')")).eval()?;
+        let Some(f) = m.get::<Option<mlua::Function>>("text_key")? else { return Ok(None) };
+        let s = runtime.lua.create_table()?;
+        for (k, v) in state {
+            s.set(k.as_str(), v.as_str())?;
+        }
+        let (pairs, action): (Option<Table>, Option<String>) = f.call((s, key))?;
+        let Some(pairs) = pairs else { return Ok(None) };
+        let mut out = Vec::new();
+        for p in pairs.pairs::<String, String>() {
+            out.push(p?);
+        }
+        Ok(Some((out, action)))
+    };
+    read().unwrap_or_else(|e| {
+        eprintln!("render.windows.{name}: text_key: {e}");
+        None
+    })
+}
+
 /// The state keys of the view `name` that are its side windows (its module's `escape_keys`:
 /// Escape closes them first), or None when the module lists none (then any state is one).
 pub fn escape_keys(runtime: &Runtime, name: &str) -> Option<Vec<String>> {
