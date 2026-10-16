@@ -1236,7 +1236,7 @@ impl App {
         }
         // the ship designer and the combat view over them
         let map = self.map.as_ref().unwrap();
-        match crate::designer::layout(&self.runtime, &map.runtime, &self.game_dir, w, h, &self.designer, combat) {
+        match crate::designer::layout(&self.runtime, map, &self.game_dir, w, h, &self.designer, combat) {
             Ok((more, models)) => {
                 items.extend(more);
                 self.designer_models = models;
@@ -1733,11 +1733,7 @@ impl App {
                     self.scene = None;
                 }
             }
-            Some(a) if a.starts_with("designer:") => {
-                let mut d = self.designer.clone();
-                crate::designer::act(&mut d, a)?;
-                self.set_designer(d);
-            }
+            Some(a) if a.starts_with("designer:") => crate::designer::act(self, a)?,
             // the bars, the alerts, the in-game menu (mainbars.rs)
             Some(a) if crate::mainbars::handles(a) => crate::mainbars::act(self, a)?,
             Some(other) => self.log.push(format!("  {other}: not done yet (its window is not laid out)")),
@@ -2265,6 +2261,8 @@ impl App {
             }
             // the wheel over the open view's list scrolls it (the view's own `wheel`)
             Effect::Zoom(n, _) if self.view_wheel(n) => Ok(true),
+            // the wheel over the ship designer's lists (designer.rs)
+            Effect::Zoom(n, _) if self.designer.open && { let at = self.cursor; crate::designer::wheel(self, n, at) } => Ok(true),
             Effect::Zoom(n, false) => {
                 self.wheel(n);
                 Ok(true)
@@ -2354,7 +2352,7 @@ impl App {
                     // the diplomacy window closes first (its close button: ESCAPE)
                     Action::Back if self.diplomacy.open.is_some() => self.act("/key/escape", Some("diplo:close"))?,
                     // the designer's close button has the shortcut ESCAPE (ship_designer.gui)
-                    Action::Back if self.designer.open => self.set_designer(Default::default()),
+                    Action::Back if self.designer.open => crate::designer::escape(self),
                     Action::Back if self.starbase.megastructure.is_some() || self.starbase.network.is_some() => {
                         self.starbase.megastructure = None;
                         self.starbase.network = None;
