@@ -38,6 +38,7 @@ function M.data(cid, state)
         military_power = tonumber(world.field(c, "military_power")) or 0,
         pops = tonumber(world.field(c, "num_sapient_pops")) or 0,
         city = C.strip(world.field(c, "city_graphical_culture")),
+        planets = #world.list(world.field(c, "owned_planets")),
     }
     local ruler = tonumber(world.field(c, "ruler"))
     d.ruler = ruler and leaders.leader_data(ruler, c) or nil
@@ -49,7 +50,7 @@ end
 -- their own; Budget is never available (CGovernmentViewBudgetTab::ShouldBeAvailable returns 0),
 -- the advisor's only with more than one playable voice type (not drawn)
 local TABS = {
-    { name = "government", window = "government_window" },
+    { name = "government", window = "info_window" },
     { name = "demographics", window = "demographics_window" },
 }
 
@@ -139,6 +140,21 @@ function M.build(ctx, d, state)
     end
     if tab == "government" then
         empire_tab(ctx, b, d, state, opts)
+    elseif tab == "demographics" and d.founder then
+        -- the founder species (CGovernmentViewDemographicsTab::UpdatePops): its name, class, ideal
+        -- planet (its planet preference trait's class), the pops (its portrait is 3D: not drawn)
+        local D = V .. "/government_window/demographics_window/population_window/"
+        opts.text[D .. "species_name"] = C.name(ctx, d.founder.name)
+        opts.text[D .. "founder_species_class"] = d.founder.class or ""
+        local ideal
+        for _, t in ipairs(d.founder.traits or {}) do
+            ideal = ideal or t:match("^trait_(pc_.*)_preference$")
+        end
+        opts.text[D .. "ideal_planet_class"] = ideal
+            and C.raw(ctx, "IDEAL_PLANET_CLASS"):gsub("%$CLASS%$", C.loc(ctx, ideal)) or "NO_IDEAL_PLANET_CLASS"
+        opts.text[D .. "pops"] = C.raw(ctx, "POPS_IN_WORLD"):gsub("%$NO|1%*H%$", "§H" .. C.short(d.pops) .. "§!")
+            :gsub("%$PLANETS|H%$", "§H" .. tostring(d.planets or 1) .. "§!")
+        opts.hide.species_leader_image = true
     end
     local r = b:add(FILE, "government_view", opts)
     if tab == "government" then

@@ -205,7 +205,7 @@ end
 -- a localisation key's text (the key itself if there is none)
 function C.loc(ctx, key)
     if ctx.loc and key and ctx.loc.has(key) then
-        return ctx.loc.get(key)
+        return (ctx.loc.get(key))
     end
     return key or ""
 end
@@ -213,7 +213,7 @@ end
 -- a localisation key's text as written, its $VARIABLES$ left for the caller to fill
 function C.raw(ctx, key)
     if ctx.loc and key and ctx.loc.has(key) then
-        return ctx.loc.raw(key)
+        return (ctx.loc.raw(key))
     end
     return key or ""
 end

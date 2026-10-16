@@ -115,3 +115,44 @@ pub fn set_state(state: &mut HashMap<String, String>, kv: &str) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn views_in_the_games_order() {
+        // CInGameIdler::Access*View: council 1, leaders 4, species 5, empire 6, factions 10,
+        // edicts 11, government 14
+        assert_eq!(index("council"), Some(1));
+        assert_eq!(index("leaders"), Some(4));
+        assert_eq!(index("species"), Some(5));
+        assert_eq!(index("empire"), Some(6));
+        assert_eq!(index("factions"), Some(10));
+        assert_eq!(index("edicts"), Some(11));
+        assert_eq!(index("government"), Some(14));
+        assert_eq!(index("nothing"), None);
+    }
+
+    #[test]
+    fn view_state_set_and_cleared() {
+        let mut s = HashMap::new();
+        set_state(&mut s, "tab=demographics");
+        assert_eq!(s.get("tab").map(String::as_str), Some("demographics"));
+        set_state(&mut s, "tab=");
+        assert!(s.get("tab").is_none());
+        set_state(&mut s, "expand_0=1");
+        set_state(&mut s, "expand_0");
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn values_copied_between_lua_states() {
+        let (a, b) = (Lua::new(), Lua::new());
+        let v: Value = a.load("return { name = 'Uthab', n = 3, x = 1.5, ok = true, list = { 'a', 'b' }, f = print }").eval().unwrap();
+        let c = copy(v, &b, 0).unwrap();
+        b.globals().set("T", c).unwrap();
+        let r: String = b.load("return T.name .. T.n .. T.x .. tostring(T.ok) .. T.list[2] .. tostring(T.f)").eval().unwrap();
+        assert_eq!(r, "Uthab31.5truebnil");
+    }
+}
