@@ -253,10 +253,8 @@ pub struct App {
     hover: Option<String>,
     pressed: Option<String>,
     items: Option<((u32, u32, Screen, (&'static str, i32, u64)), Vec<GuiItem>)>,
-    /// the load screens' console shown (console.rs), the app log's lines it has taken, the console
-    /// lines laid out
+    /// the load screens' console shown (console.rs), and the console lines laid out
     pub console: bool,
-    console_seen: usize,
     console_gen: u64,
     /// the window's Load and Continue load behind the load screen (App::start_load_save); commands
     /// load at once (`load`, `load-sim`)
@@ -378,7 +376,6 @@ impl App {
             pending: None,
             newgame_setup: None,
             console: crate::console::enabled(false),
-            console_seen: 0,
             console_gen: 0,
             async_loads: true,
             scene: None,
@@ -1994,15 +1991,8 @@ impl App {
     /// A frame of the load screen: the bar moved as the game moves it while the game is made, then
     /// the map made (LOAD_MAP_GFX at 0) and shown (at 100). Whether the screen changed.
     fn loading(&mut self, dt: f32) -> Result<bool, String> {
-        // the app's log in the console too (what the engine's and the window's outputs take from
-        // it later), and the screen laid out again when the console has new lines
-        if self.log.len() < self.console_seen {
-            self.console_seen = 0;
-        }
-        for line in &self.log[self.console_seen..] {
-            crate::console::push(line);
-        }
-        self.console_seen = self.log.len();
+        // the screen laid out again when the console has new lines (the app's log reaches it
+        // where it is written out, once: the window's eprintln!, the engine's flush_log)
         let changed = self.loading_step(dt)?;
         let gen = crate::console::generation();
         if self.console && self.screen == Screen::Loading && gen != self.console_gen {
