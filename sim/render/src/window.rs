@@ -259,7 +259,13 @@ impl ApplicationHandler for Win {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                // the window goes at once; the event loop's end and the process's follow (run)
+                if let Some(s) = &self.shown {
+                    s.window.set_visible(false);
+                }
+                event_loop.exit();
+            }
             WindowEvent::KeyboardInput { event: KeyEvent { physical_key, state, repeat, .. }, .. } => {
                 let Some(key) = key_name(&physical_key) else { return };
                 self.input(Input::Key { key, down: state == ElementState::Pressed, repeat });
@@ -335,9 +341,22 @@ where
         fit,
         start: Instant::now(),
     };
-    event_loop.run_app(&mut win).map_err(|e| format!("event loop: {e}"))?;
-    match win.error {
-        Some(e) => Err(e),
-        None => Ok(()),
-    }
+    let r = event_loop.run_app(&mut win).map_err(|e| format!("event loop: {e}"));
+    // the window closed: the process ends here, without dropping `win`. Its drop joined the UI
+    // thread, which dropped the app (the simulation's thread joined after its day, two Lua states
+    // of gigabytes freed, the models and textures) and the GPU's resources: 1.8 s after a save's
+    // load, 4.7 s after a medium new game, with the window gone and the process still there.
+    // Nothing is written on the way out, so nothing is lost; the logs are flushed first.
+    let r = r.and(win.error.take().map_or(Ok(()), Err));
+    let code = match r {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    };
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    std::process::exit(code)
 }
