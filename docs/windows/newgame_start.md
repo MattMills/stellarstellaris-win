@@ -57,6 +57,7 @@ window is at y -99999, off the screen).
 | progress | engine/newgame/init.lua calls `settings.progress` with the game's values: 5, 10, 17, `70 + 30 i / n` (systems.initialize_rest); no fallen empires yet, so no 20..70 | **[V]** the values; the moments are the Lua's steps |
 | hand-off | the generated tree handed to `engine.load` as is (`world.load_tree`: the builder's metatables cleared), no text written or parsed. `STELLAR_NEWGAME_TEXT=1` loads its text instead; `STELLAR_NEWGAME_CHECK=1` compares the tree with its text parsed again (tiny, seed 1234: 0 differences besides the parser's line numbers) | **[V]** |
 | start | `newgame.start_script` in the same state (the init_effects, the empire on_actions, on_game_start), then the clock's first snapshot | **[V]** |
+| terra incognita | engine/newgame/post.lua after the start script (InitPostGalaxyCreation's): every country without one gets an all-unknown `terra_incognita = { size = 256 data = { 65536 } systems = { } }` (the game's day 0 has one per country), the world indexed again, then engine.exploration's load pass clears it in sensor range | the maps **[V]** (day0.gamestate); the clearing is the engine's |
 | load screen | `Screen::Loading`: frontend.load_screen (the picture covering the screen [I], the status window), the bar stepped as LaunchNewGame does (`newgame::Bar`, 16 ms steps of the frame's time), stage GENERATING then POST; when the game is ready the map is made (LOAD_MAP_GFX at 50) and shown after one more frame (75) | the formula **[V]**; RestoreDeviceObjects' ~25 steps are two here **[I]** |
 | landing | as after a load (`App::show_map`): the galaxy camera reset, the capital's system entered, paused, speed 3 | **[V]** |
 | picture | `newgame::background`: the folder's `.dds` sorted by name, `% count` of a clock seed (`STELLAR_LOADSCREEN=N` fixes it) | the folder's order **[I]** |
@@ -106,9 +107,14 @@ parity setup (`newgame ... designs=.../tmp_newgame/ref/designs3.txt
 global_at=hyperlanes=5382,empire_systems=5384`, /root/ngs/t9.txt; side by side
 /root/ngs/cmp_p.jpg): the UNE at system 23 as in the game, the same Sol border and neighbours
 (Alpha Centauri, Procyon, Barnard's Star), 1st Fleet 15/50, 273 hyperlanes, 96 fleets (the game
-113), 196 systems (200), a day run with 0 errors. Still different: the game's galaxy view shows only
-what the UNE knows (terra incognita hides most lanes) where ours shows every lane; the top bar's
-incomes; the ships' names (UNS); Sol Station / Sol Starbase.
+113), 196 systems (200), a day run with 0 errors. Still different: the top bar's incomes; the
+ships' names (UNS); Sol Station / Sol Starbase.
+
+Terra incognita (post.lua): the game's UNE knows `{ 11 23 112 145 }` at day 0 (Sol and the systems
+one jump out); here `{ 23 }`. The exploration pass sees the capital (sensor range 1: its own system
+only) and the fleets at Sol, but every generated ship's design gives sensor range 1 and the
+starbase's station fleet (fleet 0) has no `movement_manager.coordinate.origin`, so nothing reaches
+past Sol: the start objects' data (session ng-effects), not the pass.
 
 ## 5. Not done
 

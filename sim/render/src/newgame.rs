@@ -234,8 +234,10 @@ pub fn sim_runtime(game_dir: &str, settings: &NewGameSettings, progress: &Arc<Pr
         let t2 = t0.elapsed().as_secs_f64();
         let start_script: mlua::Function = newgame.get("start_script")?;
         let script: String = start_script.call(game)?;
+        // InitPostGalaxyCreation's terra incognita: the maps, cleared in sensor range
+        let post: String = lua.load("return require('engine.newgame.post').run()").eval()?;
         Ok(format!(
-            "{summary}\n{loaded}\n{script}\nnew game: generated in {t1:.1} s, loaded in {:.1} s, started in {:.1} s",
+            "{summary}\n{loaded}\n{script}\n{post}\nnew game: generated in {t1:.1} s, loaded in {:.1} s, started in {:.1} s",
             t2 - t1,
             t0.elapsed().as_secs_f64() - t2
         ))
