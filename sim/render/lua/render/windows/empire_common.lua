@@ -67,6 +67,120 @@ function Builder:add_named(file, window, opts)
     return self:add(file, window, opts)
 end
 
+-- What a country is, for the triggers the views evaluate (C.facts on the world's side):
+-- { techs, traditions, ethics, civics, origin, authority, government, gestalt, hive, machine,
+--   nomadic, comms }
+function C.facts(w, c)
+    local f = { techs = {}, traditions = {}, ethics = {}, civics = {} }
+    local ts = w.field(c, "tech_status")
+    for _, e in ipairs(type(ts) == "table" and ts or {}) do
+        if e.op and e.key and e.key.text == "technology" and e.value.text then
+            f.techs[(e.value.text:gsub('"', ""))] = true
+        end
+    end
+    for _, t in ipairs(C.strings(w.field(c, "traditions"))) do
+        f.traditions[t] = true
+    end
+    for _, t in ipairs(C.strings(w.path(c, "ethos", "ethics"))) do
+        f.ethics[t] = true
+    end
+    local gov = w.field(c, "government")
+    for _, t in ipairs(C.strings(w.field(gov, "civics"))) do
+        f.civics[t] = true
+    end
+    f.origin = C.strip(w.field(gov, "origin"))
+    f.authority = C.strip(w.field(gov, "authority"))
+    f.government = C.strip(w.field(gov, "type"))
+    f.hive = f.authority == "auth_hive_mind"
+    f.machine = f.authority == "auth_machine_intelligence"
+    f.gestalt = f.ethics.ethic_gestalt_consciousness or f.hive or f.machine or false
+    f.nomadic = (C.strip(w.field(c, "type")) or ""):find("nomad") ~= nil
+    -- communications with another empire: a relation with `communications = yes`
+    f.comms = false
+    for _, e in ipairs(w.field(c, "relations_manager") or {}) do
+        if e.op and e.key and e.key.text == "relation" and type(e.value) == "table" and w.field(e.value, "communications") == "yes" then
+            f.comms = true
+        end
+    end
+    return f
+end
+
+-- a country trigger block evaluated on facts (the forms the views' potentials use; an unknown
+-- trigger is false) [I: the game's script layer evaluates them]
+function C.trigger(block, f)
+    local function yes(v)
+        return v == "yes"
+    end
+    local test
+    local function all(b)
+        for _, e in ipairs(type(b) == "table" and b or {}) do
+            if e.op and e.key and not test(e.key.text, e.value.text and e.value.text:gsub('"', "") or e.value) then
+                return false
+            end
+        end
+        return true
+    end
+    local function any(b)
+        for _, e in ipairs(type(b) == "table" and b or {}) do
+            if e.op and e.key and test(e.key.text, e.value.text and e.value.text:gsub('"', "") or e.value) then
+                return true
+            end
+        end
+        return false
+    end
+    local ETHIC = { "spiritualist", "materialist", "xenophile", "xenophobe", "egalitarian", "authoritarian", "militarist", "pacifist" }
+    test = function(k, v)
+        if k == "AND" then
+            return all(v)
+        elseif k == "OR" then
+            return any(v)
+        elseif k == "NOT" or k == "NOR" then
+            return not any(v)
+        elseif k == "NAND" then
+            return not all(v)
+        elseif k == "always" then
+            return yes(v)
+        elseif k == "is_nomadic" then
+            return f.nomadic == yes(v)
+        elseif k == "is_gestalt" then
+            return (f.gestalt and true or false) == yes(v)
+        elseif k == "is_hive_empire" then
+            return f.hive == yes(v)
+        elseif k == "is_machine_empire" then
+            return f.machine == yes(v)
+        elseif k == "is_wilderness_empire" then
+            return false == yes(v)
+        elseif k == "country_uses_consumer_goods" then
+            return (not f.gestalt) == yes(v)
+        elseif k == "has_comms_with_alien_empire" then
+            return f.comms == yes(v)
+        elseif k == "has_origin" then
+            return f.origin == v
+        elseif k == "has_valid_civic" or k == "has_civic" then
+            return f.civics[v] == true
+        elseif k == "has_authority" then
+            return f.authority == v
+        elseif k == "has_government" then
+            return f.government == v
+        elseif k == "has_ethic" then
+            return f.ethics[v] == true
+        elseif k == "has_technology" then
+            return f.techs[v] == true
+        elseif k == "has_tradition" or k == "has_active_tradition" then
+            return f.traditions[v] == true
+        end
+        for _, e in ipairs(ETHIC) do
+            if k == "is_" .. e then
+                return (f.ethics["ethic_" .. e] or f.ethics["ethic_fanatic_" .. e] or false) == yes(v)
+            elseif k == "is_fanatic_" .. e then
+                return (f.ethics["ethic_fanatic_" .. e] or false) == yes(v)
+            end
+        end
+        return false
+    end
+    return all(block)
+end
+
 -- a set from a list of names
 function C.set(list)
     local s = {}
@@ -112,22 +226,40 @@ function C.name(ctx, n)
     return require("render.names").format(ctx.loc, n)
 end
 
--- the definitions of a directory of common/ (name -> block), parsed once
+-- the definitions of a directory of common/ (name -> block), parsed once; their files'
+-- scripted variables (`@x = 10`) by definition name in C.vars_cache[dir]
 local defs_cache = {}
+C.vars_cache = {}
+
+-- a definition's number field, through its file's scripted variables
+function C.number(ctx, dir, name, v)
+    if type(v) == "string" and v:sub(1, 1) == "@" then
+        C.defs(ctx, dir)
+        local vars = (C.vars_cache[dir] or {})[name] or {}
+        v = vars[v]
+    end
+    return tonumber(v)
+end
 function C.defs(ctx, dir)
     local d = defs_cache[dir]
     if not d then
         local source = require("stellar.script.source")
         d = {}
+        local vars_of = {}
         for _, f in ipairs(source.files(ctx.game_dir, dir, "txt") or {}) do
             local tree = source.parse(ctx.game_dir, f)
+            local vars = {}
             for _, e in ipairs(tree or {}) do
-                if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
+                if e.op and e.key and e.key.text:sub(1, 1) == "@" and e.value.text then
+                    vars[e.key.text] = e.value.text
+                elseif e.op and e.key and type(e.value) == "table" and e.value.text == nil then
                     d[e.key.text] = e.value
+                    vars_of[e.key.text] = vars
                 end
             end
         end
         defs_cache[dir] = d
+        C.vars_cache[dir] = vars_of
     end
     return d
 end

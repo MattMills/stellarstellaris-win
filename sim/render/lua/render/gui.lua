@@ -361,6 +361,10 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                 button = { name = name, id = field("id"), action = action }
             end
             local tex = opts.textures and opts.textures[path]
+            -- (an icon's definition may name a sprite instead of a file: the sprite)
+            if tex and db.sprites[tex] then
+                sprite, tex = tex, nil
+            end
             if tex then
                 local tw, th = opts.texture_size(tex)
                 if tw then
@@ -401,7 +405,14 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                 text = field("text") or ""
             end
             local valign = field("vertical_alignment")
-            text_item(path, field("font"), tostring(text), x, y, w, h, field("format"),
+            -- a box without fixedSize grows to fit its lines (the game's frames: the species
+            -- view's two-line names in a 30 high box); a fixed one cuts its text (the outliner's
+            -- names) [I: the rule read from the frames]
+            local th = h
+            if field("fixedSize") ~= "yes" and (valign == nil or valign:lower() == "top") then
+                th = h * 8
+            end
+            text_item(path, field("font"), tostring(text), x, y, w, th, field("format"),
                 valign and valign:lower() or "top", field("text_color_code"))
         end
     end

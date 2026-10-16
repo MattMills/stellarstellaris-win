@@ -197,6 +197,10 @@ function L.trait_layers(ctx, trait)
             layers[1] = { sprite = C.strip(icon) }
         end
     end
+    -- a trait without an icon: gfx/interface/icons/traits/<key>.dds (trait_intelligent's) [I]
+    if #layers == 0 then
+        layers[1] = { sprite = "gfx/interface/icons/traits/" .. trait .. ".dds" }
+    end
     trait_cache[trait] = layers
     return layers
 end
@@ -301,6 +305,12 @@ function L.card(ctx, b, template, rect, d, opts)
     -- the portrait is 3D (not drawn); the pool's and the status's parts as the leader is owned
     hide.character_portrait = true
     hide.location_secondary_button = true
+    hide.no_character_container = true
+    -- (what shows while the mouse is over the card: not drawn)
+    for _, n in ipairs({ "on_hover_container", "on_hover_assign_container", "on_hover_assign_container_disabled",
+        "on_hover_replace_container", "on_hover_replace_container_disabled" }) do
+        hide[n] = true
+    end
     hide.in_player_pool_container = not opts.pool or nil
     -- its status: assigned (the ruler, a councillor, a place), idle, or in the pool
     local busy = d.ruler or d.council ~= nil or d.location ~= nil
