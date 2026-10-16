@@ -40,9 +40,13 @@ none; the alert or the Situation Log leads to them). The save's own open event, 
   texture has 12 px of margin (the visible button starts at 19).
 - Hidden: the tts button, the chain and situation panels, the presence icon. The focus button
   shows for an event with a `location`; without, the message settings button takes its x.
-- The picture: the event's `picture` sprite in `event_picture` (450 x 150, centred at 130); its
-  masking texture (event_mask.dds) is not applied **[I]**: the picture's corners are brighter than
-  the game's (mean difference 7 there, 1.5 to 3 on the texts).
+- The picture: the event's `picture` sprite in `event_picture` (450 x 150, centred at 130). The
+  mean difference over it is 7 (1.5 to 3 on the texts), and most of it is horizontal scan lines
+  the game draws over the picture: they are in none of the textures (the picture, event_frame.dds
+  whose inside is transparent, event_stripes_texture.dds, a faint white band at alpha 0.1 that
+  `stripes_1` scrolls), so they come from the sprites' shader **[I]**, not drawn here. The
+  masking texture (event_mask.dds, the same for all 581 masked event pictures) only cuts 2,236 of
+  the 67,500 pixels at the edges: not applied; the stripes' band not drawn either.
 - Texts: wrapped at the text box's maxWidth (436), lines of the font's line height (cg_16b: 16),
   colour codes kept (render.windows.events `wrap`, measured with the renderer's font metrics:
   RENDER_FONT_METRICS). The title in malgun_goth_24.
