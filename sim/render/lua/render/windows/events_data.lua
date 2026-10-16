@@ -520,6 +520,18 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- the events the simulation opened for the human since the load (simscript.events' hook)
 
+-- today: the simulation's date (RUST.date: hours from its epoch, 360-day years of 30-day months:
+-- sim/src/date.rs; the world's `date` stays the save's), as the save writes a date
+local function today()
+    local h = RUST and RUST.date and RUST.date()
+    if type(h) == "number" then
+        local days = math.floor((h - 43800000) / 24)
+        local doy = days % 360
+        return string.format("%d.%02d.%02d", math.floor(days / 360), math.floor(doy / 30) + 1, doy % 30 + 1)
+    end
+    return text(world.meta and world.meta.date) or ""
+end
+
 M.opened = M.opened or {}
 local next_id = nil
 
@@ -542,9 +554,16 @@ local function hook()
     end
     -- (simscript.events calls `opened(ev, ctx, option)` for a human's event it answers)
     events.opened = M.on_opened
+    if os.getenv("STELLAR_EVENTS_DEBUG") then
+        local st = events and package.loaded["simscript.eval"] and package.loaded["simscript.eval"].stats
+        io.stderr:write("events_data: hooked simscript.events (human options so far: " .. tostring(st and st.human_options) .. ")\n")
+    end
 end
 
 function M.on_opened(ev, ctx)
+    if os.getenv("STELLAR_EVENTS_DEBUG") then
+        io.stderr:write("events_data: the simulation opened " .. tostring(ev.id) .. "\n")
+    end
     if not next_id then
         next_id = (tonumber(world.meta and world.meta.last_event_id) or 0) + 1000
     end
@@ -558,7 +577,7 @@ function M.on_opened(ev, ctx)
     for k, s in pairs(ctx.targets or {}) do
         roots[tostring(k):lower()] = roots[tostring(k):lower()] or sc(s)
     end
-    local date = text(world.meta and world.meta.date)
+    local date = today()
     local e = { id = next_id, event = ev.id, roots = roots, fired = true, date = date,
         expires = date_after_months(date, 9) }
     next_id = next_id + 1
@@ -740,15 +759,17 @@ end
 function M.read(game_dir)
     hook()
     local pid = player()
-    local date = text(world.meta and world.meta.date) or ""
+    local date = today() or ""
     local list = {}
     for _, e in ipairs(world.tree or {}) do
         if e.op and e.key and e.key.text == "player_event" and e.value.text == nil then
             local b = e.value
-            if tonumber(world.field(b, "country")) == pid then
+            -- (until the day it expires: the game drops first_contact.1 at its 2210.03.04)
+            local expires = text(world.field(b, "date"))
+            if tonumber(world.field(b, "country")) == pid and (not expires or expires > date) then
                 list[#list + 1] = {
                     id = tonumber(world.field(b, "id")), event = text(world.field(b, "event")),
-                    expires = text(world.field(b, "date")), roots = save_scope(world.field(b, "scope")),
+                    expires = expires, roots = save_scope(world.field(b, "scope")),
                 }
             end
         end
@@ -787,7 +808,7 @@ function M.log(game_dir)
     local pid = player()
     local chains, projects = chains_and_projects(pid)
     return {
-        player = pid, date = text(world.meta and world.meta.date) or "",
+        player = pid, date = today() or "",
         first_contacts = first_contacts(pid, game_dir), situations = situations(pid), sites = sites(pid),
         chains = chains, projects = projects,
         -- (a planet's `anomaly` is one not found yet: the game's Findings list none of them here; the
