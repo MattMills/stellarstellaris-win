@@ -1743,6 +1743,63 @@ static void frame_cmd(const char *arg) {
 	reply_fmt("ok frame %s %d %d %.0f %d%s", arg, w, h, ms, C.frames, diff > 0.25 ? " unsettled" : "");
 }
 
+// ---------------------------------------------------------------- the left bar's views (open_view)
+//
+//   open_view NAME|N   CInGameIdler::ToggleTopBarView(ETopBarView), as the left bar's buttons
+//                      (CMainGuiLeftBarButton::OnClick) and the top bar's flag (government,
+//                      CMainGui::ToggleGovernmentView) open them: shown if hidden (the others
+//                      closed), hidden if shown; the reply a few frames later, with the view
+//                      shown then (idler +0xdc8)
+//   open_view close    CInGameIdler::CloseTopBarViews()
+// ETopBarView is the slot in the idler's views (+0xd38, the Access*View getters).
+
+static uintptr_t a_ToggleTopBarView, a_CloseTopBarViews;
+static const char *g_topbar_view_names[18] = {
+	"situation", "council", "traditions", "technology", "leaders", "species", "empire",
+	"expansion_planner", "fleet_manager", "contacts", "factions", "edicts", "view12", "view13",
+	"government", "discoveries", "claims", "market"};
+static struct symreq g_topbar_view_syms[] = {
+	{"_ZN12CInGameIdler16ToggleTopBarViewE11ETopBarView", &a_ToggleTopBarView},
+	{"_ZN12CInGameIdler16CloseTopBarViewsEv", &a_CloseTopBarViews},
+	{NULL, NULL},
+};
+
+static void open_view_cmd(const char *arg) {
+	static int resolved;
+	if (!resolved) {
+		if (resolve(g_topbar_view_syms) != 0) {
+			reply_fmt("error open_view: missing symbols");
+			return;
+		}
+		resolved = 1;
+	}
+	void *idler = *(void **)a_g_CurrentInGameIdler;
+	int view = -1;
+	if (!idler) {
+		reply_fmt("error open_view: no in-game idler");
+		return;
+	}
+	if (strcmp(arg, "close")) {
+		for (int i = 0; i < 18; i++)
+			if (!strcmp(arg, g_topbar_view_names[i])) view = i;
+		if (view < 0 && sscanf(arg, "%d", &view) == 1 && (view < 0 || view > 17)) view = -1;
+		if (view < 0) {
+			reply_fmt("error open_view: NAME (situation, council, ... government, ...), 0..17 or close");
+			return;
+		}
+	}
+	if (C.stage == 0) {
+		if (view < 0)
+			((void (*)(void *))a_CloseTopBarViews)(idler);
+		else
+			((char (*)(void *, int))a_ToggleTopBarView)(idler, view);
+		C.stage = 1;
+		return;
+	}
+	if (++C.frames < 4) return;
+	reply_fmt("ok open_view %s (current view %d)", arg, I32((char *)idler + 0xdc8));
+}
+
 static void view_game(void *gs) {
 	if (g_in_game_frames++ == 0) {
 		hlog("view: in game after %.3f s", now() - g_t0);
@@ -1871,6 +1928,8 @@ static void view_game(void *gs) {
 		frame_cmd(arg[0] ? arg : "frame.png");
 	} else if (!strcmp(verb, "state")) {
 		state_json(gs, arg);
+	} else if (!strcmp(verb, "open_view")) {
+		open_view_cmd(arg);
 	} else {
 		reply_fmt("error unknown command %s", verb);
 	}
