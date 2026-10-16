@@ -531,6 +531,23 @@ function empires.objects(ctx, inputs, r, game)
     local starbases = starbase_mgr:child("starbases")
     local ships = save.block()
     local fleets = save.block()
+    -- the construction queues (CConstructionManager::CreateQueue): the capital's planet and army
+    -- queues, the starbase's and its shipyard's, four an empire in that order (the game's new
+    -- game: queues 0..3 for the first empire, 4..7 for the next)
+    local construction = save.block()
+    local queues = construction:child("queue_mgr"):child("queues")
+    local next_queue = 0
+    local function queue(owner, loc_type, loc_id, kind)
+        local q = queues:child(tostring(next_queue))
+        q:set("owner", owner)
+        local loc = q:child("location")
+        loc:set("type", loc_type)
+        loc:set("id", loc_id)
+        q:set("simultaneous", 1)
+        q:set("type", kind)
+        next_queue = next_queue + 1
+        return next_queue - 1
+    end
     local next_pop, next_ship, next_fleet = 0, 0, 0
 
     for _, e in ipairs(game.empires) do
@@ -598,9 +615,16 @@ function empires.objects(ctx, inputs, r, game)
         next_ship = next_ship + 1
         local fleet_id = next_fleet
         next_fleet = next_fleet + 1
+        local home_id = e.home and e.home.id or NONE
+        queue(e.index, 2, home_id, "planet")
+        queue(e.index, 2, home_id, "army")
+        local build_q = queue(e.index, 0, station, "starbase")
+        local yard_q = queue(e.index, 0, station, "ships")
         local sb = starbases:child(tostring(sb_id))
         sb:str("level", "starbase_level_starport")
         sb:str("type", "sshipyard")
+        sb:set("build_queue", build_q)
+        sb:set("shipyard_build_queue", yard_q)
         sb:set("station", station)
         sb:set("construction_type", "starbase_shipyard")
         local sh = ships:child(tostring(station))
@@ -613,7 +637,11 @@ function empires.objects(ctx, inputs, r, game)
         fl:name("name", { key = "shipclass_starbase_name", variables = { { "PLANET", e.system.name } } })
         fl:list("ships", { station })
         fl:set("ship_class", "shipclass_starbase")
-        fl:set("station", true)
+        -- (CFleet's properties: a station, an orbital station, as the game's new game writes them;
+        -- what reads a fleet's kind reads them there: the outliner, the windows, the system view)
+        local props = fl:child("properties")
+        props:set("station", true)
+        props:set("orbital_station", true)
         e.fleets = { fleet_id }
         e.system.starbase = sb_id
         e.system.colonies = { col_id }
@@ -678,7 +706,7 @@ function empires.objects(ctx, inputs, r, game)
     game.last_created_country = #game.empires > 0 and #game.empires - 1 or NONE
     game.before_systems = { { "pop_groups", pop_groups } }
     game.before_planets = { { "starbase_mgr", starbase_mgr }, { "colony", colony } }
-    game.after_country = { { "ships", ships }, { "fleet", fleets } }
+    game.after_country = { { "ships", ships }, { "fleet", fleets }, { "construction", construction } }
     if #game.empires > 0 then
         game.players = { { name = "player", country = 0 } }
         game.meta_flag = (function()

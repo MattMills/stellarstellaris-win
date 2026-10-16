@@ -444,6 +444,84 @@ function newgame.generate_text(game_dir, settings)
     return game.text, game.meta_text, game.summary
 end
 
+-- the starbase record's design, initial modules and buildings (CStarbase::Initialize), and the
+-- construction items' store (the generated tree has none: its empty `items` is made a store here)
+local function starbase_record(sb, ship)
+    local world = require("engine.world")
+    local objects = require("engine.script.objects")
+    local defs = require("engine.defs")
+    local unq = function(v) return v and (tostring(v):gsub('"', "")) or nil end
+    if not world.store_blocks["construction.item_mgr.items"] then
+        for _, e in ipairs(world.tree or {}) do
+            if e.op and e.key and e.key.text == "construction" and type(e.value) == "table" then
+                local im = world.field(e.value, "item_mgr")
+                if type(im) ~= "table" then
+                    im = {}
+                    world.append(e.value, "item_mgr", im)
+                end
+                local items = world.field(im, "items")
+                if type(items) ~= "table" then
+                    items = {}
+                    world.append(im, "items", items)
+                end
+                local name = "construction.item_mgr.items"
+                world.stores[name], world.ids[name], world.entries[name] = world.stores[name] or {}, world.ids[name] or {}, world.entries[name] or {}
+                world.store_blocks[name] = items
+            end
+        end
+    end
+    local sdi_ship = world.field(ship, "ship_design_implementation")
+    if world.field(sb, "ship_design_implementation") == nil and type(sdi_ship) == "table" then
+        local sdi = {}
+        for _, k in ipairs({ "design", "upgrade", "growth_stage" }) do
+            local v = world.field(sdi_ship, k)
+            if v ~= nil then world.append(sdi, k, v) end
+        end
+        local at = #sb + 1
+        for i, e in ipairs(sb) do
+            if e.op and e.key and e.key.text == "station" then at = i break end
+        end
+        world.insert(sb, at, "ship_design_implementation", sdi)
+    end
+    if world.field(sb, "modules") == nil then
+        local level = defs.get("common/starbase_levels", unq(world.field(sb, "level")) or "")
+        local size = level and defs.get("common/ship_sizes", unq(defs.field(level.block, "ship_size")) or "")
+        local mods = size and defs.field(size.block, "modifier")
+        local function cap(key)
+            return type(mods) == "table" and tonumber(defs.field(mods, key)) or 0
+        end
+        -- a component of a normal starbase: its potential names is_normal_starbase (the orbital
+        -- rings', arkships' and waystations' initial ones name theirs) [I: the potential is not
+        -- evaluated: the script layer reads some of its scopes false]
+        local function mentions(block, key)
+            for _, e in ipairs(type(block) == "table" and block or {}) do
+                if e.op and e.key and e.key.text == key then return true end
+                if type(e.value) == "table" and e.value.text == nil and mentions(e.value, key) then return true end
+            end
+            return false
+        end
+        local function initial(folder, n)
+            local out = {}
+            local count = 0
+            for _, d in ipairs(objects.ordered(folder)) do
+                if count >= n then break end
+                local b = d[2].block
+                if defs.field(b, "initial") == "yes" and mentions(defs.field(b, "potential"), "is_normal_starbase") then
+                    world.append(out, tostring(count), d[1])
+                    count = count + 1
+                end
+            end
+            return out
+        end
+        local at = 3
+        for i, e in ipairs(sb) do
+            if e.op and e.key and e.key.text == "type" then at = i + 1 break end
+        end
+        world.insert(sb, at, "modules", initial("common/starbase_modules", cap("starbase_module_capacity_add")))
+        world.insert(sb, at + 1, "buildings", initial("common/starbase_buildings", cap("starbase_building_capacity_add")))
+    end
+end
+
 -- newgame.start_script([game]) -> report: the script's part of game creation, run by the script
 -- layer (simscript) on the generated world once engine.load has read it in this Lua state, in the
 -- game's order:
@@ -606,6 +684,14 @@ function newgame.start_script(game)
                 world.append(sdi, "growth_stage", 0)
                 world.insert(ship, 3, "ship_design_implementation", sdi)
             end
+        end
+        -- the starbase record (CStarbase::Initialize, as the game's new game writes it): the
+        -- station's design (ship_design_implementation, before `station`), the modules and the
+        -- buildings marked `initial`, in the files' order, as many as the level's size takes
+        -- (starbase_module_capacity_add, starbase_building_capacity_add: a starport's shipyard and
+        -- solar panel network, its crew quarters)
+        if sb and ship then
+            starbase_record(sb, ship)
         end
         -- the station's fleet at the station (its movement_manager's coordinate, which the sensors
         -- and the systems' presence read; empires.lua writes the ship's only)
