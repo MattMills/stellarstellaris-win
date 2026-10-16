@@ -696,7 +696,8 @@ galaxy's UUID name. The reference: tiny, elliptical, 3 AI empires and the UNE (`
 advanced, fallen, marauder or nomad empires (`code_working/tmp_newgame/ref/tiny3.txt`), the AI
 designs forced by a user designs file (`designs3.txt`: sathyrel, pasharti, khennet with
 `spawn_enabled = always`, so that no design is randomized), the global generator at seed 0
-position 0. The Lua:
+position 0; its gamestates in `tmp_newgame/ref/tiny3f_g0/` (`tiny3_g0/` is a run with the default,
+randomized designs: other partitions and lanes). The Lua:
 
 ```
 newgame --scenario tiny --empires 3 --fallen 0 --marauders 0 --nomads 0 --advanced 0 --global-seed 0 \
