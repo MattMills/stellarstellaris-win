@@ -2060,7 +2060,7 @@ function S:ship(id)
     local stage = type(impl) == "table" and tonumber(w.field(impl, "growth_stage")) or 0
     local design = type(did) == "number" and w.object("ship_design", did)
     local gs = design and blocks_of(w.field(design, "growth_stages"))[stage + 1]
-    if gs == nil then
+    if not gs then
         return parts
     end
     local C, T = "common/component_templates", "common/section_templates"
