@@ -321,6 +321,48 @@ pub fn menu(runtime: &Runtime, width: u32, height: u32, version: &str, modal: bo
     read().map_err(|e| format!("render.frontend.menu: {e}"))
 }
 
+/// A screen of the new game (render.frontend_newgame: "select", "creator", "setup") for a screen
+/// of `width` x `height`, from the setup state RENDER_NEWGAME (in the front end's runtime).
+pub fn newgame(runtime: &Runtime, width: u32, height: u32, screen: &str) -> Result<Layout, String> {
+    let read = || -> mlua::Result<Layout> {
+        let t: Table = runtime
+            .lua
+            .load(format!(
+                "return require('render.frontend_newgame').build(RENDER_GAME_DIR, RENDER_GFX, {{ width = {width}, height = {height} }}, RENDER_TEXTURE_SIZE, RENDER_LOC, {screen:?})"
+            ))
+            .eval()?;
+        let report: Table = t.get("report")?;
+        Ok(Layout {
+            items: read_items(t.get("items")?)?,
+            missing: missing(&report)?,
+            note: t.get::<Option<String>>("note")?.unwrap_or_default(),
+            rects: HashMap::new(),
+        })
+    };
+    read().map_err(|e| format!("render.frontend_newgame.build: {e}"))
+}
+
+/// An action of the new game's screens on the setup state (the pointer at `at`: a slider's
+/// track takes the value there): the screen to go to ("menu",
+/// "select", "creator", "setup", "play"), or None to stay.
+pub fn newgame_act(runtime: &Runtime, action: &str, at: (f32, f32)) -> Result<Option<String>, String> {
+    let (x, y) = at;
+    runtime
+        .lua
+        .load(format!("return require('render.frontend_newgame').act(RENDER_GAME_DIR, {action:?}, {x}, {y})"))
+        .eval::<Option<String>>()
+        .map_err(|e| format!("render.frontend_newgame.act {action}: {e}"))
+}
+
+/// The setup state's settings in a line (what Play starts).
+pub fn newgame_summary(runtime: &Runtime) -> Result<String, String> {
+    runtime
+        .lua
+        .load("return require('render.newgame_setup').summary(RENDER_NEWGAME)")
+        .eval::<String>()
+        .map_err(|e| format!("render.newgame_setup.summary: {e}"))
+}
+
 /// A save in the load window: the empire's name, the date, the file's name.
 pub struct SaveRow<'a> {
     pub name: &'a str,

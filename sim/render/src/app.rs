@@ -40,6 +40,23 @@ pub enum Screen {
     Menu,
     Load,
     Map,
+    /// the new game: empire selection (select_empire_design.gui), the empire creator (session
+    /// ng-creator's render.newgame_creator), the galaxy settings (game_setup/setup.gui)
+    SelectEmpire,
+    Creator,
+    GameSetup,
+}
+
+impl Screen {
+    /// One of the new game's screens (render.frontend_newgame): its name there.
+    pub fn newgame(self) -> Option<&'static str> {
+        match self {
+            Screen::SelectEmpire => Some("select"),
+            Screen::Creator => Some("creator"),
+            Screen::GameSetup => Some("setup"),
+            _ => None,
+        }
+    }
 }
 
 /// A save the load window lists.
@@ -454,6 +471,7 @@ impl App {
             Screen::Map => Context::Map,
             Screen::Menu => Context::Menu,
             Screen::Load => Context::Load,
+            Screen::SelectEmpire | Screen::Creator | Screen::GameSetup => Context::Setup,
         }
     }
 
@@ -1154,6 +1172,16 @@ impl App {
             }
         }
         let (w, h) = self.size;
+        if let Some(name) = self.screen.newgame() {
+            let l = gui::newgame(&self.runtime, w, h, name)?;
+            self.notes = vec![l.note.clone()];
+            if !l.missing.is_empty() {
+                self.notes.push(format!("sprites without a definition or texture: {}", l.missing.join(", ")));
+            }
+            gui::fonts(&self.runtime, &self.game_dir, &l.items, &mut self.fonts)?;
+            self.items = Some((key, l.items.clone()));
+            return Ok(l.items);
+        }
         let menu = gui::menu(&self.runtime, w, h, &self.version, self.screen == Screen::Load)?;
         self.notes = vec![menu.note.clone()];
         let mut items = menu.items;
@@ -1396,6 +1424,9 @@ impl App {
         self.log.push(format!("click: {path} -> {}", action.unwrap_or("no action")));
         match action {
             Some("exit") => self.exit = true,
+            // the main menu's New Game: the empire selection with a new setup (render.newgame_setup)
+            Some("new_game") => self.newgame_act("ng:open")?,
+            Some(a) if a.starts_with("ng:") || a.starts_with("creator:") => self.newgame_act(a)?,
             Some("open_load") => self.show(Screen::Load),
             Some("close_load") => self.show(Screen::Menu),
             Some(a) if a.starts_with("load:") => {
@@ -1566,6 +1597,34 @@ impl App {
         }
     }
 
+    /// An action of the new game's screens (render.frontend_newgame.act on the setup state
+    /// RENDER_NEWGAME): the screen it goes to, laid out again.
+    fn newgame_act(&mut self, action: &str) -> Result<(), String> {
+        let to = gui::newgame_act(&self.runtime, action, self.cursor.unwrap_or((0.0, 0.0)))?;
+        self.log.push(format!("new game: {action} -> {}", to.as_deref().unwrap_or("-")));
+        self.items = None;
+        self.scene = None;
+        match to.as_deref() {
+            Some("menu") => self.show(Screen::Menu),
+            Some("select") => self.show(Screen::SelectEmpire),
+            Some("creator") => self.show(Screen::Creator),
+            Some("setup") => self.show(Screen::GameSetup),
+            Some("play") => self.start_new_game()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Play on the galaxy settings: a new game from the setup state (RENDER_NEWGAME:
+    /// render.newgame_setup.settings gives engine.newgame's settings and the empire design).
+    /// The generation, the load screen and the map are session ng-start's: until then the
+    /// settings are logged and the screen stays.
+    pub fn start_new_game(&mut self) -> Result<(), String> {
+        let summary = gui::newgame_summary(&self.runtime)?;
+        self.log.push(format!("new game: start {summary} (not built yet)"));
+        Ok(())
+    }
+
     fn show(&mut self, screen: Screen) {
         self.screen = screen;
         self.hover = None;
@@ -1685,6 +1744,10 @@ impl App {
                 self.drag(None);
                 Ok(true)
             }
+            Effect::Zoom(n, _) if self.screen.newgame().is_some() => {
+                self.newgame_act(&format!("ng:wheel:{n}"))?;
+                Ok(true)
+            }
             Effect::Zoom(n, false) => {
                 self.wheel(n);
                 Ok(true)
@@ -1707,6 +1770,14 @@ impl App {
             (Action::Back, Screen::Load) => {
                 self.log.push(format!("escape: {:?} -> Menu", self.screen));
                 self.show(Screen::Menu);
+                Ok(true)
+            }
+            (Action::Back, s) if s.newgame().is_some() => {
+                self.newgame_act("ng:back")?;
+                Ok(true)
+            }
+            (Action::Accept, s) if s.newgame().is_some() => {
+                self.newgame_act("ng:accept")?;
                 Ok(true)
             }
             (Action::Continue, Screen::Menu) => {
