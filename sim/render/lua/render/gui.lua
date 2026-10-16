@@ -30,7 +30,8 @@ local ANCHOR = {
 
 -- element kinds drawn (lists, scrollbars, edit boxes are filled at run time: not drawn)
 local CONTAINERS = { containerwindowtype = true, windowtype = true, dropdownboxtype = true }
-local ICONS = { icontype = true, buttontype = true, effectbuttontype = true, guibuttontype = true }
+-- (a checkbox is a button whose frame is its state: the caller's opts.frames)
+local ICONS = { icontype = true, buttontype = true, effectbuttontype = true, guibuttontype = true, checkboxtype = true }
 local TEXTS = { instanttextboxtype = true, textboxtype = true }
 -- lists: laid out (their rectangle is recorded, for the rows the caller places) but not drawn
 local LISTS = { smoothlistboxtype = true, listboxtype = true, gridboxtype = true, overlappingelementsboxtype = true }
@@ -122,9 +123,9 @@ end
 --   opts.positions: element path -> { x, y } (a window at another of its places: hide_position)
 --   opts.sprites: element path -> sprite name (an icon the game sets at run time)
 --   opts.tints: element path -> { r, g, b, a } (a sprite coloured: the map labels' relation colour)
---   opts.textures: element path -> a texture file (an icon the game gives a file at run time:
---                  CIconBase::SetTextureFile, e.g. a civic's or an origin's icon), drawn in the
---                  element's sprite's frame size (the texture's own without a sprite)
+--   opts.progress: element path -> 0..1 (a progressbarType's state: progress.shader draws its
+--                 textureFile1 where u <= the state, its textureFile2 after; an item's `clip` is
+--                 the { u0, u1 } of its frame drawn, its rectangle cut the same)
 --   opts.parent: the rectangle the window is laid out in (else the screen)
 --   opts.prefix: a path prefix for the window's elements (else "")
 --   opts.texture_size(path) -> w, h (the renderer's: the texture's pixels)
@@ -164,12 +165,33 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
         return tw / math.max(1, s.frames), th
     end
 
-    local function sprite_item(path, name, frame, x, y, w, h, button)
+    local sprite_item
+    -- a progress bar at its state: its two textures, each over its part
+    local function progress_items(path, name, frame, x, y, w, h, button, p)
+        local s = db.sprites[name]
+        p = math.max(0, math.min(1, p))
+        local fw, fh = frame_size(name)
+        w, h = w or fw, h or fh
+        local first = sprite_item(path, name, frame, x, y, w, h, button, { 0, p }, true)
+        if s.texture2 and p < 1 then
+            local item = sprite_item(path .. "/empty", name, frame, x, y, w, h, nil, { p, 1 }, true)
+            if item then
+                item.texture = s.texture2
+            end
+        end
+        return first
+    end
+
+    function sprite_item(path, name, frame, x, y, w, h, button, clip, plain)
         name, frame = resolve(name, frame)
         local s = db.sprites[name]
         if not s or not s.texture then
             report.missing_sprites[#report.missing_sprites + 1] = tostring(name)
             return nil
+        end
+        local p = not plain and opts.progress and opts.progress[path]
+        if p and s.kind == "progressbarType" then
+            return progress_items(path, name, frame, x, y, w, h, button, p)
         end
         local fw, fh = frame_size(name)
         if not fw then
@@ -180,7 +202,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             kind = "sprite", path = path, sprite = name, texture = s.texture, sprite_kind = s.kind,
             frame = math.max(1, frame or 1), frames = s.frames, x = x, y = y, w = w or fw, h = h or fh,
             border = s.kind == "corneredTileSpriteType" and s.border or nil, button = button,
-            tint = opts.tints and opts.tints[path] or nil,
+            tint = opts.tints and opts.tints[path] or nil, clip = clip,
         }
         items[#items + 1] = item
         report.sprites = report.sprites + 1
@@ -202,7 +224,9 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                     spans[#spans + 1] = { text = s.text, colour = db.textcolors[s.colour or ""] or base }
                 elseif s.icon then
                     -- a text icon (£name£: GFX_text_<name>): "\1texture\1frames\1frame" for the renderer
-                    local sp = db.sprites["GFX_text_" .. s.icon]
+                    -- (a resource's icon has no GFX_text_ sprite: its GFX_resource_ one, as the
+                    -- game's frames show £food£ and £alloys£)
+                    local sp = db.sprites["GFX_text_" .. s.icon] or db.sprites["GFX_resource_" .. s.icon]
                     if sp and sp.sheet and db.sprites[sp.sheet] then
                         sp = { texture = db.sprites[sp.sheet].texture, frames = db.sprites[sp.sheet].frames, frame = sp.default_frame }
                     end
@@ -354,50 +378,23 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             end
         elseif ICONS[kind] then
             local button
-            local action = opts.actions and opts.actions[path]
-            -- an icon the game takes clicks on (opts.actions names it: a window made a button by
-            -- its code, as the left bar's CMainGuiLeftBarButton) is a button too
-            if (kind ~= "icontype" and field("alwaysTransparent") ~= "yes") or action then
-                button = { name = name, id = field("id"), action = action }
+            -- buttons, and an icon the game takes clicks on (opts.actions names it: the left
+            -- bar's view icons)
+            if (kind ~= "icontype" or (opts.actions and opts.actions[path])) and field("alwaysTransparent") ~= "yes" then
+                button = { name = name, id = field("id"), action = opts.actions and opts.actions[path] }
             end
-            local tex = opts.textures and opts.textures[path]
-            -- (an icon's definition may name a sprite instead of a file: the sprite)
-            if tex and db.sprites[tex] then
-                sprite, tex = tex, nil
-            end
-            if tex then
-                local tw, th = opts.texture_size(tex)
-                if tw then
-                    if w == 0 or h == 0 then
-                        w, h = tw * scale, th * scale
-                        report.rects[path] = { x = x, y = y, w = w, h = h }
-                    end
-                    items[#items + 1] = {
-                        kind = "sprite", path = path, sprite = tex, texture = tex, sprite_kind = "spriteType",
-                        frame = 1, frames = 1, x = x, y = y, w = w, h = h, button = button,
-                        tint = opts.tints and opts.tints[path] or nil,
-                    }
-                    report.sprites = report.sprites + 1
-                else
-                    report.missing_sprites[#report.missing_sprites + 1] = tex
-                end
-            elseif sprite then
+            if sprite then
                 sprite_item(path, sprite, frame, x, y, w, h, button)
             end
-            -- a button's text: buttonText, or its `text` (CButton reads either: government_view's
-            -- buttons have `text`, the game's frame shows it)
-            local bt = field("buttonText")
-            if (bt == nil or bt == "") and kind ~= "icontype" then
-                bt = field("text")
-            end
-            -- (or the text the game sets on it: a list header's expand button), in its `format`
-            -- (centred by default) within its borderSize
-            local text = opts.text and opts.text[path] or bt
-            if text and text ~= "" and kind ~= "icontype" then
-                local bs = field("borderSize")
-                local bx = type(bs) == "table" and number(get(bs, "x"), vars) or 0
-                text_item(path .. "/text", field("buttonFont") or field("font"), text, x + bx, y, w - 2 * bx, h,
-                    (field("format") or "center"):lower(), "center", field("text_color_code"))
+            -- its buttonText (or `text`: the galactic community's assign_button shows its
+            -- LEADER_ASSIGNMENT in the game's frame), or a text the game sets at run time
+            -- (CButton::SetText)
+            local bt = field("buttonText") or (kind ~= "icontype" and field("text") or nil)
+            local given = opts.text and opts.text[path]
+            if (bt and bt ~= "") or (given and kind ~= "icontype") then
+                local text = given or bt
+                text_item(path .. "/text", field("buttonFont") or field("font"), text, x, y, w, h, "center", "center",
+                    field("text_color_code"))
             end
         elseif TEXTS[kind] then
             local text = opts.text and opts.text[path]
@@ -405,14 +402,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                 text = field("text") or ""
             end
             local valign = field("vertical_alignment")
-            -- a box without fixedSize grows to fit its lines (the game's frames: the species
-            -- view's two-line names in a 30 high box); a fixed one cuts its text (the outliner's
-            -- names) [I: the rule read from the frames]
-            local th = h
-            if field("fixedSize") ~= "yes" and (valign == nil or valign:lower() == "top") then
-                th = h * 8
-            end
-            text_item(path, field("font"), tostring(text), x, y, w, th, field("format"),
+            text_item(path, field("font"), tostring(text), x, y, w, h, field("format"),
                 valign and valign:lower() or "top", field("text_color_code"))
         end
     end

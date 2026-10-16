@@ -12,7 +12,7 @@ struct Sky {
     up: vec4<f32>,
     // hue (in turns), saturation and value shifts; w: 1 YCoCg
     hsv_shift: vec4<f32>,
-    // x: 1 with a colour cube, y: the intel (1 known: the colours kept)
+    // x: 1 with a colour cube, y: the intel (1 known: the colours kept), z: 1 gamma-encoded
     flags: vec4<f32>,
 };
 
@@ -109,5 +109,9 @@ fn fs_sky(i: VsOut) -> @location(0) vec4<f32> {
     }
     let grey = dot(c, vec3<f32>(0.3, 0.59, 0.11));
     c = mix(vec3<f32>(grey), c, sky.flags.y);
+    // z: drawn into a target that is not sRGB, outside the HDR scene (an inset in the GUI)
+    if (sky.flags.z > 0.5) {
+        c = pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+    }
     return vec4<f32>(c, 0.0);
 }

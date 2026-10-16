@@ -199,10 +199,8 @@ function topbar.build(game_dir, db, screen, texture_size, state)
         hide = hide, text = text, texture_size = texture_size, frames = frames, actions = topbar.TIME_ACTIONS,
     }
     local items, report = gui.layout(game_dir, db, "interface/main.gui", "maingui", screen, opts)
-    -- the flag opens the government view (CMainGui::ToggleGovernmentView: ToggleTopBarView(14))
     local flag_items, flag_report = gui.layout(game_dir, db, "interface/main.gui", "maingui_flag", screen,
-        { hide = hide, text = {}, texture_size = texture_size,
-          actions = { ["/maingui_flag/button_topbar_government"] = "view:government" } })
+        { hide = hide, text = {}, texture_size = texture_size })
     -- the flag window's decoration is drawn under the bar's sprites, the empire's flag over them
     -- (the game's frame)
     local flag_button

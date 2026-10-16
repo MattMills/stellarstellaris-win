@@ -30,6 +30,8 @@ mod camera;
 mod clock;
 mod controls;
 mod dds;
+mod designer;
+mod diplomacy;
 mod effects;
 mod engine;
 mod flag;
@@ -37,10 +39,13 @@ mod math;
 mod models;
 mod particles;
 mod pdxmesh;
+mod planet;
 mod system;
 mod font;
 mod galaxy;
 mod galaxymap;
+mod outliner;
+mod mapicons;
 mod mapnames;
 mod gui;
 mod render;
@@ -203,11 +208,6 @@ impl Map {
 
     pub fn rt(&self) -> &Runtime {
         &self.runtime
-    }
-
-    /// Whether `runtime` holds the save's world (no simulation runs yet).
-    pub fn has_world(&self) -> bool {
-        self.world
     }
 
     /// The world's date (the simulation's once it has published).

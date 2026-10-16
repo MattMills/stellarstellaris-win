@@ -102,6 +102,14 @@ pub struct Galaxy {
     pub sectors: Vec<(u32, Name)>,
     /// the player's sectors' capital systems (sector id -> system id)
     pub sector_capitals: HashMap<u32, u32>,
+    /// the left bar's views' data: each lua/render/windows module's `extract` (views.rs)
+    pub views: HashMap<String, crate::views::Value>,
+    /// the outliner's and the observer outliner's view of the world (render.windows.outliner)
+    pub outliner_view: crate::outliner::LuaData,
+    /// what the map labels show (render.windows.mapicons: mapicons.rs)
+    pub mapicons: std::sync::Arc<crate::mapicons::Data>,
+    /// what the diplomacy windows show of the world: a Lua chunk (render.windows.diplomacy_data)
+    pub diplomacy: String,
 }
 
 impl Galaxy {
@@ -220,7 +228,7 @@ pub struct PlanetInfo {
 }
 
 /// The renderer's Lua directory (`sim/render/lua` under `runtime::repo_dir`), for `package.path`.
-fn lua_dir() -> String {
+pub(crate) fn lua_dir() -> String {
     stellar_sim::runtime::repo_dir().join("sim/render/lua").to_string_lossy().replace('\\', "/")
 }
 
@@ -381,6 +389,7 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
             });
         }
         Ok(Galaxy {
+            views: crate::views::extract(runtime, game_dir),
             date: g.get("date")?,
             systems,
             lanes,
@@ -413,6 +422,7 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                 None => None,
             },
             core_radius: g.get::<Option<f32>>("core_radius")?.unwrap_or(0.0),
+            mapicons: std::sync::Arc::new(crate::mapicons::read(g.get("mapicons")?)?),
             player: g.get::<Option<u32>>("player")?.unwrap_or(0),
             communications: g.get::<Option<Table>>("communications")?.map(|t| t.sequence_values::<u32>().collect::<mlua::Result<Vec<_>>>()).transpose()?,
             outliner: match g.get::<Option<Table>>("outliner")? {
@@ -454,6 +464,8 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                     .collect::<mlua::Result<_>>()?,
                 None => HashMap::new(),
             },
+            diplomacy: g.get::<Option<String>>("diplomacy")?.unwrap_or_default(),
+            outliner_view: crate::outliner::read_view(&g)?,
             alerts: match g.get::<Option<Table>>("alerts")? {
                 Some(t) => t
                     .sequence_values::<Table>()
