@@ -164,8 +164,17 @@ the fleets' health and the queues' bars too).
 Checked against the real game's load screens (loading a save in view mode, its Xvfb display
 captured every 0.2 s: /root/nlb/gcap.sh on .24) at 1600x900 and 1920x1080: the bar's frame at the
 same place (x 485..1094, top 785 at 1600x900; x 655..1264, top 965 at 1920x1080), the fill inside
-it from its left edge, the middle's frame and the end cap's light at the state. The other
-progress_startend bars follow the same shader and were not compared with game frames.
+it from its left edge, the middle's frame and the end cap's light at the state.
+
+The other bars the renderer draws do not take this path: the technology and traditions views'
+GFX_tech_research_progressbar has progress.shader; the fleet window's health, armour, shield and
+command limit bars are composed as `@bar:` textures (fleetwin.rs); the starbase build queue's bar
+has its own items (starbase.lua); the planet view's and the situations' bars are hidden. The
+planet (15), fleet (3), starbase (0), technology and traditions views of autosave_2210.01.01 are
+pixel for pixel the same with and without this change (master 0b73793 against it, .24
+/root/nlb/pb). (The starbase queue's GFX_queue_progressbar is a progress_startend sprite drawn
+whole by starbase.lua: when a save with a queued item is compared, it may want the same
+composition.)
 
 ## 7. The load screens' console (the renderer's, not the game's)
 
