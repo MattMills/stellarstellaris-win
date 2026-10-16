@@ -297,6 +297,10 @@ impl Textures {
         if let Some(&i) = self.index.get(path) {
             return Some(i);
         }
+        // a flag composed from its parts (flag::compose_spec)
+        if path.starts_with("@flag:") {
+            return crate::flag::compose_spec(cache, game_dir, path).map(|img| self.add(path, Arc::new(img)));
+        }
         match cache.get(game_dir, path) {
             Ok(img) => {
                 let img = img.clone();

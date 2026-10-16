@@ -379,6 +379,7 @@ map   press escape          back             [I] main_bottom.gui ESCAPE: the gam
 load  press escape          back             [R]
 map   press v               map_2d_3d        [R] the renderer's 2D map
 menu  press c               continue         [R]
+menu  click left            select           [V] a GUI button acts on the release over the button pressed (CButton)
 # the new game's screens (select_empire_design.gui, game_setup/setup.gui): a button's click, its
 # shortcuts, the lists' wheel
 setup click left            select           [V] a GUI button acts on the release over the button pressed

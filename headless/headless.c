@@ -2366,7 +2366,6 @@ static void step_days(void *gs, int days) {
 }
 
 static int g_frame_min = 10;
-static int g_frame_now;
 static double g_frame_wait = 2.0, g_frame_timeout = 30.0;
 
 // `frame`: from HEADLESS_FRAME_WAIT seconds (default 2: the GUI's fades, the camera's last

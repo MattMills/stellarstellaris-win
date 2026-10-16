@@ -41,8 +41,10 @@ local CONTAINERS = { containerwindowtype = true, windowtype = true, dropdownboxt
 -- states: checkboxType, expandButton)
 local ICONS = { icontype = true, buttontype = true, effectbuttontype = true, guibuttontype = true, checkboxtype = true, expandbutton = true }
 local TEXTS = { instanttextboxtype = true, textboxtype = true }
--- lists: laid out (their rectangle is recorded, for the rows the caller places) but not drawn
-local LISTS = { smoothlistboxtype = true, listboxtype = true, gridboxtype = true, overlappingelementsboxtype = true }
+-- lists: laid out (their rectangle is recorded, for the rows the caller places) but not drawn;
+-- edit boxes likewise (their text is the player's, drawn by the caller)
+local LISTS = { smoothlistboxtype = true, listboxtype = true, gridboxtype = true, overlappingelementsboxtype = true,
+    editboxtype = true }
 gui.CONTAINERS, gui.ICONS, gui.TEXTS, gui.LISTS = CONTAINERS, ICONS, TEXTS, LISTS
 
 local trees = {}   -- file -> tree, parsed once

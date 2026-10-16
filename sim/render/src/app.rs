@@ -1864,12 +1864,33 @@ impl App {
     /// Physical input (controls.rs): the bindings' effects carried out. `now_ms`: the input's
     /// time (a double click's). Whether something changed.
     pub fn input(&mut self, input: &Input, now_ms: f64) -> Result<bool, String> {
+        // the empire creator's text fields (render.newgame_creator): with one focused, a key
+        // typed goes to it (the game's CEditBox takes the keyboard), Shift giving capitals
+        if self.screen == Screen::Creator {
+            if let Input::Key { key, down: true, .. } = input {
+                if !matches!(key.as_str(), "shift" | "ctrl" | "alt") && self.creator_focused() {
+                    if let Some(a) = creator_key(key, self.controls.mods().shift) {
+                        self.newgame_act(&a)?;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
         let ctx = self.context();
         let mut changed = false;
         for e in self.controls.input(input, now_ms, ctx) {
             changed |= self.apply(e)?;
         }
         Ok(changed)
+    }
+
+    /// Whether a text field of the empire creator has the keyboard.
+    fn creator_focused(&self) -> bool {
+        self.runtime
+            .lua
+            .load("return RENDER_NEWGAME ~= nil and RENDER_NEWGAME.creator ~= nil and RENDER_NEWGAME.creator.focus ~= nil")
+            .eval::<bool>()
+            .unwrap_or(false)
     }
 
     /// An effect of the input.
@@ -2051,4 +2072,22 @@ pub fn si_number(v: f32) -> String {
     } else {
         format!("{s}{:.1}M", (a / 100_000.0).trunc() / 10.0)
     }
+}
+
+/// A key typed into the empire creator's focused field: its character (`creator:text:C`) or an
+/// editing key (`creator:key:NAME`); keys are named by their place on a US layout (controls.rs).
+fn creator_key(key: &str, shift: bool) -> Option<String> {
+    let c = match key {
+        "space" => " ".to_string(),
+        "minus" => if shift { "_" } else { "-" }.to_string(),
+        "apostrophe" => if shift { "\"" } else { "'" }.to_string(),
+        "period" => ".".to_string(),
+        "comma" => ",".to_string(),
+        "backspace" | "return" | "escape" | "tab" | "delete" => return Some(format!("creator:key:{key}")),
+        k if k.len() == 1 && k.chars().all(|c| c.is_ascii_alphanumeric()) => {
+            if shift { k.to_ascii_uppercase() } else { k.to_string() }
+        }
+        _ => return None,
+    };
+    Some(format!("creator:text:{c}"))
 }
