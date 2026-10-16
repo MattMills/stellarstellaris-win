@@ -82,17 +82,14 @@ function designer.extract(game_dir, country)
     end
     local coll = world.field(c, "ship_design_collection")
     data.auto_generate = world.field(coll or {}, "auto_gen_design") ~= "no"
-    for _, b in ipairs(world.fields(world.path(c, "tech_status") or {}, "technology")) do
-        data.techs[str(b)] = true
-    end
-    for _, b in ipairs(world.blocks(world.field(world.field(c, "tech_status") or {}, "technology"))) do
-        data.techs[str(world.field(b, "technology") or b)] = true
-    end
     -- tech_status = { technology = "x" level = 1 technology = "y" ... } as the save writes it
+    -- (world.statements: the world as tables or in its store)
     local ts = world.field(c, "tech_status")
-    for _, e in ipairs(type(ts) == "table" and ts or {}) do
-        if e.op and e.key and e.key.text == "technology" and e.value.text then
-            data.techs[str(e.value.text)] = true
+    if type(ts) == "table" then
+        for key, v in world.statements(ts) do
+            if key == "technology" and type(v) ~= "table" then
+                data.techs[str(v)] = true
+            end
         end
     end
     local system = require("render.system")
@@ -109,6 +106,7 @@ function designer.extract(game_dir, country)
                 role = str(world.field(d, "role")),
                 auto_gen = world.field(d, "auto_gen_design") == "yes",
                 upgrade = world.field(d, "upgrade_ship_components") == "yes",
+                culture = str(world.field(d, "graphical_culture")),
                 sections = {},
                 required = {},
             }
@@ -119,9 +117,9 @@ function designer.extract(game_dir, country)
                 end
                 design.sections[#design.sections + 1] = sec
             end
-            for _, e in ipairs(stage) do
-                if e.op and e.key and e.key.text == "required_component" and e.value.text then
-                    design.required[#design.required + 1] = str(e.value.text)
+            for key, v in world.statements(stage) do
+                if key == "required_component" and type(v) ~= "table" then
+                    design.required[#design.required + 1] = str(v)
                 end
             end
             data.designs[#data.designs + 1] = design
@@ -218,7 +216,7 @@ local function files(game_dir)
             end
         end
     end
-    local F = { sizes = {}, size_order = {}, sections = {}, components = {}, slot_templates = {}, weapons = {} }
+    local F = { sizes = {}, size_order = {}, sections = {}, components = {}, slot_templates = {}, weapons = {}, section_count = 0, component_count = 0 }
     -- ship sizes, in definition order
     each_definition(game_dir, "common/ship_sizes", globals, function(name, b, vars)
         local s = {
@@ -273,7 +271,15 @@ local function files(game_dir)
         if not key then
             return
         end
-        local sec = { key = key, entity = str(get(b, "entity")), cost = resources(b, "cost", vars), upkeep = resources(b, "upkeep", vars), slots = {} }
+        local sec = { key = key, entity = str(get(b, "entity")), cost = resources(b, "cost", vars), upkeep = resources(b, "upkeep", vars), slots = {},
+            size = str(get(b, "ship_size")), fits = str(get(b, "fits_on_slot")), order = F.section_count + 1, prerequisites = {} }
+        F.section_count = F.section_count + 1
+        local pre = get(b, "prerequisites")
+        for _, e in ipairs(type(pre) == "table" and pre or {}) do
+            if e.text then
+                sec.prerequisites[#sec.prerequisites + 1] = str(e.text)
+            end
+        end
         for _, e in ipairs(b) do
             if e.op and e.key and e.key.text == "component_slot" and type(e.value) == "table" then
                 local t = F.slot_templates[str(get(e.value, "template")) or ""] or {}
@@ -302,6 +308,21 @@ local function files(game_dir)
             modifier = modifier(get(b, "modifier"), vars),
             sensor = value(get(b, "sensor_range"), vars),
             set = str(get(b, "component_set")),
+            upgrades_to = str(get(b, "upgrades_to")),
+            prerequisites = (function()
+                local out = {}
+                local pre = get(b, "prerequisites")
+                for _, e in ipairs(type(pre) == "table" and pre or {}) do
+                    if e.text then
+                        out[#out + 1] = str(e.text)
+                    end
+                end
+                return out
+            end)(),
+            order = (function()
+                F.component_count = F.component_count + 1
+                return F.component_count
+            end)(),
         }
     end)
     -- the weapons' numbers (common/component_templates/weapon_components.csv)
@@ -480,7 +501,402 @@ local function inset(path, r)
     return { kind = "sprite", path = path, sprite = "", texture = "", sprite_kind = "inset", frame = 1, frames = 1, x = r.x, y = r.y, w = r.w, h = r.h }
 end
 
--- designer.build(ctx, data, state) -> items, report, insets = { [path] = design id }
+-- ------------------------------------------------------------------------------ the buttons
+
+-- The window's state between frames (in the GUI's runtime), as CShipDesignerBase keeps it
+-- (SDataUnderModification: the designs changed and not saved, each by the design it was loaded
+-- from, a new one as "new"): the design shown, the popup open (the size selector, the section
+-- selector, the component selector, a required component's templates, the roles, the save of an
+-- auto-generated design), the component selector's choice and filters, a request to the
+-- simulation waiting for its answer.
+local function fresh_ui()
+    return { works = {}, key = nil, current = nil, popup = nil, picked = nil, filter_size = true, hide_obsolete = true, pending = nil, buildable = {}, scroll = {}, rects = {}, extent = {} }
+end
+designer.ui = fresh_ui()
+
+-- designer.reset(): the window opened anew (Show: the designs under modification cleared when
+-- the owner changes [V 0x3190398]; here at each opening)
+function designer.reset()
+    designer.ui = fresh_ui()
+end
+
+local function deep(v)
+    if type(v) ~= "table" then
+        return v
+    end
+    local out = {}
+    for k, x in pairs(v) do
+        out[k] = deep(x)
+    end
+    return out
+end
+
+local function saved(data, id)
+    for _, d in ipairs(data and data.designs or {}) do
+        if d.id == id then
+            return d
+        end
+    end
+    return nil
+end
+
+-- the design shown: its working copy, else the saved one
+local function shown(data)
+    local ui = designer.ui
+    if ui.current == "new" then
+        return ui.works.new
+    end
+    return ui.current and (ui.works[ui.current] or saved(data, ui.current)) or nil
+end
+designer.shown = shown
+
+-- the design shown, as a working copy (made on its first change)
+local function work(data)
+    local ui = designer.ui
+    if ui.current == "new" then
+        return ui.works.new
+    end
+    if not ui.current then
+        return nil
+    end
+    if not ui.works[ui.current] then
+        local d = saved(data, ui.current)
+        if not d then
+            return nil
+        end
+        ui.works[ui.current] = deep(d)
+    end
+    return ui.works[ui.current]
+end
+
+local function section_of(d, slot)
+    for _, s in ipairs(d.sections) do
+        if s.slot == slot then
+            return s
+        end
+    end
+    return nil
+end
+
+local function researched(data, list)
+    for _, t in ipairs(list or {}) do
+        if not (data.techs and data.techs[t]) then
+            return false
+        end
+    end
+    return true
+end
+designer.researched = researched
+
+-- the components that fit a slot (its kind; its size with the filter on), the country can build
+-- (their prerequisites [I: `potential` not evaluated]), the obsolete ones hidden (one it can build
+-- upgrades them) with that filter, one per component set (its newest) [I], in definition order
+local function fitting(F, data, sl, filter_size, hide_obsolete, size)
+    -- the components the simulation says the country can build on the size (potential triggers
+    -- evaluated: designer_commands.buildable), else their prerequisites alone
+    local can = size and designer.ui.buildable[size]
+    local kinds = { weapon = "weapon_component_template", utility = "utility_component_template", strike_craft = "strike_craft_component_template" }
+    local want = kinds[sl.kind]
+    local by_set, out = {}, {}
+    for _, c in pairs(F.components) do
+        if c.kind == want and (not filter_size or c.size == sl.size) and (can and can[c.key] or (not can and researched(data, c.prerequisites))) then
+            local up = c.upgrades_to and F.components[c.upgrades_to]
+            local obsolete = up and researched(data, up.prerequisites)
+            if not (hide_obsolete and obsolete) then
+                local key = c.set or c.key
+                if not by_set[key] or by_set[key].order < c.order then
+                    by_set[key] = c
+                end
+            end
+        end
+    end
+    for _, c in pairs(by_set) do
+        out[#out + 1] = c
+    end
+    table.sort(out, function(a, b) return a.order < b.order end)
+    return out
+end
+designer.fitting = fitting
+
+local function q(v)
+    return string.format("%q", tostring(v))
+end
+
+local function sim(code)
+    return "sim:" .. code
+end
+
+local function dc_call(name, ...)
+    local args = {}
+    for i = 1, select("#", ...) do
+        local v = select(i, ...)
+        args[i] = type(v) == "string" and q(v) or tostring(v)
+    end
+    return "return require('render.windows.designer_commands')." .. name .. "(" .. table.concat(args, ", ") .. ")"
+end
+
+-- designer.act(action, data, game_dir) -> "" (the window laid out again), "sim:CODE" (CODE run in
+-- the simulation's runtime; its answer given to designer.done), "design:ID" / "design:none" (the
+-- design to show)
+function designer.act(action, data, game_dir)
+    local ui = designer.ui
+    local F = files(game_dir)
+    local a = action:gsub("^designer:ui:", "")
+    local parts = {}
+    for p in a:gmatch("[^:]+") do
+        parts[#parts + 1] = p
+    end
+    local verb = parts[1] or ""
+    local d = shown(data)
+    if verb == "popup_close" then
+        ui.popup = nil
+    elseif verb == "new" then
+        -- new_ship_design_entry: ShowShipSizeSelectDialog, the `selector` of sizes [V 0x31989c0]
+        ui.popup = { kind = "size" }
+    elseif verb == "new_size" and parts[2] then
+        -- CSelectorItemShipSize::OnClick (0x31a40a0): a design of the size with its growth stages
+        -- made and nothing in them (CShipDesign::CreateGrowthStages), loaded; its required
+        -- components the best (FixRequiredComponents [I]) and a name from the name list
+        -- (RandomizeName [I]): asked of the simulation
+        ui.popup = nil
+        ui.pending = { kind = "new", size = parts[2] }
+        return sim(dc_call("generate", data.country, parts[2], "", 0))
+    elseif verb == "delete" and tonumber(parts[2]) then
+        -- the entry's delete: CShipDesignerBase::Delete -> ConfirmedDelete
+        -- (CRemoveShipDesignCommand) [V names; the confirmation dialog not drawn here]
+        local id = tonumber(parts[2])
+        ui.works[id] = nil
+        ui.pending = { kind = "delete", id = id }
+        return sim(dc_call("delete", data.country, id))
+    elseif verb == "auto" then
+        -- auto_design: ToggleAutoDesign (the country's auto-generation of designs)
+        ui.pending = { kind = "auto" }
+        return sim(dc_call("auto_generate", data.country, data.auto_generate and "0" or "1"))
+    elseif not d then
+        return ""
+    elseif verb == "upgrade" then
+        -- upgrade_ship_components: AutoUpgradeComponents (the design's flag)
+        local w = work(data)
+        w.upgrade = not w.upgrade
+        w.dirty = true
+    elseif verb == "clear" then
+        -- clear_button: ClearDesignComponents (the sections' components cleared) [I: the sections and
+        -- the required components kept]
+        local w = work(data)
+        for _, s in ipairs(w.sections) do
+            s.components = {}
+        end
+        w.dirty = true
+    elseif verb == "complete" then
+        -- complete_button: Finish (every empty section and slot filled with the best: the AI
+        -- designer's choice for the size and the design's role) [I]
+        ui.pending = { kind = "complete" }
+        return sim(dc_call("generate", data.country, d.size, d.role or "", 0))
+    elseif verb == "randomize" then
+        -- randomize_name: RandomizeName (a name of the size from the name list)
+        ui.pending = { kind = "name" }
+        return sim(dc_call("name", data.country, d.size, math.random(0, 9999)))
+    elseif verb == "roles" then
+        -- choose_role: CShipRoleSelectionView::Show (the size's roles; disabled without any)
+        local size = F.sizes[d.size]
+        if size and #size.roles > 0 then
+            ui.popup = { kind = "role" }
+        end
+    elseif verb == "role" and parts[2] then
+        -- a role chosen: GenerateDesignOfRole (the design made anew for it)
+        ui.popup = nil
+        ui.pending = { kind = "role", role = parts[2] }
+        return sim(dc_call("generate", data.country, d.size, parts[2], 0))
+    elseif verb == "section" and tonumber(parts[2]) then
+        -- change_section: ShowSectionSelectDialog (the sections of the size that fit the slot)
+        ui.popup = { kind = "section", index = tonumber(parts[2]) }
+    elseif verb == "set_section" and tonumber(parts[2]) and parts[3] then
+        -- CSectionSelector::ItemClicked: SetSectionTemplateOnSlot; the components of the slots the
+        -- new section has too kept [I]
+        local w = work(data)
+        local size = F.sizes[w.size]
+        local slot = size and size.slots[tonumber(parts[2])]
+        local tpl = F.sections[parts[3]]
+        if slot and tpl then
+            local old = section_of(w, slot)
+            local keep = {}
+            for _, sl in ipairs(tpl.slots) do
+                keep[sl.name] = old and old.components[sl.name] or nil
+            end
+            if old then
+                old.template, old.components = parts[3], keep
+            else
+                w.sections[#w.sections + 1] = { template = parts[3], slot = slot, components = keep }
+            end
+            w.dirty = true
+        end
+        ui.popup = nil
+    elseif (verb == "filter_size" or verb == "filter_obsolete") then
+        ui.scroll.component = 0
+        if verb == "filter_size" then
+            ui.filter_size = not ui.filter_size
+        else
+            ui.hide_obsolete = not ui.hide_obsolete
+        end
+    elseif verb == "slot" and tonumber(parts[2]) and parts[3] then
+        -- a slot: ShowComponentSelectDialog (the component selector for the slot); the components
+        -- the country can build on the size asked of the simulation once
+        ui.popup = { kind = "component", index = tonumber(parts[2]), slot = parts[3] }
+        ui.scroll.component = 0
+        if not ui.buildable[d.size] then
+            ui.pending = { kind = "buildable", size = d.size }
+            return sim(dc_call("buildable", data.country, d.size))
+        end
+    elseif verb == "set_comp" and parts[2] and ui.popup and ui.popup.kind == "component" then
+        -- a component chosen: SetComponentOnSlot (the slot clicked), kept as the selected one
+        -- (Fill Empty)
+        local w = work(data)
+        local size = F.sizes[w.size]
+        local s = size and section_of(w, size.slots[ui.popup.index] or "")
+        if s then
+            s.components[ui.popup.slot] = parts[2]
+            w.dirty = true
+        end
+        ui.picked = parts[2]
+    elseif verb == "fill" and ui.picked then
+        -- apply_on_empty: ApplySelectedElementOnAllEmptySlots (every empty slot it fits)
+        local w = work(data)
+        local c = F.components[ui.picked]
+        for _, s in ipairs(w.sections) do
+            for _, sl in ipairs((F.sections[s.template] or { slots = {} }).slots) do
+                if not s.components[sl.name] and c then
+                    for _, f in ipairs(fitting(F, data, sl, true, false, w.size)) do
+                        if f.key == c.key then
+                            s.components[sl.name] = c.key
+                        end
+                    end
+                end
+            end
+        end
+        w.dirty = true
+    elseif verb == "required" and tonumber(parts[2]) then
+        -- show_templates_button: the entry's list of the set's components (CRequiredComponentEntry::Open)
+        local i = tonumber(parts[2])
+        if ui.popup and ui.popup.kind == "required" and ui.popup.index == i then
+            ui.popup = nil
+        else
+            ui.popup = { kind = "required", index = i }
+            if not ui.buildable[d.size] then
+                ui.pending = { kind = "buildable", size = d.size }
+                return sim(dc_call("buildable", data.country, d.size))
+            end
+        end
+    elseif verb == "set_req" and tonumber(parts[2]) and parts[3] then
+        -- SetRequiredComponent: the set's component replaced
+        local w = work(data)
+        local size = F.sizes[w.size]
+        local set = size and size.required[tonumber(parts[2])]
+        local done = false
+        for k, t in ipairs(w.required) do
+            if (F.components[t] or {}).set == set then
+                w.required[k], done = parts[3], true
+            end
+        end
+        if not done then
+            w.required[#w.required + 1] = parts[3]
+        end
+        w.dirty = true
+        ui.popup = nil
+    elseif verb == "save" or verb == "save_confirm" then
+        -- save_button: Save -> ConfirmedSave (CCreateOrUpdateShipDesignCommand); an auto-generated
+        -- design asks first (`rename_autogen`: saved, it is no longer auto-generated) [V names]
+        if d.auto_gen and verb == "save" and not d.new then
+            ui.popup = { kind = "autogen" }
+            return ""
+        end
+        ui.popup = nil
+        local stage = { size = d.size, sections = d.sections, required = d.required }
+        ui.pending = { kind = "save", key = ui.current }
+        return sim(dc_call("save", data.country, d.new and 0 or (d.id or 0), designer.serialize(stage), d.name_key or "", d.role or "", d.upgrade and "yes" or "no"))
+    end
+    return ""
+end
+
+-- designer.done(answer, data, game_dir) -> as designer.act: what the simulation answered
+function designer.done(answer, data, game_dir)
+    local ui = designer.ui
+    local p = ui.pending
+    ui.pending = nil
+    if not p or type(answer) ~= "string" then
+        return ""
+    end
+    local ok = answer:match("^ok (.*)$")
+    local changed = answer:match("^changed ?(.*)$")
+    local F = files(game_dir)
+    if p.kind == "buildable" and ok then
+        ui.buildable[p.size] = load("return " .. ok)()
+    elseif p.kind == "new" and ok then
+        local stage = load("return " .. ok)()
+        ui.works.new = {
+            new = true, size = p.size, culture = (data.designs[1] or {}).culture, role = "", upgrade = true, auto_gen = false, sections = {},
+            required = stage.required or {}, name = { key = p.size, vars = {} }, dirty = true,
+        }
+        ui.current = "new"
+        ui.pending = { kind = "name" }
+        return sim(dc_call("name", data.country, p.size, math.random(0, 9999)))
+    elseif p.kind == "name" and ok then
+        local w = work(data)
+        if w then
+            w.name, w.name_key, w.dirty = { key = ok, vars = {} }, ok, true
+        end
+    elseif p.kind == "complete" and ok then
+        local g = load("return " .. ok)()
+        local w = work(data)
+        for _, gs in ipairs(g.sections or {}) do
+            local s = section_of(w, gs.slot)
+            if not s then
+                w.sections[#w.sections + 1] = deep(gs)
+            elseif s.template == gs.template then
+                for slot, t in pairs(gs.components) do
+                    s.components[slot] = s.components[slot] or t
+                end
+            else
+                -- another section: its empty slots get the newest component that fits [I]
+                for _, sl in ipairs((F.sections[s.template] or { slots = {} }).slots) do
+                    if not s.components[sl.name] then
+                        local best = fitting(F, data, sl, true, true, w.size)
+                        s.components[sl.name] = best[#best] and best[#best].key or nil
+                    end
+                end
+            end
+        end
+        local sets = {}
+        for _, t in ipairs(w.required) do
+            sets[(F.components[t] or {}).set or t] = true
+        end
+        for _, t in ipairs(g.required or {}) do
+            if not sets[(F.components[t] or {}).set or t] then
+                w.required[#w.required + 1] = t
+            end
+        end
+        w.dirty = true
+    elseif p.kind == "role" and ok then
+        local g = load("return " .. ok)()
+        local w = work(data)
+        w.sections, w.required, w.role, w.dirty = g.sections or {}, g.required or {}, p.role, true
+    elseif p.kind == "save" and changed then
+        local id = tonumber(changed)
+        if p.key then
+            ui.works[p.key] = nil
+        end
+        ui.current = id
+        return id and ("design:" .. id) or "design:none"
+    elseif p.kind == "delete" and changed then
+        if ui.current == p.id then
+            ui.current = nil
+            return "design:none"
+        end
+    end
+    return ""
+end
+
+-- designer.build(ctx, data, state) -> items, report, insets = { [path] = design id (-1: the
+-- design under modification, designer.stage) }
 function designer.build(ctx, data, state)
     state = state or {}
     local F = files(ctx.game_dir)
@@ -491,7 +907,7 @@ function designer.build(ctx, data, state)
     -- render targets, drawn as insets instead
     local function lay(window, opts)
         opts.texture_size, opts.loc = ctx.texture_size, ctx.loc
-        local i, r = gui.layout(ctx.game_dir, ctx.db, FILE, window, ctx.screen, opts)
+        local i, r = gui.layout(ctx.game_dir, ctx.db, opts.file or FILE, window, ctx.screen, opts)
         if opts.drop then
             local kept = {}
             for _, it in ipairs(i) do
@@ -504,12 +920,17 @@ function designer.build(ctx, data, state)
         gui.merge(items, report, i, r)
         return r
     end
-    local design
-    for _, d in ipairs(data.designs) do
-        if d.id == state.design then
-            design = d
-        end
+    designer.ui.rects = {}
+    -- the design shown: the one the window was given (a click in the list, `open_designer design
+    -- ID`, the ship view's Open Designer), or the one made here (a new design), as modified
+    local ui = designer.ui
+    if state.design ~= ui.key then
+        ui.key, ui.current, ui.popup = state.design, state.design, nil
     end
+    data.designs = data.designs or {}
+    data.techs = data.techs or {}
+    data.models = data.models or {}
+    local design = shown(data)
     local P = "/ship_designer"
 
     -- the frame: Setup's tabs, the 3D view (the ship's), the help texts and controls by the design
@@ -559,14 +980,25 @@ function designer.build(ctx, data, state)
         -- info_mecship_pos and info_background_mecship_size) [V]; else where the .gui has it
         positions = design and { [P .. "/info"] = { 1098 - 1272, 40 } } or nil,
         sizes = design and { [P .. "/info/info_bg_box"] = { 244, 485 } } or nil,
-        actions = { [P .. "/close"] = "designer:close", [P .. "/fleet_manager_tab"] = "designer:close" },
+        -- the buttons (CShipDesignerBase::Setup's observers [V 0x318e2e0]); the creature
+        -- designer's tab is disabled without artificial breeding (its own window not done)
+        actions = {
+            [P .. "/close"] = "designer:close", [P .. "/fleet_manager_tab"] = "designer:fleet_manager",
+            [P .. "/auto_design"] = "designer:ui:auto",
+            [P .. "/controls/randomize_name"] = "designer:ui:randomize",
+            [P .. "/controls/choose_role"] = "designer:ui:roles",
+            [P .. "/controls/controls_bottom/clear_button"] = "designer:ui:clear",
+            [P .. "/controls/controls_bottom/complete_button"] = "designer:ui:complete",
+            [P .. "/controls/controls_bottom/save_button"] = "designer:ui:save",
+            [P .. "/controls/controls_bottom/upgrade_ship_components"] = "designer:ui:upgrade",
+        },
     })
     local win = r.rects[P]
     -- the 3D view: 3d_view at its place, ship_designer_3d_view_size (740 x 584) [V 0x318e370]
     -- (with no design the viewer still draws its background)
     local v = r.rects[P .. "/3d_view"]
     if v then
-        local id = design and data.models[design.id] and design.id or 0
+        local id = design and ((design.dirty or design.new) and -1 or (data.models[design.id] and design.id)) or 0
         local path = "/designer/3d_view/" .. id
         items[#items + 1] = inset(path, { x = v.x, y = v.y, w = 740, h = 584 })
         insets[path] = id
@@ -585,12 +1017,17 @@ function designer.build(ctx, data, state)
     -- the designs list
     local list = r.rects[P .. "/designs_list"]
     if list then
-        local y = list.y
+        -- scrolled by the wheel (designer.wheel): what starts above the list's top is not drawn
+        ui.rects.designs = list
+        local y = list.y - (ui.scroll.designs or 0)
         local bottom = list.y + list.h
-        lay("new_ship_design_entry", {
-            prefix = "/designer/list/new", parent = { x = list.x, y = y, w = 0, h = 0 },
-            text = { ["/designer/list/new/new_ship_design_entry/label"] = "NEW_DESIGN" },
-        })
+        if y >= list.y then
+            lay("new_ship_design_entry", {
+                prefix = "/designer/list/new", parent = { x = list.x, y = y, w = 0, h = 0 },
+                text = { ["/designer/list/new/new_ship_design_entry/label"] = "NEW_DESIGN" },
+                actions = { ["/designer/list/new/new_ship_design_entry/button"] = "designer:ui:new" },
+            })
+        end
         y = y + 90
         -- the designs the country can build: a designable size, its prerequisites researched [I:
         -- CanCountryBuildPotential's potential triggers not evaluated], by size order (stable)
@@ -620,6 +1057,9 @@ function designer.build(ctx, data, state)
             if y >= bottom then
                 break
             end
+            if d.size ~= last and y < list.y then
+                y, last = y + 18, d.size
+            end
             if d.size ~= last then
                 local hp = "/designer/list/h" .. d.id
                 lay("ship_design_header_entry", {
@@ -631,9 +1071,11 @@ function designer.build(ctx, data, state)
             end
             local ep = "/designer/list/" .. d.id
             local e = ep .. "/ship_design_entry"
-            local ehide = { delete = true, icons = true }
+            if y >= list.y then
+            -- delete: the game shows it under the mouse (PerFrameUpdate); here on the design shown [I]
+            local ehide = { icons = true }
             if not (design and design.id == d.id) then
-                ehide.selected = true
+                ehide.selected, ehide.delete = true, true
             end
             if not d.auto_gen then
                 ehide.auto_gen = true
@@ -645,7 +1087,7 @@ function designer.build(ctx, data, state)
                     [e .. "/label"] = fmt_name(ctx, d.name),
                     [e .. "/auto_gen"] = data.auto_generate and "AUTO_GENERATED_BEST" or "AUTO_GENERATED_STANDARD",
                 },
-                actions = { [e .. "/button"] = "designer:design:" .. d.id },
+                actions = { [e .. "/button"] = "designer:design:" .. d.id, [e .. "/delete"] = "designer:ui:delete:" .. d.id },
             })
             -- its 3D view (render_target: the design's entity) under the label
             local rt = er.rects[e .. "/render_target"]
@@ -662,11 +1104,14 @@ function designer.build(ctx, data, state)
                 table.insert(items, at, inset(path, rt))
                 insets[path] = d.id
             end
+            end
             y = y + 91
         end
+        ui.extent.designs = math.max(0, (#shown > 0 and 0 or 0) + y + (ui.scroll.designs or 0) - list.y - list.h)
     end
 
     if not design then
+        designer.popups(ctx, data, nil, lay, items, report, insets, r)
         return items, report, insets
     end
 
@@ -738,7 +1183,10 @@ function designer.build(ctx, data, state)
             if sec then
                 shide.is_empty = true
             end
-            local sr = lay("section_instance_entry", { prefix = sp, parent = { x = sx, y = sy, w = 0, h = 0 }, hide = shide })
+            local sr = lay("section_instance_entry", {
+                prefix = sp, parent = { x = sx, y = sy, w = 0, h = 0 }, hide = shide,
+                actions = { [e .. "/change_section"] = "designer:ui:section:" .. i },
+            })
             -- the section's name on change_section (CSectionTemplate::GetName: its key localised),
             -- NO_SECTION for an empty slot [V 0x31809e0]
             local cs = sr.rects[e .. "/change_section"]
@@ -785,7 +1233,16 @@ function designer.build(ctx, data, state)
                     local cp = sp .. "/" .. (from_bottom and "u" or "w") .. k
                     local c = cp .. "/component_slot"
                     local sl = slots[k]
-                    local opts = { prefix = cp, parent = { x = cx, y = cy, w = 0, h = 0 }, hide = { deselect = true, allowed = true }, frames = {}, sprites = {} }
+                    local opts = { prefix = cp, parent = { x = cx, y = cy, w = 0, h = 0 }, hide = { deselect = true, allowed = true }, frames = {}, sprites = {}, actions = {} }
+                    -- the slot clicked: the component selector for it; the slot selected shows
+                    -- its `deselect` mark [I]
+                    if sl then
+                        opts.actions[c .. "/component_slot_button"] = "designer:ui:slot:" .. i .. ":" .. sl.name
+                        local pp = ui.popup
+                        if pp and pp.kind == "component" and pp.index == i and pp.slot == sl.name then
+                            opts.hide.deselect = nil
+                        end
+                    end
                     -- the cell's own position (22, -5) is the box's; the grid places it [I]
                     opts.positions = { [c] = { 0, 0 } }
                     if sl then
@@ -833,7 +1290,8 @@ function designer.build(ctx, data, state)
             end
             local rp = "/designer/required/" .. i
             local e = rp .. "/required_component_entry"
-            local opts = { prefix = rp, parent = { x = x, y = y + (i - 1) * 60, w = 0, h = 0 }, hide = { list = true }, sprites = {}, frames = {} }
+            local opts = { prefix = rp, parent = { x = x, y = y + (i - 1) * 60, w = 0, h = 0 }, hide = { list = true }, sprites = {}, frames = {},
+                actions = { [e .. "/show_templates_button"] = "designer:ui:required:" .. i } }
             if chosen and chosen.icon then
                 opts.sprites[e .. "/component_icon"] = chosen.icon
                 opts.frames[e .. "/component_icon"] = chosen.icon_frame
@@ -841,7 +1299,306 @@ function designer.build(ctx, data, state)
             lay("required_component_entry", opts)
         end
     end
+    designer.popups(ctx, data, design, lay, items, report, insets, r)
     return items, report, insets
+end
+
+
+-- the size's roles' icon (GFX_role_<role>, else the brawler's) [I]
+local function role_icon(ctx, role)
+    return ctx.db.sprites["GFX_role_" .. role] and ("GFX_role_" .. role) or "GFX_role_brawler"
+end
+
+-- the slot sizes' frames of GFX_component_slot_icons (component_set_entry's icons: pd 1, small 2,
+-- medium 3, large 4, torpedo 5, extra large 6, titanic 7, planet killer 8, engulf 9, aux 10,
+-- strike craft 12)
+local SLOT_ICON = { point_defence = 1, small = 2, medium = 3, large = 4, torpedo = 5, extra_large = 6, titanic = 7, planet_killer = 8, aux = 10 }
+
+-- designer.popups(...): the popup open over the window (designer.ui.popup), its entries' clicks
+function designer.popups(ctx, data, design, lay, items, report, insets, r)
+    local ui = designer.ui
+    local pp = ui.popup
+    if not pp then
+        return
+    end
+    local F = files(ctx.game_dir)
+    local P = "/ship_designer"
+    local win = r.rects[P]
+    local function text_item(path, text, x, y, w, h, format)
+        items[#items + 1] = {
+            kind = "text", path = path, font = "cg_16b", text = text,
+            spans = { { text = text, colour = ctx.db.textcolors[""] or { 1, 1, 1 } } },
+            x = x, y = y, w = w, h = h, format = format or "left", valign = "center",
+        }
+        report.texts = report.texts + 1
+    end
+    if pp.kind == "size" then
+        -- the `selector` (CShipSelector::Update 0x31a00a0): a selector_item per ship size the country
+        -- can build (NUtil::CanBuildShipOfSize: a designable size, its prerequisites [I]), three a row
+        local wr = lay("selector", {
+            text = { ["/selector/title"] = "NEW_DESIGN" },
+            actions = { ["/selector/close"] = "designer:ui:popup_close" },
+        })
+        local grid = wr.rects["/selector/ship_grid_window/ship_sizes_grid"]
+        if grid then
+            local k = 0
+            for _, name in ipairs(F.size_order) do
+                local s = F.sizes[name]
+                if s and s.designable and #s.slots > 0 and researched(data, s.prerequisites) then
+                    local x, y = grid.x + (k % 3) * 269, grid.y + math.floor(k / 3) * 144
+                    if y + 139 <= grid.y + grid.h then
+                        local pfx = "/designer/size/" .. name
+                        local e = pfx .. "/selector_item"
+                        lay("selector_item", {
+                            prefix = pfx, parent = { x = x, y = y, w = 0, h = 0 }, hide = { selected = true },
+                            text = { [e .. "/title"] = size_name(ctx, name) },
+                            actions = { [e .. "/choose_ship_type_button"] = "designer:ui:new_size:" .. name },
+                        })
+                    end
+                    k = k + 1
+                end
+            end
+        end
+        return
+    end
+    if not design then
+        return
+    end
+    local size = F.sizes[design.size]
+    if pp.kind == "role" and size then
+        -- select_ship_role (CShipRoleSelectionView): a ship_role_entry per role of the size, four a
+        -- row (158 x 256, 24 apart), the window as wide as they are; the role chosen selected
+        local n = #size.roles
+        local cols = math.min(4, n)
+        local w = math.max(500, 12 + cols * 182 + 12)
+        local h = 50 + math.ceil(n / 4) * 280 + 12
+        local wr = lay("select_ship_role", {
+            sizes = { ["/select_ship_role"] = { w, h } },
+            positions = { ["/select_ship_role/close_button"] = { w - 41, 9 } },
+            actions = { ["/select_ship_role/close_button"] = "designer:ui:popup_close" },
+            file = "interface/ship_designer_role_selection.gui",
+        })
+        local box = wr.rects["/select_ship_role/ship_roles_container"]
+        for k, role in ipairs(size.roles) do
+            if box then
+                local x, y = box.x + ((k - 1) % 4) * 182, box.y + math.floor((k - 1) / 4) * 280
+                local pfx = "/designer/role/" .. role
+                local e = pfx .. "/ship_role_entry"
+                lay("ship_role_entry", {
+                    prefix = pfx, parent = { x = x, y = y, w = 0, h = 0 },
+                    hide = { selected_overlay = role ~= design.role or nil },
+                    sprites = { [e .. "/role_icon"] = role_icon(ctx, role) },
+                    text = { [e .. "/role_name"] = role },
+                    actions = { [e .. "/select_role_button"] = "designer:ui:role:" .. role },
+                    file = "interface/ship_designer_role_selection.gui",
+                })
+            end
+        end
+    elseif pp.kind == "section" and size then
+        -- section_select_window (CSectionSelector): the sections of the size that fit the slot and
+        -- the country can build, in definition order, two a row (section_entries_per_row), each its
+        -- name and its weapon and utility slots by size (section_component_slot_entry); a click
+        -- puts it on the slot (ItemClicked)
+        local slot = size.slots[pp.index]
+        local wr = lay("section_select_window", { actions = { ["/section_select_window/close"] = "designer:ui:popup_close" } })
+        local list = wr.rects["/section_select_window/list"]
+        local secs = {}
+        for _, sec in pairs(F.sections) do
+            if sec.size == design.size and (sec.fits == nil or sec.fits == slot) and researched(data, sec.prerequisites) then
+                secs[#secs + 1] = sec
+            end
+        end
+        table.sort(secs, function(a, b) return a.order < b.order end)
+        if list then
+            ui.rects.section = list
+            ui.extent.section = math.max(0, math.ceil(#secs / 2) * 275 - list.h)
+        end
+        for k, sec in ipairs(secs) do
+            if list then
+                local x, y = list.x + ((k - 1) % 2) * 278, list.y + math.floor((k - 1) / 2) * 275 - (ui.scroll.section or 0)
+                if y >= list.y and y + 275 <= list.y + list.h + 1 then
+                    local pfx = "/designer/sections/" .. sec.key
+                    local e = pfx .. "/section_entry"
+                    local er = lay("section_entry", {
+                        prefix = pfx, parent = { x = x, y = y, w = 0, h = 0 },
+                        text = { [e .. "/name"] = sec.key },
+                        actions = { [e .. "/render_target"] = "designer:ui:set_section:" .. pp.index .. ":" .. sec.key },
+                    })
+                    for _, kind in ipairs({ "weapon", "utility" }) do
+                        local box = er.rects[e .. "/" .. kind .. "_slots"]
+                        local count, order = {}, {}
+                        for _, sl in ipairs(sec.slots) do
+                            if sl.kind == kind or (kind == "weapon" and sl.kind == "strike_craft") then
+                                if not count[sl.size] then
+                                    order[#order + 1] = sl.size
+                                end
+                                count[sl.size] = (count[sl.size] or 0) + 1
+                            end
+                        end
+                        if box then
+                            local bx = box.x + (box.w - #order * 48) / 2
+                            for j, sz in ipairs(order) do
+                                local cp = e .. "/" .. kind .. "/" .. sz
+                                lay("section_component_slot_entry", {
+                                    prefix = cp, parent = { x = bx + (j - 1) * 48, y = box.y + 7, w = 0, h = 0 },
+                                    frames = { [cp .. "/section_component_slot_entry/icon"] = SLOT_ICON[sz] or 2 },
+                                    text = { [cp .. "/section_component_slot_entry/count"] = tostring(count[sz]) },
+                                })
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    elseif pp.kind == "component" and size and win then
+        -- component_select_window (CComponentSelector), over the designs list [I: its place]: the
+        -- components that fit the slot (the filters: its slot size, obsolete ones hidden), a
+        -- component_set_entry each; a click puts it on the slot; Fill Empty puts the one chosen on
+        -- every empty slot it fits
+        local sec
+        for _, s in ipairs(design.sections) do
+            if s.slot == size.slots[pp.index] then
+                sec = s
+            end
+        end
+        local sl
+        for _, x in ipairs(sec and (F.sections[sec.template] or { slots = {} }).slots or {}) do
+            if x.name == pp.slot then
+                sl = x
+            end
+        end
+        if not sl then
+            ui.popup = nil
+            return
+        end
+        local W = "/component_select_window"
+        local wr = lay("component_select_window", {
+            parent = { x = win.x, y = win.y, w = 0, h = 0 },
+            frames = {
+                [W .. "/filter_slot_size"] = ui.filter_size and 2 or 1,
+                [W .. "/filter_obsolete"] = ui.hide_obsolete and 2 or 1,
+                [W .. "/current_filter_slot_size"] = SLOT_ICON[sl.size] or 2,
+            },
+            actions = {
+                [W .. "/close"] = "designer:ui:popup_close", [W .. "/apply_on_empty"] = "designer:ui:fill",
+                [W .. "/filter_slot_size"] = "designer:ui:filter_size", [W .. "/filter_obsolete"] = "designer:ui:filter_obsolete",
+            },
+        })
+        local list = wr.rects[W .. "/list"]
+        local current = sec.components[sl.name]
+        local fits = fitting(F, data, sl, ui.filter_size, ui.hide_obsolete, design.size)
+        if list then
+            ui.rects.component = list
+            ui.extent.component = math.max(0, #fits * 66 - list.h)
+        end
+        for k, c in ipairs(fits) do
+            if list then
+                local y = list.y + (k - 1) * 66 - (ui.scroll.component or 0)
+                if y >= list.y and y + 60 <= list.y + list.h then
+                    local pfx = "/designer/components/" .. c.key
+                    local e = pfx .. "/component_set_entry"
+                    local hide = { unique_mutation_icon = true }
+                    for nm in pairs({ pd_icon = 1, small_icon = 1, medium_icon = 1, large_icon = 1, torpedo_icon = 1, extra_large_icon = 1, titanic_icon = 1, planet_killer_icon = 1, engulf_icon = 1, aux_icon = 1, strike_craft_icon = 1 }) do
+                        hide[nm] = true
+                    end
+                    local shown_icon = ({ point_defence = "pd_icon", small = "small_icon", medium = "medium_icon", large = "large_icon", torpedo = "torpedo_icon", extra_large = "extra_large_icon", titanic = "titanic_icon", planet_killer = "planet_killer_icon", aux = "aux_icon" })[c.size or ""]
+                    if shown_icon then
+                        hide[shown_icon] = nil
+                    end
+                    if c.key ~= current and c.key ~= ui.picked then
+                        hide.selected_overlay = true
+                    end
+                    local w = F.weapons[c.key]
+                    local power = w and w.power or c.power
+                    local stats = (power ~= 0 and ("£ship_stats_power£" .. string.format("%d", power) .. " ") or "") .. resource_string(ctx, next(c.cost) and c.cost or (w and { alloys = w.cost } or {}))
+                    lay("component_set_entry", {
+                        prefix = pfx, parent = { x = list.x + 5, y = y + 4, w = 0, h = 0 }, hide = hide,
+                        sprites = c.icon and { [e .. "/icon"] = c.icon } or nil,
+                        frames = { [e .. "/icon"] = c.icon_frame },
+                        text = { [e .. "/name"] = c.key, [e .. "/stats"] = stats },
+                        actions = { [e .. "/component_entry_bg"] = "designer:ui:set_comp:" .. c.key },
+                    })
+                end
+            end
+        end
+    elseif pp.kind == "required" and size and win then
+        -- the required component entry's `list` (LOWER_RIGHT, from x -60): the set's components the
+        -- country can build, leftward [I]; a click sets it (SetRequiredComponent)
+        local n = #size.required
+        local x0, y0 = win.x + 945, win.y + 374 - n * 60 / 2 + (pp.index - 1) * 60
+        local set = size.required[pp.index]
+        local list = {}
+        local can = ui.buildable[design.size]
+        for _, c in pairs(F.components) do
+            if c.set == set and (can and can[c.key] or (not can and researched(data, c.prerequisites))) then
+                list[#list + 1] = c
+            end
+        end
+        table.sort(list, function(a, b) return a.order < b.order end)
+        for k, c in ipairs(list) do
+            local pfx = "/designer/required_list/" .. c.key
+            local e = pfx .. "/required_component_template_entry"
+            lay("required_component_template_entry", {
+                prefix = pfx, parent = { x = x0 - 60 * k, y = y0, w = 0, h = 0 }, hide = { allowed = true },
+                sprites = c.icon and { [e .. "/component_icon"] = c.icon } or nil,
+                frames = { [e .. "/component_icon"] = c.icon_frame },
+                actions = { [e .. "/select_this_button"] = "designer:ui:set_req:" .. pp.index .. ":" .. c.key },
+            })
+        end
+    elseif pp.kind == "autogen" then
+        -- rename_autogen: an auto-generated design saved under a name (it is no longer
+        -- auto-generated); Save, or the close button (nothing saved)
+        local wr = lay("rename_autogen", {
+            actions = {
+                ["/rename_autogen/save_and_close"] = "designer:ui:save_confirm", ["/rename_autogen/close"] = "designer:ui:popup_close",
+                ["/rename_autogen/rename_container/randomize_name"] = "designer:ui:randomize",
+            },
+        })
+        local rc = wr.rects["/rename_autogen/rename_container"]
+        if rc then
+            text_item("/rename_autogen/rename_container/rename_box", fmt_name(ctx, design.name), rc.x + 55, rc.y - 8, 220, 20)
+        end
+    end
+end
+
+-- designer.wheel(notches, x, y) -> whether a list under the pointer took the wheel (the designs,
+-- the component selector's, the section selector's: a smoothListBox scrolls, 45 pixels a notch
+-- [I]); the popups' lists first
+function designer.wheel(notches, x, y)
+    local ui = designer.ui
+    local open = ui.popup and ui.popup.kind
+    for _, name in ipairs({ open == "component" and "component" or "", open == "section" and "section" or "", "designs" }) do
+        local r = ui.rects[name]
+        if r and x >= r.x and x < r.x + r.w and y >= r.y and y < r.y + r.h then
+            local s = (ui.scroll[name] or 0) - notches * 45
+            ui.scroll[name] = math.max(0, math.min(ui.extent[name] or 0, s))
+            return true
+        end
+    end
+    return false
+end
+
+-- designer.escape() -> whether Escape closed a popup (its close button's ESCAPE shortcut: the
+-- innermost window first); else the window closes
+function designer.escape()
+    if designer.ui.popup then
+        designer.ui.popup = nil
+        return true
+    end
+    return false
+end
+
+-- designer.stage() -> the design under modification's stage (its 3D view's model), serialized
+function designer.stage()
+    local d = designer.ui.current and (designer.ui.current == "new" and designer.ui.works.new or designer.ui.works[designer.ui.current])
+    if not d then
+        return nil
+    end
+    local culture = d.culture
+    for _, x in ipairs((RENDER_DESIGNER_DATA or {}).designs or {}) do
+        culture = culture or x.culture
+    end
+    return designer.serialize({ size = d.size, sections = d.sections, required = d.required, culture = culture })
 end
 
 return designer

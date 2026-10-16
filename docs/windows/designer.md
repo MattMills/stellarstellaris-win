@@ -183,12 +183,75 @@ side-by-sides: `code_working/tmp_sym/render3d/parity/windows/` (designer_empty.p
   numbers as the table above; the ship from the same side.
 - Combat: the same sides, names, entries, icons, bar and stats.
 
+## The buttons
+
+What a click does, as the game's handlers do it (CShipDesignerBase::Setup's observers
+0x318e2e0, the popups' views); `designer:*` actions, `designer.rs` `act` (the window's close, the
+fleet manager tab, a design in the list, the combat view's focus) and `designer.lua` `act` (the
+window's own state: the designs under modification, as SDataUnderModification keeps them, and its
+popups). What changes the world goes to the simulation's runtime between its days
+(`designer_commands.lua` through `Clock::query`, the simulation started first as a view's command
+starts it), through the engine's own ship designer (`engine.ai.designer`: `generate`, the AI's
+CreateShipDesign; `execute_create`, CCreateOrUpdateShipDesignCommand; `buildable`, the components
+it accepts, potential triggers evaluated). After a change the window's data are read again from
+the simulation's world, so a saved design is in the simulation's designs (its fleets, the AI, a
+save written from it).
+
+| element | the game | here |
+|---|---|---|
+| close (X), Escape | Hide; ESCAPE closes the innermost popup first (each popup's close has the shortcut) | wired: a popup closes first, then the window |
+| fleet_manager_tab | the Fleet Manager's view | wired (`view:fleet_manager`, the designer closed) |
+| creature_designer_tab_inactive | the creature designer (disabled without artificial breeding) | not done (its window is not drawn) |
+| auto_design | ToggleAutoDesign: the country's auto-generation of designs | wired, in the simulation (`ship_design_collection.auto_gen_design`); the list's tag becomes "Auto" |
+| a design in the list | CShipDesignEntry::Click: LoadDesign | wired |
+| new_ship_design_entry | ShowShipSizeSelectDialog: the `selector` of sizes | wired: a selector_item per designable size the country can build, three a row |
+| a size | CSelectorItemShipSize::OnClick (0x31a40a0): a design of the size with empty growth stages | wired: no sections ("No Section!", "Select a Section"), the best required components and a name from the name list, from the simulation [I] |
+| delete (an entry's) | Delete -> confirmation -> ConfirmedDelete (CRemoveShipDesignCommand) | wired in the simulation (the design out of the country's list); shown on the design shown, not under the mouse [I]; no confirmation dialog |
+| change_section | ShowSectionSelectDialog: section_select_window | wired: the sections of the size that fit the slot and the country has researched, two a row, their slots by size; a click puts it on the slot (CSectionSelector::ItemClicked: the components of the slots it shares kept [I]) |
+| a component slot | ShowComponentSelectDialog: component_select_window | wired: over the designs list [I: its place], the components the simulation says the country can build on the size (one per component set, the newest [I]), the slot size filter and the obsolete filter (check boxes), the slot's component highlighted; a click puts it on the slot |
+| apply_on_empty (Fill Empty) | ApplySelectedElementOnAllEmptySlots | wired: the component chosen on every empty slot it fits |
+| a required component (show_templates_button) | its entry's list of the set's components | wired: leftward of the entry, a click sets it (SetRequiredComponent) |
+| randomize_name | RandomizeName | wired: a name of the size from the country's name list (the simulation's `class_name`) |
+| rename_box (typing) | the design's name | not done (no text input in the windows yet) |
+| choose_role | CShipRoleSelectionView: the size's roles | wired: `select_ship_role` with a ship_role_entry each (the design's selected); a role makes the design anew for it (GenerateDesignOfRole: the AI designer's design of the role) |
+| clear_button | ClearDesignComponents | wired: the sections' components cleared [I: the sections and required components kept] |
+| complete_button (auto-best) | Finish | wired: every empty section and slot filled with the AI designer's choice for the size and role [I] |
+| save_button | Save -> ConfirmedSave (CCreateOrUpdateShipDesignCommand); an auto-generated design asks first (`rename_autogen`) | wired, in the simulation: the design added to the country (its base design leaves the list: the game replaces the design of the same name [I: fleet templates not retrofitted]); an auto-generated one through `rename_autogen` (Save; its randomize button; close: nothing saved) |
+| upgrade_ship_components | AutoUpgradeComponents: the design's flag | wired (saved with the design) |
+| bioship stage spinner | a growth stage | not drawn (bioships only) |
+| 3d_view | its click observer (the view turned [I]) | not done |
+| right click on a slot, dragging a component | ClearSlot, painting | not done |
+| the lists | smoothListBoxes: the wheel scrolls | wired: the designs list, the component selector's and the section selector's, 45 pixels a notch [I] |
+| disabled frames | complete and save disabled when the design cannot be saved (IsValidToSaveForCountry) | not done: always enabled |
+
+The combat view:
+
+| element | the game | here |
+|---|---|---|
+| close (X), Escape | Hide | wired: the selection cleared (which shows it) |
+| focus_on | OnClickFocus: the camera to the combat | wired: the fleet's system entered, the fleet followed [I] |
+| a ship's inspect | CCombatViewShipEntry::OnClickInspect: the ship view; disabled before contact | wired (`fleet:ship:ID`, the fleet windows' ship view) when the ship's owner is in contact; inert before (the game greys it with its shader: not done) |
+| emergency_ftl | EmergencyFTL (the player's fleets) | not done (the engine has no emergency FTL order) |
+| owner flag | (the country) | not done |
+
+Checked in a real window (the windowed renderer under Xvfb on 10.5.0.24, clicks by xdotool, the
+2210.01.01 save loaded from Load Game): the left bar's Fleet Manager, its Ship Designer tab, a
+design, a slot's component selector (the components the simulation allows: Small Red Laser,
+Nuclear Missiles, Small Mass Driver), a component on the slot (the stats changed), the wheel over
+the list, Escape (the popup first), the required component's list and a choice, Auto-upgrade,
+Clear, Randomize ("Stingray"), the role selection and Escape, Auto-Complete, Save and the
+`rename_autogen` Save (a design 33554589 in the simulation), Auto-generate off (the list's
+"Auto"), Delete (the design out of the simulation's list), New Design (a corvette, "Sneaking
+Shrimp", no section), the close button. Scripted (`--script`, the same clicks): New Design -> a
+section -> Auto-Complete -> a role -> Save (a new design in the simulation, listed); the combat
+view's inspect (inert before contact), focus (system 239, the fleet followed) and close. A Lua
+error in the designer stays in it: the other windows go on drawing (`windows: ...` logged).
+
 ## Not done
 
 - Stats: the country's modifiers (speed, evasion, damage, upkeep), the role's.
-- The designer's popups (section, component and size selection, role selection, save menu),
-  painting components, renaming, the buttons' actions; the list's scrolling; the creature
-  designer.
+- Painting components (dragging), renaming by typing, the delete confirmation, the disabled
+  frames, the creature designer (see The buttons).
 - The combat view's scrollbar, the owner's flag (the country's), the rings' rotation, the order
   buttons (hero ships), the damage numbers of a running combat (the simulation's combat stats).
 - The combat stats window.
