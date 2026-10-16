@@ -81,11 +81,31 @@ Checked on 10.5.0.24 (lavapipe, 1600x900):
 - `settings.player_design` was never read (scenario.lua's config had no `player_design`): now it
   is, and `player_design_text` beside it.
 
-## 4. Not done
+## 4. Against the game's new game
 
-- The game's own new-game frames to compare (session ng-headless's headless path): not available
-  when this was written; the load screen's picture scaling and the status window's place are
-  unverified against a game frame.
+Session ng-headless's reference (headless/newgame.sh on branch ng-headless;
+code_working/tmp_newgame/ref/tiny3_g0: tiny, elliptical, 3 AI, the player humans1_1, the global
+generator at 0:0) loaded in the renderer (`load-sim .../ticks10.gamestate`) beside `newgame
+scenario=tiny shape=elliptical empires=3 fallen_empires=0 global_seed=0 empire=humans1_1`
+(/root/ngs/t5.txt, t6.txt on .24; side by side /root/ngs/cmp_g.jpg):
+
+| | the game | here |
+|---|---|---|
+| galaxy seed (value 1874735034) | 1064022505 | 1064022505 |
+| systems | 200 (196 of the generation, 4 made by the start) | 196 |
+| the player | United Nations of Earth, Sol, Earth the capital | the same |
+| landing | paused, the capital's system (Sol, id 23) | paused, the capital's system (Sol, id 1) |
+| fleets | 113 (science, construction, 1st Fleet, ...) | 0 |
+| Sol's neighbourhood, lanes, the starting income | | differ |
+
+The path (settings, seed, generation, start, landing) agrees; what differs is the generator's and
+the start script's content (sessions ng-headless and ng-effects).
+
+## 5. Not done
+
+- The game's own frames of its load screen (the headless path writes gamestates, not frames): the
+  load screen's picture scaling and the status window's place are unverified against a game
+  frame.
 - RestoreDeviceObjects' steps (models, map textures) are two frames here, not ~25.
 - The fallen empires' 20..70 progress (the generator makes none yet).
 - Generated fleets: `fleets 0` in the galaxy read after the start (the start script's
