@@ -374,6 +374,11 @@ function View:header()
     self.actions[P .. "/header_actions/previous_planet"] = "planet:prev"
     self.actions[P .. "/header_actions/next_planet"] = "planet:next"
     self.actions[P .. "/header_actions/zoom_to_planet_button"] = "planet:zoom"
+    -- the name: CColonyRenameDialog (the player's colony); move capital: CMoveCapitalDialog
+    if self.mine then
+        self.actions[P .. "/colony_rename_button"] = "planet:dialog:rename"
+        self.actions[P .. "/header_actions/move_capital"] = "planet:dialog:move_capital"
+    end
     -- the header's buttons: previous / next planet for a planet with an owner, move capital on
     -- a colony of the player's not the capital, the orbital ring's with a ring, the observation
     -- post's on an observed world; close and zoom always
@@ -406,7 +411,11 @@ function View:header()
     only.planet_actions_window = true
     local A = P .. "/planet_actions_window"
     hide[A .. "/colonizing_planet_window"] = true
-    hide[A .. "/decision_progress_window"] = true
+    if not (d and d.decision) then
+        hide[A .. "/decision_progress_window"] = true
+    elseif self.mine then
+        self.actions[A .. "/decision_progress_window/cancel_decisions_button"] = "planet:cmd:cancel_decision"
+    end
     if not self.completed then
         -- its numbers only for a completed colony (UpdatePlanetTopBar @0x30668a3)
         for _, n in ipairs({ "planet_stability", "planet_pops", "crime_status_window/planet_crime", "crime_status_window/planet_housing",
@@ -858,10 +867,27 @@ function planet.build(ctx, sel, items, report)
     for _, f in ipairs(v.later) do
         f(r)
     end
+    -- the rename button: "size set by code to match name": the name's own rectangle takes the
+    -- click (CColonyRenameDialog)
+    local nr = r.rects[P .. "/planet_name"]
+    local inv = ctx.db.sprites.GFX_invisible
+    if v.mine and nr and inv and inv.texture then
+        items[#items + 1] = {
+            kind = "sprite", path = P .. "/colony_rename_button/hit", sprite = "GFX_invisible", texture = inv.texture,
+            sprite_kind = "spriteType", frame = 1, frames = inv.frames or 1, x = nr.x, y = nr.y, w = nr.w, h = nr.h,
+            button = { name = "colony_rename_button", action = "planet:dialog:rename" },
+        }
+    end
     v:portrait(r, first)
     -- the colonize window, over the planet view
     if st.colonize and d and d.colonizable then
         v:colonize_window()
+    end
+    if v.side and v.side:match("^resettle") and v.mine then
+        v:resettle_window()
+    end
+    if st.dialog then
+        v:dialog(st.dialog, st.text)
     end
     -- sprites the game sets from a texture (district and building icons, the unknown flag), the
     -- frames of backgrounds
@@ -961,6 +987,7 @@ local SIDE_WINDOWS = {
     zone_construction = "zone_construction_window", designation = "designation_selection_window",
     decisions = "decisions_window", terraform = "terraform_window", automation = "automation_settings_window",
     queue = "build_queue_window", pop = "pop_details_window", job = "job_summary_window",
+    district_construction = "district_construction_window",
 }
 local ALL_SIDE = {
     "building_details_window", "district_details_window", "pop_details_window", "terraform_window",
@@ -1017,9 +1044,39 @@ function View:side_bar()
         end
         if self.mine then
             self.actions[W .. "/build_district"] = "planet:cmd:build_district:" .. (sd.type or "")
+            -- Downgrade: CDestroyDistrictDialog (its Yes: remove_district); Replace: the district
+            -- construction window (side bar 10); Clear Blocker: the planet's blocker queued
+            self.actions[W .. "/destroy_district"] = "planet:dialog:destroy_district:" .. (sd.type or "")
+            self.actions[W .. "/replace_district"] = "planet:side:district_construction:" .. (sd.type or "")
+            self.actions[W .. "/quick_clear_blocker"] = "planet:cmd:quick_clear_blocker"
         end
-        -- (downgrade, replace, clear blocker: their frames as the game's, their effects not done
-        -- here)
+        -- the district's zones (zone_details_entry: "District Specialization N Details", the
+        -- zone, Replace: zone construction for its slot)
+        self.later[#self.later + 1] = function(r)
+            local i = 0
+            self:side_list(r.rects[W .. "/zones_list"], W .. "/z", "zone_details_entry", sd.zones or {}, function(E, z)
+                i = i + 1
+                return {
+                    [E .. "/zone_details_text"] = self:F("zone_details_text", { NUM = i }),
+                    [E .. "/zone_details/zone_name/zone_name"] = self:L(z.type),
+                    [E .. "/zone_details/zone_effects"] = "",
+                }, {}, (self.mine and sd.district) and ("planet:side:zone_construction:" .. sd.district .. ":" .. z.slot) or nil,
+                    E .. "/replace_zone", { [E .. "/zone_details/zone_icon/zone_icon"] = z.icon }
+            end)
+        end
+    elseif kind == "district_construction" then
+        -- Replace's list: a district type instead of the one replaced (replace_district)
+        local W = SB .. "/district_construction_window"
+        self.later[#self.later + 1] = function(r)
+            self:side_list(r.rects[W .. "/district_constructions_list"], W .. "/d", "planet_district_construction_entry", sd.list or {}, function(E, e)
+                return {
+                    [E .. "/district_name/district_name"] = self:L(e.type),
+                    [E .. "/district_cost"] = cost_text(e.cost, e.time),
+                    [E .. "/district_effects"] = "",
+                }, { [E .. "/district_icon/district_icon"] = e.icon },
+                    self.mine and ("planet:cmd:replace_district:" .. tostring(sd.replace) .. ":" .. e.type) or nil, E .. "/background"
+            end)
+        end
     elseif kind == "building" then
         local W = SB .. "/building_details_window"
         text[W .. "/building_info/building_name/building_name"] = self:L(sd.type or "")
@@ -1027,11 +1084,29 @@ function View:side_bar()
         if sd.icon then
             self.retexture[W .. "/building_info/building_icon/building_icon"] = sd.icon
         end
-        hide[W .. "/building_info/building_icon/ruined_building_icon"] = true
+        if not sd.ruined then
+            hide[W .. "/building_info/building_icon/ruined_building_icon"] = true
+        end
         -- the destroy button: Downgrade for a building something upgrades into (the game's
-        -- frames: the capital's) **[I]** (disable, downgrade, replace, repair: their frames as the
-        -- game's, their effects not done here)
+        -- frames: the capital's) **[I]**; its Yes: destroy_building
         text[W .. "/destroy_building"] = self:L(sd.downgrade and "DOWNGRADE" or "DESTROY")
+        text[W .. "/enable_disable_building"] = self:L(sd.disabled and "ENABLE" or "DISABLE")
+        if self.mine and sd.id then
+            if sd.can_demolish ~= false then
+                self.actions[W .. "/destroy_building"] = "planet:dialog:destroy_building:" .. sd.id
+            else
+                self:disable(W .. "/destroy_building")
+            end
+            self.actions[W .. "/enable_disable_building"] = "planet:cmd:toggle_building:" .. sd.id
+            self.actions[W .. "/repair_building"] = "planet:cmd:repair_building:" .. sd.id
+            if sd.zone and sd.slot then
+                self.actions[W .. "/replace_building"] = "planet:side:construction:" .. sd.zone .. ":" .. sd.slot .. ":" .. sd.id
+            end
+        end
+        if not sd.ruined then
+            self:disable(W .. "/repair_building")
+            self.actions[W .. "/repair_building"] = nil
+        end
         if #(sd.upgrades or {}) == 0 then
             hide[W .. "/upgrades"] = true
         end
@@ -1061,7 +1136,8 @@ function View:side_bar()
                     [E .. "/building_cost"] = cost_text(e.cost, e.time),
                     [E .. "/building_effects"] = "",
                 }, { [E .. "/building_icon/building_icon"] = e.icon },
-                    (self.mine and e.allowed) and ("planet:cmd:build_building:" .. sd.zone .. ":" .. e.type) or nil, E .. "/button_build"
+                    (self.mine and e.allowed) and (sd.replace and ("planet:cmd:replace_building:" .. sd.replace .. ":" .. e.type)
+                        or ("planet:cmd:build_building:" .. sd.zone .. ":" .. e.type)) or nil, E .. "/button_build"
             end)
         end
     elseif kind == "zone_construction" then
@@ -1100,8 +1176,12 @@ function View:side_bar()
         table.sort(list, function(x, y) return self:L(x.type) < self:L(y.type) end)
         self.later[#self.later + 1] = function(r)
             self:side_list(r.rects[W .. "/decisions_list"], W .. "/d", "planet_decision_entry", list, function(E, e)
-                -- (enacting a decision, its effects' text: not done here)
+                -- a click enacts it (CEnactDecisionCommand: allow, the cost) (its effects' text:
+                -- not done here)
                 local icon = e.icon and ("GFX_" .. e.icon)
+                if self.mine and e.allowed then
+                    self.actions[E .. "/button_decision"] = "planet:cmd:decision:" .. e.type
+                end
                 return {
                     [E .. "/decision_name/decision_name"] = self:L(e.type),
                     [E .. "/decision_effects/decision_effects"] = "",
@@ -1111,14 +1191,34 @@ function View:side_bar()
         end
     elseif kind == "terraform" then
         local W = SB .. "/terraform_window"
-        hide[W .. "/terraforming_ongoing_window"] = true
+        if self.d.terraforming then
+            -- the ongoing terraforming: its target, days left, Abort (CCancelTerraformationCommand)
+            local T = W .. "/terraforming_ongoing_window"
+            local left = math.max(0, math.ceil((self.d.terraforming.total or 0) - (self.d.terraforming.progress or 0)))
+            text[T .. "/terraforming_time"] = "\194\163time\194\163 " .. left
+            text[T .. "/abort"] = self:L("ABORT")
+            if self.mine then
+                self.actions[T .. "/abort"] = "planet:cmd:cancel_terraform"
+            end
+        else
+            hide[W .. "/terraforming_ongoing_window"] = true
+        end
+        local links = {}
+        for _, e in ipairs(sd.list or {}) do
+            if e.shown ~= false then
+                links[#links + 1] = e
+            end
+        end
         self.later[#self.later + 1] = function(r)
-            self:side_list(r.rects[W .. "/terraform_list"], W .. "/t", "planet_terraforming_entry", sd.list or {}, function(E, e)
+            self:side_list(r.rects[W .. "/terraform_list"], W .. "/t", "planet_terraforming_entry", links, function(E, e)
+                if self.mine and e.allowed and e.index and not self.d.terraforming then
+                    self.actions[E .. "/terraform_button"] = "planet:cmd:terraform:" .. e.index
+                end
                 -- (terraforming: not done here)
                 return {
                     [E .. "/planet_class_name/planet_class_name"] = self:L(e.to or ""),
                     [E .. "/planet_class_name/habitability"] = "",
-                    [E .. "/terraforming_cost"] = "",
+                    [E .. "/terraforming_cost"] = cost_text(e.cost),
                     [E .. "/terraforming_time"] = e.duration and ("\194\163time\194\163 " .. e.duration) or "",
                 }, {}, nil, nil, { [E .. "/planet_class_from_icon"] = self.d.class_icon, [E .. "/planet_class_to_icon"] = e.icon }
             end)
@@ -1174,14 +1274,24 @@ function View:queue_list(rect, prefix)
         local left = math.max(0, (q.needed or 0) - (q.progress or 0))
         local frac = (q.needed or 0) > 0 and (q.progress or 0) / q.needed or 0
         self.icon_frames[E .. "/progressbar"] = math.max(1, math.min(100, math.floor(frac * 100 + 0.5)))
-        -- (cancelling, reordering: not done here)
+        -- the row cancels it (CRemoveBuildableFromQueueCommand, its resources back); the arrows
+        -- move it a place (Shift: to the end **[I]** not read here)
+        local hd = {}
+        if self.mine and q.id then
+            self.actions[E .. "/cancel_button"] = "planet:cmd:queue_cancel:" .. q.id
+            self.actions[E .. "/priority_upwards"] = "planet:cmd:queue_up:" .. q.id
+            self.actions[E .. "/priority_downwards"] = "planet:cmd:queue_down:" .. q.id
+        end
+        if #(self.d.queue or {}) < 2 or not self.mine then
+            hd[E .. "/priority_upwards"], hd[E .. "/priority_downwards"] = true, true
+        end
         self:entry("planet_build_queue_item_entry", p, rect.x, y, rect.w, h, {
             text = {
-                [E .. "/title"] = self:L(q.type or ""),
+                [E .. "/title"] = q.kind == "decision" and self:L(q.type or "") or self:L(q.type or ""),
                 [E .. "/time"] = q.active and self:F("BUILD_TIME_REMAINING", { DAYS = math.ceil(left) }) or self:F("QUEUED_NUMBER", { NUMBER = q.position }),
                 [E .. "/name"] = "",
             },
-            hide = { [E .. "/priority_upwards"] = true, [E .. "/priority_downwards"] = true },
+            hide = hd,
         })
     end
 end
@@ -1284,7 +1394,7 @@ function View:armies()
             if not self.mine then
                 hd[E .. "/disband_army"] = true
             else
-                self.actions[E .. "/disband_army"] = "planet:cmd:disband:" .. a.id
+                self.actions[E .. "/disband_army"] = "planet:dialog:disband:" .. a.id
             end
             local species = a.species and self.species_names[a.species]
             if not species then
@@ -1595,6 +1705,9 @@ function View:deposits(r)
         local hd = { [E .. "/rare_deposit_frame"] = not (not dep.blocker and dep.important) or nil }
         local t = { [E .. "/deposit_name/deposit_name"] = name, [E .. "/deposit_effects"] = table.concat(effects, "\n") }
         local fr = {}
+        if dep.blocker and self.mine then
+            self.actions[E .. "/clear_blocker_button"] = "planet:cmd:clear_blocker:" .. dep.id
+        end
         if dep.blocker then
             local cost = {}
             if dep.time then
@@ -1707,6 +1820,10 @@ function View:population()
     local hide, text = self.hide, self.text
     if not self.mine then
         hide[PW .. "/resettle_button"] = true
+    else
+        -- the manual resettlement window; Restore Jobs: every job's limit its maximum
+        self.actions[PW .. "/resettle_button"] = "planet:side:resettle"
+        self.actions[PW .. "/restore_jobs_button"] = "planet:cmd:restore_jobs"
     end
     text[PW .. "/restore_jobs_button"] = self:L("RESTORE_JOBS")
     -- the jobs kept: workforce >= 0 or pops in them, in the save's order
@@ -1823,6 +1940,126 @@ end
 -- CSurfaceView::ShowWithPlanet @0x2bcabb0, Update @0x2bd0050): opened by the planet view's
 -- colonize button (CPlanetView::OnColonize -> NExpansionView::OpenColoniseView)
 
+
+-- ---------------------------------------------------------------------------------------------
+-- the view's dialogs: CColonyRenameDialog (rename_dialog.gui), and the confirmations
+-- (CPopupMessageYesNo, popup.gui yes_no_popup_window): CDestroyBuildingDialog,
+-- CDestroyDistrictDialog, CMoveCapitalDialog, the army's disband. OK / Yes: planet:dialog_ok (the
+-- command, planet.rs); Cancel / No: planet:dialog_close; Escape closes, Return accepts.
+
+function View:dialog(kind, typed)
+    local what, arg = kind:match("^([%w_]+):?(.*)$")
+    if what == "rename" then
+        local P = "/rename_dialog"
+        -- the edit box: the name typed, else the planet's (the game's box starts with it)
+        local text = typed or self.name
+        local r = self:lay("rename_dialog", {
+            file = "interface/rename_dialog.gui",
+            hide = { [P .. "/RandomizeButton"] = true },
+            actions = { [P .. "/AgreeButton"] = "planet:dialog_ok", [P .. "/DeclineButton"] = "planet:dialog_close" },
+        })
+        local rect = r.rects[P .. "/editbox"]
+        if rect then
+            self.items[#self.items + 1] = {
+                kind = "text", path = P .. "/editbox/text", font = "malgun_goth_24", text = text .. "|",
+                spans = { { text = text .. "|", colour = { 1, 1, 1 } } }, x = rect.x + 4, y = rect.y, w = rect.w - 8, h = rect.h,
+                format = "left", valign = "center", fixed = true,
+            }
+        end
+        return
+    end
+    local P = "/yes_no_popup_window"
+    local title, desc
+    if what == "destroy_building" then
+        local sd = self.d.side or {}
+        title = self:L("DESTROY_BUILDING_TITLE")
+        desc = self:F("DESTROY_BUILDING_DESC", { NAME = self:L(sd.type or "") })
+    elseif what == "destroy_district" then
+        title = self:L("DESTROY_DISTRICT_TITLE")
+        desc = self:F("DESTROY_DISTRICT_DESC", { NAME = self:L(arg) })
+    elseif what == "move_capital" then
+        title = self:L("MOVE_CAPITAL")
+        desc = self:F("MOVE_CAPITAL_CONFIRM", { PLANET = self.name, EXTRA = "", COST = 0 })
+    elseif what == "disband" then
+        title = self:L("DISBAND_TITLE")
+        desc = self:L("DISBAND_DESC")
+    else
+        return
+    end
+    self:lay("yes_no_popup_window", {
+        file = "interface/popup.gui",
+        text = { [P .. "/title"] = title, [P .. "/description"] = desc },
+        actions = { [P .. "/AgreeButton"] = "planet:dialog_ok", [P .. "/DeclineButton"] = "planet:dialog_close" },
+    })
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- the manual resettlement window (manual_resettlement_view.gui, ShowManualResettlementView): this
+-- colony on the left, another of the player's on the right (its dropdown: the next one on a
+-- click), each side's pop groups; a left group's Resettle moves POP_BULK_UNIT_SIZE of it right
+
+local RFILE = "interface/manual_resettlement_view.gui"
+local RW = "/manual_resettlement_view"
+
+function View:resettle_window()
+    local sd = self.d.side or {}
+    local cols, target = sd.colonies or {}, sd.target
+    local names = require("render.names")
+    local text, actions, hide = {}, {}, {}
+    actions[RW .. "/close"] = "planet:side_close"
+    text[RW .. "/left_planet/current"] = self.name
+    hide[RW .. "/left_planet/expand_button"] = true
+    hide[RW .. "/left_planet/expanded_window"] = true
+    hide[RW .. "/right_planet/expanded_window"] = true
+    if target then
+        text[RW .. "/right_planet/current"] = names.format(self.loc, target.name)
+        -- the dropdown: the next colony (the game's expanded list **[I]**)
+        local nxt
+        for i, x in ipairs(cols) do
+            if x.planet == target.planet then
+                nxt = cols[i % #cols + 1]
+            end
+        end
+        if nxt then
+            actions[RW .. "/right_planet/expand_button"] = "planet:side:resettle:" .. nxt.planet
+        end
+    else
+        text[RW .. "/right_planet/current"] = self:L("PLANET_VIEW_RESETTLE_NOT_ENOUGH_PLANETS")
+    end
+    local r = self:lay("manual_resettlement_view", { file = RFILE, text = text, actions = actions, hide = hide })
+    local function groups(list, rect, prefix, window, can)
+        if not rect then
+            return
+        end
+        local h = 75
+        for i, g in ipairs(list) do
+            local y = rect.y + (i - 1) * h
+            if y + h > rect.y + rect.h + 1 then
+                break
+            end
+            local p = prefix .. "/" .. i
+            local E = p .. "/" .. window
+            local acts = {}
+            if can and target then
+                acts[E .. "/resettle"] = "planet:cmd:resettle:" .. g.id .. ":" .. target.colony
+            end
+            self:entry(window, p, rect.x, y, rect.w, h, {
+                file = RFILE, actions = acts,
+                text = {
+                    [E .. "/pop_group_desc/species_name"] = self.species_names[g.species] or "",
+                    [E .. "/pop_group_desc/category_name"] = self:L("pop_cat_" .. tostring(g.category or "")),
+                    [E .. "/pop_group_desc/pop_amount"] = tostring(g.size or 0),
+                },
+                hide = can and {} or { [E .. "/resettle"] = true },
+            })
+        end
+    end
+    groups(self.d.colony and self.d.colony.pop_groups or {}, r.rects[RW .. "/manual_resettlement_view_planet_entry/pops_jobs_list_left"], RW .. "/l",
+        "resettlement_pop_entry_left", true)
+    groups(target and target.pop_groups or {}, r.rects[RW .. "/manual_resettlement_view_planet_entry/pops_jobs_list_right"], RW .. "/r",
+        "resettlement_pop_entry_right", false)
+end
+
 local CFILE = "interface/colonize_planet_view.gui"
 local CW = "/expansion_planner_surface_view"
 
@@ -1840,11 +2077,21 @@ function View:colonize_window()
     -- the districts' header: the planet's slots (DASH while not surveyed)
     local DH = CW .. "/districts_window/districts_window_title_bar/planet_total_districts_container"
     text[DH .. "/planet_num_districts/planet_districts_amount"] = d.surveyed and d.district_slots and tostring(d.district_slots.max) or self:L("DASH")
+    -- Colonize: greyed until a source is selected (CExpansionSourceSpeciesEntry::Select), then
+    -- CCountryExpansionCommand (planet.colonize)
+    local source = RENDER_PLANET and RENDER_PLANET.source
+    local tints = {}
+    if source then
+        actions[CW .. "/colonize_button"] = "planet:cmd:colonize:" .. source
+    else
+        tints[CW .. "/colonize_button"] = { 0.45, 0.45, 0.45, 1 }
+    end
     local r = self:lay("expansion_planner_surface_view", {
-        file = CFILE, text = text, hide = hide, actions = actions, tints = { [CW .. "/colonize_button"] = { 0.45, 0.45, 0.45, 1 } },
-        -- (its label dimmed with it, below)
+        file = CFILE, text = text, hide = hide, actions = actions, tints = tints,
     })
-    self.dimmed[CW .. "/colonize_button/text"] = true
+    if not source then
+        self.dimmed[CW .. "/colonize_button/text"] = true
+    end
     -- the checkboxes: the founder-species filter and the automation, unchecked
     for _, cb in ipairs({ { CW .. "/expansion_source/expansion_source_container_title_bar/main_species_filter", "checked" },
         { CW .. "/designation_container/designation_container_title_bar/automation_toggle", "automation_checkbox" } }) do
@@ -1866,15 +2113,16 @@ function View:colonize_window()
             for _, k in ipairs(c.cost) do
                 cost[#cost + 1] = "\194\163" .. k[1] .. "\194\163" .. k[2]
             end
+            local selected = s.id and RENDER_PLANET and RENDER_PLANET.source == s.id
             local er = self:entry("expansion_source_planet_sub_entry", p, lr.x, y, 725, h, {
-                file = CFILE,
+                file = CFILE, actions = { [E] = "planet:source:" .. tostring(s.id) },
                 text = {
                     [E .. "/species_container/species_name_text"] = require("render.names").format(self.loc, s.name),
                     [E .. "/species_container/ship_type_text"] = self:L("colonizer"),
                     [E .. "/habitability_container/habitability_percentage"] = col(hab > 0 and "G" or "R", hab .. "%"),
                     [E .. "/colonization_cost_container/colony_ship_cost"] = table.concat(cost, " "),
                 },
-                hide = { [E .. "/selected_overlay"] = true },
+                hide = { [E .. "/selected_overlay"] = not selected or nil },
                 frames = { [E .. "/habitability_container/habitability_icon"] = hab > 0 and 2 or 1 },
             })
             -- the species' traits, side by side at the entry's right (traits_list)
@@ -2566,7 +2814,9 @@ local function queue_items(world, p)
                     kind, b = k:sub(11), v
                 end
             end
-            local t = b and unquote(world.field(b, kind == "district" and "district" or kind == "zone" and "zone" or "building"))
+            local t = b and unquote(world.field(b, (kind == "district" or kind == "replace_district") and "district"
+                or kind == "zone" and "zone" or kind == "decision" and "decision" or kind == "clear_deposit_blocker" and "deposit"
+                or kind == "army" and "type" or "building"))
             local progress = tonumber(world.field(item, "progress")) or 0
             local needed = tonumber(world.field(item, "progress_needed")) or 0
             out[#out + 1] = {
@@ -2579,7 +2829,7 @@ local function queue_items(world, p)
 end
 
 local function side_of(game_dir, world, p, id, d, side)
-    local kind, a1, a2 = side:match("^([%w_]+):?([^:]*):?([^:]*)$")
+    local kind, a1, a2, a3 = side:match("^([%w_]+):?([^:]*):?([^:]*):?([^:]*)$")
     local out = { kind = kind }
     local cid = d.colony and d.colony.id
     local b0 = { colony = cid, planet = id, owner = d.owner }
@@ -2625,7 +2875,8 @@ local function side_of(game_dir, world, p, id, d, side)
                 }
             end
         end
-        out.zone, out.list = tonumber(a1), list
+        -- a building's Replace: the slot's building replaced (replace_building)
+        out.zone, out.list, out.replace = tonumber(a1), list, tonumber(a3)
     elseif kind == "zone_construction" then
         -- the zones a district's slot takes (the slot's included_zone_sets, the zone's zone_sets;
         -- potential and unlock in the planet's scope)
@@ -2654,6 +2905,19 @@ local function side_of(game_dir, world, p, id, d, side)
         local btype = bb and unquote(world.field(bb, "type"))
         local def = btype and block_of(game_dir, "common/buildings", btype)
         out.id, out.type = tonumber(a1), btype
+        -- ruined (Repair shown), disabled (the toggle reads Enable), its zone and slot (Replace)
+        out.ruined = bb and world.field(bb, "ruined") == "yes"
+        out.can_demolish = dfield(def, "can_demolish") ~= "no"
+        out.disabled = bb and world.field(bb, "disabled") == "yes"
+        for _, x in ipairs(d.districts or {}) do
+            for _, z in ipairs(x.zones or {}) do
+                for k, zb in ipairs(z and z.buildings or {}) do
+                    if zb.id == out.id then
+                        out.zone, out.slot = z.id, k
+                    end
+                end
+            end
+        end
         out.icon = btype and ("gfx/interface/icons/buildings/" .. (dfield(def, "icon") or btype) .. ".dds")
         out.upgrades = {}
         -- a building something upgrades into: its destroy button reads Downgrade (the game's
@@ -2685,6 +2949,35 @@ local function side_of(game_dir, world, p, id, d, side)
         local b = { colony = cid, planet = id, owner = d.owner, kind = "district", type = a1 }
         out.type = a1
         out.cost, out.time = buildable_cost(b)
+        -- its zones by slot (zones_list: zone_details_entry, Replace opens zone construction)
+        out.zones = {}
+        for _, x in ipairs(d.districts or {}) do
+            if x.type == a1 then
+                out.district = x.district_id
+                for k, z in ipairs(x.zones or {}) do
+                    -- (the first slot is the district's own zone, shown in its entry: the game's
+                    -- frames list Archives and Mixed Industry as specializations 1 and 2)
+                    if k > 1 and z and z.type then
+                        local zdef = block_of(game_dir, "common/zones", z.type)
+                        out.zones[#out.zones + 1] = { slot = k - 1, type = z.type, icon = dfield(zdef, "icon") }
+                    end
+                end
+            end
+        end
+    elseif kind == "district_construction" then
+        -- Replace: the district types the planet takes instead (potential in the planet's scope,
+        -- not the one replaced), their costs
+        local list = {}
+        for _, name in ipairs(ordered(game_dir, "common/districts")) do
+            local def = expand(game_dir, block_of(game_dir, "common/districts", name))
+            if name ~= a1 and dfield(def, "is_capped_by_modifier") == nil
+                and trigger(game_dir, dfield(def, "potential"), "planet", id, "country", d.owner) == true then
+                local b = { colony = cid, planet = id, owner = d.owner, kind = "district", type = name }
+                local cost, time = buildable_cost(b)
+                list[#list + 1] = { type = name, icon = "gfx/interface/icons/districts/" .. (dfield(def, "icon") or name) .. ".dds", cost = cost, time = time }
+            end
+        end
+        out.replace, out.list = a1, list
     elseif kind == "designation" then
         -- the colony types whose potential holds (CColonyType::IsPotential, the planet's scope,
         -- the owner as FROM), the automatic one first
@@ -2702,12 +2995,22 @@ local function side_of(game_dir, world, p, id, d, side)
         for _, name in ipairs(ordered(game_dir, "common/decisions")) do
             local def = block_of(game_dir, "common/decisions", name)
             if trigger(game_dir, dfield(def, "potential"), "planet", id, "country", d.owner) == true then
-                -- its cost (resources.cost: resource = amount)
+                -- its cost: the economy's (the cost tables whose triggers hold: the luxury goods'
+                -- by the planet's pops; planet.def_cost on the simulation's thread), else the
+                -- first table's
                 local cost = {}
-                local cb = dfield(dfield(def, "resources"), "cost")
-                for _, e in ipairs(type(cb) == "table" and cb or {}) do
-                    if e.op and e.key and e.value and e.value.text and tonumber(e.value.text) then
-                        cost[#cost + 1] = { e.key.text, tonumber(e.value.text) }
+                local ok, c = pcall(planet.def_cost, "common/decisions", name, nil, id, d.owner, cid)
+                if ok and type(c) == "table" and next(c) then
+                    for r, v in pairs(c) do
+                        cost[#cost + 1] = { r, v }
+                    end
+                    table.sort(cost, function(x, y) return x[1] < y[1] end)
+                else
+                    local cb = dfield(dfield(def, "resources"), "cost")
+                    for _, e in ipairs(type(cb) == "table" and cb or {}) do
+                        if e.op and e.key and e.value and e.value.text and tonumber(e.value.text) then
+                            cost[#cost + 1] = { e.key.text, tonumber(e.value.text) }
+                        end
                     end
                 end
                 list[#list + 1] = {
@@ -2720,15 +3023,54 @@ local function side_of(game_dir, world, p, id, d, side)
     elseif kind == "terraform" then
         -- the terraforming links from the planet's class (common/terraform: from, to)
         local list = {}
-        for _, name in ipairs(ordered(game_dir, "common/terraform")) do
-            local def = block_of(game_dir, "common/terraform", name)
+        local ok, links = pcall(planet.terraform_links, game_dir)
+        for i, def in ipairs(ok and links or {}) do
             if dfield(def, "from") == d.class then
                 local to = dfield(def, "to")
                 local cdef = block_of(game_dir, "common/planet_classes", to or "")
-                list[#list + 1] = { to = to, icon = dfield(cdef, "icon"), duration = tonumber(dfield(def, "duration")) }
+                local okc, c = pcall(planet.def_cost, nil, nil, def, id, d.owner, cid)
+                local cost = {}
+                for r, v in pairs(okc and type(c) == "table" and c or {}) do
+                    cost[#cost + 1] = { r, v }
+                end
+                table.sort(cost, function(x, y) return x[1] < y[1] end)
+                list[#list + 1] = {
+                    index = i, to = to, icon = dfield(cdef, "icon"), duration = tonumber(dfield(def, "duration")), cost = cost,
+                    allowed = trigger(game_dir, dfield(def, "condition"), "country", d.owner) ~= false,
+                    shown = trigger(game_dir, dfield(def, "potential"), "planet", id, "country", d.owner) ~= false,
+                }
             end
         end
         out.list = list
+    elseif kind == "resettle" then
+        -- the manual resettlement window: the player's other colonies (the right side's
+        -- dropdown), the one shown (a1, else the first), its pop groups
+        local cols = {}
+        for _, pid in ipairs(world.planets_of and world.planets_of[d.player] or {}) do
+            local ocid = world.planet_colony and world.planet_colony[pid]
+            if pid ~= id and ocid then
+                local pp = world.object("planet", pid)
+                cols[#cols + 1] = { planet = pid, colony = ocid, name = require("render.galaxy").name_block(world.field(pp, "name")) }
+            end
+        end
+        out.colonies = cols
+        local pick = tonumber(a1) or (cols[1] and cols[1].planet)
+        for _, x in ipairs(cols) do
+            if x.planet == pick then
+                out.target = x
+                local oc = world.object("colony", x.colony)
+                x.pop_groups = {}
+                for _, gid in ipairs(oc and world.list(world.field(oc, "pop_groups")) or {}) do
+                    local g = world.object("pop_groups", tonumber(gid))
+                    if g then
+                        x.pop_groups[#x.pop_groups + 1] = {
+                            id = tonumber(gid), species = num(world.path(g, "key", "species")),
+                            category = unquote(world.path(g, "key", "category")), size = num(world.field(g, "size")) or 0,
+                        }
+                    end
+                end
+            end
+        end
     end
     return out
 end
@@ -3129,6 +3471,18 @@ function planet.data(game_dir, id, side)
     -- the terraform button: the player's tech_terraforming (the game's frames of the capital at
     -- 2210 show it greyed without it) **[I]** the game's own test (CanTerraform: a link the
     -- player may use)
+    local tp = world.field(p, "terraform_process")
+    if type(tp) == "table" then
+        d.terraforming = {
+            to = unquote(world.field(tp, "terraform_type")), progress = num(world.field(tp, "progress")) or 0,
+            total = num(world.field(tp, "total")) or 1,
+        }
+    end
+    for _, q in ipairs(d.queue or {}) do
+        if q.kind == "decision" then
+            d.decision = d.decision or q
+        end
+    end
     local ptechs = d.player and techs_of(world, world.object("country", d.player))
     d.can_terraform = (not d.star) and ptechs ~= nil and ptechs.tech_terraforming == true
     if side and side ~= "" and c then
@@ -3218,6 +3572,528 @@ local function army_cost(country, colony, planet, army_type)
     return e.apply(t.category or "armies", "cost", base, 1, e.modifiers("colony", colony) or {}, ctx)
 end
 
+
+-- ---------------------------------------------------------------------------------------------
+-- the planet view's other commands (wire-planet-2): buildings and districts demolished, replaced,
+-- repaired; the queue's items cancelled and moved; blockers, decisions, terraforming; the planet
+-- renamed, colonized, its pops resettled, the capital moved; jobs' workforce
+
+local QUEUES, ITEMS = "construction.queue_mgr.queues", "construction.item_mgr.items"
+
+-- a definition's cost for the planet (its `resources` cost tables whose triggers hold, with the
+-- colony's modifiers: CEconomyResourceTemplate as the army's cost)
+local function def_cost(folder, key, block, planet_id, country, colony)
+    local defs = require("engine.defs")
+    local e = require("engine.economy")
+    e.init()
+    local d = block and { block = block, file = "" } or defs.get(folder, key)
+    if not d then
+        return {}, "", {}
+    end
+    local units = require("engine.economy.units")
+    local rb = defs.field(block or units.expanded(d), "resources")
+    local t = rb and e.template(rb, d.file)
+    if not t then
+        return {}, "", {}
+    end
+    local eval = require("simscript.eval")
+    local ctx = eval.new_ctx(eval.S("planet", planet_id), eval.S("country", country), nil, d.file)
+    local base = {}
+    for _, b in ipairs(t.cost or {}) do
+        local ok, holds = true, true
+        if b.trigger then
+            ok, holds = pcall(eval.trigger, b.trigger, ctx)
+        end
+        if ok and holds then
+            local m = b.mult and e.value_of(b.mult, ctx) or 1
+            for _, rv in ipairs(b.values) do
+                local okv, v = pcall(e.value_of, rv[2], ctx)
+                if okv and v then
+                    base[rv[1]] = (base[rv[1]] or 0) + v * m
+                end
+            end
+        end
+    end
+    local cat = t.category or "decisions"
+    return e.apply(cat, "cost", base, 1, colony and e.modifiers("colony", colony) or {}, ctx), cat, ctx
+end
+planet.def_cost = def_cost
+
+-- the country's stockpile: a resource added (a refund) or taken (fixed point, as orders.add)
+local function add_stock(country, cost, sign)
+    local fp = require("engine.ai.economy.fixed")
+    local c = require("engine.world").object("country", country)
+    local world = require("engine.world")
+    local module = world.path(c, "modules", "standard_economy_module")
+    local stock = type(module) == "table" and world.child(module, "resources") or nil
+    if not stock then
+        return
+    end
+    for r, v in pairs(cost or {}) do
+        if v ~= 0 then
+            local now = fp.from(tonumber(world.field(stock, r)) or 0)
+            world.set(stock, r, fp.to(now + sign * fp.from(v)))
+        end
+    end
+end
+
+-- a queue item of ours added: its buildable's kind and fields, its cost paid
+local function queue_item(world, owner, cid, queue, kind, fields, cost, time)
+    local orders = require("engine.ai.economy.orders")
+    if not orders.can_pay(owner, cost) then
+        return nil, "invalid: cannot pay"
+    end
+    local order = {}
+    for r in pairs(cost) do
+        order[#order + 1] = r
+    end
+    table.sort(order)
+    local id, why = orders.add({
+        country = owner, colony = cid, queue = queue, kind = kind, fields = fields,
+        cost = cost, cost_order = order, build_time = time,
+    })
+    return id, why
+end
+
+-- the queue item's list and its index in it
+local function item_place(world, iid)
+    local item = world.object(ITEMS, iid)
+    local q = item and world.object(QUEUES, tonumber(world.field(item, "queue")))
+    local list = q and world.field(q, "items")
+    for i, x in ipairs(list and world.list(list) or {}) do
+        if tonumber(x) == iid then
+            return item, q, list, i
+        end
+    end
+    return item, q, list, nil
+end
+
+-- the building types something upgrades into this one from (its predecessor: Downgrade)
+local function predecessor(btype)
+    local defs = require("engine.defs")
+    for name, d in pairs(defs.folder("common/buildings") or {}) do
+        for _, e in ipairs(d.block or {}) do
+            if e.op and e.key and e.key.text == "upgrades" and type(e.value) == "table" then
+                for _, u in ipairs(e.value) do
+                    if u.text and u.text:gsub('"', "") == btype then
+                        return name
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- the terraform links (common/terraform: every `terraform_link`, all of one name) in file order
+local link_cache
+local function terraform_links(game_dir)
+    if link_cache then
+        return link_cache
+    end
+    local okd, defs = pcall(require, "engine.defs")
+    local source = require("stellar.script.source")
+    local fs = okd and defs.fs or (game_dir and source.filesystem(game_dir))
+    local out = {}
+    for _, short in ipairs(fs and source.files(fs, "common/terraform", "txt") or {}) do
+        local tree = source.parse(fs, short)
+        for _, e in ipairs(tree or {}) do
+            if e.op == "=" and e.key and e.key.text == "terraform_link" and type(e.value) == "table" then
+                local ok, x = pcall(source.expand, fs, e.value, nil, 0, "file: " .. short)
+                out[#out + 1] = ok and x or e.value
+            end
+        end
+    end
+    link_cache = out
+    return out
+end
+planet.terraform_links = terraform_links
+
+local more = {}
+
+-- a building demolished (CDestroyBuildingDialog's Yes): Downgrade (the type something upgrades
+-- into it from) or gone, the zone's positions renumbered
+function more.destroy_building(world, x, a1)
+    local bid = tonumber(a1)
+    local bl = bid and world.object("buildings", bid)
+    if not bl then
+        return "invalid: no building " .. tostring(a1)
+    end
+    local btype = tostring(world.field(bl, "type")):gsub('"', "")
+    -- CanDestroyBuilding: the type's can_demolish (DESTROY_BUILDING_NOT_POSSIBLE)
+    local bdef = require("engine.defs").get("common/buildings", btype)
+    if bdef and require("engine.defs").field(bdef.block, "can_demolish") == "no" then
+        return "invalid: " .. btype .. " can not be demolished"
+    end
+    local prev = predecessor(btype)
+    if prev then
+        world.set(bl, "type", '"' .. prev .. '"')
+        x.rebuild()
+        return "ok downgraded " .. btype .. " to " .. prev
+    end
+    for _, did in ipairs(world.list(world.field(x.c, "districts"))) do
+        local d = world.object("districts", tonumber(did))
+        for _, z in ipairs(d and world.list(world.field(d, "zones")) or {}) do
+            local zb = tonumber(z) and world.object("zones", tonumber(z))
+            local bl2 = zb and world.field(zb, "buildings")
+            for _, b in ipairs(bl2 and world.list(bl2) or {}) do
+                if tonumber(b) == bid then
+                    world.remove_value(bl2, bid)
+                    world.remove("buildings", bid)
+                    for i, rest in ipairs(world.list(bl2)) do
+                        local rb = world.object("buildings", tonumber(rest))
+                        if rb then
+                            world.set(rb, "position", i - 1)
+                        end
+                    end
+                    x.rebuild()
+                    return "ok demolished " .. btype
+                end
+            end
+        end
+    end
+    return "invalid: building " .. bid .. " not on the colony"
+end
+
+-- CToggleBuildingEnabledCommand: the building's `disabled` **[I]** the key (runtime.lua's)
+function more.toggle_building(world, x, a1)
+    local bl = world.object("buildings", tonumber(a1))
+    if not bl then
+        return "invalid: no building " .. tostring(a1)
+    end
+    local off = world.field(bl, "disabled") == "yes"
+    if off then
+        world.remove_entry(bl, world.entry(bl, "disabled"))
+    else
+        world.set(bl, "disabled", "yes")
+    end
+    return "ok building " .. a1 .. (off and " enabled" or " disabled")
+end
+
+-- the building's queue items (repair, replace): the new type's cost and time
+local function building_item(world, x, kind, bid, btype, extra)
+    local B = require("engine.ai.economy.buildables")
+    local b = { kind = "planet_building", type = btype, colony = x.cid, planet = x.pid, owner = x.owner }
+    local cost, time = B.cost(b), B.build_time(b)
+    local fields = { { "building", btype, true }, { "planet", x.cid }, extra }
+    local id, why = queue_item(world, x.owner, x.cid, x.queue, kind, fields, cost, time)
+    return id and ("ok queued " .. kind .. " " .. btype .. " item " .. id) or (why or "invalid")
+end
+
+function more.repair_building(world, x, a1)
+    local bl = world.object("buildings", tonumber(a1))
+    if not bl then
+        return "invalid: no building " .. tostring(a1)
+    end
+    return building_item(world, x, "planet_repair_building", a1, tostring(world.field(bl, "type")):gsub('"', ""), { "repair_building", tonumber(a1) })
+end
+
+function more.replace_building(world, x, a1, a2)
+    if not world.object("buildings", tonumber(a1)) then
+        return "invalid: no building " .. tostring(a1)
+    end
+    return building_item(world, x, "planet_replace_building", a1, a2, { "replace_building", tonumber(a1) })
+end
+
+-- CDestroyDistrictDialog's Yes: one level of the district gone (remove_district)
+function more.destroy_district(world, x, a1)
+    require("engine.script.objects_colony")
+    local systems = require("engine.systems")
+    local r = systems.effects.remove_district({ kind = "planet", id = x.pid, district = a1 })
+    return "ok removed district " .. tostring(a1) .. " (" .. tostring(r) .. ")"
+end
+
+-- a district replaced by another type (district construction's entry: buildable_replace_district)
+function more.replace_district(world, x, a1, a2)
+    local B = require("engine.ai.economy.buildables")
+    local b = { kind = "district", type = a2, colony = x.cid, planet = x.pid, owner = x.owner }
+    local id, why = queue_item(world, x.owner, x.cid, x.queue, "replace_district",
+        { { "district", a2, true }, { "planet", x.cid }, { "replace_district", a1, true } }, B.cost(b), B.build_time(b))
+    return id and ("ok queued replace_district " .. a1 .. " -> " .. a2 .. " item " .. id) or (why or "invalid")
+end
+
+-- a blocker cleared (CBuildableClearDepositBlocker): its type's cost and time
+function more.clear_blocker(world, x, a1)
+    local dep = world.object("deposit", tonumber(a1))
+    if not dep then
+        return "invalid: no deposit " .. tostring(a1)
+    end
+    local key = tostring(world.field(dep, "type")):gsub('"', "")
+    local defs = require("engine.defs")
+    local d = defs.get("common/deposits", key)
+    local cost = def_cost("common/deposits", key, nil, x.pid, x.owner, x.cid)
+    local M = require("engine.economy").modifiers("colony", x.cid) or {}
+    for r, v in pairs(cost) do
+        cost[r] = v * (1 + (M.planet_clear_blocker_cost_mult or 0))
+    end
+    local time = (tonumber(d and defs.field(d.block, "time")) or 0) * (1 + (M.planet_clear_blocker_time_mult or 0))
+    local id, why = queue_item(world, x.owner, x.cid, x.queue, "clear_deposit_blocker",
+        { { "deposit", tonumber(a1) }, { "planet", x.cid } }, cost, time)
+    return id and ("ok queued clear_deposit_blocker " .. key .. " item " .. id) or (why or "invalid")
+end
+
+-- the district details' Clear Blocker: the first blocker deposit of the planet (CalcQuickClear-
+-- BlockerDeposit **[I]**: the one blocking the district's type)
+function more.quick_clear_blocker(world, x)
+    local colony = require("engine.script.objects_colony")
+    for _, did in ipairs(world.list(world.field(x.p, "deposits"))) do
+        local dep = world.object("deposit", tonumber(did))
+        local key = dep and tostring(world.field(dep, "type")):gsub('"', "")
+        if key and colony.is_blocker_type and colony.is_blocker_type(key) then
+            return more.clear_blocker(world, x, tostring(did))
+        end
+    end
+    return "invalid: no blocker"
+end
+
+-- CRemoveBuildableFromQueueCommand: the item out of its queue, its resources back
+function more.queue_cancel(world, x, a1)
+    local iid = tonumber(a1)
+    local item, q, list, i = item_place(world, iid)
+    if not i then
+        return "invalid: no item " .. tostring(a1)
+    end
+    local back = {}
+    for k, v in world.statements(world.field(item, "resources")) do
+        back[k] = tonumber(v)
+    end
+    add_stock(tonumber(world.field(item, "paying_country")) or x.owner, back, 1)
+    world.remove_value(list, iid)
+    world.remove(ITEMS, iid)
+    return "ok cancelled item " .. iid
+end
+
+-- the priority arrows (C{In,De}crease{Once,Max}BuildablePriorityCommand): one place, or to the end
+local function move_item(world, a1, dir, max)
+    local iid = tonumber(a1)
+    local _, _, list, i = item_place(world, iid)
+    if not i then
+        return "invalid: no item " .. tostring(a1)
+    end
+    local ids = world.list(list)
+    local j = max and (dir < 0 and 1 or #ids) or (i + dir)
+    if j < 1 or j > #ids or j == i then
+        return "invalid: cannot move"
+    end
+    table.remove(ids, i)
+    table.insert(ids, j, tostring(iid))
+    world.replace(list, {})
+    for _, v in ipairs(ids) do
+        world.append_value(list, tonumber(v))
+    end
+    return "ok moved item " .. iid .. " to " .. j
+end
+function more.queue_up(world, x, a1, a2)
+    return move_item(world, a1, -1, a2 == "max")
+end
+function more.queue_down(world, x, a1, a2)
+    return move_item(world, a1, 1, a2 == "max")
+end
+
+-- CEnactDecisionCommand: allow holds and the cost is paid; enactment_time: an item of the planet's
+-- queue (its effect when done), else the effect now
+function more.decision(world, x, a1)
+    local defs = require("engine.defs")
+    local d = defs.get("common/decisions", a1)
+    if not d then
+        return "invalid: no decision " .. tostring(a1)
+    end
+    local cost, _, ctx = def_cost("common/decisions", a1, nil, x.pid, x.owner, x.cid)
+    local eval = require("simscript.eval")
+    for _, key in ipairs({ "potential", "allow" }) do
+        local t = defs.field(d.block, key)
+        if type(t) == "table" then
+            local ok, holds = pcall(eval.trigger, t, ctx)
+            if ok and not holds then
+                return "invalid: " .. key .. " does not hold"
+            end
+        end
+    end
+    local time = tonumber(defs.field(d.block, "enactment_time"))
+    if time and time > 0 then
+        local id, why = queue_item(world, x.owner, x.cid, x.queue, "decision",
+            { { "decision", a1, true }, { "planet", x.cid } }, cost, time)
+        return id and ("ok queued decision " .. a1 .. " item " .. id) or (why or "invalid")
+    end
+    local orders = require("engine.ai.economy.orders")
+    if not orders.can_pay(x.owner, cost) then
+        return "invalid: cannot pay"
+    end
+    add_stock(x.owner, cost, -1)
+    local cp = require("engine.construction_planet")
+    local ok, err = cp.run_effect(defs.field(d.block, "effect"), x.pid, x.owner)
+    return ok and ("ok enacted " .. a1) or ("error " .. tostring(err))
+end
+
+-- the decision progress window's cancel: the queue's first decision item cancelled
+function more.cancel_decision(world, x)
+    for _, iid in ipairs(world.list(world.field(world.object(QUEUES, x.queue), "items"))) do
+        local item = world.object(ITEMS, tonumber(iid))
+        if item and world.field(item, "buildable_decision") then
+            return more.queue_cancel(world, x, iid)
+        end
+    end
+    return "invalid: no decision queued"
+end
+
+-- CStartTerraformationCommand: the link (its index in terraform_links) from the planet's class,
+-- its condition, its cost paid, the process started (construction_planet)
+function more.terraform(world, x, a1)
+    local defs = require("engine.defs")
+    local link = terraform_links()[tonumber(a1) or 0]
+    if not link then
+        return "invalid: no link " .. tostring(a1)
+    end
+    local from = tostring(defs.field(link, "from")):gsub('"', "")
+    local class = tostring(world.field(x.p, "planet_class")):gsub('"', "")
+    if from ~= class then
+        return "invalid: the planet is not " .. from
+    end
+    local cost, _, ctx = def_cost(nil, nil, link, x.pid, x.owner, x.cid)
+    local cond = defs.field(link, "condition")
+    if type(cond) == "table" then
+        local eval = require("simscript.eval")
+        local ok, holds = pcall(eval.trigger, cond, eval.new_ctx(eval.S("country", x.owner)))
+        if ok and not holds then
+            return "invalid: condition does not hold"
+        end
+    end
+    local orders = require("engine.ai.economy.orders")
+    if not orders.can_pay(x.owner, cost) then
+        return "invalid: cannot pay"
+    end
+    local to = tostring(defs.field(link, "to")):gsub('"', "")
+    local M = require("engine.economy").modifiers("colony", x.cid) or {}
+    local total = (tonumber(defs.field(link, "duration")) or 0) * (1 + (M.add_terraformation_total_time_mult or 0))
+    if not require("engine.construction_planet").start_terraform(x.pid, to, total) then
+        return "invalid: already terraforming"
+    end
+    add_stock(x.owner, cost, -1)
+    return "ok terraforming to " .. to .. " in " .. math.floor(total) .. " days"
+end
+
+function more.cancel_terraform(world, x)
+    return require("engine.construction_planet").cancel_terraform(x.pid) and "ok terraforming cancelled" or "invalid: not terraforming"
+end
+
+-- CColonyRenameDialog's OK: the planet's name (name = { key = "..." })
+function more.rename(world, x, a1)
+    local name = tostring(a1 or ""):gsub('"', "")
+    if name == "" then
+        return "invalid: empty name"
+    end
+    local nb = world.field(x.p, "name")
+    if type(nb) == "table" then
+        world.replace(nb, {})
+        world.append(nb, "key", '"' .. name .. '"')
+    else
+        local blk = {}
+        world.append(blk, "key", '"' .. name .. '"')
+        world.set(x.p, "name", blk)
+    end
+    return "ok renamed " .. name
+end
+
+-- CMoveCapitalCommand: the colony the country's capital (set_capital)
+function more.move_capital(world, x)
+    require("engine.script.objects_colony")
+    local countries = require("engine.script.objects_countries")
+    countries.set_capital(x.owner, x.cid)
+    return "ok capital " .. x.cid
+end
+
+-- the jobs' workforce: +/- (CChangeJobWorkforceLimitCommand, delta), restore (every job's limit
+-- its max workforce); jobs.update after
+function more.workforce(world, x, a1, a2)
+    local job = world.object("pop_jobs", tonumber(a1))
+    if not job then
+        return "invalid: no job " .. tostring(a1)
+    end
+    local max = tonumber(world.field(job, "max_workforce")) or 0
+    local now = tonumber(world.field(job, "workforce_limit")) or max
+    local v = math.max(0, math.min(max, now + (tonumber(a2) or 0)))
+    world.set(job, "workforce_limit", v)
+    pcall(function() require("engine.jobs").update({ x.cid }) end)
+    return "ok job " .. a1 .. " workforce limit " .. v
+end
+
+function more.restore_jobs(world, x)
+    local n = 0
+    for _, jid in ipairs(world.list(world.field(x.c, "pop_jobs"))) do
+        local job = world.object("pop_jobs", tonumber(jid))
+        if job then
+            world.set(job, "workforce_limit", tonumber(world.field(job, "max_workforce")) or 0)
+            n = n + 1
+        end
+    end
+    pcall(function() require("engine.jobs").update({ x.cid }) end)
+    return "ok restored " .. n .. " jobs"
+end
+
+-- manual resettlement: POP_BULK_UNIT_SIZE (100) of a pop group to the other colony (pops.move_size
+-- into a group of the same species and category there)
+function more.resettle(world, x, a1, a2)
+    local pops = require("engine.pops")
+    local g = world.object("pop_groups", tonumber(a1))
+    local dst = tonumber(a2)
+    local dc = dst and world.object("colony", dst)
+    if not (g and dc) then
+        return "invalid: no pop group or colony"
+    end
+    if tonumber(world.field(dc, "colonizing_species")) and tonumber(world.field(dc, "colonizing_species")) ~= 4294967295 then
+        return "invalid: the colony is being colonized"
+    end
+    local key = world.field(g, "key")
+    local sid = tonumber(world.field(key, "species"))
+    local cat = tostring(world.field(key, "category") or ""):gsub('"', "")
+    local target
+    for _, gid in ipairs(world.list(world.field(dc, "pop_groups"))) do
+        local h = world.object("pop_groups", tonumber(gid))
+        local hk = h and world.field(h, "key")
+        if hk and tonumber(world.field(hk, "species")) == sid and tostring(world.field(hk, "category") or ""):gsub('"', "") == cat then
+            target = tonumber(gid)
+        end
+    end
+    target = target or (pops.create_group and pops.create_group(dst, sid, world.field(key, "category"), tonumber(a1)))
+    if not target then
+        return "invalid: no group there"
+    end
+    local n = math.min(100, tonumber(world.field(g, "size")) or 0)
+    pops.move_size(target, tonumber(a1), n, "GROWTH_CAT_RESETTLE", x.cid)
+    return "ok resettled " .. n .. " to colony " .. dst
+end
+
+-- the colonize window's Colonize (CCountryExpansionCommand: a species of the player's, no ship):
+-- the colony ship's cost paid, the planet owned and controlled, its colony colonizing with the
+-- species (engine.pops grows it monthly) **[I]** the game's colonization start (its pops, its time)
+function planet.colonize(planet_id, player, species)
+    local world = require("engine.world")
+    local p = world.object("planet", planet_id)
+    if not p then
+        return "invalid: no planet " .. tostring(planet_id)
+    end
+    if tonumber(world.field(p, "owner")) then
+        return "invalid: the planet is owned"
+    end
+    local cost = def_cost("common/ship_sizes", "colonizer", nil, planet_id, player, nil)
+    local orders = require("engine.ai.economy.orders")
+    if not orders.can_pay(player, cost) then
+        return "invalid: cannot pay"
+    end
+    add_stock(player, cost, -1)
+    require("engine.script.objects_colony")
+    local countries = require("engine.script.objects_countries")
+    countries.set_planet_owner(planet_id, player)
+    countries.set_planet_controller(planet_id, player)
+    local cid = world.planet_colony[planet_id]
+    local c = cid and world.object("colony", cid)
+    if c and tonumber(species) then
+        world.set(c, "colonizing_species", tonumber(species))
+    end
+    return "ok colonizing " .. planet_id .. " colony " .. tostring(cid)
+end
+
+planet.more_commands = more
+
 function planet.command(game_dir, planet_id, verb, a1, a2, a3)
     local world = require("engine.world")
     local p, cid, c, owner = colony_of(world, planet_id)
@@ -3231,6 +4107,9 @@ function planet.command(game_dir, planet_id, verb, a1, a2, a3)
             player = tonumber(world.field(b, "country")) or player
         end
     end
+    if verb == "colonize" then
+        return planet.colonize(planet_id, player, a1)
+    end
     -- the game's commands are the player's own planet's (IsValid: the owner is the sender)
     if not c or owner ~= player then
         return "invalid: not the player's colony"
@@ -3243,6 +4122,24 @@ function planet.command(game_dir, planet_id, verb, a1, a2, a3)
     elseif verb == "build_zone" then
         -- a zone in a district's slot (zone construction's entry)
         b.kind, b.district, b.zone_slot, b.type = "zone", tonumber(a1), tonumber(a2), a3
+        -- an occupied slot: the zone replaces it (zone_to_replace; construction_planet finishes it)
+        local d = world.object("districts", b.district)
+        local old = d and tonumber(world.list(world.field(d, "zones"))[(b.zone_slot or 0) + 1])
+        if old and old < 4294967295 and world.object("zones", old) then
+            local B = require("engine.ai.economy.buildables")
+            local fields = B.fields(b)
+            fields[#fields + 1] = { "zone_to_replace", old }
+            local orders = require("engine.ai.economy.orders")
+            local cost = B.cost(b)
+            if not orders.can_pay(owner, cost) then
+                return "invalid: cannot pay"
+            end
+            local id = orders.add({
+                country = owner, colony = cid, queue = B.queue(b), kind = "zone", fields = fields,
+                cost = cost, cost_order = cost_order(cost), build_time = B.build_time(b),
+            })
+            return id and ("ok queued zone " .. a3 .. " replacing " .. old .. " item " .. id) or "invalid: not queued"
+        end
         return queue_buildable(world, b)
     elseif verb == "build_building" then
         -- a building in a zone's free slot (the construction window's entry)
@@ -3295,6 +4192,17 @@ function planet.command(game_dir, planet_id, verb, a1, a2, a3)
         world.remove_value(world.field(c, "army"), tostring(aid))
         world.remove("army", aid)
         return "ok disbanded " .. aid
+    end
+    local f = planet.more_commands[verb]
+    if f then
+        local x = {
+            p = p, pid = planet_id, cid = cid, c = c, owner = owner, queue = tonumber(world.field(p, "build_queue")),
+            rebuild = function()
+                local colony = require("engine.script.objects_colony")
+                colony.rebuild_cache(c)
+            end,
+        }
+        return f(world, x, a1, a2, a3)
     end
     return "not done: " .. tostring(verb)
 end

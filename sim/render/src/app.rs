@@ -1162,8 +1162,9 @@ impl App {
                 if let Some((id, name, _)) = &body {
                     names.push(name);
                     selected = Some(("planet".into(), *id));
-                } else if map.world {
-                    // any other planet: the planet view names it from its own data (planet.rs)
+                } else {
+                    // any other planet: the planet view names it from its own data (planet.rs;
+                    // the world's, or the simulation's once it runs)
                     names.push(&none);
                     selected = Some(("planet".into(), id));
                 }
@@ -1197,6 +1198,7 @@ impl App {
                 let colonize = self.planet_view.colonize == Some(s.id);
                 let side = self.planet_view.side.clone();
                 planet_owner = crate::planet::prepare(&self.runtime, self.map.as_ref().unwrap(), s.id, &tab, colonize, side.as_deref())?;
+                crate::planet::set_extras(&self.runtime, &self.planet_view)?;
             }
             _ => crate::planet::clear(&self.runtime),
         }
@@ -2159,6 +2161,21 @@ impl App {
                 if !matches!(key.as_str(), "shift" | "ctrl" | "alt") && self.creator_focused() {
                     if let Some(a) = creator_key(key, self.controls.mods().shift) {
                         self.newgame_act(&a)?;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        // the planet view's rename dialog takes the keyboard (its edit box), as the creator's fields
+        if self.screen == Screen::Map && self.planet_view.dialog.as_deref() == Some("rename") {
+            if let Input::Key { key, down, .. } = input {
+                if !matches!(key.as_str(), "shift" | "ctrl" | "alt") {
+                    // a key's release too: the bindings act on release (Space: pause)
+                    if !*down {
+                        return Ok(false);
+                    }
+                    if let Some(a) = creator_key(key, self.controls.mods().shift).and_then(|a| crate::planet::typed(&self.planet_view, &a)) {
+                        crate::planet::act(self, &a)?;
                         return Ok(true);
                     }
                 }

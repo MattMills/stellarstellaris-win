@@ -29,6 +29,13 @@ pub struct State {
     pub pending: Vec<(u32, String)>,
     /// the last command's result, for the command protocol
     pub last: String,
+    /// a dialog over the view: `rename`, `move_capital`, `destroy_building:ID`,
+    /// `destroy_district:TYPE`, `disband:ARMY`; its OK runs the command (dialog_ok)
+    pub dialog: Option<String>,
+    /// the rename dialog's text as typed (None: the planet's name, untouched)
+    pub text: Option<String>,
+    /// the colonize window's selected source (a species id)
+    pub source: Option<u32>,
 }
 
 impl State {
@@ -105,12 +112,61 @@ pub fn act(app: &mut crate::app::App, action: &str) -> Result<(), String> {
             app.open_planet(id, arg)?;
         }
         "colonize" => app.planet_view.colonize = Some(id),
-        "colonize_close" => app.planet_view.colonize = None,
+        "colonize_close" => {
+            app.planet_view.colonize = None;
+            app.planet_view.source = None;
+        }
         "side" => {
             // the same window again closes it (the side bar's buttons toggle **[I]**)
             app.planet_view.side = if app.planet_view.side.as_deref() == Some(arg) { None } else { Some(arg.to_string()) };
         }
         "side_close" => app.planet_view.side = None,
+        // the dialogs (rename, the confirmations): opened, typed into, accepted, closed
+        "dialog" => {
+            app.planet_view.dialog = Some(arg.to_string());
+            app.planet_view.text = None;
+        }
+        "dialog_close" => {
+            app.planet_view.dialog = None;
+            app.planet_view.text = None;
+        }
+        "dialog_ok" => {
+            if let Some(d) = app.planet_view.dialog.take() {
+                let text = app.planet_view.text.take();
+                let cmd = match d.split_once(':') {
+                    None if d == "rename" => text.filter(|t| !t.trim().is_empty()).map(|t| format!("rename:{}", t.trim())),
+                    None => Some(d.clone()),
+                    Some((what, a)) => Some(format!("{what}:{a}")),
+                };
+                if let Some(cmd) = cmd {
+                    // a demolished building's details close with it (the side bar shows nothing)
+                    if cmd.starts_with("destroy_building:") {
+                        app.planet_view.side = None;
+                    }
+                    app.planet_view.pending.push((id, cmd));
+                    run_pending(app)?;
+                }
+            }
+        }
+        "text" => {
+            // a character typed into the rename dialog (`:` would split the command: left out)
+            if app.planet_view.dialog.as_deref() == Some("rename") && arg != ":" {
+                app.planet_view.text.get_or_insert_with(String::new).push_str(arg);
+            }
+        }
+        "key" => match arg {
+            "backspace" => {
+                let t = app.planet_view.text.get_or_insert_with(String::new);
+                t.pop();
+            }
+            "return" => return act(app, "planet:dialog_ok"),
+            "escape" => return act(app, "planet:dialog_close"),
+            _ => {}
+        },
+        "source" => {
+            let sid = arg.parse::<u32>().ok();
+            app.planet_view.source = if app.planet_view.source == sid { None } else { sid };
+        }
         "prev" | "next" => {
             let owned: Vec<u32> = app.map.as_ref().map(|m| m.galaxy.planets.iter().map(|p| p.id).collect()).unwrap_or_default();
             if let Some(i) = owned.iter().position(|&p| p == id) {
@@ -134,6 +190,11 @@ pub fn act(app: &mut crate::app::App, action: &str) -> Result<(), String> {
         "cmd" => {
             app.planet_view.pending.push((id, arg.to_string()));
             run_pending(app)?;
+            // colonizing closes the colonize window (the game's surface view closes on its order)
+            if arg.starts_with("colonize:") && app.planet_view.last.starts_with("ok") {
+                app.planet_view.colonize = None;
+                app.planet_view.source = None;
+            }
         }
         _ => app.log.push(format!("  planet view: {action}: not done")),
     }
@@ -147,6 +208,11 @@ pub fn escape(app: &mut crate::app::App) -> bool {
     use crate::scene::Pickable;
     if !matches!(app.selected, Some(Pickable::Body(_))) {
         return false;
+    }
+    if app.planet_view.dialog.take().is_some() {
+        app.planet_view.text = None;
+        app.relayout();
+        return true;
     }
     if app.planet_view.side.take().is_some() || app.planet_view.colonize.take().is_some() {
         app.relayout();
@@ -172,7 +238,11 @@ pub fn run_pending(app: &mut crate::app::App) -> Result<(), String> {
     for (id, cmd) in std::mem::take(&mut app.planet_view.pending) {
         let mut parts = cmd.split(':');
         let verb = parts.next().unwrap_or("");
-        let args: Vec<String> = parts.map(|a| format!("{a:?}")).collect();
+        let args: Vec<String> = if verb == "rename" {
+            vec![format!("{:?}", cmd["rename:".len()..].to_string())]
+        } else {
+            parts.map(|a| format!("{a:?}")).collect()
+        };
         let code = format!(
             "local r = require('render.windows.planet').command({gd:?}, {id}, {verb:?}{}{}) return tostring(r)",
             if args.is_empty() { "" } else { ", " },
@@ -194,6 +264,32 @@ pub fn run_pending(app: &mut crate::app::App) -> Result<(), String> {
 thread_local! {
     /// the system of the planet whose data was read last (a planet not the player's: zoom)
     static DATA_SYSTEM: std::cell::RefCell<Option<i64>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The view's dialog, the rename's text and the colonize window's source in `RENDER_PLANET`
+/// (after [`prepare`]).
+pub fn set_extras(front: &Runtime, view: &State) -> Result<(), String> {
+    let lua = &front.lua;
+    let set = || -> mlua::Result<()> {
+        let Some(t) = lua.globals().get::<Option<mlua::Table>>("RENDER_PLANET")? else { return Ok(()) };
+        t.set("dialog", view.dialog.clone())?;
+        t.set("text", view.text.clone())?;
+        t.set("source", view.source)?;
+        Ok(())
+    };
+    set().map_err(|e| format!("planet view: {e}"))
+}
+
+/// A key typed while the rename dialog is open: its action (`planet:text:C`, `planet:key:NAME`),
+/// from the empire creator's key names (app.rs creator_key); None when no dialog takes keys.
+pub fn typed(view: &State, creator_action: &str) -> Option<String> {
+    if view.dialog.as_deref() != Some("rename") {
+        return None;
+    }
+    if let Some(c) = creator_action.strip_prefix("creator:text:") {
+        return Some(format!("planet:text:{c}"));
+    }
+    creator_action.strip_prefix("creator:key:").map(|k| format!("planet:key:{k}"))
 }
 
 /// Forgets the simulation's data (a command changed the planet).

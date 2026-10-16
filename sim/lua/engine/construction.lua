@@ -155,6 +155,11 @@ function construction.speed(item)
         return nil
     end
     local planet = tonumber(world.field(b, "planet"))
+    -- the planet view's other buildables (decisions, replace, repair, blockers: construction_planet)
+    local cp = require("engine.construction_planet")
+    if cp.handles(kind, b) then
+        return cp.speed(kind, b), kind
+    end
     if kind == "district" or kind == "zone" or kind == "planet_building" or kind == "planet_upgrade_building" then
         local key = world.field(b, (kind == "planet_building" or kind == "planet_upgrade_building") and "building" or kind)
         local M = colony_mods(planet)
@@ -528,6 +533,10 @@ end
 -- ---------------------------------------------------------------------------------------------
 
 local function finish(item, kind, b, date)
+    local cp = require("engine.construction_planet")
+    if cp.handles(kind, b) then
+        return cp.finish(kind, b, date)
+    end
     local planet = tonumber(world.field(b, "planet"))
     if kind == "district" then
         -- the colony's district of that type
@@ -654,6 +663,8 @@ function construction.daily(date)
             end
         end
     end
+    -- the planets' terraforming (construction_planet)
+    require("engine.construction_planet").daily(date)
     -- CConstructionQueueItemManager::DailyUpdate: the finished items
     for _, iid in ipairs(done) do
         local item = items[iid]
