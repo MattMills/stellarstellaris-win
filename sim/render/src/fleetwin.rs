@@ -22,12 +22,21 @@ use crate::scene::Pickable;
 pub struct FleetWindows {
     /// the ship_view's ship (CInGameIdler::ShowShipView)
     pub ship: Option<u32>,
+    /// a targeted order armed (its button clicked: the next map click is its target, as the
+    /// game's order buttons' OnClick(target) overloads): the fleet and the order's name
+    pub armed: Option<(u32, String)>,
+    /// a counter of the commands done (their effect re-read: the windows laid out again)
+    pub commands: u64,
 }
 
 impl FleetWindows {
     /// What the windows were laid out for (a change lays them out again).
     pub fn key(&self) -> u64 {
-        self.ship.map_or(0, |s| s as u64 + 1)
+        let mut k = self.ship.map_or(0, |s| s as u64 + 1);
+        if let Some((f, o)) = &self.armed {
+            k = k.wrapping_mul(1_000_003).wrapping_add(*f as u64 + o.len() as u64 * 7919);
+        }
+        k.wrapping_mul(1_000_003).wrapping_add(self.commands)
     }
 }
 
@@ -70,12 +79,55 @@ impl App {
 
     /// A click on a fleet window's button: `fleet:ship:ID` (a ship row's inspect: the ship_view),
     /// `fleet:close_ship`, `fleet:manager:ID` (the fleet and ship views' Fleet Manager button),
-    /// `fleet:select:ID` (a fleet selected).
+    /// `fleet:select:ID` (a fleet selected); the buttons that change the game (docs/windows/
+    /// fleet.md "The buttons"): `fleet:do:FID:NAME`, `fleet:arm:FID:NAME`, `fleet:ship_do:SID:NAME`,
+    /// `fleet:tpl:FID:DESIGN:DELTA`, `fleet:focus:FID`, `fleet:designer[:DESIGN]`.
     pub fn fleet_act(&mut self, action: &str) -> Result<(), String> {
-        let mut it = action.split(':').skip(1);
-        let verb = it.next().unwrap_or("");
-        let id = it.next().and_then(|v| v.parse::<u32>().ok());
+        let parts: Vec<&str> = action.split(':').collect();
+        let verb = parts.get(1).copied().unwrap_or("");
+        let id = parts.get(2).and_then(|v| v.parse::<u32>().ok());
+        let name = parts.get(3).copied().unwrap_or("");
         match (verb, id) {
+            // an order or action done at once (the buttons' OnClick() without a target):
+            // render.windows.fleet_commands.NAME(FID) in the world
+            ("do", Some(fid)) if is_name(name) => {
+                self.fleet.armed = None;
+                self.fleet_command(&format!("[{name:?}]({fid})"))?;
+            }
+            // a targeted order: armed (its button again: disarmed); the next map click is its
+            // target (fleet_target)
+            ("arm", Some(fid)) if is_name(name) => {
+                let next = Some((fid, name.to_string()));
+                self.fleet.armed = if self.fleet.armed == next { None } else { next };
+                self.log.push(format!("fleet order armed: {:?}", self.fleet.armed));
+            }
+            // a ship's own action (its row's disband): fleet_commands.ship_NAME(SID)
+            ("ship_do", Some(sid)) if is_name(name) => {
+                self.fleet_command(&format!("[\"ship_{name}\"]({sid})"))?;
+            }
+            // a Fleet Manager design row's increase / decrease (`fleet:tpl:FID:DESIGN:DELTA`):
+            // the template's count (fleet_commands.template)
+            ("tpl", Some(fid)) => {
+                let did = name.parse::<u32>().map_err(|_| format!("bad action {action}"))?;
+                let delta = parts.get(4).and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+                self.fleet_command(&format!(".template({fid}, {did}, {delta})"))?;
+            }
+            // the focus button (CFleetViewEntry::OnFocus): the camera to the fleet, following it
+            ("focus", Some(fid)) => {
+                self.focus(Pickable::Fleet(fid))?;
+            }
+            // the ship view's Open Designer (CShipView's open_designer: the ship designer on the
+            // ship's design, the one it upgrades to when it has one [I]): designer.rs; the ship view
+            // closes [I]
+            // (the fleet manager's Ship Designer tab: the designer without a design); the fleet
+            // view closes too, as with the Fleet Manager button (its rows were drawn over the
+            // designer) [I]
+            ("designer", did) => {
+                self.fleet.ship = None;
+                self.fleet.armed = None;
+                self.select(None);
+                self.set_designer(crate::designer::Designer { open: true, design: did });
+            }
             ("ship", Some(id)) => self.fleet.ship = Some(id),
             ("close_ship", _) => self.fleet.ship = None,
             // the fleet view's and ship view's Fleet Manager button (ShowFleetManagerView(the
@@ -99,13 +151,61 @@ impl App {
         Ok(())
     }
 
-    /// Escape closes the ship_view (its close button's shortcut); whether it was open.
+    /// Escape disarms an armed order, else closes the ship_view (its close button's shortcut);
+    /// whether it did.
     pub fn fleet_escape(&mut self) -> bool {
-        if self.fleet.ship.take().is_some() {
+        if self.fleet.armed.take().is_some() || self.fleet.ship.take().is_some() {
             self.relayout_windows();
             return true;
         }
         false
+    }
+
+    /// A fleet command run in the world (render.windows.fleet_commands, where the world is: the
+    /// simulation's thread between days, else the map's own world): the state changed as the
+    /// game's command changes it; the windows read it again. Returns the command's reply.
+    pub fn fleet_command(&mut self, call: &str) -> Result<String, String> {
+        // the engine's orders run in the simulation (its definitions, script layer, modifiers):
+        // started now if the map shows the save's world alone (paused: no day runs, as `step 0`)
+        if let Some(m) = self.map.as_mut() {
+            if m.has_world() {
+                let r = m.step(0)?;
+                self.log.push(format!("fleet command: the simulation started ({r})"));
+            }
+        }
+        let r = self.fleet_world_query(&format!("local fc = require('render.windows.fleet_commands') return tostring(fc{call})"))?;
+        self.log.push(format!("fleet command: {call} -> {r}"));
+        // the map shows it without a day run: a snapshot now, taken when it comes
+        if let Some(c) = self.map.as_ref().and_then(|m| m.clock.as_ref()) {
+            c.publish(true);
+        }
+        self.fleet.commands += 1;
+        self.relayout_windows();
+        Ok(r)
+    }
+
+    /// What a map pick is to a command: its kind and save id.
+    fn fleet_target_of(&self, hit: Pickable) -> Option<(&'static str, u32)> {
+        let m = self.map.as_ref()?;
+        Some(match hit {
+            Pickable::System(i) => ("system", m.galaxy.systems.get(i)?.id),
+            Pickable::Fleet(f) => ("fleet", f),
+            Pickable::Body(p) => ("planet", p),
+            Pickable::Ship(s) => ("ship", s),
+        })
+    }
+
+    /// A left click on the map while an order is armed: the order to what is under it
+    /// (render.windows.fleet_commands.target(FID, ORDER, KIND, ID)); nothing under it disarms.
+    /// Whether the click was taken.
+    pub fn fleet_target(&mut self, hit: Option<Pickable>) -> Result<bool, String> {
+        let Some((fid, order)) = self.fleet.armed.take() else { return Ok(false) };
+        if let Some((kind, id)) = hit.and_then(|h| self.fleet_target_of(h)) {
+            self.fleet_command(&format!(".target({fid}, {order:?}, {kind:?}, {id})"))?;
+        } else {
+            self.relayout_windows();
+        }
+        Ok(true)
     }
 
     /// The selected fleet whose fleet_view shows (a fleet that is not a station).
@@ -128,6 +228,10 @@ impl App {
         }
         if let Some(id) = self.fleet.ship {
             calls.push(format!("ship = fd.ship_view({id}),"));
+        }
+        // the armed order (its button's `_selected` sprite)
+        if let Some((fid, name)) = &self.fleet.armed {
+            calls.push(format!("armed = {{ {fid}, {name:?} }},"));
         }
         let source = self.fleet_world_query(&format!("return fd.serialize({{ {} }})", calls.join(" ")))?;
         let lua = &self.runtime.lua;
@@ -252,4 +356,9 @@ impl App {
             .eval::<String>()
             .map_err(|e| format!("render.windows.fleet_data: {e}"))
     }
+}
+
+/// A command's name: a Lua identifier (what an action may call in render.windows.fleet_commands).
+fn is_name(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !s.starts_with(|c: char| c.is_ascii_digit())
 }

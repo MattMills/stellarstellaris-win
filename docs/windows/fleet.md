@@ -184,14 +184,95 @@ tracking, penetration weights) not read: no reading of them fits both 163 and 18
 fleet's, "169" where the game shows "163/184"); the upgradable count's icon frame (|2) is drawn
 as frame 1.
 
-## 5. Not done yet
+## 5. The buttons
+
+Every button that changes the game posts a CCommand in the game (PostCommandToSession). Here it
+calls `render.windows.fleet_commands` in the simulation's runtime (fleetwin.rs
+`App::fleet_command`, through `Clock::query`). A map that shows the save's own world starts the
+simulation, paused (`step 0`), first. A snapshot is then published and the windows are laid out
+again. The actions are:
+
+- `fleet:do:FID:NAME`: an order or action at once.
+- `fleet:arm:FID:NAME`: a targeted order. The button shows its `_selected` frame, the next left
+  click on the map gives the target (`fleet_commands.target`), and Escape or a click on nothing
+  disarms it.
+- `fleet:ship_do:SID:NAME`: a ship row's button.
+- `fleet:tpl:FID:DESIGN:DELTA`: a Fleet Manager design row's count.
+- `fleet:focus:FID`: the camera.
+- `fleet:designer[:DESIGN]`: the ship designer.
+
+A missing fleet, ship or template is refused and never an error. Each call returns a line that
+goes to the log.
+
+The game's rules, from the RE spec of the handlers [V unless marked]:
+
+- Queue mode: an order replaces the fleet's orders (shift appends, ctrl+shift puts it in front).
+  Here an order always replaces them [I: the modifiers are not read].
+- Targeted orders: move (point, planet or system), survey (planet or system), research
+  (planet), the build-station orders and attack.
+- Pickers and popups: home base opens a picker; auto-explore and automate open the automation
+  popup.
+- Everything else acts at once.
+
+| Button | Window | Here |
+|---|---|---|
+| move (header) | fleet | wired: armed; a system: move_to_system_point_order to its centre, a planet: orbit_planet_order, a fleet or ship: move to its place |
+| right click on the map | map | wired on render-buttons-1 (mapicons.rs `order_at`), not here |
+| survey | science fleet | wired: armed; a planet: survey_planet_order, a system: one per unsurveyed body (orders.survey_system) |
+| research | science fleet | wired: armed; a planet: research_anomaly_order (a planet without an anomaly: issued, and the engine cancels it at once; the game does not take such a target [I]) |
+| stop | fleet, manager header | wired: the orders cleared (orders.clear); disabled while idle with no orders |
+| return | fleet, manager header | wired: return_fleet_order in front (orders.return_to_base) [I: the MIA popup when it is not valid is not done] |
+| stance | military, science, constructor; manager's change_stance | wired: passive, aggressive, evasive in turn, skipping what the fleet does not support; passive leaves `fleet_stance` out |
+| ground support | military | wired: `ground_support_stance` set to selective or indiscriminate [I: the other bombardment stances' potentials are not evaluated] |
+| merge | fleet header | wired: enabled with another of the owner's fleets of the class in the system; their ships are moved in at once (the template's row of their design, or of the design they upgrade to, counted; the naval capacity unchanged) and the emptied fleets removed [I: the game gives them merge_fleet_orders towards the first fleet] |
+| split | fleet actions | wired: the second half of the ships go to a new fleet at the same place, with its own template (engine.fleets.create); the old template's rows counted down [I: the game takes about half of each size] |
+| disband (fleet) | fleet top, manager actions | wired: the ships, the fleet, its system presence, its owned_fleets entry and its template removed [not done here: the confirmation popup, on_fleet_disbanded, the leader unassigned] |
+| disband (ship row) | fleet's ship list | wired: the ship removed from its fleet, and the fleet too when it was the last [not done here: on_ship_disbanded] |
+| inspect (ship row) | fleet | wired: the ship view |
+| focus_on | fleet top | wired: the camera to the fleet |
+| open_fleet_manager | fleet, ship | wired: the manager on the fleet's template |
+| open_designer | ship | wired: the designer on the ship's (upgrade) design, the fleet view closed; both ship view buttons greyed for a ship that cannot be upgraded [V] |
+| Ship Designer tab | manager | wired: the designer with no design (the designer's own Fleet Manager tab closes it: designer.rs, not here) |
+| row select | manager | wired (view_set:fleet=ID) |
+| increase / decrease | manager design rows | wired: the template's count +1 / -1 and its fleet_size; decrease is disabled when it would go below the fleet's ships [I: the modifiers' steps of 10 and "all spare" not done; the reinforcement it queues not done] |
+| inspect (design row) | manager | wired: the design in the designer |
+| close, Escape | all three | wired; Escape disarms an armed order first |
+| attack, home base, jump, MIA jump, build starbase / mining / research / observation, megastructure | fleet | UI only: armed, the target given, then "not done": the engine has no follow_order with attack, no home-base picker, no jump drive, and build_orbital_station_order's station is not modelled |
+| auto-explore, automate construction | fleet | not done here: the automation popup and automate_fleet_order |
+| follow / take point | fleet, manager header | not done here: flag bit 0x80 (`settings={friends_should_follow=yes}` [I]) |
+| repair, upgrade, reinforce, reinforce all, mercenary, transfer | fleet actions, manager | not done here: the engine has no repair or upgrade order, no shipyard queue for reinforcement, no transfer view |
+| overwrite, copy template, create new fleet, retrofit, the design row's disband, policies | manager | not done here: the template edits beyond a count, and the policies popup |
+| rename | manager | not done here: the renderer has no text input |
+
+The current order's line (fleet view, the manager's current_order) is now read from the fleet's
+`current_order`. move_to_system_point_order and orbit_planet_order show FLEETORDER_MOVE_OTHER_SYSTEM,
+survey_planet_order FLEETORDER_SURVEY (planet, progress), return_fleet_order FLEETORDER_RETURN, and
+anything else NO_ORDERS [I]. Stop is enabled when the fleet has an order.
+
+Checked in a real window (the windowed renderer under Xvfb on .24, 2210.01.01 save, a click
+per step, the result read in the log and the frame after each click):
+- Typhoon (military fleet): move armed and targeted on The Mooring ("Moving to the Ithni Zerak
+  System"), return ("Returning"), stop ("No orders"), stance three times (its icon each time),
+  ground support, attack armed then Escape, inspect and Escape (ship view), a ship row's disband
+  (2/3, 10/50), split (Crashing Wave, 10/50), merge (15/50 (15), one row, naval capacity 15/57),
+  the fleet's disband (the window and the outliner row gone).
+- The Fleet Manager: increase and decrease (3/4, then 3/3), change stance, return ("Returning"),
+  stop, a row's inspect (the designer), the Ship Designer tab.
+- The ship view: Fleet Manager and Open Designer on an upgradable corvette; greyed on the
+  construction ship.
+- UOR Hydrozoan (science ship): survey armed and targeted ("Surveying The Mooring: 0%"),
+  research, stance, auto-explore ("not done"), MIA jump greyed.
+- UOR Drifting Crab (construction ship): build mining armed and targeted ("not done").
+Not compared with the headless game this time: no headless game was to run on .24 (the parent's
+instruction). The frames before the clicks are the ones compared earlier (sections 2-4).
+
+## 6. Not done yet
 
 - The leader's portrait and trait icons (shared with the leader windows); the ship view's 3D
   preview (a model drawn into the GUI).
 - Ship stats: the country's modifiers; ship ranks above Regular; military power of designs.
 - Observation posts, hero ships, colonizers, transports, a foreign fleet with communications
   (the 2210 player has none) not checked against the game.
-- Clicks other than inspect, close, deselect, the fleet manager's buttons, a row's selection:
-  the orders and actions log "not done yet".
+- The buttons marked "not done here" in section 5.
 - The renderer draws every text after every sprite: a text under a window (a map label) shows
   through it (scene.rs; not the fleet windows' own).

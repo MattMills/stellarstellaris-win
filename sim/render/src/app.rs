@@ -1564,6 +1564,10 @@ impl App {
         }
         if self.screen == Screen::Map && under.is_none() {
             let hit = self.scene()?.pick_at(x, y, 6.0);
+            // an armed fleet order takes the click as its target (fleetwin.rs)
+            if self.fleet_target(hit)? {
+                return Ok(true);
+            }
             self.select(hit);
             return Ok(true);
         }
