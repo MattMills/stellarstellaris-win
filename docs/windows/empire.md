@@ -200,3 +200,67 @@ trait icons).
 - The leader's background text, the experience bars, the Demographics tab's pie chart and pop
   effects, the expanded colony rows' pop counts, the districts' maxima.
 - Tooltips.
+
+## 11. The buttons
+
+What each clickable element does in the game (the views' handlers and commands, read in the 4.5.2
+Linux build: **[V]** with the function in sections 2 to 8 and in the shared notes'
+`empire_re/commands.md`) and in the renderer. Three kinds of action:
+- the view's state (`view_set:KEY=VALUE`): tabs, sorting, rows expanded or selected, popups;
+- a simulation command (`cmd:VIEW:VERB:ARG...`, render-buttons-1's views.rs: the module's
+  `command(VERB, ARG...)` runs `render.windows.empire_commands.run` in the simulation's runtime
+  between days, then a snapshot shows the result): the game's own command redone on the world;
+- another view or window (`view:NAME`, `view_close`, `select:planet:ID`).
+
+Escape closes a view's popup first (its `escape_keys`: the council's agenda list, the species'
+rights popup), else the view. A view draws its frame alone until its data has come (every read of
+the data guarded). The wheel scrolls the leaders' list (its `wheel`).
+
+| view | element | the game | here |
+|---|---|---|---|
+| all | close (X), Escape | closes the view | wired |
+| left bar, top bar flag | the view's icon | ToggleTopBarView | wired (views.rs) |
+| government | Empire / Demographics tabs | TabGovernment / TabDemographics | wired (state) |
+| government | Modifiers / Relations | the right panel's mode | wired (state) |
+| government | emergency_election_button | an election (democratic only) | disabled as the game's here |
+| government | Reform Government | CGovernmentModWindow (authority, civics; costs unity x empire size) | not done (the window is not drawn) |
+| government | empire_rename_button | the rename dialog (`name`, `adjective`) | not done (no dialog) |
+| government | ruler card | the leader's view | not done |
+| leaders | All / class tabs | ShowLeaders: the class filter | wired (state) |
+| leaders | a row | the leader selected | wired (state) |
+| leaders | section headers (minus / plus) | the section collapsed / expanded | wired (state) |
+| leaders | Hire | ShowRecruitLeaderDialog, then CRecruitLeaderCommand: unity paid, pool -> owned_leaders, recruitment_date | wired (command; the dialog not drawn) |
+| leaders | Dismiss | ShowFireLeaderDialog, then CFireLeaderCommand (not the ruler) | wired (command; disabled for the ruler; no dialog) |
+| leaders | Assign | the job list (CAssignLeaderCommand) | disabled: the job list not done |
+| leaders | the list | the wheel scrolls it | wired (wheel) |
+| empire | sort buttons | SetSort<N>, again reverses | wired (state) |
+| empire | a sector's entry | ToggleExpanded | wired (state) |
+| empire | a colony's row | ShowPlanetView | wired (`select:planet`) |
+| empire | delete / Create Vassal | disabled for a core sector | disabled as the game's |
+| empire | edit / rename / governor card | the sector edit view, the rename dialog, the assign widget | not done |
+| council | Factions / Policies & Edicts tabs, Open Edicts | the other views | wired (`view:`) |
+| council | agenda list button, its close | ToggleCouncilAgendaView | wired (state; Escape closes it) |
+| council | an available agenda | the agenda chosen (council_agenda, progress 0) | wired (command), the list closed |
+| council | an unavailable agenda | disabled | disabled |
+| council | early launch | CEarlyFinishAgendaCommand | disabled as the game's here |
+| council | a councillor's card | the assign widget | not done |
+| edicts | Council / Factions tabs | the other views | wired |
+| edicts | a category's header, collapse all | ToggleCategoryCollapsed / ToggleAllCategoriesCollapsed | wired (state) |
+| edicts | a policy's row | its options shown | wired (state) |
+| edicts | an option | the policy set (selected, date; 10 years between changes) | wired (command) |
+| edicts | an edict's checkbox | CAddEdictCommand (unity paid; perpetual) / CRemoveEdictCommand | wired (command) |
+| factions | tabs | the other views | wired |
+| factions | sort buttons, Manage, rename | the factions' list (none in the 2210 save) | not done (no factions to show) |
+| species | Empire / All Species tabs | ChangeViewMode | the tab's state only (the galaxy's species not listed) |
+| species | sort buttons | OnSetSortTypeSpecies | state (one species group a row: the sort shows no change here) |
+| species | a row | the species selected | wired (state) |
+| species | Set Species Rights, Default Rights | the rights popup | wired (state; Escape closes it) |
+| species | a right's group, an option | its options; CSetSpeciesRightsCommand | wired (state; command) |
+| species | Reset To Empire Default | the species' own rights removed | wired (command) |
+| species | Set as Default | CSetDefaultSpeciesCommand | not done: its save field is not known (disabled for the default species) |
+| species | home planet button | OnHomePlanet | wired (`select:planet`) |
+| species | Create Template, Apply This Template | the species' editor | not done |
+
+What the commands leave out [not done here]: the cost multipliers (edict costs, the leader's cost by
+level), the edict's `effect` / `on_disabled` and the agenda's effects, the 10-year lock written by
+species rights, a hired leader's replacement in the pool.

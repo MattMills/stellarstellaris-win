@@ -42,11 +42,16 @@ function M.data(cid, state)
     local mod = world.path(c, "modules", "standard_species_rights_module")
     local rights = {}
     local function rights_of(b)
-        return { citizenship = C.strip(world.field(b, "citizenship")), slavery = C.strip(world.field(b, "slavery")) }
+        local r = {}
+        for _, g in ipairs(M.RIGHTS) do
+            r[g.field] = C.strip(world.field(b, g.field))
+        end
+        return r
     end
     local primary = world.field(mod, "primary")
     if primary then
-        rights[tonumber(world.field(primary, "species_index")) or -1] = rights_of(primary)
+        d.primary = tonumber(world.field(primary, "species_index"))
+        rights[d.primary or -1] = rights_of(primary)
     end
     for _, e in ipairs(mod or {}) do
         if e.op and e.key and e.key.text == "species_rights" and type(e.value) == "table" then
@@ -61,6 +66,8 @@ function M.data(cid, state)
         end
     end
     local default = world.field(mod, "default")
+    d.default_rights = default and rights_of(default) or {}
+    d.facts = C.facts(world, c)
     for _, sp in ipairs(order) do
         local s = leaders.species_data(sp)
         if s then
@@ -71,10 +78,38 @@ function M.data(cid, state)
             local hp = type(hb) == "table" and tonumber(world.field(hb, "reference")) or tonumber(hb)
             local p = hp and world.object("planet", hp)
             s.home_planet = p and galaxy.name_block(world.field(p, "name"))
+            s.home_planet_id = p and hp or nil
             d.species[#d.species + 1] = s
         end
     end
     return d
+end
+
+-- the species rights popup's groups (species_rights_settings_item, the game's frame's order):
+-- the module's field, the definitions' directory, the group's name and icon
+M.RIGHTS = {
+    { field = "citizenship", dir = "citizenship_types", name = "SPECIES_RIGHT_CITIZENSHIP", icon = "GFX_species_right_citizenship" },
+    { field = "subspecies_integration", dir = "subspecies_integration_types", name = "SPECIES_RIGHT_SUBSPECIES_INTEGRATION_TYPE", icon = "GFX_species_right_subspecies_integration_type" },
+    { field = "living_standard", dir = "living_standards", name = "SPECIES_RIGHT_LIVING_STANDARDS", icon = "GFX_species_right_living_standards" },
+    { field = "military_service", dir = "military_service_types", name = "SPECIES_RIGHT_MILITARY_SERVICE", icon = "GFX_species_right_military_service" },
+    { field = "colonization_control", dir = "colonization_controls", name = "SPECIES_RIGHT_COLONIZATION_CONTROLS", icon = "GFX_species_right_colonization_controls" },
+    { field = "population_control", dir = "population_controls", name = "SPECIES_RIGHT_POPULATION_CONTROLS", icon = "GFX_species_right_population_controls" },
+    { field = "migration_control", dir = "migration_controls", name = "SPECIES_RIGHT_MIGRATION_CONTROLS", icon = "GFX_species_right_migration_controls" },
+    { field = "slavery", dir = "slavery_types", name = "SPECIES_RIGHT_SLAVERY_TYPE", icon = "GFX_species_right_slavery_type", needs = "citizenship_slavery" },
+    { field = "purge", dir = "purge_types", name = "SPECIES_RIGHT_PURGE_TYPE", icon = "GFX_species_right_purge_type", needs = "citizenship_purge" },
+}
+
+-- a right's options: its directory's definitions whose potential holds (an unknown trigger
+-- counted as holding [I]: the species' scope is not evaluated here)
+function M.options(ctx, d, dir)
+    local out = {}
+    for _, k in ipairs(C.def_order(ctx, "common/species_rights/" .. dir)) do
+        local o = C.defs(ctx, "common/species_rights/" .. dir)[k]
+        if C.trigger(C.raw_field(o, "potential") or {}, d.facts or {}, true) then
+            out[#out + 1] = k
+        end
+    end
+    return out
 end
 
 -- a trait's icon file (common/traits `icon`)
@@ -150,6 +185,14 @@ local function icons(ctx, b, rect, list, size, spacing, path)
 end
 
 function M.build(ctx, d, state)
+    d = d or {}
+    -- (before the view's data has come, its frame alone: the data is nil until the snapshot
+    -- carries it)
+    if d.species == nil then
+        local b0 = C.builder(ctx)
+        b0:add(FILE, "topbar_species_view", { only = { background = true, close = true, close_button = true, heading = true }, actions = { [V .. "/close"] = "view_close" } })
+        return b0.items, b0.report
+    end
     split_ctx = ctx
     local b = C.builder(ctx)
     local list = {}
@@ -208,9 +251,42 @@ function M.build(ctx, d, state)
     else
         hide.selected_species = true
     end
+    -- the tabs (ChangeViewMode: Empire Species 0, All Species 1 [the galaxy's species not listed
+    -- here: not done]), the sort buttons (OnSetSortTypeSpecies: the same again reverses), the
+    -- selected species' buttons: Set Species Rights and Default Rights open the rights popup, Set as
+    -- Default (CSetDefaultSpeciesCommand: not the default already), the home planet's button
+    -- (OnHomePlanet: the planet selected); Create Template and Apply This Template open the
+    -- species' editor [not done here]
+    local mode = state.mode or ""
+    hide.show_empire_species_tab_button_selected = mode ~= "" or nil
+    hide.show_galaxy_species_tab_button_selected = mode == "" or nil
+    local named = {
+        close = "view_close",
+        show_empire_species_tab_button = "view_set:mode=",
+        show_galaxy_species_tab_button = "view_set:mode=all",
+        set_default_rights_button = "view_set:rights=default",
+        expand_all_button = "view_set:expand_all=" .. (state.expand_all == "1" and "" or "1"),
+    }
+    local SORTS = { "species_name_button", "traits_button", "planet_button", "population_button", "trait_points_button", "trait_picks_button", "rights_button" }
+    for n, name in ipairs(SORTS) do
+        local again = tonumber(state.sort) == n - 1
+        named[name] = "view_set:sort=" .. (n - 1) .. ";rev=" .. ((again and state.rev ~= "1") and "1" or "")
+    end
+    local disabled = {}
+    if selected then
+        named.set_rights_or_policy_button = "view_set:rights=" .. selected.id
+        if d.primary == selected.id then
+            disabled[S .. "set_default"] = true
+        else
+            named.set_default = "cmd:species:default_species:" .. selected.id
+        end
+        if selected.home_planet_id then
+            named.selected_species_home_planet_type_button = "select:planet:" .. selected.home_planet_id
+        end
+    end
     local r = b:add_named(FILE, "topbar_species_view", {
-        hide = hide, text = text, textures = textures, sprites = sprites,
-        actions = { [V .. "/close"] = "view_close" },
+        hide = hide, text = text, textures = textures, sprites = sprites, disabled = disabled,
+        named = { actions = named },
     })
     if selected then
         local _, rest = split_traits(selected.traits)
@@ -248,6 +324,70 @@ function M.build(ctx, d, state)
             y = y + 91 + 1
         end
     end
+
+    -- the rights popup (species_rights_settings_item, centred: (510, 110) at 1600 x 900 as in the
+    -- game's frame): the species' name or "Default Rights" as its title, a
+    -- species_right_group_entry per right (its
+    -- option selected; Slavery and Purge only for a slave or a purged species: disabled), a
+    -- group's click shows its options (species_right_entry), an option's click sets it (the
+    -- simulation's command: cmd:species:rights); Reset sets the default's rights again
+    if state.rights then
+        local who = state.rights
+        local rights, title = d.default_rights or {}, C.loc(ctx, "SET_DEFAULT_RIGHTS")
+        for _, s in ipairs(d.species or {}) do
+            if tostring(s.id) == who then
+                rights, title = s.rights or {}, C.name(ctx, s.name)
+            end
+        end
+        local P = "/species_rights_settings_item/"
+        local pr = b:add(FILE, "species_rights_settings_item", {
+            text = {
+                [P .. "species_rights_header"] = title,
+                [P .. "reset_rights_button"] = who == "default" and "RESET_RIGHTS_ALL" or "RESET_RIGHTS",
+            },
+            actions = {
+                [P .. "close"] = "view_set:rights=",
+                [P .. "reset_rights_button"] = "cmd:species:rights_reset:" .. who,
+            },
+        })
+        local rl = pr.rects[P .. "species_right_list_window/species_right_list"]
+        if rl then
+            local y = rl.y
+            for i, g in ipairs(M.RIGHTS) do
+                if y + 30 > rl.y + rl.h then
+                    break
+                end
+                local gp = "/species_rights/" .. i
+                local q = gp .. "/species_right_group_entry/"
+                local off = g.needs and rights.citizenship ~= g.needs
+                local open = state["rg_" .. g.field] == "1" and not off
+                b:add(FILE, "species_right_group_entry", {
+                    prefix = gp, parent = { x = rl.x, y = y, w = 0, h = 0 },
+                    sprites = ctx.db.sprites[g.icon] and { [q .. "group_icon"] = g.icon } or nil,
+                    text = { [q .. "species_right_name"] = g.name, [q .. "selected_option_name"] = rights[g.field] or "" },
+                    frames = { [q .. "expand_icon"] = open and 2 or 1 },
+                    actions = not off and { [q .. "background"] = "view_set:rg_" .. g.field .. "=" .. (open and "" or "1") } or nil,
+                    disabled = off and { [q .. "background"] = true } or nil,
+                })
+                y = y + 30
+                for k, opt in ipairs(open and M.options(ctx, d, g.dir) or {}) do
+                    if y + 30 > rl.y + rl.h then
+                        break
+                    end
+                    local op = gp .. "/options/" .. k
+                    local o = op .. "/species_right_entry/"
+                    local chosen = opt == rights[g.field]
+                    b:add(FILE, "species_right_entry", {
+                        prefix = op, parent = { x = rl.x + 15, y = y, w = 0, h = 0 },
+                        text = { [o .. "name"] = opt },
+                        frames = { [o .. "is_selected"] = chosen and 2 or 1 },
+                        actions = not chosen and { [o .. "option_button"] = "cmd:species:rights:" .. who .. ":" .. g.field .. ":" .. opt } or nil,
+                    })
+                    y = y + 30
+                end
+            end
+        end
+    end
     return b.items, b.report
 end
 
@@ -257,5 +397,14 @@ end
 function M.extract(game_dir)
     return M.data(require("render.topbar").player(), {})
 end
+
+
+-- its buttons' commands in the simulation (views.rs: `cmd:species:VERB:ARG...`, between days)
+function M.command(...)
+    return require("render.windows.empire_commands").run(...)
+end
+
+-- Escape (views.rs): the side windows in these state keys close first, else the view closes
+M.escape_keys = { "rights" }
 
 return M

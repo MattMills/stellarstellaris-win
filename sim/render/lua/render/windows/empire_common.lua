@@ -94,7 +94,13 @@ function C.facts(w, c)
     f.hive = f.authority == "auth_hive_mind"
     f.machine = f.authority == "auth_machine_intelligence"
     f.gestalt = f.ethics.ethic_gestalt_consciousness or f.hive or f.machine or false
-    f.nomadic = (C.strip(w.field(c, "type")) or ""):find("nomad") ~= nil
+    f.country_type = C.strip(w.field(c, "type")) or "default"
+    f.nomadic = f.country_type:find("nomad") ~= nil
+    -- the DLCs the save names (meta.required_dlcs)
+    f.dlcs = {}
+    for _, n in ipairs(C.strings(w.meta.required_dlcs)) do
+        f.dlcs[n] = true
+    end
     -- communications with another empire: a relation with `communications = yes`
     f.comms = false
     for _, e in ipairs(w.field(c, "relations_manager") or {}) do
@@ -105,28 +111,59 @@ function C.facts(w, c)
     return f
 end
 
+-- the DLC triggers and the names the save's required_dlcs gives the DLCs [I: from the triggers'
+-- documentation and the save]
+C.DLCS = {
+    has_paragon_dlc = "Galactic Paragons", has_overlord_dlc = "Overlord", has_federations_dlc = "Federations",
+    has_megacorp = "Megacorp", has_nemesis = "Nemesis", has_apocalypse = "Apocalypse",
+    has_ancrel = "Ancient Relics Story Pack", has_lithoids = "Lithoids Species Pack",
+    has_machine_age_dlc = "The Machine Age", has_shroud_dlc = "Cosmic Storms",
+    has_grand_archive_dlc = "Grand Archive", has_biogenesis_dlc = "BioGenesis",
+}
+
 -- a country trigger block evaluated on facts (the forms the views' potentials use; an unknown
 -- trigger is false) [I: the game's script layer evaluates them]
-function C.trigger(block, f)
+-- Three-valued: an unknown trigger is unknown through AND, OR and NOT (AND false when one is
+-- false, OR true when one is true); an unknown result is false, or true when `lenient`.
+function C.trigger(block, f, lenient)
     local function yes(v)
         return v == "yes"
     end
     local test
-    local function all(b)
+    local function each(b, fn)
         for _, e in ipairs(type(b) == "table" and b or {}) do
-            if e.op and e.key and not test(e.key.text, e.value.text and e.value.text:gsub('"', "") or e.value) then
-                return false
+            if e.op and e.key then
+                fn(test(e.key.text, e.value.text and e.value.text:gsub('"', "") or e.value))
             end
         end
-        return true
+    end
+    local function all(b)
+        local r = true
+        each(b, function(x)
+            if x == false then
+                r = false
+            elseif x == nil and r == true then
+                r = nil
+            end
+        end)
+        return r
     end
     local function any(b)
-        for _, e in ipairs(type(b) == "table" and b or {}) do
-            if e.op and e.key and test(e.key.text, e.value.text and e.value.text:gsub('"', "") or e.value) then
-                return true
+        local r = false
+        each(b, function(x)
+            if x == true then
+                r = true
+            elseif x == nil and r == false then
+                r = nil
             end
+        end)
+        return r
+    end
+    local function negate(x)
+        if x == nil then
+            return nil
         end
-        return false
+        return not x
     end
     local ETHIC = { "spiritualist", "materialist", "xenophile", "xenophobe", "egalitarian", "authoritarian", "militarist", "pacifist" }
     test = function(k, v)
@@ -135,9 +172,9 @@ function C.trigger(block, f)
         elseif k == "OR" then
             return any(v)
         elseif k == "NOT" or k == "NOR" then
-            return not any(v)
+            return negate(any(v))
         elseif k == "NAND" then
-            return not all(v)
+            return negate(all(v))
         elseif k == "always" then
             return yes(v)
         elseif k == "is_nomadic" then
@@ -154,6 +191,11 @@ function C.trigger(block, f)
             return (not f.gestalt) == yes(v)
         elseif k == "has_comms_with_alien_empire" then
             return f.comms == yes(v)
+        elseif k == "is_country_type" then
+            return f.country_type == v
+        elseif k == "has_menace_perk" or k == "has_ascension_perk" then
+            -- (no perks read [I])
+            return false
         elseif k == "has_origin" then
             return f.origin == v
         elseif k == "has_valid_civic" or k == "has_civic" then
@@ -168,6 +210,8 @@ function C.trigger(block, f)
             return f.techs[v] == true
         elseif k == "has_tradition" or k == "has_active_tradition" then
             return f.traditions[v] == true
+        elseif k:match("^has_.+_dlc$") and C.DLCS[k] then
+            return ((f.dlcs or {})[C.DLCS[k]] or false) == yes(v)
         end
         for _, e in ipairs(ETHIC) do
             if k == "is_" .. e then
@@ -176,9 +220,30 @@ function C.trigger(block, f)
                 return (f.ethics["ethic_fanatic_" .. e] or false) == yes(v)
             end
         end
-        return false
+        return nil
     end
-    return all(block)
+    local r = all(block)
+    if r == nil then
+        return lenient and true or false
+    end
+    return r
+end
+
+-- the rectangle of an element of a window laid out alone (where its list is, for the wheel)
+function C.rect_of(ctx, file, window, path)
+    local ok, _, report = pcall(gui.layout, ctx.game_dir, ctx.db, file, window, ctx.screen, { texture_size = ctx.texture_size })
+    return ok and report.rects[path] or nil
+end
+
+-- the wheel over a list (views.rs: a module's wheel): its first row shown one up or down, within
+-- 0..max, kept in the state's `key`; nil when (x, y) is not over the list (the map's wheel)
+function C.list_wheel(rect, state, key, notches, x, y, max)
+    if not rect or x < rect.x or x > rect.x + rect.w or y < rect.y or y > rect.y + rect.h then
+        return nil
+    end
+    local n = (tonumber(state[key]) or 0) + (notches > 0 and -1 or 1)
+    n = math.max(0, math.min(max or n, n))
+    return { [key] = tostring(n) }
 end
 
 -- a set from a list of names

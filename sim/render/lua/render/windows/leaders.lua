@@ -77,6 +77,14 @@ local function cap(ctx, class)
 end
 
 function M.build(ctx, d, state)
+    d = d or {}
+    -- (before the view's data has come, its frame alone: the data is nil until the snapshot
+    -- carries it)
+    if d.owned == nil then
+        local b0 = C.builder(ctx)
+        b0:add(FILE, "topbar_leaders_view", { only = { background = true, close = true, close_button = true, heading = true }, actions = { [V .. "/close"] = "view_close" } })
+        return b0.items, b0.report
+    end
     local b = C.builder(ctx)
     local tab = state.tab or "all"
     local owned, pool = {}, {}
@@ -205,7 +213,12 @@ function M.build(ctx, d, state)
     -- the list: the owned section, then the recruitable one, rows as far as the list reaches
     local list = r.rects[V .. "/leader_list_container/leader_container_list"]
     local y, bottom = list.y, list.y + list.h
-    local function header(prefix, key, n, rhs)
+    -- (scrolled by the wheel: the list's first `scroll` rows, headers counted, not shown)
+    local skip = tonumber(state.scroll) or 0
+    -- a section's header (collapsable_leader_container): expanded, its unexpand_button (the minus)
+    -- collapses it; collapsed, its expand_button (the plus) expands it (CExpandableContainerItem);
+    -- both sections open when the view is shown (Show)
+    local function header(prefix, key, n, rhs, fold)
         if y + 42 > bottom then
             return false
         end
@@ -214,13 +227,19 @@ function M.build(ctx, d, state)
         if n then
             t = t .. " (" .. n .. ")"
         end
+        local folded = state[fold] == "1"
+        if skip > 0 then
+            skip = skip - 1
+            return not folded
+        end
         b:add(FILE, "collapsable_leader_container", {
             prefix = prefix, parent = { x = list.x, y = y, w = 0, h = 0 },
-            hide = { expand_button = true, item_gridbox = true },
-            text = { [p .. "unexpand_button"] = t, [p .. "rhs_header_button_custom_text"] = rhs or "" },
+            hide = { expand_button = not folded or nil, unexpand_button = folded or nil, item_gridbox = true },
+            text = { [p .. "unexpand_button"] = t, [p .. "expand_button"] = t, [p .. "rhs_header_button_custom_text"] = rhs or "" },
+            actions = { [p .. "unexpand_button"] = "view_set:" .. fold .. "=1", [p .. "expand_button"] = "view_set:" .. fold .. "=" },
         })
         y = y + 42
-        return true
+        return not folded
     end
     local function rows(prefix, list_of, is_pool)
         for i, l in ipairs(list_of) do
@@ -228,6 +247,11 @@ function M.build(ctx, d, state)
             if y + 93 > bottom then
                 return
             end
+            if skip > 0 then
+                skip = skip - 1
+                goto next
+            end
+            do
             local rp = prefix .. "/" .. i
             local er = b:add(FILE, "leaders_view_gridbox_entry", {
                 prefix = rp, parent = { x = list.x, y = y, w = 0, h = 0 },
@@ -240,9 +264,11 @@ function M.build(ctx, d, state)
                 text = is_pool and { ["cost_text"] = C.raw(ctx, "LEADER_COST"):gsub("%$VALUE|?Y?%$", "§Y100§!") } or nil,
             })
             y = y + 93
+            end
+            ::next::
         end
     end
-    if header("/leader_list/owned", "CURRENT_LEADERS", #owned) then
+    if header("/leader_list/owned", "CURRENT_LEADERS", #owned, nil, "fold_owned") then
         rows("/leader_list/owned", owned, false)
     end
     -- the pool's next refresh (LEADER_POOL_REFRESH_TIME 1800 days from the game's start [I])
@@ -254,7 +280,7 @@ function M.build(ctx, d, state)
         local left = math.floor((nxt - now) / 360)
         rhs = C.raw(ctx, "DAYS_UNTIL_LEADER_POOL_REFRESH"):gsub("%$DATE%$", date_of(nxt)):gsub("%$TIME%$", "§Y" .. left .. " " .. C.loc(ctx, "YEARS") .. "§!")
     end
-    if header("/leader_list/pool", "AVAILABLE_LEADERS", nil, rhs) then
+    if header("/leader_list/pool", "AVAILABLE_LEADERS", nil, rhs, "fold_pool") then
         rows("/leader_list/pool", pool, true)
     end
 
@@ -269,15 +295,44 @@ function M.build(ctx, d, state)
             only[n] = true
         end
     end
-    b:add(FILE, "topbar_leaders_view", { only = only, hide = { [V .. "/background"] = true }, text = {} })
+    -- their commands (the simulation's: cmd:leaders): hire (ShowRecruitLeaderDialog: the game asks
+    -- first [not done here: the dialog]), dismiss (ShowFireLeaderDialog; CFireLeaderCommand is not
+    -- valid for the ruler: disabled), assign (the job list [not done here])
+    local act, disabled = {}, {}
+    if selected then
+        act[V .. "/hire_leader_button"] = "cmd:leaders:hire:" .. selected.id
+        if selected.ruler then
+            disabled[V .. "/dismiss_leader_button"] = true
+        else
+            act[V .. "/dismiss_leader_button"] = "cmd:leaders:dismiss:" .. selected.id
+        end
+        disabled[V .. "/assign_leader_button"] = true
+    end
+    b:add(FILE, "topbar_leaders_view", { only = only, hide = { [V .. "/background"] = true }, text = {}, actions = act, disabled = disabled })
     return b.items, b.report
 end
 
+
+-- views.rs: the wheel over the leaders' list scrolls it a row at a time
+function M.wheel(ctx, d, state, notches, x, y)
+    local rect = C.rect_of(ctx, FILE, "topbar_leaders_view", V .. "/leader_list_container/leader_container_list")
+    local n = 2 + #((d or {}).owned or {}) + #((d or {}).pool or {})
+    return C.list_wheel(rect, state, "scroll", notches, x, y, math.max(0, n - 4))
+end
 
 -- views.rs: the view's data, read where the galaxy is read (the save's world, or the
 -- simulation's), for the player's country
 function M.extract(game_dir)
     return M.data(require("render.topbar").player(), {})
 end
+
+
+-- its buttons' commands in the simulation (views.rs: `cmd:leaders:VERB:ARG...`, between days)
+function M.command(...)
+    return require("render.windows.empire_commands").run(...)
+end
+
+-- Escape (views.rs): the side windows in these state keys close first, else the view closes
+M.escape_keys = {}
 
 return M
