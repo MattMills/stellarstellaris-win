@@ -94,16 +94,43 @@ function windows.specs(game_dir, db, screen, texture_size, loc, specs)
     return items, report
 end
 
+-- One window's layout, guarded: an error in its module drops that window's items only (the
+-- others are drawn), and is logged once per message (stderr and the report's missing list),
+-- not every frame.
+local logged = {}
+local function guarded(name, f, ctx, items, report, ...)
+    local n = #items
+    local ok, err = pcall(f, ctx, ...)
+    if not ok then
+        for i = #items, n + 1, -1 do
+            items[i] = nil
+        end
+        local msg = name .. ": " .. tostring(err)
+        if not logged[msg] then
+            logged[msg] = true
+            io.stderr:write("render.windows: " .. msg .. "\n")
+        end
+        report.missing_sprites[#report.missing_sprites + 1] = msg
+    end
+end
+windows.guarded = guarded
+
 function windows.build(game_dir, db, screen, texture_size, loc, data)
     local ctx = { game_dir = game_dir, db = db, screen = screen, texture_size = texture_size, loc = loc }
     local items = {}
     local report = { sprites = 0, texts = 0, missing_sprites = {}, skipped = {}, rects = {} }
-    outliner(ctx, items, report)
+    guarded("outliner", function(c)
+        outliner(c, items, report)
+    end, ctx, items, report)
     if data.selected then
-        selected_window(ctx, data.selected, items, report)
+        guarded(tostring(data.selected.kind) .. " window", function(c)
+            selected_window(c, data.selected, items, report)
+        end, ctx, items, report)
     end
     -- the windows render.windows.starbase opens itself (a megastructure's)
-    require("render.windows.starbase").extra(ctx, items, report)
+    guarded("starbase extra", function(c)
+        require("render.windows.starbase").extra(c, items, report)
+    end, ctx, items, report)
     return items, report
 end
 

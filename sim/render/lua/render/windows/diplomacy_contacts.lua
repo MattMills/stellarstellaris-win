@@ -83,15 +83,25 @@ function M.rows(ctx, state)
             local rel = data.relations[id]
             show = t.show_in_contacts_list and rel and rel.communications or false
         end
+        local off = state.filters_off or {}
         if show then
             local f = TYPE_FILTERS[c.type]
             if f then
                 colour = f
+                -- its type's checkbox unchecked: not listed
+                show = not off[c.type]
             else
                 -- "other": the player can act with it or has custom diplomacy with it [I: both
-                -- taken as communications]
+                -- taken as communications]; its checkbox unchecked: not listed
                 colour = "M"
+                show = not off.other
             end
+            -- the non-player checkbox unchecked: only the human players' countries
+            if off.non_player and not data.player_names[id] then
+                show = false
+            end
+        end
+        if show then
             rows[#rows + 1] = { id = id, country = c, colour = colour, key = sort_key(ctx, c) }
         end
     end
@@ -244,12 +254,26 @@ local function profile(ctx, id, hide, text, frames, sprites)
         text[S .. "/sprawl/label"] = tostring(math.floor(c.empire_size or 0))
         text[S .. "/diplo_weight/label"] = "LABEL_QUESTION_MARK"
     end
-    -- the Diplomacy and Espionage buttons: enabled by IsDiplomaticViewAvailableFor (communications)
+    -- the Diplomacy and Espionage buttons, always shown: Diplomacy enabled by
+    -- IsDiplomaticViewAvailableFor (communications, not the player's own) and opening the country's
+    -- window (OnEmpireDiplomacy: ShowDiplomacyView(country, 0, 1, 1)); Espionage by
+    -- IsEspionageAvailableFor [I: a spy network on them], opening its espionage tab
     local rel = data.relations[id]
-    ctx.actions[P .. "/diplomacy_button"] = (not mine and rel and rel.communications) and ("diplo:country:" .. id) or nil
-    -- zoom to capital: a capital in the world
-    if not c.capital then
+    if not mine and rel and rel.communications then
+        ctx.actions[P .. "/diplomacy_button"] = "diplo:country:" .. id
+    else
+        ctx.disabled[P .. "/diplomacy_button"] = true
+    end
+    if not mine and c.spy_network then
+        ctx.actions[P .. "/espionage_button"] = "diplo:espionage:" .. id
+    else
+        ctx.disabled[P .. "/espionage_button"] = true
+    end
+    -- zoom to capital: shown with a capital in the world (HasInworldCapital), the camera to it
+    if not c.capital_system then
         hide[P .. "/zoom_to_capital_button"] = true
+    else
+        ctx.actions[P .. "/zoom_to_capital_button"] = "diplo:zoom:" .. id
     end
 end
 
@@ -264,6 +288,7 @@ function M.build(ctx, state)
     ctx.actions = {
         [V] = "diplo:none", [V .. "/close"] = "diplo:close",
     }
+    ctx.disabled = {}
     local hide = {
         -- the tabs (UpdateTabVisibility): the active one's _active twin; the shroud's needs its DLC
         tab_galaxy = tab == "contacts" or nil, tab_galaxy_active = tab ~= "contacts" or nil,
@@ -275,14 +300,17 @@ function M.build(ctx, state)
     }
     local text, frames, sprites = {}, {}, {}
     text[V .. "/header"] = tab == "contacts" and "topbar_button_contacts_name" or "xenos_ui_agreements"
-    -- the checkboxes: all checked
+    -- the checkboxes: checked at Setup, a click toggles one (the list made again)
+    local off = state.filters_off or {}
     for _, n in ipairs({ "default", "fallen_empire", "primitive", "other", "non_player" }) do
-        frames[G .. "/filter_checkbox_" .. n] = 2
+        frames[G .. "/filter_checkbox_" .. n] = off[n] and 1 or 2
+        ctx.actions[G .. "/filter_checkbox_" .. n] = "diplo:filter:" .. n
     end
-    -- the agreements tab: enabled with an overlord or subjects (Update)
-    local pc = data.countries[data.player]
-    if pc and (pc.overlord or #(pc.subjects or {}) > 0) then
+    -- the agreements tab: enabled with an overlord or subjects, else disabled (Update)
+    if agreements_ok then
         ctx.actions[V .. "/tab_agreements"] = "diplo:tab:agreements"
+    else
+        ctx.disabled[V .. "/tab_agreements"] = true
     end
     ctx.actions[V .. "/tab_galaxy"] = "diplo:tab:contacts"
     for b, m in pairs(SORT_BUTTONS) do
@@ -304,7 +332,7 @@ function M.build(ctx, state)
     end
 
     local r = ctx.layout(FILE, "galaxy_view", {
-        hide = hide, text = text, frames = frames, sprites = sprites, actions = ctx.actions,
+        hide = hide, text = text, frames = frames, sprites = sprites, actions = ctx.actions, disabled = ctx.disabled,
     })
     if ctx.ethics then
         -- the box's format = right
@@ -332,7 +360,8 @@ function M.build(ctx, state)
             rtext[w .. "/empire_type"] = "PLAYER_EMPIRE_SP"
         else
             local g = ctx.loc and ctx.loc.has(c.government) and ctx.loc.get(c.government) or c.government
-            rtext[w .. "/empire_type"] = "§" .. row.colour .. g .. "§!"
+            -- (the government with its intel: none at intel 0, as the game's row of a new contact)
+            rtext[w .. "/empire_type"] = knows(data, id, "government") and ("§" .. row.colour .. g .. "§!") or ""
         end
         -- their opinion of the player: DASH on the player's own row
         if id == data.player then
@@ -369,7 +398,8 @@ function M.build(ctx, state)
         local er = ctx.layout(FILE, "galaxy_view_empire_entry", {
             prefix = p, parent = { x = list.x, y = y, w = 0, h = 0 },
             text = rtext, hide = rhide, frames = rframes,
-            actions = { [w .. "/background"] = "diplo:select:" .. id },
+            -- a click on the row (its background, or its flag over it) selects it (OnBackground)
+            actions = { [w .. "/background"] = "diplo:select:" .. id, [w .. "/flag"] = "diplo:select:" .. id },
         })
         -- the pacts' icons in the box (format left)
         if id ~= data.player then

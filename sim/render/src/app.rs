@@ -204,8 +204,8 @@ pub struct App {
     pub camera: Option<OrbitCamera>,
     pub view: MapView,
     pub system_camera: Option<OrbitCamera>,
-    camera_goal: Option<OrbitCamera>,
-    system_camera_goal: Option<OrbitCamera>,
+    pub(crate) camera_goal: Option<OrbitCamera>,
+    pub(crate) system_camera_goal: Option<OrbitCamera>,
     /// the cameras move to their goals over time (the window), else at once (commands)
     pub smooth: bool,
     /// the model view: the model shown (an entity or a pdxmesh), and the models read for it
@@ -229,6 +229,8 @@ pub struct App {
     pub overlay_labels: Vec<scene::Label>,
     /// the outliner's state: its tab, the groups collapsed (render.windows.outliner)
     pub outliner: crate::outliner::State,
+    /// the main screen's bars, alerts and in-game menu (mainbars.rs)
+    pub bars: crate::mainbars::Bars,
     /// the ship designer (designer.rs) and the ship models of its 3D views, by inset
     pub designer: crate::designer::Designer,
     designer_models: HashMap<String, crate::designer::ShipModel>,
@@ -272,7 +274,9 @@ pub struct App {
     pub controls: Controls,
     /// the clock's commands of the input, done at the next frame ([`ClockCommand`])
     commands: Vec<ClockCommand>,
-    cursor: Option<(f32, f32)>,
+    pub cursor: Option<(f32, f32)>,
+    /// where the left button went down on the map (a box selection's corner: mapicons.rs)
+    pub(crate) map_press: Option<(f32, f32)>,
     last_update: Option<Instant>,
     /// the diplomacy windows (Contacts, a country's diplomacy, ...: diplomacy.rs)
     pub diplomacy: crate::diplomacy::State,
@@ -356,6 +360,7 @@ impl App {
             fleet: Default::default(),
             overlay_labels: Vec::new(),
             outliner: Default::default(),
+            bars: Default::default(),
             designer: Default::default(),
             designer_models: HashMap::new(),
             overlay_key: None,
@@ -381,6 +386,7 @@ impl App {
             controls: Controls::from_env()?,
             commands: Vec::new(),
             cursor: None,
+            map_press: None,
             last_update: None,
             diplomacy: Default::default(),
         })
@@ -388,7 +394,7 @@ impl App {
 
     /// The camera of what the map shows (the galaxy's or the system's): its goal, where input
     /// moves it.
-    fn goal_mut(&mut self) -> Option<&mut OrbitCamera> {
+    pub(crate) fn goal_mut(&mut self) -> Option<&mut OrbitCamera> {
         match self.view {
             MapView::Galaxy => {
                 if self.camera_goal.is_none() {
@@ -406,7 +412,7 @@ impl App {
     }
 
     /// After the goal moved: without smoothing, the camera is there at once.
-    fn goal_moved(&mut self) {
+    pub(crate) fn goal_moved(&mut self) {
         if !self.smooth {
             match self.view {
                 MapView::Galaxy => self.camera = self.camera_goal,
@@ -430,7 +436,7 @@ impl App {
         self.goal_moved();
     }
     /// The camera drawn now (the galaxy's or the system's).
-    fn current(&self) -> Option<OrbitCamera> {
+    pub(crate) fn current(&self) -> Option<OrbitCamera> {
         match self.view {
             MapView::Galaxy => self.camera,
             MapView::System(_) | MapView::Model => self.system_camera,
@@ -551,6 +557,8 @@ impl App {
     /// simulation's newest snapshot taken. Whether the picture changed (a frame is due).
     pub fn advance(&mut self, dt: f32) -> bool {
         let mut changed = false;
+        // a system's camera fitted to a stand-in (its data not come yet) fitted again (mapicons.rs)
+        changed |= self.refit_system_camera();
         // the clock's commands of the last frame's input
         for c in std::mem::take(&mut self.commands) {
             let r = match c {
@@ -742,7 +750,7 @@ impl App {
         self.enter_system(index, None)
     }
 
-    fn enter_system(&mut self, index: usize, focus: Option<Pickable>) -> Result<(), String> {
+    pub(crate) fn enter_system(&mut self, index: usize, focus: Option<Pickable>) -> Result<(), String> {
         let map = self.map.as_mut().ok_or("no map loaded")?;
         if index >= map.galaxy.systems.len() {
             return Err(format!("no system {index}"));
@@ -933,36 +941,58 @@ impl App {
         // the left bar, collapsed (hide_position): the views' icons (right_icon, x 0.6) down its
         // gridbox; the order of the game's frame (CTopbarMenuOrderSettings' default) [I]
         let mut bar = gui::WindowSpec::new("interface/main.gui", "maingui_left_bar_buttons");
-        bar.positions.push(("/maingui_left_bar_buttons".into(), (-225.0, 35.0)));
+        // open under the cursor (show_position -5), else collapsed at its hide_position (-225)
+        // (mainbars.rs hover; the slide's 200 ms not animated)
+        let expanded = self.bars.expanded;
+        let bar_x = if expanded { -5.0 } else { -225.0 };
+        bar.positions.push(("/maingui_left_bar_buttons".into(), (bar_x, 35.0)));
         // its background (the container `background`, GFX_navbar_bg_wide at its 320 x 610): the
         // game's frame has its right edge at x = 35, 65 left of its (5, 5) in the window at the
         // hide position [I: what moves it is not read; no clip: the texture's own edge shows]
         bar.positions.push(("/maingui_left_bar_buttons/background".into(), (-60.0, 5.0)));
         bar.only = Some(vec!["lock".into(), "background".into(), "navbar_bg".into()]);
+        // the lock (CMainGui::ToggleLeftBarLock: frame 2 locked)
+        bar.actions.push(("/maingui_left_bar_buttons/lock".into(), "bar:lock".into()));
+        bar.frames.push(("/maingui_left_bar_buttons/lock".into(), if self.bars.lock { 2 } else { 1 }));
         specs.push(bar);
-        let views = ["situation", "council", "traditions", "technology", "leaders", "species", "empire", "expansion_planner", "fleet_manager", "contacts", "discoveries", "claims", "market"];
-        for (i, v) in views.iter().enumerate() {
+        for (i, v) in crate::mainbars::LEFT_BAR.iter().enumerate() {
             let mut e = gui::WindowSpec::new("interface/main.gui", "maingui_left_bar_button");
             let prefix = format!("/left_bar/{i}");
+            let p = format!("{prefix}/maingui_left_bar_button");
             // (27 left of the gridbox's 34: the game's frames have the icons' left edge at x = 5,
             // inside the bar, with and without a view open [I: measured; the rule not read])
-            e.parent = Some([-225.0 + 34.0 - 27.0, 35.0 + 50.0 + 40.0 * i as f32, 0.0, 0.0]);
-            e.only = Some(vec!["right_icon".into()]);
-            e.sprites.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("GFX_topbar_{v}_button")));
+            e.parent = Some([bar_x + 34.0 - 27.0, 35.0 + 50.0 + 40.0 * i as f32, 0.0, 0.0]);
+            let mut only = vec!["right_icon".to_string()];
+            if expanded {
+                // open: the entry's icon, name (topbar_button_<view>_name), key (F1..F10 by its
+                // place: CMainGuiLeftBarButton::Update) and its button
+                only.extend(["icon", "text", "hotkey", "button"].iter().map(|s| s.to_string()));
+                e.sprites.push((format!("{p}/icon"), format!("GFX_topbar_{v}_button")));
+                e.text.push((format!("{p}/text"), format!("topbar_button_{v}_name")));
+                e.text.push((format!("{p}/hotkey"), if i < 10 { format!("F{}", i + 1) } else { String::new() }));
+                e.actions.push((format!("{p}/button"), format!("view:{v}")));
+            }
+            e.sprites.push((format!("{p}/right_icon"), format!("GFX_topbar_{v}_button")));
             // a click toggles its view (CInGameIdler::ToggleTopBarView)
-            e.actions.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("view:{v}")));
+            e.actions.push((format!("{p}/right_icon"), format!("view:{v}")));
             // its view shown (CMainGuiLeftBarButton::Update): the icons' frame 3 (2 x shown + 1)
             // and the highlight shown [V; which children: I, by the game's frame]
             if self.view_shown(v) {
-                e.only = Some(vec!["right_icon".into(), "highlight".into()]);
-                e.frames.push((format!("{prefix}/maingui_left_bar_button/right_icon"), 3));
+                only.push("highlight".into());
+                e.frames.push((format!("{p}/right_icon"), 3));
+                e.frames.push((format!("{p}/icon"), 3));
             }
+            e.only = Some(only);
             e.prefix = Some(prefix);
             specs.push(e);
         }
         // the alerts (CAlertManager::GetXFromIndex, GetYFromIndex): from (200, 30), 55 x 72 apart,
-        // five a row; the banner by priority, the alert's icon
-        for (i, (_, icon, prio)) in g.alerts.iter().enumerate() {
+        // five a row; the banner by priority, the alert's icon; the banner takes the clicks (left:
+        // what the alert points to, right: dismissed until its condition ends: mainbars.rs)
+        let keys: Vec<String> = g.alerts.iter().map(|a| a.0.clone()).collect();
+        self.bars.dismissed.retain(|k| keys.contains(k));
+        let shown: Vec<_> = g.alerts.iter().filter(|a| !self.bars.dismissed.contains(&a.0)).collect();
+        for (i, (key, icon, prio)) in shown.into_iter().enumerate() {
             let mut a = gui::WindowSpec::new("interface/alerts.gui", "alerticon_window");
             let prefix = format!("/alerts/{i}");
             a.parent = Some([200.0 + ((i % 5) + 1) as f32 * 55.0, 30.0 + (i / 5) as f32 * 72.0, 0.0, 0.0]);
@@ -973,6 +1003,7 @@ impl App {
             };
             a.sprites.push((format!("{prefix}/alerticon_window/alerticon_banner"), banner.into()));
             a.sprites.push((format!("{prefix}/alerticon_window/alerticon"), icon.clone()));
+            a.actions.push((format!("{prefix}/alerticon_window/alerticon_banner"), format!("alert:{key}")));
             a.prefix = Some(prefix);
             specs.push(a);
         }
@@ -1020,6 +1051,27 @@ impl App {
             bottom.hide.push("paused".into());
             bottom.hide.push("paused_bar_bg".into());
         }
+        // the buttons (mainbars.rs): the toolbar's, the banners' (leave the system, enter one,
+        // rename), the map filters' (the icon's frame + 1 when on; details + 1 or + 2); the
+        // tutorial's help button is the databank's place (one of them is detached [I])
+        bottom.hide.push("button_topbar_help_menu".into());
+        let bb = "/maingui_bottombar";
+        for (el, a) in [
+            ("toolbar/button_topbar_menu", "bar:menu"),
+            ("toolbar/button_topbar_chat", "bar:chat"),
+            ("toolbar/button_topbar_help", "bar:databank"),
+            ("toolbar/toggle_gotobox", "bar:find"),
+            ("toolbar/home_button", "bar:home"),
+            ("leave_system_window/button", "bar:galaxy"),
+            ("leave_system_window/system_rename_button", "bar:rename"),
+            ("leave_galaxy_window/change_camera_mode_button", "bar:system"),
+        ] {
+            bottom.actions.push((format!("{bb}/{el}"), a.into()));
+        }
+        for (i, f) in crate::mainbars::FILTERS.iter().enumerate() {
+            bottom.actions.push((format!("{bb}/toolbar/toggle_mapmode_{f}"), format!("bar:filter:{f}")));
+            bottom.frames.push((format!("{bb}/toolbar/toggle_mapmode_icon_{f}"), 1 + self.bars.filters[i] as u32));
+        }
         let texts = gui::format_names(&self.runtime, &names)?;
         if let Some(t) = texts.first() {
             bottom.text.push(("/maingui_bottombar/leave_system_window/system_name".into(), t.clone()));
@@ -1039,10 +1091,12 @@ impl App {
                 let prefix = format!("/map_modes/{k}");
                 e.parent = Some([r[0] + (k % 4) as f32 * 34.0, r[1] + r[3] - ((k / 4) + 1) as f32 * 34.0, 0.0, 0.0]);
                 e.sprites.push((format!("{prefix}/main_gui_map_mode_entry/icon"), format!("GFX_map_mode_{m}")));
-                // the active mode (the default after a load) in its second frame
-                if k == 0 {
+                // the active mode (the default after a load) in its second frame; a click sets
+                // the mode (CMapModeEntry::OnClick: SetCurrentMapMode)
+                if k == self.bars.map_mode {
                     e.frames.push((format!("{prefix}/main_gui_map_mode_entry/icon"), 2));
                 }
+                e.actions.push((format!("{prefix}/main_gui_map_mode_entry/button"), format!("bar:mapmode:{k}")));
                 e.prefix = Some(prefix);
                 mspecs.push(e);
             }
@@ -1072,6 +1126,8 @@ impl App {
     }
 
     fn window_items(&mut self) -> Result<Vec<GuiItem>, String> {
+        // the planet view's commands that waited for the simulation (planet.rs)
+        crate::planet::run_pending(self)?;
         let (w, h) = self.size;
         let Some(map) = self.map.as_mut() else { return Ok(Vec::new()) };
         if !map.gui || self.view == MapView::Model {
@@ -1106,8 +1162,9 @@ impl App {
                 if let Some((id, name, _)) = &body {
                     names.push(name);
                     selected = Some(("planet".into(), *id));
-                } else if map.world {
-                    // any other planet: the planet view names it from its own data (planet.rs)
+                } else {
+                    // any other planet: the planet view names it from its own data (planet.rs;
+                    // the world's, or the simulation's once it runs)
                     names.push(&none);
                     selected = Some(("planet".into(), id));
                 }
@@ -1139,7 +1196,9 @@ impl App {
             Some(s) if s.kind == "planet" => {
                 let tab = self.planet_view.tab_for(s.id).to_string();
                 let colonize = self.planet_view.colonize == Some(s.id);
-                planet_owner = crate::planet::prepare(&self.runtime, self.map.as_ref().unwrap(), s.id, &tab, colonize)?;
+                let side = self.planet_view.side.clone();
+                planet_owner = crate::planet::prepare(&self.runtime, self.map.as_ref().unwrap(), s.id, &tab, colonize, side.as_deref())?;
+                crate::planet::set_extras(&self.runtime, &self.planet_view)?;
             }
             _ => crate::planet::clear(&self.runtime),
         }
@@ -1169,6 +1228,14 @@ impl App {
             Ok(e) => items.extend(e),
             Err(e) => self.log.push(format!("events: {e}")),
         }
+        // an event fired whose message type auto-pauses (the message settings): paused
+        if self.events.take_pause() {
+            self.commands.push(ClockCommand::Paused(true));
+        }
+        // an entry tracked or no longer: the galaxy's scene with its trackers again
+        if self.events.take_trackers_changed() {
+            self.scene = None;
+        }
         // the left bar's view open (views.rs)
         if let Some(name) = self.open_view.clone() {
             let data = self.map.as_ref().and_then(|m| m.galaxy.views.get(&name).cloned());
@@ -1179,7 +1246,7 @@ impl App {
         }
         // the ship designer and the combat view over them
         let map = self.map.as_ref().unwrap();
-        match crate::designer::layout(&self.runtime, &map.runtime, &self.game_dir, w, h, &self.designer, combat) {
+        match crate::designer::layout(&self.runtime, map, &self.game_dir, w, h, &self.designer, combat) {
             Ok((more, models)) => {
                 items.extend(more);
                 self.designer_models = models;
@@ -1210,6 +1277,8 @@ impl App {
             map.flags(std::slice::from_mut(&mut diplo[i]), c);
         }
         items.extend(diplo);
+        // the in-game menu and its dialogs, over all (mainbars.rs)
+        items.extend(crate::mainbars::menu_items(&self.runtime, w, h, &self.bars, &self.version)?);
         // the textures the windows name that are made (a disabled button greyed, a progress bar
         // filled: fleetwin.rs), for any window's items
         crate::fleetwin::derived_textures(map, &items);
@@ -1404,6 +1473,10 @@ impl App {
                 let cache = map.cache.clone();
                 crate::designer::fill_insets(&mut scene, &self.designer_models, &mut map.models, &map.runtime, &self.game_dir, &mut map.textures, &mut cache.borrow_mut());
             }
+            // the Situation Log's trackers on the galaxy (events.rs)
+            if let (Screen::Map, Some(map)) = (self.screen, self.map.as_mut()) {
+                crate::events::draw_trackers(&mut scene, &self.runtime, map, self.view, &self.game_dir);
+            }
             self.scene = Some(std::sync::Arc::new(scene));
             // a new scene, whoever asked for it (a hit test builds it too)
             self.generation += 1;
@@ -1424,7 +1497,14 @@ impl App {
         }
     }
 
-    fn button_at(&mut self, x: f32, y: f32) -> Result<Option<(String, Option<String>)>, String> {
+    pub(crate) fn button_at(&mut self, x: f32, y: f32) -> Result<Option<(String, Option<String>)>, String> {
+        // the in-game menu or its dialog open: only their buttons take the input (their dimmed
+        // layer covers the screen, the map labels too: mainbars.rs)
+        if let Some(prefix) = crate::mainbars::modal(&self.bars) {
+            let scene = self.scene()?;
+            let hit = scene.buttons.iter().rev().find(|b| b.path.starts_with(prefix) && x >= b.rect[0] && x < b.rect[2] && y >= b.rect[1] && y < b.rect[3]);
+            return Ok(hit.map(|b| (b.path.clone(), b.action.clone())));
+        }
         Ok(self.scene()?.button_at(x, y).map(|b| (b.path.clone(), b.action.clone())))
     }
 
@@ -1448,6 +1528,10 @@ impl App {
     /// The mouse moved: the button under it shows its hover frame. Whether the frame changed.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> Result<bool, String> {
         self.cursor = Some((x, y));
+        // the left bar opens under the cursor (mainbars.rs)
+        if self.screen == Screen::Map && crate::mainbars::hover(self, x, y) {
+            self.relayout();
+        }
         let hover = self.button_at(x, y)?.map(|b| b.0);
         // the tooltips' hook: the element or the thing on the map under the cursor
         let target = match &hover {
@@ -1467,6 +1551,7 @@ impl App {
     }
 
     pub fn mouse_down(&mut self, x: f32, y: f32) -> Result<bool, String> {
+        self.map_press = Some((x, y));
         let pressed = self.button_at(x, y)?.map(|b| b.0);
         if pressed != self.pressed {
             self.pressed = pressed;
@@ -1493,8 +1578,26 @@ impl App {
         }
         if self.screen == Screen::Map && under.is_none() {
             let hit = self.scene()?.pick_at(x, y, 6.0);
+            // an armed fleet order takes the click as its target (fleetwin.rs)
+            if self.fleet_target(hit)? {
+                return Ok(true);
+            }
             self.select(hit);
             return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// A right click on a GUI button whose action is `LEFT||RIGHT` (a monthly trade's entry:
+    /// removed): RIGHT done; whether there was one.
+    fn gui_right_click(&mut self, x: f32, y: f32) -> Result<bool, String> {
+        if let Some((path, Some(a))) = self.button_at(x, y)? {
+            if let Some((_, right)) = a.split_once("||") {
+                let right = right.to_string();
+                self.log.push(format!("right click: {path} -> {right}"));
+                self.act(&path, Some(&right))?;
+                return Ok(true);
+            }
         }
         Ok(false)
     }
@@ -1539,6 +1642,8 @@ impl App {
 
     fn act(&mut self, path: &str, action: Option<&str>) -> Result<(), String> {
         self.log.push(format!("click: {path} -> {}", action.unwrap_or("no action")));
+        // an action `LEFT||RIGHT`: a left click does LEFT (a right click RIGHT: gui_right_click)
+        let action = action.map(|a| a.split_once("||").map_or(a, |(l, _)| l));
         match action {
             Some("exit") => self.exit = true,
             // the main menu's New Game: the empire selection with a new setup (render.newgame_setup)
@@ -1588,27 +1693,9 @@ impl App {
                 self.commands.push(ClockCommand::Speed(if action == Some("speed_up") { 1 } else { -1 }));
             }
             // the event windows' and popups' buttons (events.rs)
-            Some(a) if crate::events::handles(a) => {
-                // the first contact view replaces the top bar view (the game's Situation Log
-                // closes when "Show First Contact" opens it)
-                if a.starts_with("fc:open:") {
-                    self.close_view();
-                }
-                self.events.act(a);
-                self.relayout();
-            }
+            Some(a) if crate::events::handles(a) => crate::events::app_act(self, a)?,
             // the diplomacy windows (diplomacy.rs): Contacts from the left bar, the others from it
-            Some(a) if a == "view:contacts" || a.starts_with("diplo:") => {
-                if self.diplomacy.act(a)? {
-                    // Contacts is a left bar view: one view at a time (ToggleTopBarView)
-                    if self.diplomacy.open == Some(crate::diplomacy::Open::Contacts) {
-                        self.close_view();
-                        self.set_designer(Default::default());
-                    }
-                    self.overlay_key = None;
-                    self.invalidate();
-                }
-            }
+            Some(a) if a == "view:contacts" || a.starts_with("diplo:") => crate::diplomacy::act(self, a)?,
             // the left bar's views (views.rs): a button toggles its view, a view's close button
             // closes it, `view_set:KEY=VALUE;KEY2=VALUE2` sets keys of the view's state (`KEY=`
             // removes one)
@@ -1616,6 +1703,19 @@ impl App {
                 self.toggle_view(&a[5..]);
             }
             Some("view_close") => self.close_view(),
+            // a view's command in the simulation (views.rs): `cmd:VIEW:ARG...`, then `#K=V;K2=` the
+            // view's state set (a side window closed after a choice)
+            Some(a) if a.starts_with("cmd:") => {
+                let (cmd, then) = a[4..].split_once('#').unwrap_or((&a[4..], ""));
+                let mut parts = cmd.split(':');
+                let view = parts.next().unwrap_or("").to_string();
+                let args: Vec<&str> = parts.collect();
+                let map = self.map.as_mut().ok_or("no map")?;
+                let r = crate::views::command(map, &view, &args)?;
+                self.log.push(format!("{view}: {r}"));
+                let pairs: Vec<(&str, &str)> = if then.is_empty() { Vec::new() } else { then.split(';').map(|kv| kv.split_once('=').unwrap_or((kv, ""))).collect() };
+                self.set_view_state(&pairs);
+            }
             Some(a) if a.starts_with("view_set:") => {
                 let pairs: Vec<(&str, &str)> = a[9..].split(';').map(|kv| kv.split_once('=').unwrap_or((kv, ""))).collect();
                 self.set_view_state(&pairs);
@@ -1623,22 +1723,13 @@ impl App {
             // the selection's window closed; an outliner row selects its planet or fleet
             Some("close") => self.select(None),
             Some(a) if a.starts_with("fleet:") => self.fleet_act(a)?,
-            // the planet view's tabs, its colonize button and the colonize window's close (planet.rs)
-            Some(a) if a.starts_with("planet_tab:") => {
-                if let Some(Pickable::Body(id)) = self.selected {
-                    self.open_planet(id, &a["planet_tab:".len()..])?;
-                }
-            }
-            Some("planet_colonize") | Some("colonize_close") => {
-                if let Some(Pickable::Body(id)) = self.selected {
-                    self.planet_view.colonize = if action == Some("planet_colonize") { Some(id) } else { None };
-                    self.log.push(format!("planet view: colonize window {}", if action == Some("planet_colonize") { "open" } else { "closed" }));
-                    self.overlay_key = None;
-                    self.scene = None;
-                }
-            }
+            // the planet view's and the colonize window's clicks (planet.rs)
+            Some(a) if a.starts_with("planet:") => crate::planet::act(self, a)?,
+            // the map labels' own actions (mapicons.rs: a star label slides the camera there)
+            Some(a) if a.starts_with("map:") => self.map_act(a)?,
             Some(a) if a.starts_with("select:") => self.select(Some(pickable_of(a)?)),
             Some(a) if a.starts_with("starbase:") => crate::starbase::act(self, a)?,
+            Some(a) if a.starts_with("economy:") => crate::economy::act(self, a)?,
             // the outliner's tabs, groups, observer list (outliner.rs State::act): laid out again
             Some(a) if a.starts_with("outliner:") => {
                 if self.outliner.act(&a["outliner:".len()..]) {
@@ -1646,11 +1737,9 @@ impl App {
                     self.scene = None;
                 }
             }
-            Some(a) if a.starts_with("designer:") => {
-                let mut d = self.designer.clone();
-                crate::designer::act(&mut d, a)?;
-                self.set_designer(d);
-            }
+            Some(a) if a.starts_with("designer:") => crate::designer::act(self, a)?,
+            // the bars, the alerts, the in-game menu (mainbars.rs)
+            Some(a) if crate::mainbars::handles(a) => crate::mainbars::act(self, a)?,
             Some(other) => self.log.push(format!("  {other}: not done yet (its window is not laid out)")),
             None => {}
         }
@@ -1706,6 +1795,46 @@ impl App {
         }
         self.overlay_key = None;
         self.scene = None;
+    }
+
+    /// Escape on the open view: its side windows closed (the state keys its module lists in
+    /// `escape_keys`; without the list, all its state), true; nothing to close there, false.
+    fn view_escape(&mut self) -> bool {
+        let Some(name) = self.open_view.clone() else { return false };
+        // a view with M.escape(state) says what Escape does: its innermost window closed (a popup,
+        // then its dialog)
+        if !self.view_state.is_empty() {
+            if let Some(a) = crate::views::escape(&self.runtime, &name, &self.view_state) {
+                return self.act("/key/escape", Some(&a)).is_ok();
+            }
+        }
+        let keys: Vec<String> = match crate::views::escape_keys(&self.runtime, &name) {
+            Some(list) => list.into_iter().filter(|k| self.view_state.contains_key(k)).collect(),
+            None => self.view_state.keys().cloned().collect(),
+        };
+        if keys.is_empty() {
+            return false;
+        }
+        let pairs: Vec<(&str, &str)> = keys.iter().map(|k| (k.as_str(), "")).collect();
+        self.set_view_state(&pairs);
+        true
+    }
+
+    /// The wheel over the open view: its lists scroll (views::wheel); whether it took it.
+    fn view_wheel(&mut self, notches: f32) -> bool {
+        let (Some(name), Some((x, y))) = (self.open_view.clone(), self.cursor) else { return false };
+        let data = self.map.as_ref().and_then(|m| m.galaxy.views.get(&name).cloned());
+        let (w, h) = self.size;
+        match crate::views::wheel(&self.runtime, w, h, &name, data.as_ref(), &self.view_state, notches, x, y) {
+            Some(pairs) => {
+                if !pairs.is_empty() {
+                    let p: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                    self.set_view_state(&p);
+                }
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn close_view(&mut self) {
@@ -1774,6 +1903,15 @@ impl App {
         let summary = gui::newgame_summary(&self.runtime)?;
         self.log.push(format!("new game: play {summary}"));
         self.start_new_game(settings)
+    }
+
+    /// The game resigned (CInGameIdler::DoResign): the map left for the main menu.
+    pub(crate) fn resign(&mut self) {
+        self.close_view();
+        self.select(None);
+        self.map = None;
+        self.overlay_key = None;
+        self.show(Screen::Menu);
     }
 
     fn show(&mut self, screen: Screen) {
@@ -2026,6 +2164,58 @@ impl App {
                 }
             }
         }
+        // the planet view's rename dialog takes the keyboard (its edit box), as the creator's fields
+        if self.screen == Screen::Map && self.planet_view.dialog.as_deref() == Some("rename") {
+            if let Input::Key { key, down, .. } = input {
+                if !matches!(key.as_str(), "shift" | "ctrl" | "alt") {
+                    // a key's release too: the bindings act on release (Space: pause)
+                    if !*down {
+                        return Ok(false);
+                    }
+                    if let Some(a) = creator_key(key, self.controls.mods().shift).and_then(|a| crate::planet::typed(&self.planet_view, &a)) {
+                        crate::planet::act(self, &a)?;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        // a text box of the open view (a rename dialog's: views::text_focus) has the keyboard: a key
+        // typed goes to it (its press; its release taken too, so no shortcut fires), RETURN its OK;
+        // ESCAPE goes on to the view's Escape (the dialog's Cancel)
+        if self.screen == Screen::Map {
+            if let (Input::Key { key, down, .. }, Some(name)) = (input, self.open_view.clone()) {
+                if !matches!(key.as_str(), "shift" | "ctrl" | "alt" | "escape") && crate::views::text_focus(&self.runtime, &name, &self.view_state) {
+                    if *down {
+                        if let Some(t) = creator_key(key, self.controls.mods().shift) {
+                            let token = t.trim_start_matches("creator:").to_string();
+                            if let Some((pairs, action)) = crate::views::text_key(&self.runtime, &name, &self.view_state, &token) {
+                                let p: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                                self.set_view_state(&p);
+                                if let Some(a) = action {
+                                    self.act("/key", Some(&a))?;
+                                }
+                            }
+                        }
+                    }
+                    return Ok(true);
+                }
+            }
+        }
+        // the bars' .gui shortcuts (F1..F10, F, L, Alt+B, Ctrl+Z ..., O: mainbars.rs), on release
+        if self.screen == Screen::Map {
+            if let Input::Key { key, down: false, .. } = input {
+                let m = self.controls.mods();
+                if let Some(a) = crate::mainbars::shortcut(key, m.ctrl, m.alt, m.shift) {
+                    self.act("/key", Some(&a))?;
+                    return Ok(true);
+                }
+                // the event windows', popups' and their views' shortcuts (events.rs)
+                if let Some(a) = crate::events::key(self, key) {
+                    self.act("/key", Some(&a))?;
+                    return Ok(true);
+                }
+            }
+        }
         let ctx = self.context();
         let mut changed = false;
         for e in self.controls.input(input, now_ms, ctx) {
@@ -2056,6 +2246,21 @@ impl App {
             Effect::Down(..) => Ok(false),
             Effect::At(Action::Select, x, y) => self.mouse_up(x, y),
             Effect::At(Action::Focus, x, y) => self.double_click(x, y),
+            Effect::At(Action::Order, x, y) if self.screen == Screen::Map => {
+                // a button's own right click (`action||right`: the market's amounts, economy)
+                if self.gui_right_click(x, y)? {
+                    return Ok(true);
+                }
+                // a map label orders as the place it is on (mapicons.rs order_at); another GUI
+                // element takes the right click itself (an alert dismissed, an outliner row's
+                // camera: mainbars.rs), never an order under it
+                let label = matches!(self.button_at(x, y)?, Some((p, _)) if p.starts_with("/label/"));
+                if !label && crate::mainbars::right_click(self, x, y)? {
+                    return Ok(true);
+                }
+                self.order_at(x, y)
+            }
+            Effect::At(Action::BoxSelect, x, y) if self.screen == Screen::Map && self.pressed.is_none() => self.box_select(x, y),
             Effect::At(a, x, y) => {
                 // the left button's press over a GUI button ends without a click
                 if a == Action::BoxSelect && self.pressed.take().is_some() {
@@ -2095,6 +2300,12 @@ impl App {
                 self.newgame_act(&format!("ng:wheel:{n}"))?;
                 Ok(true)
             }
+            // the wheel over the open view's list scrolls it (the view's own `wheel`)
+            Effect::Zoom(n, _) if self.view_wheel(n) => Ok(true),
+            // the wheel over the starbase window's side view scrolls its list (starbase.rs)
+            Effect::Zoom(n, _) if crate::starbase::wheel(self, n) => Ok(true),
+            // the wheel over the ship designer's lists (designer.rs)
+            Effect::Zoom(n, _) if self.designer.open && { let at = self.cursor; crate::designer::wheel(self, n, at) } => Ok(true),
             Effect::Zoom(n, false) => {
                 self.wheel(n);
                 Ok(true)
@@ -2114,6 +2325,13 @@ impl App {
     /// An action of a key binding (controls.rs `BINDINGS`). Whether something changed.
     pub fn perform(&mut self, action: Action) -> Result<bool, String> {
         match (action, self.screen) {
+            // the load window opened from the in-game menu: back to the map (mainbars.rs)
+            (Action::Back, Screen::Load) if self.bars.load_from_game && self.map.is_some() => {
+                self.bars.load_from_game = false;
+                self.show(Screen::Map);
+                self.relayout();
+                Ok(true)
+            }
             (Action::Back, Screen::Load) => {
                 self.log.push(format!("escape: {:?} -> Menu", self.screen));
                 self.show(Screen::Menu);
@@ -2160,34 +2378,46 @@ impl App {
                         self.mode3d = !self.mode3d;
                         self.scene = None;
                     }
+                    // the in-game menu and its dialogs are over the other windows (mainbars.rs)
+                    Action::Back if crate::mainbars::escape(self, true)? => {}
+                    // a popup's and the first contact view's ESCAPE (events.rs)
+                    Action::Back if crate::events::escape(self) => {}
                     // the fleet windows' close buttons first (their ESCAPE shortcut)
                     Action::Back if self.fleet_escape() => {}
                     // the open view's close buttons (shortcut ESCAPE) have the key first (the
                     // GUI's input before the idler's): a side window's (the view's state: the
                     // game's frames, the researched window closes and the view stays), then the
                     // view's
-                    Action::Back if self.open_view.is_some() && !self.view_state.is_empty() => {
-                        self.view_state.clear();
-                        self.set_view_state(&[]);
-                    }
+                    // (a view that lists its side windows' keys, M.escape_keys, has those closed
+                    // first and is closed itself otherwise: its other keys are its filters, tabs)
+                    Action::Back if self.open_view.is_some() && self.view_escape() => {}
                     Action::Back if self.open_view.is_some() => self.close_view(),
                     // the diplomacy window closes first (its close button: ESCAPE)
-                    Action::Back if self.diplomacy.open.is_some() => self.act("/key/escape", Some("diplo:close"))?,
+                    Action::Back if self.diplomacy.open.is_some() => self.act("/key/escape", Some("diplo:escape"))?,
                     // the designer's close button has the shortcut ESCAPE (ship_designer.gui)
-                    Action::Back if self.designer.open => self.set_designer(Default::default()),
+                    Action::Back if self.designer.open => crate::designer::escape(self),
+                    // the starbase window's dialog, then its side view (a slot's), close before the window
+                    Action::Back if self.starbase.dialog.is_some() => {
+                        self.starbase.dialog = None;
+                        self.relayout();
+                    }
+                    Action::Back if self.selected.is_some() && self.starbase.side.is_some() => {
+                        self.starbase.side = None;
+                        self.relayout();
+                    }
                     Action::Back if self.starbase.megastructure.is_some() || self.starbase.network.is_some() => {
                         self.starbase.megastructure = None;
                         self.starbase.network = None;
                         self.relayout();
                     }
+                    // the planet view's side bar, then its colonize window (their close buttons:
+                    // ESCAPE), before the view
+                    Action::Back if crate::planet::escape(self) => {}
                     Action::Back if self.selected.is_some() => self.select(None),
-                    Action::Back if self.view != MapView::Galaxy && self.map.is_some() => {
-                        self.log.push(format!("escape: {:?} -> Galaxy", self.view));
-                        self.show_galaxy();
-                    }
+                    // nothing open: the game's menu window opens (main_bottom.gui button_topbar_menu,
+                    // shortcut ESCAPE: mainbars.rs)
                     Action::Back => {
-                        self.log.push("escape: Map -> Menu".into());
-                        self.show(Screen::Menu);
+                        crate::mainbars::escape(self, false)?;
                     }
                     a => {
                         self.log.push(format!("{}: not done yet", a.name()));

@@ -189,7 +189,7 @@ function combat.extract(game_dir, fleet_id)
         end
     end
     local sz, types = sizes(game_dir), country_types(game_dir)
-    local data = { player = player, sides = { {}, {} }, hull = { 0, 0 }, hull_max = { 0, 0 } }
+    local data = { player = player, selected = fleet_id, sides = { {}, {} }, hull = { 0, 0 }, hull_max = { 0, 0 } }
     for _, fid in ipairs(list) do
         local f = world.object("fleet", fid)
         local owner = owners[fid] or -1
@@ -222,6 +222,7 @@ function combat.extract(game_dir, fleet_id)
                     return tonumber(world.field(s, k)) or 0
                 end
                 local ship = {
+                    id = tonumber(sid),
                     hp = num("hitpoints"), hp_max = num("max_hitpoints"),
                     armor = num("armor_hitpoints"), armor_max = num("max_armor_hitpoints"),
                     shield = num("shield_hitpoints"), shield_max = num("max_shield_hitpoints"),
@@ -312,7 +313,10 @@ function combat.build(ctx, data)
     end
     local wi, wr = lay("combat_view", {
         frames = { ["/combat_view/progress"] = frame },
-        actions = { ["/combat_view/close"] = "close" },
+        -- close (CCombatView::Hide: here the selection cleared, which shows it); focus_on
+        -- (OnClickFocus: the camera to the combat [I: the selected fleet's system entered, the
+        -- fleet followed]: designer.rs); the bar and the stats take no clicks
+        actions = { ["/combat_view/close"] = "close", ["/combat_view/focus_on"] = data.selected and ("designer:combat_focus:" .. data.selected) or nil },
         text = stat_text,
     })
     -- the bar, a progressbarType: its first texture to the progress, its second past it (the
@@ -423,6 +427,10 @@ function combat.build(ctx, data)
                             [path .. "/ship_class"] = s.frame,
                         },
                         positions = { [path .. "/hitpoints"] = ring_at, [path .. "/armor"] = ring_at, [path .. "/shields"] = ring_at },
+                        -- inspect (CCombatViewShipEntry::OnClickInspect 0x2bfb700: the ship view),
+                        -- only after contact; emergency_ftl (the player's fleets: EmergencyFTL) not
+                        -- done here
+                        actions = (s.known and s.id) and { [path .. "/inspect"] = "fleet:ship:" .. s.id } or nil,
                         text = {
                             [path .. "/name"] = format_name(ctx, s.name),
                             [path .. "/size"] = s.class and ctx.loc and (ctx.loc.get("SHIP_CLASS"):gsub("%$CLASS%$", (format_name(ctx, s.class):gsub("%%", "%%%%")))) or "",

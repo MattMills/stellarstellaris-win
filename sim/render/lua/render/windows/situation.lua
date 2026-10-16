@@ -69,6 +69,7 @@ local function categories(game_dir)
             key = k, priority = tonumber(get(b, "priority")) or 0, icon = unquote(get(b, "icon")),
             loc = unquote(get(b, "localization")) or k, findings = get(b, "target_tab") == "anomalies",
             default = get(b, "default") == "yes",
+            collapsible = get(b, "collapsible") ~= "no",
         }
     end
     table.sort(list, function(a, b)
@@ -128,7 +129,7 @@ local function entries(ctx, data)
         out[#out + 1] = {
             kind = "situation", key = s.type, category = unquote(get(d, "situation_log_category")) or "urgent_matters",
             title = s.type, desc = s.type .. "_desc", picture = unquote(get(d, "picture")),
-            icon = unquote(get(d, "icon")),
+            icon = unquote(get(d, "icon")), situation = s, tone = unquote(get(d, "category")) or "neutral",
         }
     end
     for _, f in ipairs(data and data.first_contacts or {}) do
@@ -139,7 +140,7 @@ local function entries(ctx, data)
             out[#out + 1] = {
                 kind = "first_contact", key = tostring(f.id), category = "first_contacts", name = f.name, title = "",
                 icon = "GFX_category_first_contact", picture = v.picture, desc = v.desc, view = v,
-                days_left = f.days_left, difficulty = f.difficulty, leader = f.leader,
+                days_left = f.days_left, difficulty = f.difficulty, leader = f.leader, location = f.location,
             }
         end
     end
@@ -164,6 +165,9 @@ local SUBVIEW_OF = { chain = "event_chain_subview", project = "special_project_s
 -- ("kind:key"), state.no_selection (an event window opened over it: the game's frame shows none)
 function M.build(ctx, data, state)
     state = state or {}
+    local pinned, tracked = {}, {}
+    for _, k in ipairs(data and data.pinned or {}) do pinned[k] = true end
+    for _, k in ipairs(data and data.tracked or {}) do tracked[k] = true end
     local loc, db = ctx.loc, ctx.db
     local items, report = {}, { sprites = 0, texts = 0, missing_sprites = {}, skipped = {}, rects = {} }
     local findings = state.tab == "anomalies"
@@ -181,7 +185,8 @@ function M.build(ctx, data, state)
         if c.findings == findings then
             local members = {}
             for _, e in ipairs(list) do
-                local ec = e.category
+                -- a pinned entry is in "priority" ("Pinned by the player": the game moves it there)
+                local ec = pinned[e.kind .. ":" .. e.key] and "priority" or e.category
                 local known = false
                 for _, cc in ipairs(cats) do
                     if cc.key == ec then
@@ -281,6 +286,27 @@ function M.build(ctx, data, state)
         if selected.picture and db.sprites[selected.picture] then
             sprites[hw .. "/picture_window/picture"] = selected.picture
         end
+        if sub == "situation_subview" then
+            local st = selected.situation or {}
+            local sv = root .. "/log_window/currently_selected/situation_subview"
+            local ps = sv .. "/situations_progress_subview"
+            -- the bar's sprite by the type's tone (set in code: _neutral, _positive, _negative) [I]
+            local bar = "GFX_situation_event_progressbar_monodirectional_" .. (selected.tone or "neutral") .. "_large"
+            if db.sprites[bar] then
+                sprites[ps .. "/situations_progress_bar_container_large/progress_bar_monodirectional"] = bar
+            end
+            hide.progress_bar_bidirectional_left, hide.progress_bar_bidirectional_right = true, true
+            -- the pin over the progress, the month's change in it ("+0.3") [I: its place along the
+            -- 584 px bar container at 42]
+            local span = math.max(1, (st.finish or 100) - (st.start or 0))
+            local f = math.max(0, math.min(1, ((st.progress or 0) - (st.start or 0)) / span))
+            positions[ps .. "/progress_bar_pin_container"] = { 42 + f * 584 - 36, 5 }
+            local m = st.monthly or 0
+            text[ps .. "/progress_bar_pin_container/monthly_change"] = (m >= 0 and "§G+" or "§R") .. string.format("%.1f", m) .. "§!"
+            -- (the details' effects texts and the stage icons are not laid out)
+            hide.situations_details_container, hide.stage_icon_container = true, true
+            hide.outcome_right, hide.outcome_right_frame, hide.outcome_left, hide.outcome_left_frame = true, true, true, true
+        end
         if sub == "event_chain_subview" then
             local lines = {}
             for _, c in ipairs(selected.counters or {}) do
@@ -298,6 +324,10 @@ function M.build(ctx, data, state)
         actions = {
             [root] = "view_set:noop=",
             [root .. "/close"] = "view_close",
+            -- goto: the galaxy over the entry's place (events.rs); track: the entry tracked or not
+            -- (CTrackSituationLogEntryCommand: its dot in the list, its tracker on the map)
+            [root .. "/goto"] = selected and selected.location and ("sitlog:focus:" .. selected.location) or nil,
+            [root .. "/track"] = selected and ("cmd:events_data:track:" .. selected.kind .. ":" .. selected.key) or nil,
             [root .. "/tab_log"] = "view_set:tab=",
             [root .. "/tab_anomalies"] = "view_set:tab=anomalies",
             -- "Show First Contact": the first contact view (events.rs)
@@ -322,6 +352,41 @@ function M.build(ctx, data, state)
         end
     end
 
+    -- a situation's approaches (situations_approach_grid: CENTERED_UP, 165 x 50 slots, 4 a row): a
+    -- `situation_approach_entry` each shown (its potential), the current one selected; a click on
+    -- an allowed one sets it (cmd:events_data:approach, CSetSituationApproachCommand)
+    local ag = selected and selected.kind == "situation"
+        and wr.rects[root .. "/log_window/currently_selected/situation_subview/situations_approach_container/situations_approach_grid_container/situations_approach_grid"]
+    if ag then
+        local st = selected.situation or {}
+        local list = {}
+        for _, a in ipairs(st.approaches or {}) do
+            if a.potential ~= false then
+                list[#list + 1] = a
+            end
+        end
+        local n = math.min(#list, 4)
+        local x0 = ag.x + (ag.w - n * 165) / 2
+        for i, a in ipairs(list) do
+            if i > 4 then
+                break
+            end
+            local p = "/sitlog_approach/" .. i
+            local path = p .. "/situation_approach_entry"
+            local current = a.key == st.approach
+            local ai, ar = gui.layout(ctx.game_dir, db, FILE, "situation_approach_entry", ctx.screen, {
+                texture_size = ctx.texture_size, loc = loc, prefix = p,
+                parent = { x = x0 + (i - 1) * 165, y = ag.y, w = 0, h = 0 },
+                hide = { selected = not current or nil },
+                sprites = { [path .. "/approach_icon"] = a.icon, [path .. "/approach_icon_bg"] = a.icon_background },
+                text = { [path .. "/approach_text"] = (a.allow == false and "§g" or "") .. (loc and loc.has(a.key) and (loc.get(a.key)) or a.key) .. (a.allow == false and "§!" or "") },
+                actions = { [path .. "/approach_button"] = (a.allow ~= false and not current)
+                    and ("cmd:events_data:approach:" .. tostring(st.id) .. ":" .. a.key) or nil },
+            })
+            gui.merge(items, report, ai, ar)
+        end
+    end
+
     -- the list: a header per category, its entries under it
     local lr = wr.rects[root .. "/log_window/entries/entries"]
     if lr then
@@ -329,23 +394,29 @@ function M.build(ctx, data, state)
         for ci, s in ipairs(shown) do
             local hp = "/sitlog/" .. ci
             local hpath = hp .. "/situation_log_entry"
+            -- a click on a collapsible category's header folds it (the arrow's frame 1) or opens it
+            local ck = "collapsed:" .. s.cat.key
+            local collapsed = s.cat.collapsible and state[ck]
             local hi, hr = gui.layout(ctx.game_dir, db, FILE, "situation_log_entry", ctx.screen, {
                 texture_size = ctx.texture_size, loc = loc, prefix = hp,
                 parent = { x = lr.x, y = y, w = 0, h = 0 },
                 hide = { selected = true, completed = true, tracked = true, subentries = true },
                 -- the arrow of an expanded category (GFX_entry_expand frame 2)
-                frames = { [hpath .. "/expand_button"] = 2 },
+                frames = { [hpath .. "/expand_button"] = collapsed and 1 or 2 },
+                actions = { [hpath .. "/button"] = s.cat.collapsible and ("view_set:" .. ck .. "=" .. (collapsed and "" or "1")) or nil },
                 sprites = { [hpath .. "/entry_icon"] = s.cat.icon },
                 text = { [hpath .. "/name"] = s.cat.loc },
             })
             gui.merge(items, report, hi, hr)
             y = y + 39
-            for ei, e in ipairs(s.members) do
+            for ei, e in ipairs(collapsed and {} or s.members) do
                 local ep = hp .. "/" .. ei
                 local epath = ep .. "/situation_log_subentry"
                 local is_sel = selected == e
+                local pk = "pin:" .. e.kind .. ":" .. e.key
                 local ehide = {
-                    progressbar = true, cost_icon = true, completed = true, tracked = true, subentries = true,
+                    progressbar = true, cost_icon = true, completed = true, subentries = true,
+                    tracked = not tracked[e.kind .. ":" .. e.key] or nil,
                     situation_entry_icon_background = true, situation_entry_icon = true, situation_name = true,
                     situations_progress_subview = true, selected = not is_sel or nil,
                     -- the pin: not on the tutorials' entries [I: by the frame]
@@ -355,9 +426,13 @@ function M.build(ctx, data, state)
                     texture_size = ctx.texture_size, loc = loc, prefix = ep,
                     parent = { x = lr.x, y = y, w = 0, h = 0 },
                     hide = ehide,
-                    sprites = { [epath .. "/entry_icon"] = e.icon },
+                    sprites = { [epath .. "/entry_icon"] = e.icon, [epath .. "/pin_button"] = pinned[e.kind .. ":" .. e.key] and "GFX_button_pin_pinned" or nil },
                     text = { [epath .. "/name"] = e.name and require("render.names").format(loc, e.name) or e.title },
-                    actions = { [epath .. "/button"] = "view_set:selected=" .. e.kind .. ":" .. e.key },
+                    actions = {
+                        [epath .. "/button"] = "view_set:selected=" .. e.kind .. ":" .. e.key,
+                        -- the pin: to Priorities and back
+                        [epath .. "/pin_button"] = "cmd:events_data:pin:" .. e.kind .. ":" .. e.key,
+                    },
                 })
                 gui.merge(items, report, ei_items, ei_report)
                 y = y + 44
@@ -368,5 +443,9 @@ function M.build(ctx, data, state)
     end
     return items, report
 end
+
+-- no side windows: Escape closes the view (its close button has the shortcut ESCAPE), its tab and
+-- selection are not windows to close first (views.rs escape_keys)
+M.escape_keys = {}
 
 return M

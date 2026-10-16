@@ -22,6 +22,10 @@ local text = require("render.loctext")
 
 local ex = {}
 
+-- Escape closes the planner at once, an open drop-down with it (the close button's ESCAPE; the
+-- game's frames: the second Escape opens the game's menu); its filters are not side windows
+ex.escape_keys = {}
+
 local FILE = "interface/expansion_planner_view.gui"
 local V = "/expansion_planner_view"
 local F = V .. "/expansion_target_filters"
@@ -468,9 +472,14 @@ function ex.build(ctx, data, state)
     local list = report.rects[T .. "/list"]
     if list then
         local y = list.y
+        -- (the list scrolled by the wheel: its first row, state scroll)
+        local first = math.max(0, math.min(tonumber(state.scroll) or 0, #rows - 1))
         for i, r in ipairs(rows) do
             if y + 55 > list.y + list.h then
                 break
+            end
+            if i <= first then
+                goto continue
             end
             local prefix = T .. "/list/" .. i
             local p = prefix .. "/expansion_target_entry"
@@ -503,7 +512,11 @@ function ex.build(ctx, data, state)
                 -- (the row's button: disabled for a planet that cannot be colonised [I: an
                 -- unsurveyed one]; its frame 3)
                 frames = {},
-                actions = { [p .. "/zoom_to_planet"] = "select:planet:" .. r.id },
+                -- the zoom button and the class icon: the camera to the planet (OnClickGoto:
+                -- FocusCameraOnObjectOrSystem; the planner stays open); the row itself opens the
+                -- colonize window when the planet can be colonised [not done here: no colonize
+                -- window yet]
+                actions = { [p .. "/zoom_to_planet"] = "economy:goto:" .. r.id, [p .. "/planet_class_icon"] = "economy:goto:" .. r.id },
                 parent = { x = list.x, y = y, w = 0, h = 0 },
             })
             if ok then
@@ -512,6 +525,7 @@ function ex.build(ctx, data, state)
                 report.missing_sprites[#report.missing_sprites + 1] = "expansion_target_entry: " .. tostring(it)
             end
             y = y + 55
+            ::continue::
         end
     end
     -- the filters, an open drop-down's list: an entry per choice in its gridbox (the minimum
@@ -554,6 +568,23 @@ function ex.build(ctx, data, state)
         end
     end
     return items, report
+end
+
+-- the wheel over the list (a smoothListbox): a row a notch, within the rows that do not fit;
+-- the state's `scroll`, or nil off the list
+function ex.wheel(ctx, data, state, notches, x, y)
+    local _, report = gui.layout(ctx.game_dir, ctx.db, FILE, "expansion_planner_view", ctx.screen, {
+        texture_size = ctx.texture_size, loc = ctx.loc, only = { expansion_target = true },
+    })
+    local list = report.rects[T .. "/list"]
+    if not list or x < list.x or x > list.x + list.w or y < list.y or y > list.y + list.h then
+        return nil
+    end
+    local rows = #ex.filter(data or {}, state or {})
+    local fit = math.floor(list.h / 55)
+    local maxs = math.max(0, rows - fit)
+    local s = math.max(0, math.min(maxs, (tonumber(state.scroll) or 0) - (notches > 0 and 1 or -1) * math.max(1, math.floor(math.abs(notches) + 0.5))))
+    return { scroll = tostring(s) }
 end
 
 return ex

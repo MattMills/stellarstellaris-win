@@ -202,3 +202,50 @@ leader's level badge is GFX_outliner_leader_level in frame = the level, shown wi
   the numbers the game computes live (the Typhoon's 172; economy power and pops a few units off
   the save's) and the game's last row, half drawn under its list's edge with a scroll bar (rows
   that do not fit are left out here).
+
+## 8. The buttons (branch wire-outliner: src/mainbars.rs, outliner.rs, windows/outliner.lua)
+
+Read from the Linux 4.5.2 build (handlers' addresses). **wired**: the click does what the
+game's does; **UI only**: the window or state changes, the effect on the game is
+`[not done here]`; **not done**: no window here to open.
+
+| element | game (handler) | here |
+|---|---|---|
+| outliner row, left click | select it (the object's view opens), a map ping (COutlinerMember*::OnLeftClick) | wired (`select:`); the ping not done; an already selected row stays |
+| outliner row, double or right click | the camera on it (FocusCamera: its system, then the object) | wired (App::focus) |
+| Shift + row | add to or take from the selection | not done (one selection here) |
+| faction row | toggles the Factions view (0x301f3b0) | wired (`view:factions`) |
+| observer's country row | observe it (0x3029ff0) | not done (no observed country here) |
+| group header | collapse / expand (OnToggle) | wired |
+| sector header's icon | the Planets view at the sector (OpenEmpireView 0x300f000) | wired (opens it; not scrolled) |
+| tab buttons, O, observer toggle | the tab; the outliner shown or hidden | wired (O: mainbars shortcut) |
+| options (0x2fee790) | the options window: a group's checkbox shows or hides it, up and down move it, the colonies' mode spinner (4 modes, wraps), the tab's badge on or off, the custom tab | wired (state in outliner.rs); the custom tab UI only |
+| rearrange (0x2fee860) | Reorder Colonies: a row's click marks it last moved (yellow), up, down, below the last moved; sorts by distance, name, pops, class, designation (again: reversed) | wired for the outliner's order; the game's colony-order command UI only |
+| popups' close, Escape, the other popup, a tab switch | closes the popup | wired |
+| alert, left click | what it points to (CAlertManager::Click 0x1dee550): research: the technology view at the area; traditions; government; market; council; leaders; first contact's window; the next unstable planet | wired for the alerts drawn here; the others' views log `not done here` |
+| alert, right click | dismissed until its condition ends (RightClick 0x1deea20) | wired |
+| top bar resource groups | market (on the resource), claims, traditions, technology, situation log (resource_groups `onclick`, ShowTopBarViewTab) | wired |
+| naval capacity / envoys | fleet manager / the envoys' window | wired / not done |
+| government flag, date, speed buttons | the government view, pause, speed | wired (already) |
+| left bar | opens under the cursor unless locked (the slide not animated); a button toggles its view; F1..F10; the lock | wired; its edit mode (reorder) not done |
+| map modes, Ctrl+Z ... | the mode (frame 2), not a toggle | UI only: the map's colours not done here |
+| map filters | on/off; details cycles 3 states | UI only |
+| home, Home, Backspace | the camera to the capital | wired (Action::HomeSystem) |
+| galaxy / system banner buttons | leave the system / enter one (as E) | wired (Action::ToggleSystem) |
+| system name | rename dialog | not done |
+| search (F), chat (L), databank (Alt+B) | their windows | not done |
+| menu button, Escape | the in-game menu (pauses; Escape closes the top window first) | wired |
+| menu: Resume | closes it | wired |
+| menu: Load | the load window over the game | wired (Escape back to the map) |
+| menu: Exit to Menu / Exit to Desktop | standard_dialog_quit_to_menu / standard_dialog_quit, then DoResign / quit | wired |
+| menu: Save, Settings, Privacy | the save window, settings, a browser | not done |
+
+Checked in a real window (the windowed renderer under Xvfb on 10.5.0.24, xdotool clicks and keys,
+2210.01.01 loaded from Load Game): an outliner row opens its view, its double click keeps it and
+moves the camera; an alert's right click dismisses it, its left click opens the technology view
+at the area; the energy group opens the Market and Escape closes it; the options window opens
+and closes from its button; the left bar opens under the cursor and its button opens the Fleet
+Manager; Escape opens the in-game menu and closes it; Exit to Menu opens its dialog, Cancel
+closes it, Exit to Menu (Agree) returns to the main menu. While the menu or its dialog is open
+only their buttons take clicks (the map labels' buttons are otherwise above the windows' in the
+scene: App::button_at, mainbars::modal).

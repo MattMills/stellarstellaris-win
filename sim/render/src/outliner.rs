@@ -81,6 +81,23 @@ pub struct State {
     pub shows: [u32; 4],
     pub collapsed: BTreeSet<String>,
     pub shown: u8,
+    /// the tab window's popup: 0 none, 1 the options (COutlinerOptions), 2 the colonies' order
+    /// (COutlinerRearrange)
+    pub popup: u8,
+    /// the groups shown or hidden against their default (`NAME@TAB`: the options' checkboxes)
+    pub toggled: BTreeSet<String>,
+    /// a tab's groups in the order the options' up and down buttons gave (names, comma separated)
+    pub order: std::collections::BTreeMap<u32, String>,
+    /// the colonies' display mode (the options' spinner, 0..3)
+    pub planet_mode: u8,
+    /// the tabs whose badge is off (the options' Notification checkbox)
+    pub notifications_off: BTreeSet<u32>,
+    /// the options' Custom Outliner Tab checkbox
+    pub custom_tab: bool,
+    /// the colonies in the order the rearrange window gave (planet ids, comma separated), the
+    /// last moved
+    pub colony_order: String,
+    pub last_moved: Option<u32>,
 }
 
 impl State {
@@ -94,6 +111,10 @@ impl State {
                 let changed = self.tab != n;
                 if changed && (n as usize) < self.shows.len() {
                     self.shows[n as usize] += 1;
+                }
+                // (a tab switched closes its popup)
+                if changed {
+                    self.popup = 0;
                 }
                 self.tab = n;
                 changed
@@ -112,6 +133,52 @@ impl State {
             }
             (Some("observer"), None) => {
                 self.shown = if self.shown == 1 { 2 } else { 1 };
+                true
+            }
+            // the tab window's buttons: options, rearrange (each toggles its popup, closing the
+            // other), the popups' close
+            (Some("options"), None) => {
+                self.popup = if self.popup == 1 { 0 } else { 1 };
+                true
+            }
+            (Some("rearrange"), None) => {
+                self.popup = if self.popup == 2 { 0 } else { 2 };
+                true
+            }
+            (Some("close"), None) => {
+                self.popup = 0;
+                true
+            }
+            (Some("group"), Some(key)) => {
+                if !self.toggled.remove(key) {
+                    self.toggled.insert(key.to_string());
+                }
+                true
+            }
+            (Some("order"), Some(rest)) => {
+                let (tab, list) = rest.split_once(':').unwrap_or((rest, ""));
+                self.order.insert(tab.parse().unwrap_or(0), list.to_string());
+                true
+            }
+            (Some("planet_mode"), Some(n)) => {
+                self.planet_mode = n.parse::<u8>().unwrap_or(0) % 4;
+                true
+            }
+            (Some("notify"), Some(tab)) => {
+                let t = tab.parse().unwrap_or(0);
+                if !self.notifications_off.remove(&t) {
+                    self.notifications_off.insert(t);
+                }
+                true
+            }
+            (Some("custom"), None) => {
+                self.custom_tab = !self.custom_tab;
+                true
+            }
+            (Some("colonies"), Some(rest)) => {
+                let (last, list) = rest.split_once(':').unwrap_or(("", rest));
+                self.last_moved = last.parse().ok();
+                self.colony_order = list.to_string();
                 true
             }
             _ => false,
@@ -140,6 +207,28 @@ pub fn install(runtime: &Runtime, view: &LuaData, state: &State, selected: Optio
         }
         s.set("collapsed", c)?;
         s.set("shown", state.shown)?;
+        s.set("popup", state.popup)?;
+        let tg = lua.create_table()?;
+        for k in &state.toggled {
+            tg.set(k.as_str(), true)?;
+        }
+        s.set("toggled", tg)?;
+        let order = lua.create_table()?;
+        for (t, l) in &state.order {
+            order.set(*t, l.as_str())?;
+        }
+        s.set("order", order)?;
+        s.set("planet_mode", state.planet_mode)?;
+        let off = lua.create_table()?;
+        for t in &state.notifications_off {
+            off.set(*t, true)?;
+        }
+        s.set("notifications_off", off)?;
+        s.set("custom_tab", state.custom_tab)?;
+        s.set("colony_order", state.colony_order.as_str())?;
+        if let Some(l) = state.last_moved {
+            s.set("last_moved", l)?;
+        }
         t.set("state", s)?;
         if let Some((kind, id)) = selected {
             let sel = lua.create_table()?;
@@ -192,6 +281,27 @@ mod tests {
     fn flag_country_from_path() {
         assert_eq!(flag_country("/observer_outliner/2/3@16777225/observer_outliner_country_window/country"), Some(16777225));
         assert_eq!(flag_country("/outliner/1/2/outliner_member_planet_entry_window/name"), None);
+    }
+
+    #[test]
+    fn popup_actions() {
+        let mut s = State::default();
+        assert!(s.act("options"));
+        assert_eq!(s.popup, 1);
+        assert!(s.act("rearrange"));
+        assert_eq!(s.popup, 2);
+        assert!(s.act("tab:1"));
+        assert_eq!(s.popup, 0);
+        assert!(s.act("group:planets@0"));
+        assert!(s.toggled.contains("planets@0"));
+        assert!(s.act("order:0:sectors,civilian"));
+        assert_eq!(s.order.get(&0).map(String::as_str), Some("sectors,civilian"));
+        assert!(s.act("planet_mode:5"));
+        assert_eq!(s.planet_mode, 1);
+        assert!(s.act("colonies:7:7,5"));
+        assert_eq!((s.last_moved, s.colony_order.as_str()), (Some(7), "7,5"));
+        assert!(s.act("colonies::5,7"));
+        assert_eq!(s.last_moved, None);
     }
 
     #[test]

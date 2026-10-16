@@ -8,8 +8,8 @@
 -- (tradition_box), seven category slots (TRADITION_CATEGORIES_MAX) with the adopted categories
 -- first in their order then empty ones (tradition_category_grid_entry: an adopted category's tree
 -- from its tree_template with a tradition_entry in each of the template's containers, an empty one
--- "Empty" with its Select button), and the eight ascension perk slots (ap_0 .. ap_7). The crisis
--- (Ambition) tab is not drawn.
+-- "Empty" with its Select button), and the eight ascension perk slots (ap_0 .. ap_7). The Ambition
+-- tab (crisis_window, with the country's crisis progression): traditions_crisis.lua.
 
 local gui = require("render.gui")
 local source = require("stellar.script.source")
@@ -83,7 +83,67 @@ function traditions.extract(game_dir)
                 end
             end
         end
+        if d.can then
+            local eval = require("simscript.eval")
+            local function holds(block, file)
+                if type(block) ~= "table" then
+                    return true
+                end
+                local okt, r = pcall(eval.trigger, block, eval.new_ctx(eval.S("country", cid), nil, nil, file))
+                return okt and r and true or false
+            end
+            local adopted = {}
+            for _, cat in ipairs(d.categories) do
+                adopted[cat] = true
+            end
+            -- the category selection (CTraditionCategorySelectionView::Update): the potential
+            -- categories not adopted, in the database's order; Adopt enabled when the adoption
+            -- tradition is possible and affordable; the description the first `desc` whose trigger
+            -- holds (CTriggeredEventDescription), else KEY_desc
+            d.available = {}
+            local unity_cost = d.cost or 0
+            for _, c in ipairs(tr.categories()) do
+                local okp, potential = pcall(tr.category_potential, cid, c.name)
+                if not adopted[c.name] and okp and potential then
+                    local desc
+                    for _, e in ipairs(c.block) do
+                        if not desc and e.op and e.key and e.key.text == "desc" and type(e.value) == "table" and e.value.text == nil then
+                            local trig, text
+                            for _, x in ipairs(e.value) do
+                                if x.op and x.key and x.key.text == "trigger" then trig = x.value end
+                                if x.op and x.key and x.key.text == "text" then text = x.value.text end
+                            end
+                            if text and holds(trig, c.file) then
+                                desc = unquote(text)
+                            end
+                        end
+                    end
+                    local okq, possible = pcall(tr.is_possible, cid, c.adoption or "")
+                    d.available[#d.available + 1] = {
+                        key = c.name, desc = desc,
+                        can = c.adoption ~= nil and okq and possible and d.unity >= unity_cost or false,
+                    }
+                end
+            end
+            -- the ascension perks (CAscensionPerksView::UpdateList): potential, possible (without
+            -- the slots), valid (CCountryActivateAscensionPerkCommand::IsValid: with them)
+            d.perk_list = {}
+            for _, p in ipairs(tr.perk_types()) do
+                local okp, potential = pcall(tr.is_potential, cid, p.name)
+                if okp and potential then
+                    local okq, possible = pcall(tr.can_activate, cid, p.name, false)
+                    local okv, valid = pcall(tr.can_activate, cid, p.name, true)
+                    d.perk_list[#d.perk_list + 1] = {
+                        key = p.name, potential = true, possible = okq and possible or false, valid = okv and valid or false,
+                        icon = unquote(require("engine.defs").field(p.block, "icon")),
+                    }
+                end
+            end
+        end
     end
+    -- the Ambition tab's data (nil without a crisis progression: the tab disabled)
+    local okc, cr = pcall(require("render.windows.traditions_crisis").extract, cid)
+    d.crisis = okc and cr or nil
     if d.cost == nil then
         -- (TRADITION_COST_AMOUNTS + (n x TRADITION_COST_TRADITION) ^ EXP) x (1 + size penalty)
         -- [I: the modifiers not applied: the administrative capacity is EMPIRE_SIZE_BASE]
@@ -158,7 +218,11 @@ end
 -- traditions.build(ctx, data, state) -> items, report
 function traditions.build(ctx, data, state)
     local defs = definitions(ctx.game_dir)
-    data = data or { categories = {}, traditions = {}, perks = {}, unity = 0, income = 0, cost = 300 }
+    -- (the data comes a snapshot after the view opens: every field guarded)
+    data = data or {}
+    data.categories, data.traditions, data.perks = data.categories or {}, data.traditions or {}, data.perks or {}
+    data.unity, data.income, data.cost = data.unity or 0, data.income or 0, data.cost or 300
+    state = state or {}
     local items = {}
     local report = { sprites = 0, texts = 0, missing_sprites = {}, skipped = {}, rects = {} }
     local base = { texture_size = ctx.texture_size, loc = ctx.loc }
@@ -191,7 +255,12 @@ function traditions.build(ctx, data, state)
 
     -- the window: the Traditions tab active (UpdateTabVisibility), the crisis window hidden
     local V = "/traditions_view"
-    local hide = { tab_traditions = true, tab_crisis_active = true, crisis_window = true }
+    -- the Ambition tab (CCrisisView) when the country has a crisis progression (Update 0x334c3e0:
+    -- tab 1 without one goes back to tab 0)
+    local crisis = require("render.windows.traditions_crisis")
+    local on_crisis = state.tab == "crisis" and data.crisis ~= nil
+    local hide = on_crisis and { tab_traditions_active = true, tab_crisis = true, traditions_window = true }
+        or { tab_traditions = true, tab_crisis_active = true, crisis_window = true }
     local text, progress = {}, {}
     if has_next then
         -- UpdateProgress: the cost with the unity icon, rounded up; the stock's share of it; the
@@ -212,12 +281,37 @@ function traditions.build(ctx, data, state)
     else
         hide.tradition_cost, hide.progress, hide.time_to_next_tradition = true, true, true
     end
+    local actions, sprites, disabled = { [V .. "/close"] = "view_close" }, {}, {}
+    -- (a text box without maxWidth is as wide as its text)
+    local sizes = { [V .. "/traditions_window/ascension_perks/ascension_perks_label"] = { 280, 25 } }
+    if data.crisis then
+        -- the tabs (OnTab: the tab set, UpdateTabVisibility)
+        actions[V .. "/tab_traditions"] = "view_set:tab="
+        actions[V .. "/tab_crisis"] = "view_set:tab=crisis"
+    else
+        -- the Ambition tab: disabled without the country's crisis data (Update 0x334c3e0)
+        disabled[V .. "/tab_crisis"] = true
+    end
+    if on_crisis then
+        crisis.build(ctx, data.crisis, state, V, { sprites = sprites, text = text, hide = hide, actions = actions, sizes = sizes })
+    end
     local r = layout("traditions_view", {
-        hide = hide, text = text, progress = progress,
-        -- (a text box without maxWidth is as wide as its text)
-        sizes = { [V .. "/traditions_window/ascension_perks/ascension_perks_label"] = { 280, 25 } },
-        actions = { [V .. "/close"] = "view_close" },
+        hide = hide, text = text, progress = progress, actions = actions, sprites = sprites, disabled = disabled,
+        sizes = sizes,
     })
+    if on_crisis then
+        -- the window's lists (its levels, their perks, the objectives); the traditions tab's
+        -- dialogs are not over it
+        crisis.lists(ctx, data.crisis, state, r, function(file, window, opts)
+            for k, v in pairs(base) do
+                opts[k] = opts[k] or v
+            end
+            local i, rr = gui.layout(ctx.game_dir, ctx.db, file, window, ctx.screen, opts)
+            gui.merge(items, report, i, rr)
+            return rr
+        end, items)
+        return items, report
+    end
 
     -- the categories (UpdateTraditionsGridbox): slot i at the gridbox's (314 x 266) cell
     local grid = r.rects[V .. "/traditions_window/tradition_category_gridbox"]
@@ -256,6 +350,13 @@ function traditions.build(ctx, data, state)
             -- blocker when the next tradition is affordable
             opts.hide.adopted_count_container = true
             opts.text[E .. "/category_adopt_button"] = "TRADITION_SELECT_BUTTON"
+            -- Select: enabled when the next tradition is affordable; it opens the category
+            -- selection (OnClickAdopt with no category: CTraditionCategorySelectionView)
+            if affordable then
+                opts.actions[E .. "/category_adopt_button"] = "view_set:confirm=;dialog=categories"
+            else
+                opts.disabled = { [E .. "/category_adopt_button"] = true }
+            end
             if affordable then
                 opts.sprites[E .. "/tradition_grid_entry_bg_container/tradition_grid_entry_bg"] = "GFX_tradition_category_bg_available"
                 opts.sprites[E .. "/category_name_container/category_icon"] = "GFX_tradition_category_icon_available"
@@ -283,6 +384,9 @@ function traditions.build(ctx, data, state)
                             -- a tradition neither had nor adoptable is disabled: the game draws
                             -- it greyed [I: the disabled look as a grey tint]
                             tints = { [T .. "/tradition_adopt_button"] = (data.can and not has[t] and not data.can[t]) and { 0.35, 0.35, 0.35, 1 } or nil },
+                            -- a click on one that can be adopted asks for confirmation
+                            -- (OnClickTraditionAdopt: CPopupMessageYesNo)
+                            actions = { [T .. "/tradition_adopt_button"] = (data.can and data.can[t]) and ("view_set:confirm=" .. t) or nil },
                         })
                     end
                 end
@@ -308,9 +412,94 @@ function traditions.build(ctx, data, state)
         layout("traditions_ascension_perk_entry", {
             prefix = prefix, parent = { x = box.x + at[1], y = box.y + at[2], w = 0, h = 0 },
             sprites = { [P .. "/icon"] = icon, [P .. "/ascension_perk_button"] = frame },
+            -- an untaken slot (free or locked) opens the perk list (OnClickAscensionPerk)
+            actions = { [P .. "/ascension_perk_button"] = not data.perks[i + 1] and "view_set:confirm=;perks=1" or nil },
         })
     end
+
+    -- the dialogs over the view: the category selection, the perk list, their confirmations
+    local dialogs = require("render.windows.traditions_dialogs")
+    local function dlayout(file, window, opts)
+        for k, v in pairs(base) do
+            opts[k] = opts[k] or v
+        end
+        local i, rr = gui.layout(ctx.game_dir, ctx.db, file, window, ctx.screen, opts)
+        gui.merge(items, report, i, rr)
+        return rr
+    end
+    local native = require("render.windows.technology").native
+    if state.dialog == "categories" then
+        dialogs.categories(ctx, data, state, dlayout, defs, native)
+    end
+    if state.perks then
+        dialogs.perks(ctx, data, state, dlayout)
+    end
+    -- (the popups' descriptions have "\n"s: a text item a line)
+    local first = #items + 1
+    if state.confirm then
+        dialogs.confirm(ctx, data, state, dlayout)
+    end
+    if state.perk_confirm then
+        dialogs.perk_confirm(ctx, data, state, dlayout)
+    end
+    require("render.windows.technology").split_lines(items, first, 17)
     return items, report
+end
+
+-- traditions.escape(state) -> the action Escape does: the innermost window closed (a popup, then
+-- the dialog under it), or nil (the view closed)
+function traditions.escape(state)
+    if state.confirm then
+        return "view_set:confirm="
+    elseif state.perk_confirm then
+        return "view_set:perk_confirm="
+    elseif state.dialog then
+        return "view_set:dialog=;cat_scroll="
+    elseif state.perks then
+        return "view_set:perks=;perk_scroll="
+    end
+    return nil
+end
+
+-- traditions.wheel(ctx, data, state, notches, x, y): the category selection's rows or the perk
+-- list scrolled when the pointer is over them
+function traditions.wheel(ctx, data, state, notches, x, y)
+    if state.tab == "crisis" and data and data.crisis then
+        -- the Ambition tab's objectives
+        local _, r = gui.layout(ctx.game_dir, ctx.db, FILE, "traditions_view", ctx.screen, { texture_size = ctx.texture_size, loc = ctx.loc })
+        local list = r.rects["/traditions_view/crisis_window/information_box/objectives_box/objectives_list"]
+        return require("render.windows.traditions_crisis").wheel(data.crisis, state, notches, x, y, list)
+    end
+    local dialogs = require("render.windows.traditions_dialogs")
+    if state.perks then
+        return dialogs.perks_wheel(ctx, data, state, notches, x, y)
+    elseif state.dialog == "categories" then
+        return dialogs.categories_wheel(ctx, data, state, notches, x, y)
+    end
+    return nil
+end
+
+-- traditions.command(what, name) -> what it did (the action `cmd:traditions:WHAT:NAME`, views.rs:
+-- in the simulation's runtime)
+--   adopt NAME  CCountryActivateTraditionCommand (IsValid: CanActivate with the slots; Execute:
+--               the cost paid, CCountry::ActivateTradition): engine.traditions.activate; a
+--               category is adopted with its adoption tradition
+--   perk NAME   CCountryActivateAscensionPerkCommand (IsValid: CanActivate with the slots;
+--               Execute: CCountry::ActivateAscensionPerk, no cost): the same activate
+function traditions.command(what, name)
+    local world = require("engine.world")
+    local tr = require("engine.traditions")
+    local cid = require("render.topbar").player()
+    if what ~= "adopt" and what ~= "perk" then
+        return "refused: unknown command " .. tostring(what)
+    end
+    local t = tr.type(name or "")
+    if not t or (what == "perk") ~= (t.kind == tr.PERK) then
+        return "refused: no " .. (what == "perk" and "ascension perk " or "tradition ") .. tostring(name)
+    end
+    local date = (tostring(world.meta.date or ""):gsub('"', ""))
+    local ok = tr.activate(cid, name, require("simscript.host"), date)
+    return (ok and (what == "perk" and "perk " or "adopted ") or "refused: ") .. name
 end
 
 return traditions

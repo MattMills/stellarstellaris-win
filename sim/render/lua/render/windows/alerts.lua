@@ -92,7 +92,9 @@ function M.extract(game_dir, ctx)
     -- an alert shown (banner: a priority the code sets in place of the type's)
     local function alert(key, banner)
         local d = alert_defs[key] or {}
-        shown[#shown + 1] = { key = key, icon = d.icon or "", priority = banner or d.priority or "LOW", rank = RANK[d.priority or "LOW"] or 2, order = d.order or 999 }
+        local e = { key = key, icon = d.icon or "", priority = banner or d.priority or "LOW", rank = RANK[d.priority or "LOW"] or 2, order = d.order or 999 }
+        shown[#shown + 1] = e
+        return e
     end
     if not pc then
         return shown
@@ -122,14 +124,18 @@ function M.extract(game_dir, ctx)
         end
     end
 
-    -- 7: low stability (a colony under LOW_PLANET_STABILITY) [V]
+    -- 7: low stability (a colony under LOW_PLANET_STABILITY) [V]; its targets the planets (a
+    -- click goes to the next: OnPlanetsLowStabilityClick)
+    local unstable = {}
     for _, c in ipairs(world.list(world.field(pc, "owned_planets"))) do
         local col = world.object("colony", tonumber(c))
         local s = col and tonumber(world.field(col, "stability"))
         if s and s < (def.LOW_PLANET_STABILITY or 25) then
-            alert("alert_low_stability")
-            break
+            unstable[#unstable + 1] = world.colony_planet and world.colony_planet[tonumber(c)] or tonumber(c)
         end
+    end
+    if #unstable > 0 then
+        alert("alert_low_stability").targets = unstable
     end
 
     -- 16: a resource short (HasResourceShortage: none in stock and the month's balance below
@@ -174,7 +180,7 @@ function M.extract(game_dir, ctx)
         local ev = c and world.field(c, "event")
         if c and tonumber(world.field(c, "owner")) == player and world.field(c, "status") == "in_progress"
             and type(ev) == "table" and world.field(ev, "expired") ~= "yes" then
-            alert("alert_first_contact_stage_done", "LOW")
+            alert("alert_first_contact_stage_done", "LOW").targets = { tonumber(cid) }
             break
         end
     end

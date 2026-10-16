@@ -567,8 +567,10 @@ impl Engine {
                     ["close"] => "diplo:close".to_string(),
                     ["community"] => "diplo:community".to_string(),
                     [what @ ("country" | "federation" | "war"), id] => format!("diplo:{what}:{id}"),
-                    [what @ ("select" | "tab" | "sort"), v] => format!("diplo:{what}:{v}"),
-                    _ => return Err("open_diplomacy contacts|country ID|community|federation ID|war ID|close (or select ID, tab NAME, sort NAME)".into()),
+                    [what @ ("select" | "tab" | "sort" | "action" | "filter" | "zoom"), v] => format!("diplo:{what}:{v}"),
+                    // the picked action proposed (its Confirm button), whether or not the list offers it
+                    ["confirm"] => "diplo:action_confirm".to_string(),
+                    _ => return Err("open_diplomacy contacts|country ID|community|federation ID|war ID|close (or select ID, tab NAME, sort NAME, action KEY, confirm, filter NAME, zoom ID)".into()),
                 };
                 // (the left bar's button toggles Contacts; the command opens it)
                 if action == "view:contacts" && self.app.diplomacy.open == Some(crate::diplomacy::Open::Contacts) {
@@ -644,6 +646,16 @@ impl Engine {
                     self.app.select(None);
                     self.flush_log();
                     return Ok(Reply::ok("open_planet close"));
+                }
+                // `open_planet act ACTION`: a `planet:` action as its button sends it (planet.rs act),
+                // the reply the simulation's answer to a command
+                if a.first().copied() == Some("act") {
+                    let action = rest["act".len()..].trim().to_string();
+                    crate::planet::act(&mut self.app, &action)?;
+                    crate::planet::run_pending(&mut self.app)?;
+                    self.app.scene()?;
+                    self.flush_log();
+                    return Ok(Reply::ok(format!("open_planet act {action}: {}", self.app.planet_view.last)));
                 }
                 let id: u32 = num(a.first(), "planet id")?;
                 // without a tab the window keeps its own (the game's `open_planet ID` too)

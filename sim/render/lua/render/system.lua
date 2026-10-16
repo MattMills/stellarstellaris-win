@@ -504,14 +504,33 @@ end
 -- owner's colour when the culture takes it; the culture's lighting), for the ship designer's 3D
 -- view (render.windows.designer); nil without one
 function system.design_model(game_dir, design_id, owner)
-    local f = files(game_dir)
     local design = world.object("ship_design", design_id)
     local stage = design and world.blocks(world.field(design, "growth_stages"))[1]
     local size = stage and tostring(world.field(stage, "ship_size") or ""):gsub('"', "")
     if not size then
         return nil
     end
-    local culture = tostring(world.field(design, "graphical_culture") or ""):gsub('"', "")
+    local plain = { size = size, sections = {} }
+    for _, s in ipairs(world.fields(stage, "section")) do
+        local sec = { template = tostring(world.field(s, "template") or ""):gsub('"', ""), slot = tostring(world.field(s, "slot") or ""):gsub('"', ""), components = {} }
+        for _, c in ipairs(world.fields(s, "component")) do
+            sec.components[tostring(world.field(c, "slot") or ""):gsub('"', "")] = tostring(world.field(c, "template") or ""):gsub('"', "")
+        end
+        plain.sections[#plain.sections + 1] = sec
+    end
+    return system.stage_model(game_dir, plain, tostring(world.field(design, "graphical_culture") or ""):gsub('"', ""), owner)
+end
+
+-- system.stage_model(game_dir, stage, culture, owner) -> the model of a design's stage { size,
+-- sections = { { template, slot, components = { [slot] = template } } } } (the ship designer's
+-- design under modification), as design_model's
+function system.stage_model(game_dir, stage, culture, owner)
+    local f = files(game_dir)
+    local size = stage and stage.size
+    if not size then
+        return nil
+    end
+    culture = (culture and culture ~= "") and culture or (stage.culture or "")
     if culture == "" and owner then
         -- a design without its own culture: its owner's [I]
         local c = world.object("country", owner)
@@ -520,24 +539,22 @@ function system.design_model(game_dir, design_id, owner)
     local slots = f.slots[size] or {}
     local frame = first_entity({ culture .. "_" .. size .. "_entity", f.slots[size .. "#entity"] and culture .. "_" .. f.slots[size .. "#entity"], f.slots[size .. "#entity"] })
     local sections = {}
-    for _, s in ipairs(world.fields(stage, "section")) do
-        local template = tostring(world.field(s, "template") or ""):gsub('"', "")
-        local slot = tostring(world.field(s, "slot") or ""):gsub('"', "")
-        local ent = f.templates[template]
+    for _, s in ipairs(stage.sections or {}) do
+        local ent = f.templates[s.template]
         local name = ent and first_entity({ culture .. "_" .. ent, ent })
         if name then
             local turrets = {}
-            local cs = f.component_slots[template] or {}
-            for _, c in ipairs(world.fields(s, "component")) do
-                local sl = cs[tostring(world.field(c, "slot") or ""):gsub('"', "")]
-                local wt = f.weapon_types[tostring(world.field(c, "template") or ""):gsub('"', "")]
+            local cs = f.component_slots[s.template] or {}
+            for slot, template in pairs(s.components or {}) do
+                local sl = cs[slot]
+                local wt = f.weapon_types[template]
                 local te = sl and wt and (f.slot_entities[sl.template] or {})[wt]
                 local tname = te and first_entity({ culture .. "_" .. te, te })
                 if tname and sl.locator ~= "" then
                     turrets[#turrets + 1] = { entity = tname, locator = sl.locator }
                 end
             end
-            sections[#sections + 1] = { entity = name, locator = slots[slot] or "", turrets = turrets }
+            sections[#sections + 1] = { entity = name, locator = slots[s.slot] or "", turrets = turrets }
         end
     end
     local country = owner and world.object("country", owner)

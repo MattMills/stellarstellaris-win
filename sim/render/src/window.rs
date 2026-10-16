@@ -210,6 +210,34 @@ impl Win {
             }
             other => return Err(format!("the surface gave no frame: {other:?}")),
         };
+        // a scene made for another size (the window just resized or maximised: the UI thread's
+        // scene of the new size comes a few frames later) is not drawn into this one: its depth
+        // buffer's size differs and the pass would fail (wgpu's validation panics); the frame is
+        // cleared and presented instead (an image taken and not presented is not given back by
+        // every backend: the surface then times out for good)
+        let ts = texture.texture.size();
+        if s.renderer.size() != Some((ts.width, ts.height)) {
+            if std::env::var("RENDER_TRACE").is_ok() {
+                eprintln!("frame cleared: the scene is {:?}, the surface {}x{}", s.renderer.size(), ts.width, ts.height);
+            }
+            let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder = s.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("resize") });
+            drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("resize"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                ..Default::default()
+            }));
+            s.in_flight = Some(s.queue.submit([encoder.finish()]));
+            s.window.pre_present_notify();
+            s.queue.present(texture);
+            s.window.request_redraw();
+            return Ok(());
+        }
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = s.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         s.renderer.draw(&mut encoder, &view, ALL);

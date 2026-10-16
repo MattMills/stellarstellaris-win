@@ -629,6 +629,29 @@ function designer.generate(country, size, role, seed)
     return stage
 end
 
+-- designer.buildable(country, size) -> the keys of the components the country can build on a
+-- ship of the size (component_ok: prerequisites, potential, possible; not hidden, not space fauna's),
+-- in the database's order: the ship designer window's component lists (render.windows.designer)
+function designer.buildable(country, size)
+    local sd = defs.get("common/ship_sizes", size)
+    if not sd then
+        return {}
+    end
+    local E = require("simscript.eval")
+    local d = {
+        country = country, size = size, size_def = sd, class = unq(defs.field(sd.block, "class")) or "shipclass_military",
+        role = "", prefs = designer.preferences(country),
+        ctx = E.new_ctx(E.S("country", country), E.S("country", country), nil, "ship design"),
+    }
+    local out = {}
+    for _, c in ipairs(components().list) do
+        if component_ok(c, d) then
+            out[#out + 1] = c.key
+        end
+    end
+    return out
+end
+
 -- the stage as plain data (a command's argument): no definitions, no flags
 function designer.plain(stage)
     if not stage then return nil end

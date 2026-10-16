@@ -159,3 +159,51 @@ Same commands on both (autosave_2212.07.01, 1600 x 900, the game by `headless/vi
 - The diplomacy view of a regular empire, the federation and the war overview have no frame to
   compare: in every save the player has communications only with the marauders, belongs to no
   federation and is at no war. They are laid out by the code read (sections 3 to 5).
+
+## 8. The buttons
+
+What each element the game takes clicks on does, and how far the renderer does it. The world's
+changes go through the simulation (render-buttons-1's views.rs: `render.windows.contacts`'s
+`command(...)`, run between days, the simulation started if it is not running, a snapshot taken
+after): `list` (a country's actions) and `propose` (an action) in `lua/render/windows/
+diplomacy_actions.lua`. The command protocol's `open_diplomacy action KEY`, `confirm`, `filter
+NAME`, `zoom ID`, `select ID`, `tab NAME`, `sort NAME` do the same as the clicks.
+
+| window | element | the game | here |
+|---|---|---|---|
+| Contacts | the left bar's contacts button | ToggleTopBarView: shown, or hidden when shown | wired |
+| Contacts | close, Escape | CGalaxyView::Hide | wired |
+| Contacts | a row (its background, its flag) | OnBackground: the row selected, its profile shown | wired |
+| Contacts | the sort headers (name, opinion, power, status, federation, planets, war) | ChangeEmpireSortingMethod: its method, the same header again flips | wired (name, opinion, planets, war sort; power, status, federation sort by name [I]) |
+| Contacts | the filter checkboxes (empire, fallen empire, pre-FTL, other, non-player) | the list filtered (ShouldShowEmpire) | wired (frame 2 checked, 1 unchecked) |
+| Contacts | Diplomacy | OnEmpireDiplomacy: ShowDiplomacyView(country, 0, 1, 1); disabled without IsDiplomaticViewAvailableFor | wired (enabled with communications; the marauders' own event is not shown) |
+| Contacts | Espionage | the window on its espionage tab; disabled without IsEspionageAvailableFor | UI only (disabled: the spy networks are not read here [I]) |
+| Contacts | zoom to capital | OnEmpireZoomToCapital: the camera to the capital | wired (the capital's system entered) |
+| Contacts | the Agreements tab | the agreements' list (CAgreementsListViewController); disabled without an overlord or subjects | disabled as the game; its lists not done |
+| Contacts | the list's wheel | the list scrolled | not done (no save lists more than three rows) |
+| Diplomacy | close, Escape | CloseClick; Escape cancels a picked action first | wired |
+| Diplomacy | the capital (to_to_home_world) | the camera to the capital | wired |
+| Diplomacy | the tabs | OnTabButton: Diplomacy, Espionage (enabled by IsEspionageAvailableFor) | Diplomacy wired; Espionage disabled (its tab's lists not done) |
+| Diplomacy | an action's entry | SelectAction: its view (the window 990 wide, the action's title, description, icon), Confirm and Cancel; disabled when it cannot be proposed | wired; the trade deal, declare war, proxy war, offer peace, agreements and claims open their own windows in the game [not done here] |
+| Diplomacy | Cancel | CancelAction: the list again | wired |
+| Diplomacy | Confirm | the action proposed (CDiploActionProposeCommand) | wired for close and open borders, rivalry (declared and ended), the embassy recalled, the pacts broken; the actions that need the AI's acceptance are not accepted (the engine has no acceptance yet): the bubble says so [not done here] |
+| Diplomacy | the AI's acceptance icons | frame 1 refuses, 2 accepts, 3 with favours | not drawn (no acceptance computed) |
+| Community | close, Escape; the tabs | Hide; Community, Senate Floor (disabled for a non-member), Resolutions | wired |
+| Community | Join / Leave | CJoinCommunityCommand / CLeaveCommunityCommand | not done (no community is formed in any save; the engine has no command) |
+| Community | Select a Leader | the delegate's leader selection (CAssignOfficialWindow) | not done |
+| Community | resolutions, votes, the senate floor | CResolution proposals, CVoteCommand | not done (no community formed) |
+| Federation | close, the tabs (Levels, Members, Fleets, Laws) | Hide, SwitchToTab | wired (the view opens only for the player's federation: none in the saves) |
+| Federation | leave, rename, type, laws' votes | CLeaveFederationAction, the federation commands | not done |
+| War | close | Hide | wired |
+| War | the peace options, Send, set war goal, the battle log's headers | COfferPeaceAction, CWarGoalsView | not done (no war in any save) |
+
+The diplomatic actions listed (§3): common/diplomatic_actions in file order, `is_listed = no`
+dropped, their `potential` triggers evaluated by the simulation's script layer (this = the
+player, from = the recipient), the possible ones (`possible` and `proposable` holding) first. The
+engine's own checks (CDiplomaticAction subclasses' IsPotential) are approximated from the
+relation's state: a pact formed or not, rivalry, embassy, closed borders, a federation's members
+(no defensive pact, non-aggression pact or guarantee with one), subjects, spy networks [I]. On the
+test save (autosave_2212.07.01 with communications added to the empire 16777223) the renderer
+lists the game's seventeen actions plus Pledge Secret Fealty; the game puts Close Borders among the
+possible and Make Claims among the impossible ones, the renderer the other way round: the script
+layer's `possible` checks that read intel (`has_intel`) are not those of the game yet.

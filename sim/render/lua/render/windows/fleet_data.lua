@@ -150,13 +150,55 @@ local function orders(f)
             list[#list + 1] = e.key.text
         end
     end
-    local queue = world.field(f, "orders")
-    for _, e in ipairs(type(queue) == "table" and queue or {}) do
-        if e.op and e.key then
-            list[#list + 1] = e.key.text
+    -- the current order and the queue (engine.fleets.orders: current_order = { <type> = {..} },
+    -- order = { <type> = {..} ... })
+    for _, key in ipairs({ "current_order", "order", "orders" }) do
+        local q = world.field(f, key)
+        for _, e in ipairs(type(q) == "table" and q or {}) do
+            if e.op and e.key then
+                list[#list + 1] = e.key.text
+            end
         end
     end
     return state, list
+end
+
+-- the current order's line (CFleetView::UpdateOrders' FLEETORDER_* texts) as { key, vars } with
+-- name blocks for the GUI's side to localise; nil: none (NO_ORDERS) [I: the order types the
+-- engine runs; the others none]
+local function order_line(f)
+    local cur = world.field(f, "current_order")
+    local e
+    for _, x in ipairs(type(cur) == "table" and cur or {}) do
+        if x.op and x.key then e = x break end
+    end
+    if not e then
+        return nil
+    end
+    local ty, b = e.key.text, e.value
+    local function system_name(sid)
+        local g = sid and world.object("galactic_object", sid)
+        return g and galaxy.name_block(world.field(g, "name"))
+    end
+    local function planet_name(pid)
+        local p = pid and world.object("planet", pid)
+        return p and galaxy.name_block(world.field(p, "name"))
+    end
+    if ty == "move_to_system_point_order" then
+        local sid = num(world.path(b, "coordinate", "origin"))
+        return { key = "FLEETORDER_MOVE_OTHER_SYSTEM", names = { SYSTEM = system_name(sid) } }
+    elseif ty == "orbit_planet_order" then
+        local pid = num(world.path(b, "orbitable", "planet"))
+        local p = pid and world.object("planet", pid)
+        local sid = p and num(world.path(p, "coordinate", "origin"))
+        return { key = "FLEETORDER_MOVE_OTHER_SYSTEM", names = { SYSTEM = system_name(sid) } }
+    elseif ty == "survey_planet_order" then
+        local pid = num(world.path(b, "deposit_holder", "id"))
+        return { key = "FLEETORDER_SURVEY", names = { PLANET = planet_name(pid) }, vars = { PROGRESS = num(world.field(b, "progress")) or 0 } }
+    elseif ty == "return_fleet_order" then
+        return { key = "FLEETORDER_RETURN" }
+    end
+    return nil
 end
 
 -- fd.fleet(fid [, observer]) -> the fleet_view's data, as the observer (the player) sees it
@@ -201,8 +243,20 @@ function fd.fleet(fid, observer)
         system = origin ~= NONE and origin or nil,
         state = state,
         orders = order_list,
+        order_line = order_line(f),
         ships = {},
     }
+    -- another of the owner's mobile fleets of the class in the system: merge enabled
+    -- (render.windows.fleet_commands.merge)
+    local g = out.system and world.object("galactic_object", out.system)
+    for _, v in ipairs(world.list(g and world.field(g, "fleet_presence") or {})) do
+        local oid = tonumber(v)
+        local o = oid and oid ~= fid and world.object("fleet", oid)
+        if o and world.fleet_owner and world.fleet_owner[oid] == owner and unquote(world.field(o, "ship_class")) == out.class
+            and world.path(o, "properties", "mobile") == "yes" and world.path(o, "properties", "station") ~= "yes" then
+            out.mergeable = true
+        end
+    end
     local country = owner >= 0 and world.object("country", owner)
     if country then
         out.owner_name = galaxy.name_block(world.field(country, "name"))

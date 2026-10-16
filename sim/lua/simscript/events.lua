@@ -177,8 +177,10 @@ local function run(ev, ctx)
         local opt
         if is_human(target_country(ctx)) and not ev.hidden then
             stats.human_options = stats.human_options + 1
-            -- the renderer's event windows hear of it (render.windows.events_data)
+            -- the renderer's event windows hear of it (render.windows.events_data); with `defer`
+            -- they keep it open as the game does (COpenPlayerEvent) and answer it later (M.answer)
             if M.opened then M.opened(ev, ctx) end
+            if M.defer and M.defer(ev, ctx) then return true end
             for _, o in ipairs(ev.options) do
                 if option_ok(o, ctx) then opt = o; break end
             end
@@ -193,6 +195,27 @@ local function run(ev, ctx)
     end
     if ev.after then eval.effect(ev.after, ctx); after_root() end
     return true
+end
+
+-- M.answer(ev, ctx, k): a human player's answer to an event kept open (COpenPlayerEvent::
+-- OnOptionSelected): option k (an index of ev.options) when it is valid, else the first valid one
+-- (k nil: the default, as SelectDefaultOptionForOpenPlayerEventAtIndex when it times out [I]);
+-- then the event's `after`. The option's name, or nil if it has none.
+function M.answer(ev, ctx, k)
+    local opt = k and ev.options[k]
+    if opt and not option_ok(opt, ctx) then opt = nil end
+    if not opt then
+        for _, o in ipairs(ev.options) do
+            if option_ok(o, ctx) then opt = o; break end
+        end
+    end
+    if opt then
+        stats.options = stats.options + 1
+        eval.effect(opt, ctx, OPTION_PARAMS)
+        after_root()
+    end
+    if ev.after then eval.effect(ev.after, ctx); after_root() end
+    return opt ~= nil
 end
 
 -- the event's pre_triggers and trigger in its scope (CEvent::IsValid, with the pre-triggers' scope

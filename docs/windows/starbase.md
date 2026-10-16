@@ -133,10 +133,85 @@ default was tried and dropped: main.gui's topbar draws outside its 200 px.
 | waystation_view on starbases 0 and 1 | same (the game's frame still fading out the starbase view) |
 | the main screen with no window | unchanged but the outliner toggle (closer to the game) |
 
+## 9. The buttons
+
+What each clickable element does, as the game's handlers do (the 4.5.2 Linux build) **[V]**,
+and how the renderer does it. A change to the world is a command run in the simulation between
+days: `starbase:cmd:VERB:ARG...` (starbase.rs `run_command`: `render.windows.starbase_commands`
+`.run` through `Clock::query`, then a snapshot published and taken), the item made as the game's
+CAddBuildableToQueueCommand does (engine.ai.economy.orders: the free item slot, the queue, the
+cost from the stockpile). Commands the engine has no model for say so (`not done: ...`).
+
+| element | game | renderer |
+|---|---|---|
+| tabs | ShowTab: the tab's view and its own side view | `starbase:tab:N`; the side view and the lists' scroll reset |
+| previous / next / goto / planet / close | OnPrev/NextStarbaseClick, Goto, OnOpenPlanetClick | as before (section 1) |
+| Upgrade | CStarbaseAbstractStarbaseTabController::Upgrade: CreateAddBuildableCommand(country, starbase, next level), PostCommandToSession; a designable size: CDesignSelectionWindow | `upgrade SB`: a starbase_upgrade item in the build queue, its cost the next size's (engine.fleets.stations.size_table), its time the size's base_buildtime; checked: the game's queue shows the same "Upgrade / Upgrade to Starport / 288". The design selection: not done |
+| Dismantle (class row) | Dismantle: STARBASE_DISMANTLE_DIALOG (an outpost) or STARBASE_DOWNGRADE_DIALOG | its dialog; Agree: `not done` (the engine removes no starbase, rebuilds no station design) |
+| Details | CShip::CanInspectShip: the station's ship view | `fleet:ship:STATION` (fleetwin.rs) |
+| Retrofit | OpenRetrofitWindow (CDesignSelectionWindow) | not done |
+| rename | CAbstractStarbaseView::OnRename (a text box) | not done (no text input) |
+| a module / building slot | the tab controller (CStarbaseComponentGridEntry's observer): the side view of the slot | `starbase:slot:KIND:N`: the side view (the slot's overlay shown); again: closed |
+| a side view component | CStarbaseBuildableComponentEntry: the component in the slot (CAddBuildableToQueueCommand) | `module|building SB SLOT KEY`: a starbase_module/_building item, its cost the definition's (economy template, the starbase's modifiers), its time construction_days; checked: the game's queue shows "Transit Hub / Transit Hub 180" and greys the slot's other choices |
+| a side view's current component: Dismantle | STARBASE_DISMANTLE_COMPONENT_DIALOG | its dialog; Agree: `dismantle_component SB KIND SLOT` (the slot emptied; no refund [I]) |
+| a side view design | CBuildableShipListItem::Build | `ship SB DESIGN`: a ship item in the shipyard queue (a defense platform's size: the build queue), cost engine.ai.shipbuilding.ship_table, time build_time; checked against the game's queue |
+| a sublist header | CBuildableShipListSubList::ToggleOpenStatus | `starbase:sub:KEY`: open / closed (its arrow) |
+| a queue entry (cancel_button) | CConstructionQueueListItem::OnCancel | `cancel ITEM`: out of its queue, its resources back [I: the game's refund rules] |
+| priority up / down | OnPriorityUp / OnPriorityDown | `priority ITEM up|down`; disabled at the ends and for others' |
+| Disband All (defenses) | DisbandAll: MULTIPLE_SHIPS_DISBAND dialog | its dialog (checked against the game's: "Disband these 2 ship(s)?"), Agree: `disband_all SB` |
+| a platform's disband / details / upgrade | CStarbaseShipItem::Disband (SHIP_DISBAND dialog), details, Upgrade | the dialog and `disband_ship SB SHIP`; details `fleet:ship:ID`; upgrade disabled (CalcCanUpgradeDefensePlatforms not evaluated) [I] |
+| platforms' Upgrade (capacity row) | CStarbaseDefensesTabController::Upgrade | disabled [I] |
+| Ship Designs / Defense Designs | OpenShipDesigns / OpenDefenseDesigns: the ship designer | the designer opened (no design chosen) [I] |
+| Army Hub: Army Types, recruit | CBuildableShipListController::UpdateStarbaseMacroBuilder, recruit_button | the side view's title only; not done |
+| megastructure Upgrade / Complete | OnUpgrade: CCountryUpgradeMegaStructureCommand | `mega_upgrade`: not done (no megastructure construction in the engine) |
+| megastructure Dismantle / Abort | OnDismantle: MEGASTRUCTURE_DISMANTLE_DIALOG; OnAbortDismantle | its dialog; Agree and Abort: not done |
+| waystation Upgrade / Details / Dismantle | as the starbase's | as the starbase's |
+| waystation cloaking | CStarbaseWaystationTabController::OnCloakClick | `cloak`: not done |
+| network window | close, previous / next, a connected network | as before (section 6) |
+
+- **The side view** (CStarbaseSideView, `starbase_side_view` beside the window): the Shipyard and
+  Defenses tabs show theirs at once (the game's frames), the Command tab's after a slot is
+  clicked, for the player's own starbase. Designs: each of the country's collection and the
+  special buildable global designs (`is_special_buildable`) whose `allow_buildable_trigger` (a
+  scripted trigger, country scope) holds (CShipDesign::CanCountryBuildPotential); kept when the
+  size's construction types take the queue's (starbase_shipyard or the beastport's;
+  starbase_defenses), its prerequisites are researched and its potential_construction holds
+  (CanBuildAtPotential); sorted as SShipyardEntrySorter (civilian first, then
+  SSortShipSizeBySizeMultiplier, then the size's place in the files [I]). Civilian sizes under
+  OUTLINER_CIVILIAN_FLEETS ("Utility Ships"), shown by their size's name; the others under
+  `<size>_plural`, as BUILDABLE_SHIP_NAME ("<name>-class") with AUTO_GENERATED_BEST for an
+  auto-generated design; the class icon (GFX_ship_class_medium: constructor 2, science 1,
+  colonizer 14, military 3, defense platform 27, matched to the game's frame by pixels); the build
+  time over the starbase's speed, whole days down (54 for 60 at +10%); the cost. Components: the
+  definitions whose potential holds, by category (the categories by their names, the components
+  by cost then name: the game's frames), "£alloys£ 38 £time£ 180" (half up). Greyed: what the
+  owner cannot pay for, a building the starbase has or has queued, every choice of a slot with an
+  item queued [I: read off the game's frames]. `possible` is not used: the script layer evaluates
+  some of its scopes false (a solar_system count) where the game lets the component be built [I].
+- **Rows' places** (the game's frames): a design list's rows 8 px above the listbox's position, 3
+  apart; a component list's categories 10 px below the current component or the top, rows 5 apart
+  (each category in a starbase_view_panel_buildables_entry). Rows partly outside a list are not
+  drawn (the game clips them) [I].
+- **The queue**: the days left over the item's speed, rounded up (55 for 60 at +10%); a ship's
+  entry: its size's name, then a civilian's size name or the design's "<name>-class"; a module's
+  or building's name twice; the progress bar is render.gui's startend bar (GFX_queue_progressbar,
+  progress_startend.shader), the same pixels as the game's on a ship at 27%.
+- **Escape**: the dialog, then the slot's side view, then the window (app.rs Action::Back).
+  **The wheel** over the side view, the build queues, the fleets in orbit or the platforms scrolls
+  that list, 20 px a notch (the game's frames).
+- **Checked** in the real window (winsteps under Xvfb, the save loaded from Load Game; a copy of
+  the 2210.01.01 autosave whose player is the fallen empire 16777226, for free slots, outposts and
+  platforms): the outliner row opening the window, the tabs, a building slot's side view, the
+  wheel, queuing a building, Disband All and a platform's disband with their dialogs (Agree: 12 to
+  11 platforms), Escape twice. Against the game (headless view.sh, the same clicks): the ship and
+  defense lists, a slot's lists, queuing a construction ship, a defense platform, an upgrade and a
+  building, the queue entries, the dialog, the scroll per notch.
+- **Not done**: the Devastator design greyed in the game (and its 360 days, 300 here): its reason
+  is not read; Army Hub's army types; retrofit and the upgrade's design selection; rename; the
+  starbase's dismantle and downgrade; megastructure commands; cloaking; tooltips.
+
 ## Not done yet
 
-- The side panels (starbase_side_view: Defense Designs, Ship Designs, Army Types, the module and
-  building choices) need the owner's designs and `CanBuildAtPotential`, and costs and times.
 - Text icons drawn larger than the game's; the fleet health bar's look; progress bars stretched,
   not cropped; the shipyard speed without the simulation misses the country modifiers.
 - The waystation stockpile, intel and network modifiers; networks against a frame of the game.

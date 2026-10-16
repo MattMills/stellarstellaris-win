@@ -36,6 +36,14 @@ function M.data(cid, state)
 end
 
 function M.build(ctx, d, state)
+    d = d or {}
+    -- (before the view's data has come, its frame alone: the data is nil until the snapshot
+    -- carries it)
+    if d.distribution == nil then
+        local b0 = C.builder(ctx)
+        b0:add(FILE, "topbar_factions_view", { only = { background = true, close = true, close_button = true, heading = true }, actions = { [V .. "/close"] = "view_close" } })
+        return b0.items, b0.report
+    end
     local b = C.builder(ctx)
     local text, hide = {}, {}
     if #(d.factions or {}) == 0 then
@@ -115,5 +123,9 @@ end
 function M.extract(game_dir)
     return M.data(require("render.topbar").player(), {})
 end
+
+
+-- Escape (views.rs): the side windows in these state keys close first, else the view closes
+M.escape_keys = {}
 
 return M

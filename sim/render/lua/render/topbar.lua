@@ -143,6 +143,18 @@ topbar.TIME_ACTIONS = {
     [TW .. "increase_speed"] = "speed_up", [TW .. "decrease_speed"] = "speed_down",
 }
 
+-- the resource groups and counters (mainbars.rs `bar:res:GROUP`: onclick of
+-- interface/resource_groups; naval capacity: the fleet manager; envoys: their window); a group's
+-- window takes the clicks over all of it (its background, GFX_topbar_button_narrow_hover)
+local TS = "/maingui/topbar_static/"
+for _, g in ipairs({ "tb_energy_group", "tb_mineral_group", "tb_food_group", "tb_consumer_goods_group",
+    "tb_biomass_group", "tb_alloys_group", "tb_trade_group", "tb_operational_reserves_group", "tb_others_group",
+    "tb_influence_group", "tb_unity_group", "tb_research_group" }) do
+    topbar.TIME_ACTIONS[TS .. g] = "bar:res:" .. g
+end
+topbar.TIME_ACTIONS[TS .. "navy_group"] = "bar:navy"
+topbar.TIME_ACTIONS[TS .. "leaders_group"] = "bar:envoys"
+
 -- topbar.build(game_dir, db, screen, texture_size, state) -> { items, report, values, country, date }
 --   state: { text = { [path] = text } (the amounts, from the simulation; else read from the
 --            world), date, paused, speed }

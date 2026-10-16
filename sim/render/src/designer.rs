@@ -71,12 +71,27 @@ pub fn first_in_combat(map_rt: &Runtime) -> Option<u32> {
     map_rt.lua.load("return require('render.windows.combat').first_in_combat()").eval::<Option<u32>>().ok().flatten()
 }
 
+/// The window's data read from the world (designer.lua `extract`, serialized: the models of the
+/// designs in it), kept until a command changes the world or the window opens again.
+static DATA: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// Whether the window was open at the last layout (an opening resets its state).
+static WAS_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Lua code run where the world is: the simulation's runtime when it runs (Clock::query, between
+/// days: what a command changed is there), else the loaded save's.
+fn world_eval(map: &crate::Map, code: &str) -> Result<String, String> {
+    match map.clock.as_ref() {
+        Some(c) if c.status().ready => c.query(code),
+        _ => map.runtime.lua.load(code).eval::<String>().map_err(|e| e.to_string()),
+    }
+}
+
 /// The designer's and the combat view's items for a screen of `width` x `height`, and the models
 /// of the designer's 3D views by their inset's path.
 #[allow(clippy::too_many_arguments)]
 pub fn layout(
     gui_rt: &Runtime,
-    map_rt: &Runtime,
+    map: &crate::Map,
     game_dir: &str,
     width: u32,
     height: u32,
@@ -85,70 +100,197 @@ pub fn layout(
 ) -> Result<(Vec<GuiItem>, HashMap<String, ShipModel>), String> {
     let gd = game_dir.replace('\\', "/");
     let mut items = Vec::new();
-    let mut models = HashMap::new();
     let ctx = format!("{{ game_dir = {gd:?}, db = RENDER_GFX, screen = {{ width = {width}, height = {height} }}, texture_size = RENDER_TEXTURE_SIZE, loc = RENDER_LOC }}");
     if let Some(fleet) = combat {
-        let read = || -> mlua::Result<Vec<GuiItem>> {
-            let data: Option<String> = map_rt
-                .lua
-                .load(format!("local d = require('render.windows.combat').extract({gd:?}, {fleet}) return d and require('render.windows.designer').serialize(d)"))
-                .eval()?;
-            let Some(data) = data else { return Ok(Vec::new()) };
-            let t: Table = gui_rt
-                .lua
-                .load(format!("local data = load('return ' .. {data:?})() local items, report = require('render.windows.combat').build({ctx}, data) return {{ items = items, report = report }}"))
-                .eval()?;
-            crate::gui::read_items(t.get("items")?)
-        };
-        items.extend(read().map_err(|e| format!("render.windows.combat: {e}"))?);
-    }
-    if designer.open {
-        let mut read = || -> mlua::Result<()> {
-            let t: Table = map_rt
-                .lua
-                .load(format!(
-                    "if not RENDER_MODELS then RENDER_MODELS = require('render.models').load({gd:?}) end
-                     local d = require('render.windows.designer').extract({gd:?}) return {{ data = require('render.windows.designer').serialize(d), models = d.models }}"
-                ))
-                .eval()?;
-            let data: String = t.get("data")?;
-            let mut by_id: HashMap<u32, ShipModel> = HashMap::new();
-            for p in t.get::<Table>("models")?.pairs::<u32, Table>() {
-                let (id, m) = p?;
-                by_id.insert(id, read_model(&m)?);
-            }
-            let state = match designer.design {
-                Some(id) => format!("{{ design = {id} }}"),
-                None => "{}".into(),
+        let data = world_eval(map, &format!("local d = require('render.windows.combat').extract({gd:?}, {fleet}) return d and require('render.windows.designer').serialize(d) or ''"))
+            .map_err(|e| format!("render.windows.combat: {e}"))?;
+        if !data.is_empty() {
+            let read = || -> mlua::Result<Vec<GuiItem>> {
+                gui_rt.lua.globals().set("RENDER_COMBAT_DATA", data.as_str())?;
+                let t: Table = gui_rt
+                    .lua
+                    .load(format!("local data = load('return ' .. RENDER_COMBAT_DATA)() local items, report = require('render.windows.combat').build({ctx}, data) return {{ items = items, report = report }}"))
+                    .eval()?;
+                crate::gui::read_items(t.get("items")?)
             };
-            let t: Table = gui_rt
-                .lua
-                .load(format!(
-                    "local data = load('return ' .. {data:?})() local items, report, insets = require('render.windows.designer').build({ctx}, data, {state}) return {{ items = items, report = report, insets = insets }}"
-                ))
-                .eval()?;
-            items.extend(crate::gui::read_items(t.get("items")?)?);
-            for p in t.get::<Table>("insets")?.pairs::<String, u32>() {
-                let (path, id) = p?;
-                // the designer's view with no design: its background alone
-                let empty = ShipModel { frame: String::new(), sections: Vec::new(), turrets: Vec::new(), colour: None, lighting: None };
-                models.insert(path, by_id.get(&id).cloned().unwrap_or(empty));
-            }
-            Ok(())
-        };
-        read().map_err(|e| format!("render.windows.designer: {e}"))?;
+            items.extend(read().map_err(|e| format!("render.windows.combat: {e}"))?);
+        }
     }
+    if !designer.open {
+        if WAS_OPEN.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            *DATA.lock().unwrap() = None;
+        }
+        return Ok((items, HashMap::new()));
+    }
+    if !WAS_OPEN.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        // opened: its data read anew, its state cleared (designer.lua reset)
+        *DATA.lock().unwrap() = None;
+        gui_rt.lua.load("require('render.windows.designer').reset()").exec().map_err(|e| format!("render.windows.designer: {e}"))?;
+    }
+    let cached = DATA.lock().unwrap().clone();
+    let data = match cached {
+        Some(d) => d,
+        None => {
+            let d = world_eval(map, &format!("return require('render.windows.designer_commands').data({gd:?})")).map_err(|e| format!("render.windows.designer: {e}"))?;
+            *DATA.lock().unwrap() = Some(d.clone());
+            d
+        }
+    };
+    let mut read = || -> mlua::Result<HashMap<String, ShipModel>> {
+        gui_rt.lua.globals().set("RENDER_DESIGNER_SRC", data.as_str())?;
+        let state = match designer.design {
+            Some(id) => format!("{{ design = {id} }}"),
+            None => "{}".into(),
+        };
+        let t: Table = gui_rt
+            .lua
+            .load(format!(
+                "RENDER_DESIGNER_DATA = load('return ' .. RENDER_DESIGNER_SRC)()
+                 local items, report, insets = require('render.windows.designer').build({ctx}, RENDER_DESIGNER_DATA, {state})
+                 return {{ items = items, report = report, insets = insets, models = RENDER_DESIGNER_DATA.models or {{}},
+                          country = RENDER_DESIGNER_DATA.country, stage = require('render.windows.designer').stage() }}"
+            ))
+            .eval()?;
+        items.extend(crate::gui::read_items(t.get("items")?)?);
+        let mut by_id: HashMap<i64, ShipModel> = HashMap::new();
+        for p in t.get::<Table>("models")?.pairs::<i64, Table>() {
+            let (id, m) = p?;
+            by_id.insert(id, read_model(&m)?);
+        }
+        // the design under modification's model: its stage where the world is (the game's files,
+        // the models' index, the owner's colour), read back here
+        if let Some(stage) = t.get::<Option<String>>("stage")? {
+            let country: i64 = t.get::<Option<i64>>("country")?.unwrap_or(0);
+            let code = format!(
+                "if not RENDER_MODELS then RENDER_MODELS = require('render.models').load({gd:?}) end
+                 local m = require('render.system').stage_model({gd:?}, load('return ' .. {stage:?})(), '', {country})
+                 return m and require('render.windows.designer').serialize(m) or ''"
+            );
+            let m = world_eval(map, &code).map_err(mlua::Error::RuntimeError)?;
+            if !m.is_empty() {
+                gui_rt.lua.globals().set("RENDER_DESIGNER_MODEL", m)?;
+                let m: Table = gui_rt.lua.load("return load('return ' .. RENDER_DESIGNER_MODEL)()").eval()?;
+                by_id.insert(-1, read_model(&m)?);
+            }
+        }
+        let mut out = HashMap::new();
+        for p in t.get::<Table>("insets")?.pairs::<String, i64>() {
+            let (path, id) = p?;
+            // the designer's view with no design: its background alone
+            let empty = ShipModel { frame: String::new(), sections: Vec::new(), turrets: Vec::new(), colour: None, lighting: None };
+            out.insert(path, by_id.get(&id).cloned().unwrap_or(empty));
+        }
+        Ok(out)
+    };
+    let models = read().map_err(|e| format!("render.windows.designer: {e}"))?;
     Ok((items, models))
 }
 
-/// What a click on one of the designer's buttons does (`designer:close`, `designer:design:ID`).
-pub fn act(designer: &mut Designer, action: &str) -> Result<(), String> {
+/// The wheel at (x, y) over the designer: one of its lists scrolled (designer.lua `wheel`); whether
+/// it took it.
+pub fn wheel(app: &mut crate::app::App, notches: f32, at: Option<(f32, f32)>) -> bool {
+    let Some((x, y)) = at else { return false };
+    let took = app
+        .runtime
+        .lua
+        .load(format!("return require('render.windows.designer').wheel({notches}, {x}, {y})"))
+        .eval::<bool>()
+        .unwrap_or(false);
+    if took {
+        app.relayout();
+    }
+    took
+}
+
+/// Escape while the designer is open: its popup closed, else the window (the close buttons'
+/// ESCAPE shortcut, the innermost first).
+pub fn escape(app: &mut crate::app::App) {
+    let popup = app.runtime.lua.load("return require('render.windows.designer').escape()").eval::<bool>().unwrap_or(false);
+    if popup {
+        app.relayout();
+    } else {
+        app.set_designer(Designer::default());
+    }
+}
+
+/// The parts of a designer action: `designer:close`, `designer:fleet_manager`,
+/// `designer:design:ID`, else the window's own (`designer:ui:...`, designer.lua `act`).
+#[derive(Debug, PartialEq)]
+enum Action<'a> {
+    Close,
+    FleetManager,
+    Design(u32),
+    CombatFocus(u32),
+    Ui(&'a str),
+}
+
+fn parse(action: &str) -> Result<Action<'_>, String> {
     match action.strip_prefix("designer:") {
-        Some("close") => *designer = Designer::default(),
-        Some(a) if a.starts_with("design:") => {
-            designer.design = Some(a[7..].parse().map_err(|_| format!("bad action {action}"))?);
+        Some("close") => Ok(Action::Close),
+        Some("fleet_manager") => Ok(Action::FleetManager),
+        Some(a) if a.starts_with("design:") => Ok(Action::Design(a[7..].parse().map_err(|_| format!("bad action {action}"))?)),
+        Some(a) if a.starts_with("combat_focus:") => Ok(Action::CombatFocus(a[13..].parse().map_err(|_| format!("bad action {action}"))?)),
+        Some(a) if a.starts_with("ui:") => Ok(Action::Ui(action)),
+        _ => Err(format!("bad action {action}")),
+    }
+}
+
+/// What a click on one of the designer's buttons does (docs/windows/designer.md "The buttons"):
+/// the window's close button and the fleet manager's tab, a design in the list; the others are the
+/// window's (designer.lua `act`), which may ask the simulation (designer_commands.lua, run between
+/// its days: a design saved or deleted there is in its world) and take its answer (`done`).
+pub fn act(app: &mut crate::app::App, action: &str) -> Result<(), String> {
+    match parse(action)? {
+        Action::Close => app.set_designer(Designer::default()),
+        Action::FleetManager => {
+            // the Fleet Manager tab: its view (one view at a time: the designer closes)
+            app.set_designer(Designer::default());
+            app.toggle_view("fleet_manager");
         }
-        _ => return Err(format!("bad action {action}")),
+        Action::Design(id) => app.set_designer(Designer { open: true, design: Some(id) }),
+        Action::CombatFocus(fleet) => {
+            // the combat view's focus (CCombatView::OnClickFocus): the camera to the combat, the
+            // fleet's system entered and the fleet followed [I]
+            let sys = app.map.as_ref().and_then(|m| {
+                let s = m.galaxy.fleets.iter().find(|f| f.id == fleet)?.system?;
+                m.galaxy.systems.iter().position(|x| x.id == s)
+            });
+            if let Some(i) = sys {
+                app.enter_system(i, Some(crate::scene::Pickable::Fleet(fleet)))?;
+            }
+        }
+        Action::Ui(a) => {
+            let gd = app.game_dir.replace('\\', "/");
+            let call = |app: &crate::app::App, f: &str, arg: &str| -> Result<String, String> {
+                app.runtime.lua.globals().set("RENDER_DESIGNER_ARG", arg).map_err(|e| e.to_string())?;
+                app.runtime
+                    .lua
+                    .load(format!("return require('render.windows.designer').{f}(RENDER_DESIGNER_ARG, RENDER_DESIGNER_DATA or {{}}, {gd:?})"))
+                    .eval::<String>()
+                    .map_err(|e| format!("render.windows.designer: {f}: {e}"))
+            };
+            let mut reply = call(app, "act", a)?;
+            // the simulation's answers, and what the window asks next (a new design: its
+            // components, then its name)
+            for _ in 0..4 {
+                let Some(code) = reply.strip_prefix("sim:").map(str::to_string) else { break };
+                let map = app.map.as_mut().ok_or("no map")?;
+                map.ready()?;
+                let clock = map.clock.as_ref().ok_or("no simulation")?;
+                let answer = clock.query(&code).map_err(|e| format!("render.windows.designer_commands: {e}"))?;
+                if answer.starts_with("changed") {
+                    clock.publish(true);
+                    map.sync();
+                    *DATA.lock().unwrap() = None;
+                }
+                app.log.push(format!("designer: {}", answer.chars().take(120).collect::<String>()));
+                reply = call(app, "done", &answer)?;
+            }
+            if let Some(d) = reply.strip_prefix("design:") {
+                app.set_designer(Designer { open: true, design: d.parse().ok() });
+            }
+            app.relayout();
+        }
     }
     Ok(())
 }
@@ -165,6 +307,9 @@ pub fn fill_insets(scene: &mut Scene, models: &HashMap<String, ShipModel>, lib: 
         let Some(m) = models.get(&inset.path) else { continue };
         let (w, h) = ((inset.rect[2] - inset.rect[0]).max(1.0), (inset.rect[3] - inset.rect[1]).max(1.0));
         let (meshes, radius, centre) = ship_meshes(lib, rt, game_dir, m, tex, cache);
+        // a hull with nothing drawn (no section yet): the view's sky alone, at a ship's distance
+        let ok = |v: V3| v.0.is_finite() && v.1.is_finite() && v.2.is_finite();
+        let (radius, centre) = if meshes.is_empty() || !radius.is_finite() || radius <= 0.01 || !ok(centre) { (10.0, V3(0.0, 0.0, 0.0)) } else { (radius, centre) };
         let main = inset.path.starts_with("/designer/3d_view");
         if meshes.is_empty() && !main {
             continue;
@@ -268,12 +413,12 @@ mod tests {
 
     #[test]
     fn designer_actions() {
-        let mut d = Designer { open: true, design: None };
-        act(&mut d, "designer:design:2207").unwrap();
-        assert_eq!(d, Designer { open: true, design: Some(2207) });
-        act(&mut d, "designer:close").unwrap();
-        assert_eq!(d, Designer::default());
-        assert!(act(&mut d, "designer:design:x").is_err());
-        assert!(act(&mut d, "close").is_err());
+        assert_eq!(parse("designer:design:2207"), Ok(Action::Design(2207)));
+        assert_eq!(parse("designer:close"), Ok(Action::Close));
+        assert_eq!(parse("designer:fleet_manager"), Ok(Action::FleetManager));
+        assert_eq!(parse("designer:combat_focus:261"), Ok(Action::CombatFocus(261)));
+        assert_eq!(parse("designer:ui:slot:1:SMALL_GUN_01"), Ok(Action::Ui("designer:ui:slot:1:SMALL_GUN_01")));
+        assert!(parse("designer:design:x").is_err());
+        assert!(parse("close").is_err());
     }
 }

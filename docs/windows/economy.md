@@ -181,6 +181,65 @@ country ID` (the game: the diplomacy view's Trade action for its selected countr
 - 2210.01.01: the player's one contact (country 6) has no communications and is an exterminator:
   the game cannot open the window there; no game frame to compare.
 
+## The buttons
+
+What each window's clicks do, read in the 4.5.2 binary (`code_working/tmp_sim/wire_market_re.md`,
+`wire_clicks_re.md`) and wired in `sim/render/src/economy.rs` (the `economy:` actions) and the
+window modules (`view_set:` state). A change to the game state runs where the world is: the map's
+runtime while it holds the save's world, else the simulation's thread between days
+(`Clock::query`); the view's data and the top bar are then made again.
+
+| window | element | what it does | state |
+|---|---|---|---|
+| market | resource grid entry | selects the resource (CMarketViewResourcesGridEntry::Click) | wired |
+| market | buy / sell entry | CMarketBuyResourceCommand / CMarketSellResourceCommand **[V]**: the currency pays the exact price with the fee, the resource the whole units (a sell credits the price's whole units); the fluctuation one step for the lot (internal_market_fluctuations, or the galactic market's `fluctuations`); the bought and sold totals at the country's index, `id[index]` set. Only when CanClick (greyed otherwise) | wired |
+| market | Add new monthly trade | opens the monthly trade window (CMarketView::OpenMonthlyTrade) | wired |
+| market | a monthly trade, left click | opens it for editing (ShowMonthlyTradeViewWithData) | wired |
+| market | a monthly trade, right click | CRemoveMonthlyTradeCommand | wired (an action `LEFT\|\|RIGHT`) |
+| market | tabs | Market; Slave Market only with the galactic market's access (greyed otherwise) | wired |
+| market | close, Escape | closes it; Escape closes Sell Slaves first (its own ESCAPE); the monthly trade window has none and goes with the market (CMarketView::Hide) | wired |
+| market | the tabs' keys Z and X | the market's and the slave market's tab | not done: the renderer has no way yet to hand a `.gui` button's `shortcut` to it |
+| monthly trade | Buy, Sell | the type (its button active), the resource unchosen (SelectBuy / SelectSell) | wired |
+| monthly trade | resource | amount ceil(market_amount x 0.1), no limit (SetActiveResource) | wired |
+| monthly trade | - + (amount, limit) | a step of 1, never below 0 **[I: the shift and control steps not read]** | wired |
+| monthly trade | Add / Edit | CAddMonthlyTradeCommand (IsValid: a resource, amount > 0, at most 200 base amounts; the next id) or CUpdateMonthlyTradeCommand; closes | wired |
+| monthly trade | Cancel / Remove | closes; editing, CRemoveMonthlyTradeCommand | wired |
+| monthly trade | the trades' monthly execution, the daily drift of the fluctuations | CMarket::MonthlyUpdate, DailyUpdate | not done here: the simulation's monthly and daily updates |
+| slave market | sort buttons | name, habitability, traits, cost; the same again the other way (OnSetSortType) | wired |
+| slave market | a destination | selects it, again deselects | wired |
+| slave market | Buy / Cancel | CBuySlaveFromMarketCommand / CRetractSlaveFromMarketCommand | UI only: the effects not done (no galactic market in the saves: the tab cannot open in the game) |
+| slave market | Sell Slaves | opens Sell Slaves | wired |
+| Sell Slaves | species drop-down | opens; a species chosen (the chosen one last, disabled) closes it | wired |
+| Sell Slaves | a colony group | opens or closes its pops | wired |
+| Sell Slaves | a pop | toggled in the selection (only with the market's access: CanClick) | wired (never enabled in the saves) |
+| Sell Slaves | Put on Market | with a selection: CPutSlaveOnMarketCommand per group, then closes | UI only: the effect not done |
+| Sell Slaves | close, Escape | closes, the selection cleared | wired |
+| planner | checkboxes, drop-downs, sort buttons | the filters and the order (as before) | wired |
+| planner | a row's zoom button, its class icon | FocusCameraOnObjectOrSystem **[V]**: in the planet's system the camera follows it; from another system that system is entered with the planet followed (the game's frame: Runa from the home system); from the galaxy map the camera slides to the system; the planner stays open | wired |
+| planner | a row | the colonize window (OpenColoniseView) or the terraform panel | not done: those windows are not drawn |
+| planner | cancel colonize | CCountryCancelExpansionCommand after a confirmation | not done: no planned colonies in the saves |
+| planner | the wheel over the list | a row a notch, within the rows that do not fit | wired (views' `wheel`) |
+| planner | close, Escape | closes it, an open drop-down with it (the game's frames: a second Escape opens the game's menu) | wired |
+| trade | a category | opens or closes its items (several at once) | wired (Resources: the side's tradable stocks) |
+| trade | an item | in or out of the side's offer list (its button active) | wired |
+| trade | an offered resource's - + and close | its amount (a step of 1 **[I]**), out of the list | wired |
+| trade | Propose | with something offered: CDiploActionProposeCommand, the window closed | UI only: the AI's answer not done |
+| trade | Cancel, close, Escape | closes, the deal cleared | wired |
+
+Shared, general: Escape closes a view's side windows first when its module lists their state keys
+(`M.escape_keys`; else any state, as before), then the view; a GUI button's action `LEFT||RIGHT`
+does RIGHT on a right click; the wheel over an open view goes to its module's `wheel` (a list's
+scroll) before the map's zoom.
+
+Checked in a real window (the windowed renderer under Xvfb at 1600x900, 2210.01.01 from Load
+Game; `winsteps.sh`) and against the game's frames of the same clicks (`headless/view.sh`): +100
+energy bought (trade 4413 to 4283, unit prices 1.32 and 0.71, bought 100), -100 sold (4354, 1.30
+and 0.70, sold 100); a monthly trade added (Buy 10, Max -) and removed with a right click; the
+planner's zoom from the home system into Runa's; Escape on the planner (with its drop-down open)
+and on the market (with the monthly window open). The slave market, Sell Slaves and trade cannot
+be opened in these saves, in the window or the game: checked with the commands (`open_view market
+tab slave_market`, `open_view trade country 6`) and the same clicks.
+
 ## Not done yet
 
 - The animated overlays of the planner's rows (brighter frames in the game).

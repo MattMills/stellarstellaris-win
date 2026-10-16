@@ -9,6 +9,7 @@
 local world = require("engine.world")
 local C = require("render.windows.empire_common")
 local leaders = require("render.windows.leaders_common")
+local rename = require("render.windows.rename")
 
 local M = {}
 
@@ -157,9 +158,60 @@ local function group_texts(prefix, values, stored)
     return text
 end
 
+-- the sort buttons (CEmpireView::SetSort<N>): Type 0, Name 1, Output 2, Governor 3, Pops 4,
+-- Districts 5; the same button again reverses the order; Districts ascending at first
+M.SORTS = { sort_type = 0, sort_name = 1, sort_output = 2, sort_governor = 3, sort_pops = 4, sort_districts = 5 }
+
+-- a sector's or a colony's sort key (CEmpireViewSectorEntry / CEmpireViewPlanetEntry::SortLessThan):
+-- Output's is never filled (always 0), Governor compares nothing
+local function sort_key(kind, e, sort)
+    if sort == 0 then
+        return e.type or e.class or ""
+    elseif sort == 1 then
+        return e.sort_name or ""
+    elseif sort == 4 then
+        return e.pops or 0
+    elseif sort == 5 then
+        return e.n_districts or 0
+    end
+    return 0
+end
+
+local function sorted(list, kind, sort, rev)
+    for i, e in ipairs(list) do
+        e.order = i
+    end
+    table.sort(list, function(a, b2)
+        local ka, kb = sort_key(kind, a, sort), sort_key(kind, b2, sort)
+        if ka ~= kb then
+            if rev then
+                return ka > kb
+            end
+            return ka < kb
+        end
+        return a.order < b2.order
+    end)
+    return list
+end
+
 function M.build(ctx, d, state)
+    d = d or {}
+    -- (before the view's data has come, its frame alone: the data is nil until the snapshot
+    -- carries it)
+    if d.sectors == nil then
+        local b0 = C.builder(ctx)
+        b0:add(FILE, "empire_view", { only = { background = true, close = true, close_button = true, heading = true }, actions = { [V .. "/close"] = "view_close" } })
+        return b0.items, b0.report
+    end
     local b = C.builder(ctx)
-    local r = b:add(FILE, "empire_view", { actions = { [V .. "/close"] = "view_close" } })
+    local sort, rev = tonumber(state.sort) or 5, state.rev == "1"
+    local r = b:add_named(FILE, "empire_view", { actions = {}, named = { actions = (function()
+        local a = { close = "view_close" }
+        for name, n in pairs(M.SORTS) do
+            a[name] = "view_set:sort=" .. n .. ";rev=" .. ((n == sort and not rev) and "1" or "")
+        end
+        return a
+    end)() } })
     local list = r.rects[V .. "/empire_list/planets_window/list"] or r.rects[V .. "/planets_window/list"]
     if not list then
         for path, rr in pairs(r.rects) do
@@ -172,7 +224,23 @@ function M.build(ctx, d, state)
         return b.items, b.report
     end
     local y, bottom = list.y, list.y + list.h
-    for i, s in ipairs(d.sectors or {}) do
+    local sectors = {}
+    for _, s in ipairs(d.sectors or {}) do
+        s.sort_name = C.name(ctx, s.name)
+        s.pops, s.n_districts = 0, 0
+        for _, cd in ipairs(s.colonies or {}) do
+            cd.sort_name = C.name(ctx, cd.name)
+            cd.n_districts = 0
+            for _, dist in ipairs(cd.districts or {}) do
+                cd.n_districts = cd.n_districts + (dist.count or 0)
+            end
+            s.pops = s.pops + (cd.pops or 0)
+            s.n_districts = s.n_districts + cd.n_districts
+        end
+        sectors[#sectors + 1] = s
+    end
+    sorted(sectors, "sector", sort, rev)
+    for i, s in ipairs(sectors) do
         if y + 100 > bottom then
             break
         end
@@ -193,22 +261,31 @@ function M.build(ctx, d, state)
         text[p .. "sector_info/colonies"] = tostring(#s.colonies)
         text[p .. "sector_info/pops_window/pops"] = C.short(pops)
         local expanded = state["expand_" .. s.id] == "1"
-        local er = b:add(FILE, "planet_list_sector_entry", {
+        -- a click on the entry expands or collapses it (CEmpireViewSectorEntry::ToggleExpanded); a
+        -- core sector can be neither deleted nor made a vassal (CANNOT_DELETE_CORE_SECTOR,
+        -- CREATE_VASSAL_CORE_SECTOR_INVALID): both disabled; rename (CEmpireViewSectorEntry::Rename:
+        -- CSectorRenameDialog, render.windows.rename); edit opens a window not drawn here [not done
+        -- here]
+        local core = s.type == "core_sector"
+        local er = b:add_named(FILE, "planet_list_sector_entry", {
             prefix = prefix, parent = { x = list.x, y = y, w = 0, h = 0 },
             text = text,
+            named = { actions = { rename_button = rename.open("sector", s.id, C.name(ctx, s.name)) } },
             actions = {
                 [prefix .. "/planet_list_sector_entry"] = "view_set:expand_" .. s.id .. "=" .. (expanded and "" or "1"),
             },
-            -- (a core sector can be neither deleted nor made a vassal: drawn disabled [I: the
-            -- disabled look not drawn])
+            disabled = core and {
+                [p .. "delete_sector"] = true, [p .. "create_vassal"] = true,
+            } or nil,
         })
         local pc = er.rects[p .. "leader_portrait_container"]
         if pc and s.governor then
-            leaders.card(ctx, b, "paragon_portrait_container_horizontal", pc, s.governor, { prefix = prefix .. "/governor" })
+            leaders.card(ctx, b, "paragon_portrait_container_horizontal", pc, s.governor, { prefix = prefix .. "/governor",
+                named_actions = leaders.rename_actions(ctx, s.governor) })
         end
         y = y + 100 + 4
         if expanded then
-            for k, cd in ipairs(s.colonies) do
+            for k, cd in ipairs(sorted(s.colonies, "colony", sort, rev)) do
                 if y + 95 > bottom then
                     break
                 end
@@ -256,7 +333,14 @@ function M.build(ctx, d, state)
             end
         end
     end
+    -- the rename dialog over the view
+    rename.build(b, ctx, "empire", state, nil)
     return b.items, b.report
+end
+
+-- its commands in the simulation (views.rs: `cmd:empire:VERB:ARG...`): rename
+function M.command(...)
+    return require("render.windows.empire_commands").run(...)
 end
 
 
@@ -265,5 +349,10 @@ end
 function M.extract(game_dir)
     return M.data(require("render.topbar").player(), {})
 end
+
+
+-- Escape (views.rs): the side windows in these state keys close first, else the view closes
+M.escape_keys = {}
+rename.install(M, "empire")
 
 return M

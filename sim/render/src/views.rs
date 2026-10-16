@@ -135,6 +135,43 @@ pub fn extract_one(runtime: &Runtime, game_dir: &str, name: &str) -> Option<Valu
     }
 }
 
+/// A view's command (the action `cmd:VIEW:ARG:ARG...`): its module's `command(ARG, ARG, ...)` run
+/// in the simulation's runtime between days (its world, definitions, modifiers: the game's own
+/// command, CResearchTechnologyCommand, CCountryActivateTraditionCommand, ...), started if it is not
+/// running; then a snapshot published and taken. The string it returns (what it did) for the log.
+pub fn command(map: &mut crate::Map, view: &str, args: &[&str]) -> Result<String, String> {
+    if !names().iter().any(|n| n == view) {
+        return Err(format!("no view {view}"));
+    }
+    let quoted: Vec<String> = args.iter().map(|a| format!("{a:?}")).collect();
+    let code = format!("return tostring(require('render.windows.{view}').command({}))", quoted.join(", "));
+    map.ready()?;
+    let clock = map.clock.as_ref().ok_or("no simulation")?;
+    let r = clock.query(&code).map_err(|e| format!("render.windows.{view}: command: {e}"))?;
+    clock.publish(true);
+    map.sync();
+    Ok(r)
+}
+
+/// What Escape does in the open view with side windows open: its module's `escape(state)` (an
+/// action: its innermost window closed), or none (the module has no escape: all of its state
+/// cleared).
+pub fn escape(runtime: &Runtime, name: &str, state: &HashMap<String, String>) -> Option<String> {
+    let read = || -> mlua::Result<Option<String>> {
+        let m: Table = runtime.lua.load(format!("return require('render.windows.{name}')")).eval()?;
+        let Some(f) = m.get::<Option<mlua::Function>>("escape")? else { return Ok(None) };
+        let s = runtime.lua.create_table()?;
+        for (k, v) in state {
+            s.set(k.as_str(), v.as_str())?;
+        }
+        f.call(s)
+    };
+    read().unwrap_or_else(|e| {
+        eprintln!("render.windows.{name}: escape: {e}");
+        None
+    })
+}
+
 /// The open view's data from a runtime's world (only the open one: a snapshot carries what is
 /// drawn; opening a view republishes it, Map::refresh_view).
 pub fn extract(runtime: &Runtime, game_dir: &str) -> HashMap<String, Value> {
@@ -146,6 +183,80 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> HashMap<String, Value> {
         }
     }
     out
+}
+
+/// The wheel over the open view `name` (its module's `wheel(ctx, data, state, notches, x, y)`:
+/// the state's keys to set when the pointer is over one of its lists, else nil): the pairs, or
+/// None (the wheel is the map's).
+pub fn wheel(runtime: &Runtime, width: u32, height: u32, name: &str, data: Option<&Value>, state: &HashMap<String, String>, notches: f32, x: f32, y: f32) -> Option<Vec<(String, String)>> {
+    let lua = &runtime.lua;
+    let m: Table = lua.load(format!("return require('render.windows.{name}')")).eval().ok()?;
+    let f: mlua::Function = m.get::<Option<mlua::Function>>("wheel").ok()??;
+    let s = lua.create_table().ok()?;
+    for (k, v) in state {
+        s.set(k.as_str(), v.as_str()).ok()?;
+    }
+    let ctx: Table = lua
+        .load(format!("return {{ game_dir = RENDER_GAME_DIR, db = RENDER_GFX, screen = {{ width = {width}, height = {height} }}, texture_size = RENDER_TEXTURE_SIZE, loc = RENDER_LOC }}"))
+        .eval()
+        .ok()?;
+    let d = data.map_or(Ok(mlua::Value::Nil), |d| d.to_lua(lua)).ok()?;
+    let out: Option<Table> = f.call((ctx, d, s, notches, x, y)).map_err(|e| eprintln!("render.windows.{name}: wheel: {e}")).ok()?;
+    let out = out?;
+    let mut pairs = Vec::new();
+    for p in out.pairs::<String, String>() {
+        let (k, v) = p.ok()?;
+        pairs.push((k, v));
+    }
+    Some(pairs)
+}
+
+/// Whether a text box of the open view `name` has the keyboard (its module's `text_focus(state)`:
+/// a rename dialog's edit box).
+pub fn text_focus(runtime: &Runtime, name: &str, state: &HashMap<String, String>) -> bool {
+    let read = || -> mlua::Result<bool> {
+        let m: Table = runtime.lua.load(format!("return require('render.windows.{name}')")).eval()?;
+        let Some(f) = m.get::<Option<mlua::Function>>("text_focus")? else { return Ok(false) };
+        let s = runtime.lua.create_table()?;
+        for (k, v) in state {
+            s.set(k.as_str(), v.as_str())?;
+        }
+        Ok(f.call::<Option<bool>>(s)?.unwrap_or(false))
+    };
+    read().unwrap_or(false)
+}
+
+/// A key typed into the open view's focused text box (its module's `text_key(state, key)`, the key
+/// `text:C` a character or `key:NAME` an editing key): the state's pairs to set and an action to
+/// run, or None (the key not taken).
+pub fn text_key(runtime: &Runtime, name: &str, state: &HashMap<String, String>, key: &str) -> Option<(Vec<(String, String)>, Option<String>)> {
+    let read = || -> mlua::Result<Option<(Vec<(String, String)>, Option<String>)>> {
+        let m: Table = runtime.lua.load(format!("return require('render.windows.{name}')")).eval()?;
+        let Some(f) = m.get::<Option<mlua::Function>>("text_key")? else { return Ok(None) };
+        let s = runtime.lua.create_table()?;
+        for (k, v) in state {
+            s.set(k.as_str(), v.as_str())?;
+        }
+        let (pairs, action): (Option<Table>, Option<String>) = f.call((s, key))?;
+        let Some(pairs) = pairs else { return Ok(None) };
+        let mut out = Vec::new();
+        for p in pairs.pairs::<String, String>() {
+            out.push(p?);
+        }
+        Ok(Some((out, action)))
+    };
+    read().unwrap_or_else(|e| {
+        eprintln!("render.windows.{name}: text_key: {e}");
+        None
+    })
+}
+
+/// The state keys of the view `name` that are its side windows (its module's `escape_keys`:
+/// Escape closes them first), or None when the module lists none (then any state is one).
+pub fn escape_keys(runtime: &Runtime, name: &str) -> Option<Vec<String>> {
+    let m: Table = runtime.lua.load(format!("return require('render.windows.{name}')")).eval().ok()?;
+    let keys: Table = m.get::<Option<Table>>("escape_keys").ok()??;
+    keys.sequence_values::<String>().collect::<mlua::Result<Vec<_>>>().ok()
 }
 
 /// The view `name` laid out for a screen of `width` x `height` (in the UI's runtime: the GUI and

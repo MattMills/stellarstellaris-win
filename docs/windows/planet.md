@@ -231,3 +231,107 @@ containers), the pie charts, the Economy tab's upkeep and production boxes (the 
 the planet modifiers row, the build queues, the side bar's other windows (building, district,
 decisions, terraform), ShouldDisplayPlanetInfo, the window during a running simulation, scrolling
 and clipping of long lists (an entry is drawn while it fits).
+
+## Buttons (wire-planet, wire-planet-2)
+
+Clicks send `planet:` actions to `planet::act` (planet.rs). Changes to the game go through
+`render.windows.planet.command` (planet.lua), which runs on the simulation's thread. A click on a
+save loaded world-only starts the simulation and runs the command once it is ready. The window
+then reads its data again. What each button does in the game comes from the RE of its handlers
+(`CButtonObserverGlue` members, `/root/wp/re_buttons.md` on .24).
+
+The script verb `open_planet act ACTION` sends one action the way a button does, and the reply is
+the simulation's answer (for example `ok queued district district_city item N`).
+
+### The new queue kinds and terraforming (engine/construction_planet.lua)
+
+The game's buildables that engine.construction did not model are in
+`sim/lua/engine/construction_planet.lua`. construction.lua asks it for their daily progress and
+to finish them (two hooks), and its daily update runs the terraforming (a third).
+
+The kinds are `decision`, `planet_replace_building`, `planet_repair_building`, `replace_district`,
+`clear_deposit_blocker` (the game's `buildable_*` keys), plus a `zone` with `zone_to_replace`.
+**[I]** Their fields: no save of 2210-2212 holds one.
+
+Terraforming is `planet.terraform_process = { terraform_type progress total
+player_started_terraform }` **[I]** (the keys are the game's strings). It advances one a day with
+`terraform_speed_mult`; when done it changes the planet class with `change_pc`.
+
+### Dialogs
+
+- **Rename:** `CColonyRenameDialog` (rename_dialog.gui). The name's own rectangle takes the click,
+  since the game sizes that button to the name in code. While the dialog is open the keyboard
+  types into it: App::input routes keys through the creator's key names, and key releases are
+  swallowed so the bindings (Space: pause) don't fire. Return accepts, Escape closes.
+- **Confirmations** (popup.gui `yes_no_popup_window`): demolish building, downgrade district, move
+  capital, disband army. Yes runs the command; No closes.
+- Escape closes the dialog, then the side bar, then the colonize window, then the view.
+- **[I]** The dialogs don't block clicks on the view behind them.
+
+| Element | In the game | Here |
+| --- | --- | --- |
+| Tabs, header close, previous / next planet, zoom | as before | wired **[V]** |
+| planet name (rename) | `CColonyRenameDialog` | wired: dialog, typing, `rename` (name = { key }) **[V]** real window |
+| move_capital | `CMoveCapitalDialog` → `CMoveCapitalCommand` | wired: confirm, `set_capital`; **[I]** its influence cost is not charged (the formula isn't read) |
+| header colonize button | the colonize window | as before (greyed as in the game's frames); `open_planet ID colonize` opens it |
+| colonize window: source entry | Select() | wired `planet:source:SID`, selected overlay |
+| colonize window: Colonize | `CCountryExpansionCommand` | wired `colonize`: the colony ship's cost paid, the planet owned and controlled, its colony `colonizing_species` (engine.pops grows it); the window closes **[V]**; **[I]** the game's colonization start |
+| colonize window close | closes it | wired **[V]** |
+| resettle_button | the manual resettlement window | wired: manual_resettlement_view with this colony and the player's others (the dropdown cycles them **[I]**) |
+| resettlement entry Resettle | resettles the pops | wired `resettle`: POP_BULK_UNIT_SIZE (100) of the group into one of the same species and category there (`pops.move_size`); refused into a colony under colonization; **[I]** its cost |
+| district tile, Build | as before | wired **[V]** |
+| district Downgrade | `CDestroyDistrictDialog` | wired: confirm, `remove_district` (one level) **[V]** dialog |
+| district Replace | side bar 10 | wired: district construction list; entry → `replace_district` item; **[I]** what the game keeps of the old district (zones and buildings go here) |
+| district Clear Blocker | the blocker queued | wired `quick_clear_blocker`: the planet's first blocker **[I]** (the game: the one blocking that type) |
+| district specializations (zones_list) | zone_details_entry, Replace → side bar 5 | wired: the district's zones after its own, Replace opens zone construction for the slot |
+| zone construction entry on an occupied slot | the zone replaces the old one | wired: a `zone` item with `zone_to_replace`; its buildings move (`colony.add_zone`) |
+| building Demolish / Downgrade | `CDestroyBuildingDialog` | wired: confirm, the predecessor type or the building gone (positions renumbered); greyed for `can_demolish = no` **[V]** real window |
+| building Disable / Enable | `CToggleBuildingEnabledCommand` | wired `toggle_building` (the building's `disabled`, the key runtime.lua reads) |
+| building Replace | side bar 7 for its slot | wired: construction list in replace mode, entry → `planet_replace_building` item |
+| building Repair | queue a repair | wired for a ruined building (`planet_repair_building` item), greyed otherwise |
+| construction / upgrade / zone entries | `CAddBuildableToQueueCommand` | as before |
+| build queue row | `CRemoveBuildableFromQueueCommand` | wired `queue_cancel`: out of the queue, its resources back **[V]** real window |
+| priority arrows | Increase/Decrease Once (Shift: Max) | wired `queue_up` / `queue_down` (shown with two or more items); **[I]** Shift is not read |
+| deposit clear_blocker_button | `CBuildableClearDepositBlocker` | wired `clear_blocker`: the deposit type's cost (`planet_clear_blocker_cost_mult`) and time; when done its `on_cleared` and its swap type, as `clear_blockers` |
+| decisions entry | `CEnactDecisionCommand` | wired `decision`: potential and allow, the economy's cost (its cost tables with triggers: Distribute Luxury Goods 600 at 2210, as the game's); `enactment_time` > 0 queues a `decision` item, else the effect runs now **[V]** |
+| decision progress window cancel | the decision's queue item cancelled | wired `cancel_decision` (shown while one is queued) |
+| terraform entry | `CStartTerraformationCommand` | wired `terraform:LINK`: every `terraform_link` read from the files (same-name definitions otherwise replace each other), the link's condition, its cost, `add_terraformation_total_time_mult` |
+| terraforming_ongoing_window Abort | `CCancelTerraformationCommand` | wired `cancel_terraform` |
+| automation gear, designation, decisions, terraform buttons | side bar toggles | as before |
+| restore_jobs_button | `CChangeJobWorkforceLimitCommand` for every job | wired `restore_jobs`: each job's `workforce_limit` back to `max_workforce`, then `jobs.update` |
+| job workforce +/- | `CChangeJobWorkforceLimitCommand` (delta) | the command exists (`workforce:JOB:DELTA`); **[not done here]** the buttons, since the expanded job entries (planet_job_entry) aren't drawn |
+| favourite job | `CSetFavoriteJobCommand` | **[not done here]**: the engine has no favourite job |
+| armies: checkboxes, recruit | as before | wired |
+| armies: disband | confirm, `CDisbandArmyCommand` | wired: confirm, then disband |
+| armies: embark all, retreat, land | `CMoveArmyToOrbitCommand`, `CFleetLandArmiesCommand` | **[not done here]**: the engine has no army embark or land orders |
+| governor / general portraits | assign-leader widget; right click unassigns | **[not done here]**: the assign-leader widget is another window |
+| sector buttons, ascension tier, branch offices | sector commands, `CIncreasePlanetaryAscensionTierCommand`, dialogs | **[not done here]**: other windows and costs not read |
+
+Commands refuse a planet that isn't the player's colony (colonize: one that is owned), and a cost
+the player can't pay (`invalid: cannot pay`).
+
+The planet view now opens for any planet while the simulation runs; before, only for planets in
+the shown system or with a world-only save. Its data comes from the simulation.
+
+Known gaps:
+- **[I]** The construction list includes buildings whose potential the trigger engine can't
+  decide.
+- **[I]** The decisions list still holds Expel Excess Population at 2210.
+- **[I]** The building's days lack the colony's modifiers.
+- Effects texts, category tabs and wheel scrolling of the side bar's lists are
+  **[not done here]**.
+
+Checked:
+- **Load-sim scripts** (`open_planet act`):
+  - build, cancel with refund, decision enacted (cost paid), rename, blocker queued, district
+    removed, demolish with confirm;
+  - colonize planet 207 (it becomes a colony and its view opens);
+  - the rename typed through `key` (Space and Backspace stay in the box).
+- **Real window** (own Xvfb :79, one renderer, Load Game, world-only):
+  - Downgrade's dialog, then No;
+  - a building demolished through its dialog (this started the simulation);
+  - rename typed and accepted;
+  - Build, then the queue row cancelled;
+  - building details, then Escape twice (the side bar, then the view).
+- **Headless comparisons:** the earlier wire-planet frames. No headless game was run for this
+  branch, as the parent asked.

@@ -309,10 +309,21 @@ local function bar(ctx, path, value)
     end
 end
 
+-- the order buttons that need a target (the game's OnClick(planet / system / fleet / coordinate)
+-- overloads [V: their signatures]): a click arms them (`fleet:arm:FID:NAME`), the next map click
+-- is the target; the others act at once (`fleet:do:FID:NAME`)
+local TARGETED = {
+    move = true, attack = true, home_base = true, survey = true, research = true, jump = true,
+    mia_jump = true, build_starbase = true, build_mining = true, build_research = true,
+    build_observation = true,
+}
+fleet.TARGETED = TARGETED
+
 -- a grid of buttons (fleet_view_order_button / fleet_view_action_button windows) in the slots of
--- the gridbox at `rect`: { sprite, action, disabled } each; `right`: UPPER_RIGHT (the first at
--- the right, going left), `per_row`: max_slots_horizontal
-local function button_grid(ctx, window, rect, slot_w, slot_h, buttons, prefix, right, per_row)
+-- the gridbox at `rect`: { name, sprite, disabled } each, for the fleet `fid`; `right`:
+-- UPPER_RIGHT (the first at the right, going left), `per_row`: max_slots_horizontal. An armed
+-- order's button shows its `_selected` sprite, as the game's while its cursor mode is on.
+local function button_grid(ctx, window, rect, slot_w, slot_h, buttons, prefix, right, per_row, fid)
     for i, b in ipairs(buttons) do
         local k = i - 1
         local col, row = k, 0
@@ -323,11 +334,20 @@ local function button_grid(ctx, window, rect, slot_w, slot_h, buttons, prefix, r
         local y = rect.y + row * slot_h
         local p = prefix .. "/" .. i
         local from = #ctx.items + 1
+        local sprite = b.sprite
+        local armed = ctx.armed and ctx.armed[1] == fid and ctx.armed[2] == b.name
+        if armed and ctx.db.sprites[sprite .. "_selected"] then
+            sprite = sprite .. "_selected"
+        end
+        local action = b.action
+        if not action and fid and b.name then
+            action = (TARGETED[b.name] and "fleet:arm:" or "fleet:do:") .. fid .. ":" .. b.name
+        end
         layout(ctx, FLEET_GUI, window, {
             prefix = p,
             parent = { x = x, y = y, w = 0, h = 0 },
-            sprites = { [p .. "/" .. window .. "/button"] = b.sprite },
-            actions = { [p .. "/" .. window .. "/button"] = b.action or ("fleet:order:" .. tostring(b.name or b.sprite)) },
+            sprites = { [p .. "/" .. window .. "/button"] = sprite },
+            actions = { [p .. "/" .. window .. "/button"] = action },
         })
         if b.disabled then
             grey(ctx, from, p)
@@ -340,13 +360,30 @@ end
 -- CFleetView::BuildPossibleActionsList's fleet-wide buttons (the header: EFleetOrderButtonType
 -- 0-3, 26-28, 30, the ones not fleet-specific) for one fleet the player commands [V: the types,
 -- their sprites; which are potential and enabled: I, as the game's frames show them]
+-- the current order's line (fleet_data's order_line: a key, name blocks, values), else NO_ORDERS
+function fleet.order_text(loc, d)
+    local o = d and d.order_line
+    if type(o) ~= "table" or not o.key then
+        return loc_text(loc, "NO_ORDERS")
+    end
+    local vars = {}
+    for k, v in pairs(o.vars or {}) do
+        vars[k] = v
+    end
+    for k, n in pairs(o.names or {}) do
+        vars[k] = name_text(loc, n)
+    end
+    return loc_text(loc, o.key, vars)
+end
+
 local function header_orders(d)
     if not d.player then
         return {}
     end
     return {
-        { name = "merge", sprite = "GFX_fleet_order_button_merge", disabled = true },
-        { name = "stop", sprite = "GFX_fleet_order_button_stop", disabled = d.state == "move_idle" },
+        -- merge: another of the owner's fleets of the class in the system (fleet_data's mergeable)
+        { name = "merge", sprite = "GFX_fleet_order_button_merge", disabled = not d.mergeable },
+        { name = "stop", sprite = "GFX_fleet_order_button_stop", disabled = d.state == "move_idle" and #(d.orders or {}) == 0 },
         { name = "return", sprite = "GFX_fleet_order_button_return" },
         { name = "move", sprite = "GFX_fleet_order_button_move" },
         { name = "jump", sprite = "GFX_fleet_action_button_jump", disabled = true },
@@ -594,7 +631,7 @@ function fleet.fleet_view(ctx, d)
     end
     local grid = wr.rects["/fleet_view/header/orders/orders"]
     if grid then
-        button_grid(ctx, "fleet_view_order_button", grid, 34, 30, header_orders(d), "/fleet_view/header_orders", false)
+        button_grid(ctx, "fleet_view_order_button", grid, 34, 30, header_orders(d), "/fleet_view/header_orders", false, nil, d.id)
     end
 
     local p = "/fleet_view/fleets/fleet_view_entry"
@@ -646,7 +683,7 @@ function fleet.fleet_view(ctx, d)
             POWER_STRING = loc_text(loc, "FLEET_TEMPLATE_POWER_MAX_REACHED_VALUE_FORMAT", { CURRENT_STRING = fleet.si_number(d.military_power) }),
             VALUE = fleet.si_number(d.military_power),
         })
-    local orders_text = d.orders_text or loc_text(loc, "NO_ORDERS")
+    local orders_text = fleet.order_text(loc, d)
     local text = {
         [p .. "/top/fleet_name"] = name,
         [p .. "/top/fleet_type"] = d.communications and type_name or "",
@@ -693,6 +730,8 @@ function fleet.fleet_view(ctx, d)
         actions = {
             [p .. "/top/deselect"] = "close",
             [p .. "/top/open_fleet_manager"] = "fleet:manager:" .. d.id,
+            [p .. "/top/focus_on"] = "fleet:focus:" .. d.id,
+            [p .. "/top/disband"] = "fleet:do:" .. d.id .. ":disband",
         },
     })
     -- another's fleet: its disband and fleet manager buttons disabled (CanBeDisbandedBy, the
@@ -723,12 +762,12 @@ function fleet.fleet_view(ctx, d)
         local SLOTS = { orders_small = { 51, 50, 4 }, orders_large = { 49, 50, 5 }, observation_orders = { 50, 48, 4 } }
         local sl = SLOTS[orders_window]
         if g and sl then
-            button_grid(ctx, "fleet_view_order_button", g, sl[1], sl[2], fleet_orders(d), "/fleet_view/orders", false, sl[3])
+            button_grid(ctx, "fleet_view_order_button", g, sl[1], sl[2], fleet_orders(d), "/fleet_view/orders", false, sl[3], d.id)
         end
     end
     local ag = er.rects[p .. "/bottom/actions"]
     if ag and d.communications then
-        button_grid(ctx, "fleet_view_action_button", ag, 34, 34, fleet_actions(d), "/fleet_view/actions", true)
+        button_grid(ctx, "fleet_view_action_button", ag, 34, 34, fleet_actions(d), "/fleet_view/actions", true, nil, d.id)
     end
 
     -- the ships: the summary, then a row each
@@ -798,7 +837,7 @@ function fleet.fleet_view(ctx, d)
             hide = { inspect_army = true },
             sprites = z.icon and { [sp .. "/icon"] = "GFX_" .. z.icon } or nil,
             text = { [sp .. "/name"] = line1 },
-            actions = { [sp .. "/inspect"] = "fleet:ship:" .. s.id },
+            actions = { [sp .. "/inspect"] = "fleet:ship:" .. s.id, [sp .. "/disband"] = "fleet:ship_do:" .. s.id .. ":disband" },
         })
         -- the disband button: the observer's fleets only (CanBeDisbandedBy) [V]
         if not d.player then
@@ -1107,6 +1146,7 @@ function fleet.ship_view(ctx, d)
         actions = {
             ["/ship_view/close"] = "fleet:close_ship",
             ["/ship_view/buttons/open_fleet_manager"] = "fleet:manager:" .. tostring(d.fleet or ""),
+            ["/ship_view/buttons/open_designer"] = "fleet:designer:" .. tostring(d.upgrade_to and d.upgrade_to ~= 4294967295 and d.upgrade_to or d.design or ""),
         },
     })
     -- the buttons: the local player's ship that can be upgraded (CShip::CanBeUpgraded) [V]
@@ -1276,7 +1316,7 @@ function fleet.manager_view(ctx, d)
         text[lp .. "/health"] = loc_text(loc, "FLEET_MANAGER_HEALTH", { VALUE = fraction(hp, hpm) })
         text[lp .. "/armor"] = loc_text(loc, "FLEET_MANAGER_ARMOR", { VALUE = fraction(ar, arm) })
         text[lp .. "/shields"] = loc_text(loc, "FLEET_MANAGER_SHIELD", { VALUE = fraction(sh, shm) })
-        text[lp .. "/current_order"] = loc_text(loc, "NO_ORDERS")
+        text[lp .. "/current_order"] = fleet.order_text(loc, sel)
         text[lp .. "/current_activity"] = ""
         local used = 0
         for _, s in ipairs(sel.ships) do
@@ -1293,20 +1333,43 @@ function fleet.manager_view(ctx, d)
     -- drawn below at (317, 103)
     hide[W .. "/box1/background"] = true
     local from = #ctx.items + 1
+    -- the buttons: the selected fleet's as the fleet window's (fleet:do:FID:NAME, render.windows.
+    -- fleet_commands), the others with no fleet (fid 0)
+    local actions = {
+        [W .. "/close"] = d.view and "view_close" or "fleet:close_manager",
+        [W .. "/ship_designer_tab"] = "fleet:designer",
+        [W .. "/create_new_fleet"] = "fleet:do:0:create_new_fleet",
+        [W .. "/reinforce_all"] = "fleet:do:0:reinforce_all",
+        [W .. "/policies"] = "fleet:do:0:policies",
+    }
+    if sel then
+        local fa = "fleet:do:" .. sel.id .. ":"
+        local FA = W .. "/box2/box2_3/fleet_info/actions/"
+        actions[W .. "/box1/fleet_orders/header/stop"] = fa .. "stop"
+        actions[W .. "/box1/fleet_orders/header/return"] = fa .. "return"
+        actions[W .. "/box1/fleet_orders/header/take_point"] = fa .. "take_point"
+        actions[W .. "/box1/fleet_orders/stats/change_stance"] = fa .. "stance"
+        actions[W .. "/box1/fleet_orders/stats/home_base_button"] = fa .. "home_base"
+        actions[W .. "/box1/rename_button"] = fa .. "rename"
+        actions[FA .. "overwrite_design_with_current"] = fa .. "overwrite"
+        actions[FA .. "reinforce"] = fa .. "reinforce"
+        actions[FA .. "repair"] = fa .. "repair"
+        actions[FA .. "upgrade"] = fa .. "upgrade"
+        actions[FA .. "disband"] = fa .. "disband"
+        actions[FA .. "copy_template"] = fa .. "copy_template"
+    end
     local _, wr = layout(ctx, MANAGER_GUI, "fleet_manager_view", {
         hide = hide, text = text,
         sprites = { [W .. "/box1/fleet_orders/stats/change_stance"] = sel and (STANCE[sel.stance] or "GFX_fleet_order_button_stance_passive") or nil },
-        actions = {
-            [W .. "/close"] = d.view and "view_close" or "fleet:close_manager",
-            [W .. "/ship_designer_tab"] = "fleet:designer",
-        },
+        actions = actions,
     })
     -- the disabled ones: Space Fauna (artificial breeding), reinforce all (nothing to reinforce),
     -- stop (no orders), the fleet's reinforce (complete) and repair (undamaged) [V: their
     -- conditions; I: their states here]
-    local disabled = {
-        W .. "/creature_designer_tab", W .. "/reinforce_all", W .. "/box1/fleet_orders/header/stop",
-    }
+    local disabled = { W .. "/creature_designer_tab", W .. "/reinforce_all" }
+    if not sel or (sel.state == "move_idle" and #(sel.orders or {}) == 0) then
+        disabled[#disabled + 1] = W .. "/box1/fleet_orders/header/stop"
+    end
     if sel then
         local damaged = false
         for _, s in ipairs(sel.ships) do
@@ -1465,6 +1528,15 @@ function fleet.manager_view(ctx, d)
                         -- here: the fleet's whole [I])
                         [ep .. "/offensive_power"] = loc_text(loc, "FLEET_MANAGER_SHIP_OFFENSIVE_POWER_FULL", { TEMPLATE_POWER = fleet.si_number(sel.military_power) }),
                     },
+                    -- the template's count +-1 (fleet_commands.template), the design in the
+                    -- designer; retrofit and the row's disband not done here
+                    actions = {
+                        [ep .. "/increase_button"] = "fleet:tpl:" .. sel.id .. ":" .. tostring(e.design) .. ":1",
+                        [ep .. "/decrease_button"] = "fleet:tpl:" .. sel.id .. ":" .. tostring(e.design) .. ":-1",
+                        [ep .. "/inspect"] = "fleet:designer:" .. tostring(e.design),
+                        [ep .. "/retrofit"] = "fleet:do:" .. sel.id .. ":retrofit",
+                        [ep .. "/disband"] = "fleet:do:" .. sel.id .. ":row_disband",
+                    },
                 })
                 if e.count <= F then
                     grey(ctx, from_row, ep .. "/decrease_button")
@@ -1488,7 +1560,7 @@ end
 -- fleet.build(game_dir, db, screen, texture_size, loc, data) -> items, report
 function fleet.build(game_dir, db, screen, texture_size, loc, data)
     local ctx = {
-        game_dir = game_dir, db = db, screen = screen, texture_size = texture_size, loc = loc, plain = data.plain,
+        game_dir = game_dir, db = db, screen = screen, texture_size = texture_size, loc = loc, plain = data.plain, armed = data.armed,
         items = {}, report = { sprites = 0, texts = 0, missing_sprites = {}, skipped = {}, rects = {} },
     }
     if data.fleet then
