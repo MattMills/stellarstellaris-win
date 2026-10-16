@@ -1328,6 +1328,7 @@ freed when the device is polled).
   (SNavigationTextConstants), the arrows' hover and click (to the neighbour).
 - Alerts: the other 60 conditions; the tradition and agenda costs' modifiers.
 - The left bar background's 65 px offset (by the frame), the thin outline under it in the game.
+- The outliner and the alerts: docs/windows/outliner.md (what is drawn, the rules read, what is left).
 - The outliner rows' icons (fleet status, leader level, planet portrait, starbase type, status
   lists), the military row's size line ("15/50 (15)"), the location's colour, the frontier
   sector, the tab buttons over Overview, the other tabs, collapsing groups.
