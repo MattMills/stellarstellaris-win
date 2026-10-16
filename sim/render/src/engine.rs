@@ -6,6 +6,10 @@
 //!
 //! Commands (angles in degrees, positions in map units):
 //! - `load PATH` (the save's world), `load-sim PATH` (as a running simulation), `step DAYS`
+//! - `newgame [async] KEY=VALUE ... [empire=DESIGN]`: a new game (newgame.rs; the keys are
+//!   newgame.generate's: scenario, shape, empires, seed, global_seed, ...), the load screen shown
+//!   while it is made (`frame` draws it, `state` says `Loading`); the reply when it is shown
+//!   paused on the capital at 2200.01.01, or at once with `async`, then `loaded` waits for it
 //! - `view galaxy`, `view system ID` (the save's system id), `view model NAME` (an entity or a
 //!   pdxmesh of gfx/models alone), `view menu`, `view 2d`, `view 3d`
 //! - `focus system ID`, `focus fleet ID`: the galaxy camera over it
@@ -286,13 +290,36 @@ impl Engine {
             self.frame_no,
             self.pending.len()
         );
+        // a new game's load screen: its text and bar, the generation's progress and stage
+        let load_screen = a.pending.as_ref().map_or("null".to_string(), |p| {
+            let (key, percent) = p.shown();
+            format!("{{\"text\":\"{key}\",\"percent\":{percent},\"world_gen\":{},\"stage\":{}}}", p.progress.world_gen(), p.progress.stage())
+        });
         format!(
-            "{{\"screen\":\"{:?}\",\"view\":\"{view}\",\"camera\":{camera},\"date\":\"{date}\",\"clock\":{clock},\"selected\":{selected},\"input\":{input},\"systems\":{systems},\"fleets\":{fleets},\"movement\":{{{}}},\"ftl_trails\":{jumping},\"simulation\":{sim},\"size\":[{},{}],\"frames\":{}}}",
+            "{{\"screen\":\"{:?}\",\"load_screen\":{load_screen},\"view\":\"{view}\",\"camera\":{camera},\"date\":\"{date}\",\"clock\":{clock},\"selected\":{selected},\"input\":{input},\"systems\":{systems},\"fleets\":{fleets},\"movement\":{{{}}},\"ftl_trails\":{jumping},\"simulation\":{sim},\"size\":[{},{}],\"frames\":{}}}",
             a.screen,
             states.join(","),
             a.size.0,
             a.size.1,
             self.frames
+        )
+    }
+
+    /// The game loaded, as `load` replies it: the date, the systems, fleets and countries, the
+    /// view.
+    fn loaded_line(&self) -> String {
+        let Some(m) = self.app.map.as_ref() else { return "no map".into() };
+        let view = match self.app.view {
+            MapView::System(i) => format!("system {}", m.galaxy.systems[i].id),
+            _ => "galaxy".into(),
+        };
+        format!(
+            "date {} systems {} fleets {} countries {} player {} view {view}",
+            m.date(),
+            m.galaxy.systems.len(),
+            m.galaxy.fleets.len(),
+            m.galaxy.countries.len(),
+            m.galaxy.player
         )
     }
 
@@ -355,6 +382,30 @@ impl Engine {
                     m.galaxy.fleets.len(),
                     if verb == "load-sim" { "simulation" } else { "world" }
                 )))
+            }
+            "newgame" => {
+                // `newgame [async] KEY=VALUE ... [empire=DESIGN]` (newgame.rs): the load screen
+                // shown while the game is made; without `async` the reply waits for the game
+                let wait = a.first().copied() != Some("async");
+                let words: Vec<&str> = a.iter().copied().filter(|w| *w != "async").collect();
+                let settings = crate::newgame::NewGameSettings::parse(&words)?;
+                let described = settings.describe();
+                self.app.start_new_game(settings)?;
+                if !wait {
+                    return Ok(Reply::ok(format!("newgame async {described}")));
+                }
+                let took = self.app.finish_loading()?;
+                self.flush_log();
+                Ok(Reply::ok(format!("newgame {} {took} {}", described, self.loaded_line())))
+            }
+            "loaded" => {
+                // waits for the new game in progress (`newgame async`)
+                if self.app.pending.is_none() {
+                    return Err("no new game in progress".into());
+                }
+                let took = self.app.finish_loading()?;
+                self.flush_log();
+                Ok(Reply::ok(format!("loaded {took} {}", self.loaded_line())))
             }
             "step" => {
                 let days: u64 = num(a.first(), "days")?;

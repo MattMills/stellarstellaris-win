@@ -363,6 +363,31 @@ pub fn newgame_summary(runtime: &Runtime) -> Result<String, String> {
         .map_err(|e| format!("render.newgame_setup.summary: {e}"))
 }
 
+/// The load screen for a screen of `width` x `height` (in the front end's runtime): `key`'s text
+/// (localised), the bar at `percent`, over `picture` (newgame.rs).
+pub fn load_screen(runtime: &Runtime, width: u32, height: u32, key: &str, percent: i32, picture: Option<&str>) -> Result<Layout, String> {
+    let read = || -> mlua::Result<Layout> {
+        let f: mlua::Function = runtime.lua.load("return require('render.frontend').load_screen").eval()?;
+        let g = runtime.lua.globals();
+        let screen = runtime.lua.create_table()?;
+        screen.set("width", width)?;
+        screen.set("height", height)?;
+        let t: Table = f.call((
+            g.get::<mlua::Value>("RENDER_GAME_DIR")?,
+            g.get::<mlua::Value>("RENDER_GFX")?,
+            screen,
+            g.get::<mlua::Value>("RENDER_TEXTURE_SIZE")?,
+            g.get::<mlua::Value>("RENDER_LOC")?,
+            key,
+            percent,
+            picture,
+        ))?;
+        let report: Table = t.get("report")?;
+        Ok(Layout { items: read_items(t.get("items")?)?, missing: missing(&report)?, note: format!("load screen: {key} {percent}%"), rects: HashMap::new() })
+    };
+    read().map_err(|e| format!("render.frontend.load_screen: {e}"))
+}
+
 /// A save in the load window: the empire's name, the date, the file's name.
 pub struct SaveRow<'a> {
     pub name: &'a str,
