@@ -297,15 +297,27 @@ local function mini_trigger(block, sc, pid)
                             ok = true
                         end
                     end
-                elseif k == "nor" then
+                elseif k == "nor" or k == "not" then
+                    -- (NOT is true when none of its triggers is: a NOR)
                     ok = true
                     for _, x in ipairs(v) do
                         if x.op and x.key and eval({ x }, s) then
                             ok = false
                         end
                     end
-                elseif k == "not" then
+                elseif k == "nand" then
                     ok = not eval(v, s)
+                elseif k == "custom_tooltip" then
+                    -- its trigger without the tooltip's own keys
+                    local inner = {}
+                    for _, x in ipairs(v) do
+                        if x.op and x.key and x.key.text ~= "fail_text" and x.key.text ~= "success_text" and x.key.text ~= "text" then
+                            inner[#inner + 1] = x
+                        end
+                    end
+                    ok = eval(inner, s)
+                elseif k == "always" then
+                    ok = yes
                 elseif k == "owner" or k == "contact_country" or k == "from" or k == "root" or k == "this" then
                     local t = (k == "owner" or k == "contact_country") and link(s, k, pid) or s
                     ok = t and eval(v, t) or false
@@ -332,6 +344,27 @@ local function mini_trigger(block, sc, pid)
                         ok = et[text(v.text)] or false
                     elseif k == "has_authority" then
                         ok = auth == text(v.text)
+                    elseif k == "is_homicidal" then
+                        ok = (cv.civic_fanatic_purifiers or cv.civic_hive_devouring_swarm or cv.civic_machine_terminator or false) == yes
+                    elseif k == "has_technology" then
+                        local want, has = text(v.text), false
+                        for _, t in ipairs(world.fields(world.field(c or {}, "tech_status") or {}, "technology")) do
+                            if text(t) == want then
+                                has = true
+                            end
+                        end
+                        ok = has
+                    elseif k == "has_modifier" then
+                        local want, has = text(v.text), false
+                        for _, m in ipairs(world.fields(c or {}, "timed_modifier")) do
+                            if type(m) == "table" and text(world.field(m, "modifier")) == want then
+                                has = true
+                            end
+                        end
+                        ok = has
+                    elseif v.text == "yes" or v.text == "no" then
+                        -- an unknown yes/no trigger: as if false [I]
+                        ok = not yes
                     else
                         -- an unknown trigger: false [I]
                         ok = false
@@ -382,6 +415,8 @@ local function trigger(block, roots, pid)
     end
     return r
 end
+
+M.trigger = trigger
 
 -- ---------------------------------------------------------------------------------------------
 -- the events' definitions: the simulation's database when it runs, else the event's file read
