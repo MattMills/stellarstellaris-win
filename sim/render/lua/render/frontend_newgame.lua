@@ -216,6 +216,10 @@ local function build_setup(ctx, state)
     opts.text[SP .. "/species_class"] = texts.species_class or ""
     opts.text[SP .. "/government_authority_name"] = texts.authority or ""
     opts.text[SP .. "/origin_name"] = texts.origin or ""
+    opts.textures = {
+        [SP .. "/government_authority_icon"] = texts.authority_icon,
+        [SP .. "/origin_icon"] = texts.origin_icon,
+    }
     if e.kind == "random" then
         opts.hide[P .. "/empire_flag"] = true
         opts.hide[SP .. "/portrait_window/portrait"] = true
@@ -399,7 +403,8 @@ function fe.build(game_dir, db, screen, texture_size, loc, name)
         ctx.design_texts_of = function(d)
             return design.texts(game_dir, loc, d)
         end
-        ctx.design_texts = design.texts(game_dir, loc, state.designs[state.selected] or {})
+        -- (the empire chosen: a prescripted design, or the creator's after Done)
+        ctx.design_texts = design.texts(game_dir, loc, state.empire or state.designs[state.selected] or {})
     end
     still(game_dir, screen, texture_size, ctx.items, ctx.report)
     if name == "select" then
