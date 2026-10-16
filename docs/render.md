@@ -924,7 +924,7 @@ galaxy has no star class; the frames agree):
 ## 12. The window's controls: the clock, the camera, the selection
 
 The game's behaviour, read from the 4.5.2 Linux build's code **[V]** (inferences marked **[I]**),
-and how the renderer does it. Checked against the game's frame after a load (`headless/view.sh`,
+and how the renderer does it. The windows: [the planet view](windows/planet.md). Checked against the game's frame after a load (`headless/view.sh`,
 the same commands: `H:\code_working\tmp_sym\render3d\parity\7_controls.png`, the game left): the
 home system at the same place and scale, the top bar's clock, the outliner.
 
