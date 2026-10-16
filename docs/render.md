@@ -1325,6 +1325,8 @@ freed when the device is polled).
 
 - The left bar's views (one open at a time, `views.rs`, `lua/render/windows/NAME.lua`): the research
   and traditions views in [windows/research.md](windows/research.md).
+- The empire and government views (government, leaders, empire, council, policies and edicts,
+  factions, species): [windows/empire.md](windows/empire.md).
 
 ### Not done yet
 
