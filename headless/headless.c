@@ -1556,8 +1556,9 @@ static void date_str(void *gs, char *buf, size_t n) {
 // 4.5.2 Linux: CInGameIdler::ShowStarbaseView(CStarbase const*) and ShowWaystationView(CStarbase
 // const&) close the top bar views and CAbstractStarbaseView::Show the view at idler +0xb70
 // (starbase) / +0xb78 (waystation); ShowWaystationNetworkView, the view at +0xd18;
-// ShowMegaStructureView(CMegaStructure const*), AccessMegaStructureView; a starbase's station
-// fleet is selected first (CInGameIdler::Select). A TPdxRef database:
+// ShowMegaStructureView(CMegaStructure const*), AccessMegaStructureView; what the view shows is
+// selected first (CInGameIdler::Select: a starbase's station fleet, CFleet +0x18; a megastructure,
+// CMegaStructure +0x28; a network, CWaystationNetwork +0x18). A TPdxRef database:
 // +0x18 its entries (16 bytes, the object at +8, whose +8 is its full ref), +0x20 their count.
 static uintptr_t a_ShowStarbaseView, a_ShowWaystationView, a_ShowWaystationNetworkView, a_ShowMegaStructureView;
 static uintptr_t a_AccessMegaStructureView, a_StarbaseViewShowTab, a_WaystationViewShowTab;
@@ -1647,6 +1648,9 @@ static void open_starbase_cmd(const char *arg) {
 			reply_fmt("error open_starbase: no megastructure %ld", id);
 			return;
 		}
+		// selected first, as a starbase's fleet (CMegaStructureView::Update hides the view unless
+		// GetSelectedMegaStructure is it): its CSelectable at +0x28 (OnClose's Deselect)
+		((void (*)(void *, void *))a_IdlerSelect)(idler, (char *)m + 0x28);
 		((void (*)(void *, void *))a_ShowMegaStructureView)(idler, m);
 		view = ((void *(*)(void *))a_AccessMegaStructureView)(idler);
 		if (view && tab >= 0) {
@@ -1659,6 +1663,8 @@ static void open_starbase_cmd(const char *arg) {
 			reply_fmt("error open_starbase: no waystation network %ld", id);
 			return;
 		}
+		// selected first: its CSelectable at +0x18 (GetSelectedWaystationNetwork)
+		((void (*)(void *, void *))a_IdlerSelect)(idler, (char *)n + 0x18);
 		((void (*)(void *, void *))a_ShowWaystationNetworkView)(idler, n);
 		view = *(void **)(idler + 0xd18);
 	} else {
