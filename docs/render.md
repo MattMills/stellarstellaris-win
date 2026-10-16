@@ -928,6 +928,9 @@ and how the renderer does it. Checked against the game's frame after a load (`he
 the same commands: `H:\code_working\tmp_sym\render3d\parity\7_controls.png`, the game left): the
 home system at the same place and scale, the top bar's clock, the outliner.
 
+- The ship designer and the combat view (`open_designer`, the 3D view as an inset in the GUI):
+  [windows/designer.md](windows/designer.md).
+
 ### The controls: input, bindings, actions (`sim/render/src/controls.rs`)
 
 **Physical input is kept apart from the game's actions.** The window (winit) and the command

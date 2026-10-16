@@ -2209,6 +2209,109 @@ static void frame_cmd(const char *arg) {
 	reply_fmt("ok frame %s %d %d %.0f %d%s", arg, w, h, ms, C.frames, g_frame_now ? " now" : diff > 0.25 ? " unsettled" : "");
 }
 
+// ---------------------------------------------------------------- the ship designer and the combat
+// view (docs/windows/designer.md), opened with the game's own calls:
+//   open_designer               CShipDesignerBase::Show() on CInGameIdler::AccessShipDesigner()
+//                               (+0xd98), as the fleet manager's designer tab does
+//   open_designer design ID     then CShipDesignEntry::Click's work: CShipDesignerBase::LoadDesign
+//                               (TPdxRef<CShipDesign> ID, owner 0, false) and the five refreshes
+//                               (designer +0x1a58..+0x1a78, vtable +0x100)
+//   open_designer combat [ID]   the fleet selected (CInGameIdler::Select of its CSelectable at
+//                               CFleet +0x18, as a click does): ShowFleetView shows the CCombatView
+//                               (+0xb50) instead of the fleet view for a fleet in combat
+//                               (CFleet::HasCombat), and CCombatView::Update lists the selected
+//                               fleets (CInGameIdler +0xa80) in combat; without ID the first one
+//   open_designer close         CShipDesignerBase::Hide(), CCombatView::Hide()
+
+static uintptr_t a_AccessShipDesigner, a_DesignerShow, a_DesignerHide, a_DesignerLoad;
+static uintptr_t a_DesignerSelect, a_FleetHasCombat, a_CombatHide, a_DesignFleetDb, a_ShipDesignDb;
+static int g_combat_fleet;   // the fleet open_designer combat showed
+
+static struct symreq g_designer_syms[] = {
+	{"_ZN12CInGameIdler18AccessShipDesignerEv", &a_AccessShipDesigner},
+	{"_ZN17CShipDesignerBase4ShowEv", &a_DesignerShow},
+	{"_ZN17CShipDesignerBase4HideEv", &a_DesignerHide},
+	{"_ZN17CShipDesignerBase10LoadDesignERK11CShipDesign12EDesignOwnerb", &a_DesignerLoad},
+	{"_ZN12CInGameIdler6SelectEPK11CSelectable", &a_DesignerSelect},
+	{"_ZNK6CFleet9HasCombatEv", &a_FleetHasCombat},
+	{"_ZN11CCombatView4HideEv", &a_CombatHide},
+	{"_ZN7TPdxRefI6CFleetE10_pDatabaseE", &a_DesignFleetDb},
+	{"_ZN7TPdxRefI11CShipDesignE10_pDatabaseE", &a_ShipDesignDb},
+	{NULL, NULL},
+};
+
+// a TPdxRef database's object at slot i (16-byte slots at +0x18, the object at +8, the count at
+// +0x20), or NULL
+static char *designer_db_at(uintptr_t db_sym, uint32_t i) {
+	char *db = *(char **)db_sym;
+	if (!db || i >= *(uint32_t *)(db + 0x20)) return NULL;
+	return *(char **)(*(char **)(db + 0x18) + 16 * (size_t)i + 8);
+}
+
+static void open_designer_cmd(const char *arg) {
+	static int resolved;
+	if (!resolved) {
+		if (resolve(g_designer_syms) != 0) {
+			reply_fmt("error open_designer: symbols missing");
+			return;
+		}
+		resolved = 1;
+	}
+	char *idler = *(char **)a_g_CurrentInGameIdler;
+	char what[32] = "";
+	int id = -1;
+	sscanf(arg, "%31s %d", what, &id);
+	if (C.stage == 0) {
+		char *designer = ((char *(*)(void *))a_AccessShipDesigner)(idler);
+		if (!what[0] || !strcmp(what, "design")) {
+			char *d = NULL;
+			if (!strcmp(what, "design")) {
+				d = designer_db_at(a_ShipDesignDb, (uint32_t)id & 0xffffff);
+				if (!d || I32(d + 0x10) != id) {
+					reply_fmt("error open_designer: no ship design %d", id);
+					return;
+				}
+			}
+			((void (*)(void *))a_DesignerShow)(designer);
+			if (d) {
+				((void (*)(void *, void *, int, int))a_DesignerLoad)(designer, d, 0, 0);
+				for (int k = 0; k < 5; k++) {
+					void **o = *(void ***)(designer + 0x1a58 + 8 * k);
+					if (o) ((void (*)(void *))(*(void ***)o)[0x100 / 8])(o);
+				}
+			}
+		} else if (!strcmp(what, "combat")) {
+			char *f = NULL;
+			char *db = *(char **)a_DesignFleetDb;
+			uint32_t n = db ? *(uint32_t *)(db + 0x20) : 0;
+			for (uint32_t i = 0; i < n && !f; i++) {
+				char *o = designer_db_at(a_DesignFleetDb, i);
+				if (o && (id < 0 || I32(o + 0x30) == id) && ((int (*)(void *))a_FleetHasCombat)(o) & 0xff) f = o;
+			}
+			if (!f) {
+				reply_fmt("error open_designer: no fleet in combat%s", id >= 0 ? " with that id" : "");
+				return;
+			}
+			g_combat_fleet = I32(f + 0x30);
+			((void (*)(void *, void *))a_DesignerSelect)(idler, f + 0x18);
+		} else if (!strcmp(what, "close")) {
+			((void (*)(void *))a_DesignerHide)(designer);
+			((void (*)(void *))a_CombatHide)(*(void **)(idler + 0xb50));
+		} else {
+			reply_fmt("error open_designer [design ID | combat [FLEET] | close]");
+			return;
+		}
+		C.stage = 1;
+		return;
+	}
+	// a few frames for the window to show (ship_designer slides in: animation_time 200)
+	if (++C.frames < 20) return;
+	if (!strcmp(what, "combat"))
+		reply_fmt("ok open_designer combat %d", g_combat_fleet);
+	else
+		reply_fmt("ok open_designer %s", arg);
+}
+
 static void view_game(void *gs) {
 	if (g_in_game_frames++ == 0) {
 		hlog("view: in game after %.3f s", now() - g_t0);
@@ -2393,6 +2496,8 @@ static void view_command(void *gs) {
 		} else {
 			reply_fmt("error camera X Y Z YAW PITCH DISTANCE, or camera off");
 		}
+	} else if (!strcmp(verb, "open_designer")) {
+		open_designer_cmd(arg);
 	} else if (!strcmp(verb, "frame")) {
 		// frame PATH now: the frame the game presented last, no frame run (the input's frames
 		// exactly); frame PATH: once the picture settles

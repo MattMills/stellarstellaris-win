@@ -30,6 +30,7 @@ mod camera;
 mod clock;
 mod controls;
 mod dds;
+mod designer;
 mod effects;
 mod engine;
 mod flag;

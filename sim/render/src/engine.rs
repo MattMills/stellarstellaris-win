@@ -301,6 +301,34 @@ impl Engine {
         }
     }
 
+    fn open_designer(&mut self, a: &[&str]) -> Result<Reply, String> {
+        use crate::designer::Designer;
+        match (a.first().copied(), a.get(1)) {
+            (None, _) => self.app.set_designer(Designer { open: true, design: None }),
+            (Some("design"), Some(_)) => self.app.set_designer(Designer { open: true, design: Some(num(a.get(1), "id")?) }),
+            (Some("combat"), id) => {
+                let map = self.app.map.as_ref().ok_or("no map loaded")?;
+                let fleet = match id {
+                    Some(_) => Some(num(a.get(1), "id")?).filter(|&f| crate::designer::in_combat(&map.runtime, f)),
+                    None => crate::designer::first_in_combat(&map.runtime),
+                };
+                let fleet = fleet.ok_or("open_designer: no fleet in combat")?;
+                self.app.select(Some(Pickable::Fleet(fleet)));
+                self.flush_log();
+                return Ok(Reply::ok(format!("open_designer combat {fleet}")));
+            }
+            (Some("close"), _) => {
+                self.app.set_designer(Designer::default());
+                if matches!(self.app.selected, Some(Pickable::Fleet(_))) {
+                    self.app.select(None);
+                }
+            }
+            other => return Err(format!("open_designer {other:?}: [design ID | combat [FLEET] | close]")),
+        }
+        self.flush_log();
+        Ok(Reply::ok(format!("open_designer {}", a.join(" "))))
+    }
+
     fn system_index(&self, id: u32) -> Result<usize, String> {
         let m = self.app.map.as_ref().ok_or("no map loaded")?;
         m.galaxy.systems.iter().position(|s| s.id == id).ok_or(format!("no system {id}"))
@@ -460,6 +488,10 @@ impl Engine {
                 self.flush_log();
                 Ok(Reply::ok(format!("select {}", a.join(" "))))
             }
+            // the game's headless `open_designer` (headless.c): the ship designer (CShipDesignerBase::
+            // Show, no design loaded; `design ID` loads one), a fleet in combat selected (the combat
+            // view: the first in combat without ID), `close`
+            "open_designer" => self.open_designer(a),
             "orbit" => {
                 self.app.orbit(num(a.first(), "dyaw")?, num(a.get(1), "dpitch")?);
                 Ok(Reply::ok("orbit"))

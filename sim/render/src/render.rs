@@ -309,6 +309,29 @@ struct MeshDrawGpu {
     slot: u32,
 }
 
+/// A 3D view inside the GUI (scene::Inset): where it goes in the GUI's draws, its rectangle, its
+/// view's bind group and its meshes.
+struct InsetGpu {
+    batch: usize,
+    rect: [f32; 4],
+    bind: wgpu::BindGroup,
+    _buffer: wgpu::Buffer,
+    draws: Vec<MeshDrawGpu>,
+    /// its sky: the uniform (and its buffer) and the textures' bind groups
+    sky: Option<(wgpu::Buffer, wgpu::BindGroup, wgpu::BindGroup)>,
+}
+
+/// The order meshes are drawn in: opaque first, then blended and added.
+fn mesh_order(meshes: &[crate::scene::MeshDraw]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..meshes.len()).collect();
+    order.sort_by_key(|&i| match meshes[i].shading {
+        Shading::Lit | Shading::Emissive | Shading::Star => 0,
+        Shading::Clouds | Shading::Ring | Shading::Button => 1,
+        Shading::Atmosphere | Shading::StarAtmosphere | Shading::Additive => 2,
+    });
+    order
+}
+
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// The map's pipelines, textures, meshes and buffers on one device, for one target format.
@@ -339,6 +362,8 @@ pub struct Renderer {
     dummy_cube_view: wgpu::TextureView,
     post: Option<PostFrame>,
     sky_pipeline: wgpu::RenderPipeline,
+    sky_pipeline_ldr: wgpu::RenderPipeline,
+    sky_uniform_layout: wgpu::BindGroupLayout,
     sky_layout: wgpu::BindGroupLayout,
     sky_uniform: wgpu::Buffer,
     sky_uniform_bind: wgpu::BindGroup,
@@ -358,6 +383,7 @@ pub struct Renderer {
     draw_uniforms: Option<(wgpu::Buffer, wgpu::BindGroup)>,
     mesh_draws: Vec<MeshDrawGpu>,
     draws: Vec<Draw>,
+    insets: Vec<InsetGpu>,
     depth: Option<(u32, u32, wgpu::Texture, wgpu::TextureView)>,
     srgb: bool,
     clear: [f32; 3],
@@ -390,11 +416,15 @@ pub fn scene_resources(scene: &Scene) -> Vec<Res<'_>> {
     if let Some(m) = scene.maps {
         v.extend(m.iter().map(|&i| Res::Texture(i)));
     }
-    v.extend(scene.batches.iter().map(|b| Res::Texture(b.texture)));
+    // (an inset's marker batch has no texture)
+    v.extend(scene.batches.iter().filter(|b| b.texture != usize::MAX).map(|b| Res::Texture(b.texture)));
     if let Some((i, _)) = scene.env {
         v.push(Res::Cube(i));
     }
-    for m in &scene.meshes {
+    for i in &scene.insets {
+        v.extend(i.env.map(|(c, _)| Res::Cube(c)));
+    }
+    for m in scene.meshes.iter().chain(scene.insets.iter().flat_map(|i| i.meshes.iter())) {
         v.push(Res::Mesh(&m.mesh));
         v.extend(m.textures.iter().map(|&t| Res::Texture(t)));
         if let Some(c) = m.cube {
@@ -766,22 +796,27 @@ impl Renderer {
             bind_group_layouts: &[Some(&sky_uniform_layout), Some(&sky_layout)],
             immediate_size: 0,
         });
-        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("sky"),
-            layout: Some(&sky_pipeline_layout),
-            vertex: wgpu::VertexState { module: &sky_shader, entry_point: Some("vs_sky"), compilation_options: Default::default(), buffers: &[] },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: depth(false, wgpu::CompareFunction::LessEqual),
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &sky_shader,
-                entry_point: Some("fs_sky"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: HDR_FORMAT, blend: None, write_mask: wgpu::ColorWrites::COLOR })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let sky_pipeline_for = |format: wgpu::TextureFormat| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("sky"),
+                layout: Some(&sky_pipeline_layout),
+                vertex: wgpu::VertexState { module: &sky_shader, entry_point: Some("vs_sky"), compilation_options: Default::default(), buffers: &[] },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: depth(false, wgpu::CompareFunction::LessEqual),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &sky_shader,
+                    entry_point: Some("fs_sky"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::COLOR })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let sky_pipeline = sky_pipeline_for(HDR_FORMAT);
+        // an inset's sky (scene::Inset), drawn with the GUI over the target
+        let sky_pipeline_ldr = sky_pipeline_for(format);
         let sky_uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sky"),
             size: 80,
@@ -817,6 +852,8 @@ impl Renderer {
             dummy_cube_view,
             post: None,
             sky_pipeline,
+            sky_pipeline_ldr,
+            sky_uniform_layout,
             sky_layout,
             sky_uniform,
             sky_uniform_bind,
@@ -836,6 +873,7 @@ impl Renderer {
             draw_uniforms: None,
             mesh_draws: Vec::new(),
             draws: Vec::new(),
+            insets: Vec::new(),
             depth: None,
             srgb: format.is_srgb(),
             clear: [0.0; 3],
@@ -1041,6 +1079,11 @@ impl Renderer {
         let mut instances = Vec::new();
         self.draws.clear();
         for b in &scene.batches {
+            if b.texture == usize::MAX {
+                // an inset's place (scene::Inset): nothing of its own
+                self.draws.push(Draw { layer: b.layer, blend: b.blend, texture: String::new(), range: 0..0 });
+                continue;
+            }
             let name = &textures.names[b.texture];
             self.texture(device, queue, name, &textures.images[b.texture]);
             let start = instances.len() as u32;
@@ -1087,19 +1130,127 @@ impl Renderer {
         // meshes: opaque first, then blended and added
         self.mesh_draws.clear();
         let mut uniforms: Vec<DrawUniform> = Vec::new();
-        let mut order: Vec<usize> = (0..scene.meshes.len()).collect();
-        order.sort_by_key(|&i| match scene.meshes[i].shading {
-            Shading::Lit | Shading::Emissive | Shading::Star => 0,
-            Shading::Clouds | Shading::Ring | Shading::Button => 1,
-            Shading::Atmosphere | Shading::StarAtmosphere | Shading::Additive => 2,
-        });
         // the world's environment map (its levels by glossiness), shared by every mesh
         let env_name = scene.env.map(|(i, _)| {
             self.cube(device, queue, &textures.names[i], &textures.images[i]);
             textures.names[i].clone()
         });
-        for i in order {
-            let m = &scene.meshes[i];
+        for i in mesh_order(&scene.meshes) {
+            let d = self.mesh_draw(device, queue, &scene.meshes[i], textures, &env_name, scene.env.map_or(0.0, |e| e.1), hdr, &mut uniforms);
+            self.mesh_draws.push(d);
+        }
+        // the insets' meshes (drawn with the GUI, over the target: not in the HDR scene) and their
+        // views
+        self.insets.clear();
+        for inset in &scene.insets {
+            let Some(v) = &inset.view else { continue };
+            let env_name = inset.env.map(|(i, _)| {
+                self.cube(device, queue, &textures.names[i], &textures.images[i]);
+                textures.names[i].clone()
+            });
+            let mut draws = Vec::new();
+            for i in mesh_order(&inset.meshes) {
+                draws.push(self.mesh_draw(device, queue, &inset.meshes[i], textures, &env_name, inset.env.map_or(0.0, |e| e.1), false, &mut uniforms));
+            }
+            let u = ViewUniform {
+                view_proj: v.view_proj.cols(),
+                right: [v.right.0, v.right.1, v.right.2, 0.0],
+                up: [v.up.0, v.up.1, v.up.2, 0.0],
+                eye: [v.eye.0, v.eye.1, v.eye.2, 1.0],
+                light: inset.light,
+                px_to_ndc: [2.0 / v.width.max(1) as f32, 2.0 / v.height.max(1) as f32],
+                focal: v.focal_px,
+                srgb: self.srgb as u32,
+                linear: 0,
+                _pad: [0; 3],
+                light_colour: inset.light_colour,
+                back_light: scene.back_light,
+                cam_lights: inset.cam_lights,
+            };
+            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("inset view"),
+                size: std::mem::size_of::<ViewUniform>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(&buf, 0, bytemuck::bytes_of(&u));
+            let bind = view_bind_with(device, &self.view_layout, &buf, [&self.dummy_view; 6], &self.sampler);
+            let sky = inset.sky.as_ref().map(|s| self.sky_binds(device, queue, s, v, textures, !self.srgb));
+            self.insets.push(InsetGpu { batch: inset.batch, rect: inset.rect, bind, _buffer: buf, draws, sky });
+        }
+        if !uniforms.is_empty() {
+            let buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("draws"),
+                size: uniforms.len() as u64 * DRAW_SLOT,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(&buf, 0, bytemuck::cast_slice(&uniforms));
+            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("draws"),
+                layout: &self.draw_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &buf, offset: 0, size: wgpu::BufferSize::new(DRAW_SLOT) }),
+                }],
+            });
+            self.draw_uniforms = Some((buf, bind));
+        }
+        self.upload_post(device, queue, scene, textures);
+    }
+
+    /// A sky's uniform (its direction, edges, shifts and flags; `encode`: gamma-encoded for a
+    /// target that is not sRGB) and its textures' bind group.
+    fn sky_binds(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, s: &crate::scene::SkyDraw, v: &crate::camera::ViewParams, textures: &Textures, encode: bool) -> (wgpu::Buffer, wgpu::BindGroup, wgpu::BindGroup) {
+        let name = textures.names[s.cube].clone();
+        self.cube(device, queue, &name, &textures.images[s.cube]);
+        let lut = s.lut.map(|i| {
+            self.texture(device, queue, &textures.names[i], &textures.images[i]);
+            textures.names[i].clone()
+        });
+        let (sx, sy) = (v.width as f32 / (2.0 * v.focal_px), v.height as f32 / (2.0 * v.focal_px));
+        let fwd = v.right.cross(v.up);
+        let uniform: [[f32; 4]; 5] = [
+            [fwd.0, fwd.1, fwd.2, 0.0],
+            [v.right.0 * sx, v.right.1 * sx, v.right.2 * sx, 0.0],
+            [v.up.0 * sy, v.up.1 * sy, v.up.2 * sy, 0.0],
+            [s.hsv_shift[0], s.hsv_shift[1], s.hsv_shift[2], s.ycocg as u32 as f32],
+            [lut.is_some() as u32 as f32, 1.0, encode as u32 as f32, 0.0],
+        ];
+        let buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("inset sky"), size: 80, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        queue.write_buffer(&buf, 0, bytemuck::cast_slice(&uniform));
+        let ubind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("inset sky"),
+            layout: &self.sky_uniform_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
+        });
+        let lut_view = lut.as_ref().map_or(&self.dummy_view, |n| &self.textures[n].view);
+        let tbind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("inset sky"),
+            layout: &self.sky_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.cubes[&name].2) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(lut_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        (buf, ubind, tbind)
+    }
+
+    /// One mesh's textures, bind group and draw constants (its slot in `uniforms`).
+    #[allow(clippy::too_many_arguments)]
+    fn mesh_draw(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        m: &crate::scene::MeshDraw,
+        textures: &Textures,
+        env_name: &Option<String>,
+        env_intensity: f32,
+        hdr: bool,
+        uniforms: &mut Vec<DrawUniform>,
+    ) -> MeshDrawGpu {
+        {
             self.mesh(device, queue, &m.mesh);
             for &t in &m.textures {
                 self.texture(device, queue, &textures.names[t], &textures.images[t]);
@@ -1143,31 +1294,17 @@ impl Renderer {
                 atmosphere,
                 extra: [k.width, k.kind, 0.0, 0.0],
                 lava: [l(k.lava[0]), l(k.lava[1]), l(k.lava[2])],
-                std: [m.std[0], m.std[1], scene.env.map_or(0.0, |e| e.1), m.std[3]],
+                std: [m.std[0], m.std[1], env_intensity, m.std[3]],
                 ship: m.ship,
             });
-            self.mesh_draws.push(MeshDrawGpu { mesh: m.mesh.key.clone(), textures: names, shading: m.shading, slot: (uniforms.len() - 1) as u32 });
+            MeshDrawGpu { mesh: m.mesh.key.clone(), textures: names, shading: m.shading, slot: (uniforms.len() - 1) as u32 }
         }
-        if !uniforms.is_empty() {
-            let buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("draws"),
-                size: uniforms.len() as u64 * DRAW_SLOT,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            queue.write_buffer(&buf, 0, bytemuck::cast_slice(&uniforms));
-            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("draws"),
-                layout: &self.draw_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &buf, offset: 0, size: wgpu::BufferSize::new(DRAW_SLOT) }),
-                }],
-            });
-            self.draw_uniforms = Some((buf, bind));
-        }
+    }
 
-        // the post effects: their targets (kept while the size holds), constants and bind groups
+    /// The post effects of an uploaded scene: their targets (kept while the size holds), constants
+    /// and bind groups; the sky.
+    fn upload_post(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &Scene, textures: &Textures) {
+        let v = &scene.view;
         let Some(p) = scene.post.clone() else {
             self.post = None;
             self.sky_bind = None;
@@ -1428,12 +1565,9 @@ impl Renderer {
         let (Some(quads), Some(lines)) = (&self.quads, &self.lines) else { return };
         let mut meshes_drawn = false;
         let mut lines_drawn = false;
-        let draw_meshes = |pass: &mut wgpu::RenderPass<'_>| {
-            if mask & Layer::Models.bit() == 0 {
-                return;
-            }
+        let draw_list = |pass: &mut wgpu::RenderPass<'_>, list: &[MeshDrawGpu]| {
             let Some((_, draw_bind)) = &self.draw_uniforms else { return };
-            for d in &self.mesh_draws {
+            for d in list {
                 let g = &self.meshes[&d.mesh];
                 pass.set_pipeline(match d.shading {
                     Shading::Lit | Shading::Emissive | Shading::Star => &pipes.mesh_opaque,
@@ -1452,6 +1586,35 @@ impl Renderer {
                 pass.draw_indexed(0..g.count, 0, 0..1);
             }
         };
+        let draw_meshes = |pass: &mut wgpu::RenderPass<'_>| {
+            if mask & Layer::Models.bit() != 0 {
+                draw_list(pass, &self.mesh_draws);
+            }
+        };
+        // a 3D view inside the GUI: its meshes in its rectangle, through its own view (the GUI's
+        // quads write no depth: the pass's depth, cleared, is the inset's)
+        let (tw, th) = (self.depth.as_ref().map_or(1, |d| d.0), self.depth.as_ref().map_or(1, |d| d.1));
+        let draw_inset = |pass: &mut wgpu::RenderPass<'_>, inset: &InsetGpu| {
+            let [x0, y0, x1, y1] = inset.rect;
+            let (x0, y0) = (x0.clamp(0.0, tw as f32), y0.clamp(0.0, th as f32));
+            let (x1, y1) = (x1.clamp(x0, tw as f32), y1.clamp(y0, th as f32));
+            if x1 - x0 < 1.0 || y1 - y0 < 1.0 {
+                return;
+            }
+            pass.set_viewport(x0, y0, x1 - x0, y1 - y0, 0.0, 1.0);
+            pass.set_scissor_rect(x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
+            if let Some((_, ubind, tbind)) = &inset.sky {
+                pass.set_pipeline(&self.sky_pipeline_ldr);
+                pass.set_bind_group(0, ubind, &[]);
+                pass.set_bind_group(1, tbind, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            pass.set_bind_group(0, &inset.bind, &[]);
+            draw_list(pass, &inset.draws);
+            pass.set_viewport(0.0, 0.0, tw as f32, th as f32, 0.0, 1.0);
+            pass.set_scissor_rect(0, 0, tw, th);
+            pass.set_bind_group(0, view_bind, &[]);
+        };
         let draw_lines = |pass: &mut wgpu::RenderPass<'_>| {
             if mask & Layer::Lanes.bit() != 0 && self.n_lines > 0 {
                 pass.set_pipeline(&pipes.line);
@@ -1459,7 +1622,12 @@ impl Renderer {
                 pass.draw(0..6, 0..self.n_lines);
             }
         };
-        for d in &self.draws {
+        for (k, d) in self.draws.iter().enumerate() {
+            if mask & Layer::Gui.bit() != 0 {
+                for inset in self.insets.iter().filter(|i| i.batch == k) {
+                    draw_inset(&mut pass, inset);
+                }
+            }
             if !meshes_drawn && d.layer as u32 >= Layer::Models as u32 {
                 draw_meshes(&mut pass);
                 meshes_drawn = true;

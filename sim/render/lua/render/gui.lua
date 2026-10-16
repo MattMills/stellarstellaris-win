@@ -30,7 +30,7 @@ local ANCHOR = {
 
 -- element kinds drawn (lists, scrollbars, edit boxes are filled at run time: not drawn)
 local CONTAINERS = { containerwindowtype = true, windowtype = true, dropdownboxtype = true }
-local ICONS = { icontype = true, buttontype = true, effectbuttontype = true, guibuttontype = true }
+local ICONS = { icontype = true, buttontype = true, effectbuttontype = true, guibuttontype = true, checkboxtype = true }
 local TEXTS = { instanttextboxtype = true, textboxtype = true }
 -- lists: laid out (their rectangle is recorded, for the rows the caller places) but not drawn
 local LISTS = { smoothlistboxtype = true, listboxtype = true, gridboxtype = true, overlappingelementsboxtype = true }
