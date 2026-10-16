@@ -106,6 +106,36 @@ function L.leader_data(id, country)
     return d
 end
 
+-- the pops of a colony by species (its pop groups' `key.species` and `size`), and the order the
+-- species first appear in: count, order
+function L.colony_species(colony_id, count, order)
+    local w = world()
+    count, order = count or {}, order or {}
+    local col = colony_id and w.object("colony", colony_id)
+    for _, g in ipairs(w.list(col and w.field(col, "pop_groups"))) do
+        local pg = w.object("pop_group", tonumber(g))
+        local sp = pg and tonumber(w.path(pg, "key", "species"))
+        if sp then
+            if not count[sp] then
+                order[#order + 1] = sp
+                count[sp] = 0
+            end
+            count[sp] = count[sp] + (tonumber(w.field(pg, "size")) or 0)
+        end
+    end
+    return count, order
+end
+
+-- the pops of a country's colonies by species: count, order
+function L.country_species(c)
+    local w = world()
+    local count, order = {}, {}
+    for _, k in ipairs(w.list(w.field(c, "controlled_colonies"))) do
+        L.colony_species(tonumber(k), count, order)
+    end
+    return count, order
+end
+
 -- species_data(id) -> { id, name, class, portrait, traits }
 function L.species_data(id)
     local w = world()

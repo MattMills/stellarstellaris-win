@@ -43,6 +43,9 @@ function M.data(cid, state)
     local ruler = tonumber(world.field(c, "ruler"))
     d.ruler = ruler and leaders.leader_data(ruler, c) or nil
     d.founder = leaders.species_data(tonumber(world.field(c, "founder_species_ref")))
+    -- the founder species' pops (POPS_IN_WORLD's NO: the game's frame, 2.6K of 5.3K)
+    local count = leaders.country_species(c)
+    d.founder_pops = d.founder and count[d.founder.id] or d.pops
     return d
 end
 
@@ -152,7 +155,7 @@ function M.build(ctx, d, state)
         end
         opts.text[D .. "ideal_planet_class"] = ideal
             and C.raw(ctx, "IDEAL_PLANET_CLASS"):gsub("%$CLASS%$", C.loc(ctx, ideal)) or "NO_IDEAL_PLANET_CLASS"
-        opts.text[D .. "pops"] = C.raw(ctx, "POPS_IN_WORLD"):gsub("%$NO|1%*H%$", "§H" .. C.short(d.pops) .. "§!")
+        opts.text[D .. "pops"] = C.raw(ctx, "POPS_IN_WORLD"):gsub("%$NO|1%*H%$", "§H" .. C.short(d.founder_pops or d.pops) .. "§!")
             :gsub("%$PLANETS|H%$", "§H" .. tostring(d.planets or 1) .. "§!")
         opts.hide.species_leader_image = true
     end
