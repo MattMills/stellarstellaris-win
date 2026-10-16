@@ -148,6 +148,9 @@ end
 --   opts.open: drop-down path -> true (its expanded window laid out: the drop-down clicked open)
 --   opts.disabled: element path -> true (it and its children drawn as the game draws a disabled
 --                  button: greyed)
+--   opts.textures: element path -> a texture file, or a sprite's name (an icon the game sets at run
+--                  time: CIconBase::SetTextureFile, NGuiUtil::SetInstantSprite: civics', origins',
+--                  ethics' icons), drawn in the element's sprite's frame size (else the texture's)
 --   opts.progress: element path -> 0..1 (a progressbarType's state: progress.shader draws its
 --                 textureFile1 where u <= the state, its textureFile2 after; an item's `clip` is
 --                 the { u0, u1 } of its frame drawn, its rectangle cut the same)
@@ -460,7 +463,28 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             if (kind ~= "icontype" or (opts.actions and opts.actions[path])) and field("alwaysTransparent") ~= "yes" then
                 button = { name = name, id = field("id"), action = opts.actions and opts.actions[path] }
             end
-            if sprite then
+            local tex = opts.textures and opts.textures[path]
+            -- (an icon's definition may name a sprite instead of a file: the sprite)
+            if tex and db.sprites[tex] then
+                sprite, tex = tex, nil
+            end
+            if tex then
+                local tw, th = opts.texture_size(tex)
+                if tw then
+                    if w == 0 or h == 0 then
+                        w, h = tw * scale, th * scale
+                        report.rects[path] = { x = x, y = y, w = w, h = h }
+                    end
+                    items[#items + 1] = {
+                        kind = "sprite", path = path, sprite = tex, texture = tex, sprite_kind = "spriteType",
+                        frame = 1, frames = 1, x = x, y = y, w = w, h = h, button = button,
+                        tint = opts.tints and opts.tints[path] or nil,
+                    }
+                    report.sprites = report.sprites + 1
+                else
+                    report.missing_sprites[#report.missing_sprites + 1] = tex
+                end
+            elseif sprite then
                 -- a plain sprite is drawn at its frame's size (times its scale) whatever the
                 -- element's `size`, which is its box (its text's, its clicks'); a cornered tile
                 -- fills the size (expansion_target_entry's background: the 1158 x 74 frame of
@@ -487,8 +511,12 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             local given = opts.text and opts.text[path]
             if (bt and bt ~= "") or (given and kind ~= "icontype") then
                 local text = given or bt
-                text_item(path .. "/text", field("buttonFont") or field("font"), text, x, y, w, h, "center", "center",
-                    field("text_color_code"))
+                -- in the button's `format` (centred by default) within its borderSize (the leaders
+                -- view's list headers: left, after the expand icon)
+                local bs = field("borderSize")
+                local bx = type(bs) == "table" and number(get(bs, "x"), vars) or 0
+                text_item(path .. "/text", field("buttonFont") or field("font"), text, x + bx, y, w - 2 * bx, h,
+                    (field("format") or "center"):lower(), "center", field("text_color_code"))
                 if is_disabled(path) then
                     for _, s in ipairs(items[#items].spans) do
                         s.colour = grey(s.colour)
