@@ -47,17 +47,40 @@ impl State {
 /// The planet's data (a Lua expression, render.windows.planet.encode) from the map's world, or
 /// None when the map has no world (a running simulation: its world is on its own thread).
 pub fn data(map: &Map, id: u32) -> Result<Option<String>, String> {
-    if !map.world {
+    let gd = map.game_dir.replace('\\', "/");
+    let code = format!("local p = require('render.windows.planet') local d = p.data({gd:?}, {id}) return d and p.encode(d) or ''");
+    if map.world {
+        return map
+            .runtime
+            .lua
+            .load(code)
+            .eval::<String>()
+            .map(|s| if s.is_empty() { None } else { Some(s) })
+            .map_err(|e| format!("render.windows.planet.data: {e}"));
+    }
+    // the simulation's world (its own thread): asked once a snapshot, when it is ready (the
+    // window shows its frame and name until then; Clock::query would wait for the load)
+    let Some(clock) = map.clock.as_ref() else { return Ok(None) };
+    if !clock.status().ready {
         return Ok(None);
     }
-    let gd = map.game_dir.replace('\\', "/");
-    map.runtime
-        .lua
-        .load(format!(
-            "local p = require('render.windows.planet') local d = p.data({gd:?}, {id}) return d and p.encode(d)"
-        ))
-        .eval::<Option<String>>()
-        .map_err(|e| format!("render.windows.planet.data: {e}"))
+    let generation = map.snapshot.as_ref().map_or(0, |s| s.generation);
+    if let Some(d) = CACHE.with(|c| c.borrow().as_ref().filter(|(i, g, _)| *i == id && *g == generation).map(|(_, _, d)| d.clone())) {
+        return Ok(d);
+    }
+    let d = clock.query(&code).map(|s| if s.is_empty() { None } else { Some(s) }).map_err(|e| format!("render.windows.planet.data: {e}"))?;
+    CACHE.with(|c| *c.borrow_mut() = Some((id, generation, d.clone())));
+    Ok(d)
+}
+
+thread_local! {
+    /// the last planet's data from the simulation: (planet, snapshot generation, data)
+    static CACHE: std::cell::RefCell<Option<(u32, u64, Option<String>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Forgets the simulation's data (a command changed the planet).
+pub fn forget() {
+    CACHE.with(|c| *c.borrow_mut() = None);
 }
 
 /// Hands planet `id`'s data and the tab shown to the front end's runtime (`RENDER_PLANET =

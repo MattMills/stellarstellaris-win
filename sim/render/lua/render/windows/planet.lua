@@ -774,7 +774,9 @@ function planet.build(ctx, sel, items, report)
     -- population and armies for a completed colony; holdings for a completed colony)
     v.tab = st.tab or "summary"
     local can = {
-        summary = true, management = true,
+        -- (nothing but the summary until the planet's data has come: RENDER_PLANET.data is nil
+        -- while the simulation has not answered, and the window then shows its frame and name)
+        summary = true, management = d ~= nil,
         population = v.completed, armies = v.completed, corporate = v.completed,
     }
     if not can[v.tab] then
