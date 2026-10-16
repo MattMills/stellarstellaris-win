@@ -1475,7 +1475,9 @@ static uintptr_t a_TechViewVtable;        // vtable for CTechnologyView
 static uintptr_t a_g_CurrentIdler;        // CGameIdler* (+0xe0: the frame's time, CGameCamera::UpdateZoom's keys)
 static uintptr_t a_SDL_AddEventWatch;     // SDL_AddEventWatch (SDL2 is linked in)
 
+static uintptr_t a_FindGalacticObjectUnderMouse; // CInGameIdler::FindGalacticObjectUnderMouse()
 static struct symreq g_view_syms[] = {
+	{"_ZN12CInGameIdler28FindGalacticObjectUnderMouseEv", &a_FindGalacticObjectUnderMouse},
 	{"_ZN11CGameCamera6UpdateEPK9CKeyBoardP6CMousePK18CPdxGameControllerR5CListI11CInputEventEf", &a_GameCameraUpdate},
 	{"_ZN11CGameCamera20UpdateInternalCameraEv", &a_UpdateInternalCamera},
 	{"_ZN11CGameCamera11EnterSystemEPK15CGalacticObject", &a_EnterSystem},
@@ -1771,6 +1773,7 @@ struct cmd {
 	uint8_t *prev; // the last capture (frame)
 	int pw, ph;
 	int stage;
+	int settled;   // a click's pointer: the frame the game had it (pointer_wait)
 	// the input commands that take frames (hold, drag, tick, wait): frames (or seconds) to wait,
 	// the step, the chord or button, the path
 	int n, step, steps, button;
@@ -2155,6 +2158,37 @@ static int duration(const char *s, int *frames, double *secs) {
 	return 0;
 }
 
+// The pointer published to the game's hit tests: in game, the GUI (CGuiGraphics, at *(idler
+// +0xe8) +0x58) keeps the pointer of the mouse's events at +0x350 (SetCurrentMousePosition
+// 0x43a5b30) and copies it to +0x358 only when it draws (Render2dObjectsToScreen 0x43a562a,
+// RefreshCollisionObjects 0x43a58fe); the hover tests read +0x358 (GetMouseScreenPosition-
+// ForCollisionObjects 0x43a5c70: the galaxy's system under the mouse, FindGalacticObjectUnderMouse,
+// cached at idler +0xaa4 by UpdateInternal, what a right click there orders to). The headless game
+// draws far fewer frames than it updates, so +0x358 lags the pointer by many frames: a click
+// right after a move acts on the old place. 1 when they agree (or not in game).
+static int pointer_published(void) {
+	char *idler = a_g_CurrentInGameIdler ? *(char **)a_g_CurrentInGameIdler : NULL;
+	char *mgr = idler ? *(char **)(idler + 0xe8) : NULL;
+	char *gui = mgr ? *(char **)(mgr + 0x58) : NULL;
+	if (!g_in_game || !gui) return 1;
+	return !memcmp(gui + 0x350, gui + 0x358, 8);
+}
+
+// A click's wait for its pointer (pointer_published): at least two frames (the motion reaches the
+// game the frame after its injection), then until the GUI has drawn it, then one frame more (the
+// hover pass of UpdateInternal); at most POINTER_WAIT_MAX frames. 1 while it waits.
+#define POINTER_WAIT_MAX 600
+static int pointer_wait(void) {
+	C.frames++;
+	if (C.frames < 2) return 1;
+	if (!C.settled && !pointer_published() && C.frames < POINTER_WAIT_MAX) return 1;
+	if (!C.settled) {
+		C.settled = C.frames;
+		return 1;
+	}
+	return 0;
+}
+
 // One frame of a command that waits: whether its frames (or its time) are done.
 static int waited(void) {
 	C.frames++;
@@ -2223,14 +2257,22 @@ static int input_command(const char *verb, const char *arg) {
 		X.sync(g_dpy, False);
 		reply_fmt("ok button %s %s at %d %d frame %d", a[0], a[1], g_ptr_x, g_ptr_y, g_frame_no);
 	} else if (!strcmp(verb, "click")) {
-		// click X Y [BUTTON] [double]: pressed and released there (twice for double), one frame
+		// click X Y [BUTTON] [double]: pressed and released there (twice for double), one frame;
+		// a click elsewhere than the pointer is moves it first and waits until the game has it
+		// (pointer_wait: the frames counted in the reply's `waited`)
 		if (n < 2) return reply_fmt("error click X Y [left|right|middle] [double]"), 1;
 		int b = n > 2 && button_num(a[2]) ? button_num(a[2]) : 1;
 		int twice = (n > 2 && !strcmp(a[2], "double")) || (n > 3 && !strcmp(a[3], "double"));
-		pointer_to(atoi(a[0]), atoi(a[1]));
+		if (C.stage == 0 && (atoi(a[0]) != g_ptr_x || atoi(a[1]) != g_ptr_y)) {
+			pointer_to(atoi(a[0]), atoi(a[1]));
+			X.sync(g_dpy, False);
+			C.stage = 1;
+			return 1;
+		}
+		if (C.stage == 1 && pointer_wait()) return 1;
 		for (int i = 0; i <= twice; i++) button(b, 1), button(b, 0);
 		X.sync(g_dpy, False);
-		reply_fmt("ok click %d %d%s frame %d", g_ptr_x, g_ptr_y, twice ? " double" : "", g_frame_no);
+		reply_fmt("ok click %d %d%s frame %d waited %d", g_ptr_x, g_ptr_y, twice ? " double" : "", g_frame_no, C.frames);
 	} else if (!strcmp(verb, "wheel") || !strcmp(verb, "scroll")) {
 		// wheel NOTCHES [X Y]: > 0 away from the user (zoom in); a notch a frame (UpdateZoom
 		// takes a frame's last notch only)
@@ -3231,6 +3273,28 @@ static void view_game(void *gs) {
 	}
 }
 
+// `hover`: the galaxy view's hover state, what a right click there acts on (docs/windows/fleet.md
+// "Right click"; CFleet::PerformAction takes the system from CInGameIdler::GetGalacticObjectUnderMouse,
+// the ref cached at idler +0xaa4 by UpdateInternal's FindGalacticObjectUnderMouse each frame): the
+// cached ref, the GUI's mouse position for collisions (CGuiGraphics +0x84/+0x88 times +0x358/
+// +0x35c; the CGuiGraphics at *(idler +0xe8) +0x58), the view (+0x48c, -1 galaxy), the camera's
+// rotating flag (+0x484) and FindGalacticObjectUnderMouse called now.
+static void hover_cmd(void) {
+	char *idler = *(char **)a_g_CurrentInGameIdler;
+	if (!idler) {
+		reply_fmt("error hover: not in game");
+		return;
+	}
+	char *gui = *(char **)(*(char **)(idler + 0xe8) + 0x58);
+	float mx = *(float *)(gui + 0x84), my = *(float *)(gui + 0x88);
+	float sx = *(float *)(gui + 0x358), sy = *(float *)(gui + 0x35c);
+	uint32_t cached = *(uint32_t *)(idler + 0xaa4), closest = *(uint32_t *)(idler + 0xaa8);
+	uint32_t now = ((uint32_t (*)(void *))a_FindGalacticObjectUnderMouse)(idler);
+	reply_fmt("ok hover cached %u (index %u) now %u (index %u) closest %u gui_mouse %.1f %.1f scale %.3f %.3f view %d rotating %d",
+		cached, cached & 0xffffff, now, now & 0xffffff, closest & 0xffffff, mx, my, sx, sy,
+		I32(idler + 0x48c), U8(idler + 0x484));
+}
+
 static void view_command(void *gs) {
 	char verb[64] = "", arg[960] = "";
 	sscanf(C.line, "%63s %959[^\n]", verb, arg);
@@ -3409,6 +3473,8 @@ static void view_command(void *gs) {
 		g_frame_now = 0;
 	} else if (!strcmp(verb, "state")) {
 		state_json(gs, arg);
+	} else if (!strcmp(verb, "hover")) {
+		hover_cmd();
 	} else if (!strcmp(verb, "open_view")) {
 		open_view_cmd(arg);
 	} else {

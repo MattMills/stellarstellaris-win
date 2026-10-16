@@ -443,16 +443,16 @@ local function on_system(fids, target, mods, player)
             end
             if unsurveyed then menu[#menu + 1] = entry("FLEETORDER_SURVEY_ALL_BUTTON", run_of("survey_system", fids, sid)) end
         elseif single and class == CLASS.constructor then
-            -- (with intel on the system [V]; a class listed when a body is, possible when one is:
-            -- its cost that body's [I])
+            -- (with intel on the system [V]; a class listed when a body could take it, surveyed
+            -- or not, possible when one can now; the cost only then: CalcCost over the bodies that
+            -- can [V: the game's frame, an unsurveyed system: "Build Mining Stations" and "Build
+            -- Starbase (Outpost)" crossed, no cost])
             local listed, can = {}, {}
             for _, b in ipairs(system_bodies(sid)) do
-                if surveyed(player, b) then
-                    for _, c in ipairs({ STATION.mining, STATION.research, STATION.observation, STATION.starbase }) do
-                        if station_listed(player, b, c, sid) then
-                            listed[c] = listed[c] or b
-                            if not can[c] and station_possible(player, b, c, station_cost(player, b, c)) then can[c] = b end
-                        end
+                for _, c in ipairs({ STATION.mining, STATION.research, STATION.observation, STATION.starbase }) do
+                    if station_listed(player, b, c, sid) then
+                        listed[c] = listed[c] or b
+                        if not can[c] and surveyed(player, b) and station_possible(player, b, c, station_cost(player, b, c)) then can[c] = b end
                     end
                 end
             end
@@ -461,7 +461,7 @@ local function on_system(fids, target, mods, player)
                 if b then
                     menu[#menu + 1] = entry("FLEETORDER_MULTI_BUILD_CURRENT_" .. STATION_TOKEN[c] .. "_BUTTON",
                         c == STATION.starbase and run_of("build", fids, b, c) or run_of("build", fids, nil, c, sid),
-                        { cost = station_cost(player, b, c), possible = can[c] ~= nil })
+                        { cost = can[c] and station_cost(player, b, c) or nil, possible = can[c] ~= nil })
                 end
             end
         elseif not single and class == CLASS.science then

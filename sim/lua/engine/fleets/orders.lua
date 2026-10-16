@@ -1007,7 +1007,18 @@ function orders.survey_system(fid, system, opts)
     end
     local here = coord(world.field(mm_of(f), "coordinate"))
     local x, y = 0, 0
-    if here and here.origin == system then x, y = here.x, here.y end
+    if here and here.origin == system then
+        x, y = here.x, here.y
+    elseif here then
+        -- from outside: where the fleet will come in (CFTLJump::CalcFTLEnterSystemPoint,
+        -- engine.fleets.path.enter_point) [V: the game's queue from the galaxy view starts with
+        -- Toarus I, the body nearest the hyperlane's entry from Ithni Zerak, not the star]
+        local okp, path = pcall(require, "engine.fleets.path")
+        if okp and path.enter_point then
+            local ok, e = pcall(path.enter_point, path.coord(path.raw(here.x), path.raw(here.y), here.origin), system)
+            if ok and e then x, y = e.x / ONE, e.y / ONE end
+        end
+    end
     local n = 0
     while #left > 0 do
         local best, bd

@@ -389,9 +389,23 @@ A fix in engine.fleets.orders came out of these runs: a move from another system
 0.6 short of its point (an orbit slot), so a survey or an orbit given from another system never
 finished. The move's last leg is now given again inside the system.
 
-Galaxy-view right clicks could not be reproduced in the headless game: none opened a menu or gave
-an order there, whatever the point (on the star, beside it, its label). The harness's pointer
-probably never reaches the game's hover cache. The renderer's galaxy menus follow the RE.
+Galaxy view, compared with the game (2210.01.01, the same right clicks on Toarus's and Runa's
+stars):
+- science ship: "Move Here / Survey System"; Survey System from there: "Surveying Toarus I: 0%
+  (+5 Orders)". From outside, the survey queue starts with the body nearest where the fleet will
+  come in (engine.fleets.path.enter_point, CFTLJump::CalcFTLEnterSystemPoint), not the star;
+- construction ship on an unsurveyed system: "Move Here / Build Mining Stations / Build Starbase
+  (Outpost)", both crossed and with no cost (the classes the bodies could take, surveyed or not;
+  the cost only over those that can be built now);
+- Typhoon on Runa: a direct order, "Moving to the Runa System".
+Both the game's and the renderer's windows show these. The game's second order line ("Moving to
+the Toarus System", "Estimated Arrival Date") and its route line on the map are not done.
+
+These runs needed the harness to reach the game's hover state. The game's hit tests read the GUI's
+pointer copy, which it refreshes only when it draws, and the headless game draws far fewer frames
+than it updates: a right click right after the pointer's move found no system. `click` now waits
+until the game has drawn the pointer (headless/README.md, "The pointer's hit tests"), and `hover`
+shows the state.
 
 ## 7. Not done yet
 
