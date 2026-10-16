@@ -739,8 +739,19 @@ E.city = function(ctx, b, st, R, d, W, o)
                 end
             end)
     else
-        local rooms = { "default_room", "personality_hegemonic_imperialists_room", "personality_federation_builders_room",
-            "personality_democratic_crusaders_room", "personality_evangelizing_zealots_room", "personality_migrating_flock_room" }
+        -- the rooms the room selector offers in the game setup (gfx/portraits/asset_selectors/
+        -- room_textures.txt `room_selector = { game_setup = { "room" = { trigger } } }`)
+        local rooms = {}
+        local source = require("stellar.script.source")
+        local sel = C.raw_field(source.parse(ctx.game_dir, "gfx/portraits/asset_selectors/room_textures.txt") or {}, "room_selector")
+        for _, e in ipairs(type(C.raw_field(sel, "game_setup")) == "table" and C.raw_field(sel, "game_setup") or {}) do
+            if e.op and e.key and rules.trigger(R, type(e.value) == "table" and not e.value.text and e.value or nil, rules.config(R, d)) then
+                rooms[#rooms + 1] = (e.key.text:gsub('"', ""))
+            end
+        end
+        if #rooms == 0 then
+            rooms = { "default_room" }
+        end
         grid_entries(b, FILE, "diplomacy_room_entry", r, W .. "/rooms_window/rooms_grid", #rooms, "/rooms",
             function(i, E_)
                 return {
