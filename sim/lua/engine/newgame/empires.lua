@@ -383,8 +383,7 @@ end
 
 -- InitEmpireSystems (0x984eb0): ReorderPlayerLocations, then each empire's home system queued with
 -- its initializer (the design's, else GetRandomFromList over usage = empire_init with the
--- generator's stream), its context (the ideal planet class; a draw of the generator's stream for
--- the ideal design class) and a scope (a draw of the global stream); one InitializeQueue for all:
+-- generator's stream), its context (the ideal planet class) and a scope (a draw of the global stream); one InitializeQueue for all:
 -- the empires' systems first, then their neighbours layer by layer
 function empires.init_systems(ctx, inputs, G, game)
     local homes = {}
@@ -408,7 +407,8 @@ function empires.init_systems(ctx, inputs, G, game)
                     or "random_empire_init_01"
             end
             systems.class_check(ctx, game, e.initializer)
-            G:int()
+            -- no draw of the generator here (measured: InitEmpireSystems draws G only in
+            -- ReorderPlayerLocations and GetRandomFromList before the queue)
             game.global:int()
             if e.system_name then
                 sys.name = e.system_name

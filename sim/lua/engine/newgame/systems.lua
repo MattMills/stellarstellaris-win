@@ -625,7 +625,7 @@ local function entries(ctx, block, file, moon_key)
                 out[#out + 1] = {
                     block = b, file = file, class = field(b, "class"), count = field(b, "count"),
                     orbit_distance = field(b, "orbit_distance"), orbit_angle = field(b, "orbit_angle"),
-                    size = field(b, "size"), has_ring = field(b, "has_ring"), home = field(b, "home_planet") == "yes",
+                    size = field(b, "size"), has_ring = field(b, "has_ring"), home = field(b, "home_planet") == "yes" or field(b, "starting_planet") == "yes",
                     moon = k == "moon",
                 }
             elseif k == "change_orbit" then

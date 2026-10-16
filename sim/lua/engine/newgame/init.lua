@@ -225,7 +225,38 @@ function newgame.generate(fs, settings)
         local t = RUST.clock()
         local p = r.draws
         local gp = global.draws
+        -- NEWGAME_TRACE=STEP (NEWGAME_TRACE_OUT=FILE): every draw of the generator (G) and of the
+        -- global stream (C) in that step, with the Lua line that made it, to set beside the game's
+        -- (headless with gdb, docs/newgame.md 8.1)
+        local trace = os.getenv and os.getenv("NEWGAME_TRACE")
+        local tf
+        if trace == name then
+            tf = io.open(os.getenv("NEWGAME_TRACE_OUT") or "newgame_trace.txt", "w")
+            local function where()
+                local out = {}
+                for lv = 3, 7 do
+                    local info = debug.getinfo(lv, "Sl")
+                    if not info then break end
+                    out[#out + 1] = info.short_src:match("[^/]*$") .. ":" .. info.currentline
+                end
+                return table.concat(out, " < ")
+            end
+            r.int = function(self)
+                local v = getmetatable(self).__index.int(self)
+                tf:write("G ", self.draws, " ", v, " ", where(), "\n")
+                return v
+            end
+            global.int = function(self)
+                local v = getmetatable(self).__index.int(self)
+                tf:write("C ", self.draws, " ", v, " ", where(), "\n")
+                return v
+            end
+        end
         f()
+        if tf then
+            tf:close()
+            r.int, global.int = nil, nil
+        end
         game.steps[#game.steps + 1] = string.format("%s %.2fs %d draws (global %d)", name, RUST.clock() - t, r.draws - p, global.draws - gp)
     end
     local ctx
