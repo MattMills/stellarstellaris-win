@@ -76,11 +76,25 @@ generated empires' starbase stations get their level's design this way too.
 | `assign_leader` | a planet's or colony's governor (`location = { type = planet id = <colony> }`), a fleet's leader [V] | one |
 | `set_policy` | CCountry::ChangePolicy 0x2399b40: the entry's option (`date` only with cooldown); a change: on_disabled / on_enabled (a draw each when non-empty), on_policy_changed (one draw) [V] | as listed |
 | `add_council_agenda_progress` | the government's council_agenda_progress, floored at 0 [V] | none |
+| `unlock_council_slots` | CUnlockCouncilSlot 0x3715700: with Galactic Paragons only, the government's `unlocked_civic_council_slots` (+0x88) raised [V] | none |
+| `set_council_position_to_council` | CSetCouncilPositionToCouncil 0x3715bf0: CUnlockCouncilPositionCommand when valid (picked types below the unlocked slots, the type not picked), PickCouncilorType 0x1c13f70: a position (`council_positions = { council_positions = { <id> = { country type leader } } }`) in the government's `council_positions` and the type in `picked_council_types` [V; the civic check not modelled] | none |
+| `set_council_position` | CSetCouncilPosition 0x37b32f0 (a leader): seated in its owner's position of the type (CLeaderLocation::SetLeader: the position's `leader`, the leader's `council_location = { type = council_position assignment = none id position = 0 }`) [V] | one, on_leader_assigned |
 
 A new country's policies (CCountry::InitializePolicy 0x23999f0): for each policy group it has no
 entry of, the potential and valid option with the highest ai_weight (the first of equals), no
 draw; its on_enabled [V]. When the game first runs this for a new country is not traced: the
 start script does it with the ruler, before the empire's on_actions [I].
+
+A new country's council (CCountry::InitFromDesign -> CGovernment::DetermineCouncilorTypes
+0x1c13780): every councilor type in the database's order whose `possible` holds and whose
+`optional` does not (an empty `optional` holds) gets a position, its type picked. A regular
+empire's research, defense and state positions are optional only with Galactic Paragons
+(`has_paragon_dlc`); without it they are made here (the 2200.01.11 save's `picked_council_types =
+{ councilor_research councilor_defense councilor_state }`, `unlocked_civic_council_slots = 0`),
+with it game_start.72 unlocks a slot and picks each. At the end of InitEmpireShared (0x262a605)
+each position takes the first of the country's leaders not on the council (the ruler left out
+[I]) whose `is_leader_possible` holds; game_start.72 then seats a scientist, a commander and an
+official (or creates them) in positions still empty [V].
 
 ## Countries and species
 
@@ -116,6 +130,11 @@ start script does it with the ruler, before the empire's on_actions [I].
 gives it), the ruler (CCountry::CreateRulerFromDesign: an official [I]), the policies, the starbase
 station's design; the capital colony emptied of the generator's stand-in pops and given to
 empire_init_capital_colony as its planet (the simulation's colony scope), from = the founder species.
+With the ruler, the council's positions (above). After empire_init_add_technologies, the research
+options (InitEmpireShared 0x2629c76: CTechnologyStatus::UpdateAllTechAlternatives(false), the
+three areas topped up by engine.research's weighted draws), so a new game shows them at day 0 as
+the game's does (its day0.gamestate has `alternatives`); after the three on_actions, the council
+filled (above).
 
 ## Checks
 

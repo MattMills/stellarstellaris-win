@@ -261,6 +261,31 @@ The tabs swap `tab_X` / `tab_X_active` and the two windows (`view_set:tab=crisis
   requirement and its `allow` holds, its `on_unlock`, the perks' modifiers, the objectives'
   rewards); the tooltips.
 
+## A new game's research
+
+A new game (New Game, Select, Play, or the `newgame` command) is paused at its first day, so the
+research view must show what the game's start makes, not what the simulation's first day adds:
+
+- **The options**: InitEmpireShared runs CTechnologyStatus::UpdateAllTechAlternatives(false)
+  right after the on_action empire_init_add_technologies (0x2629c76); the start script now does
+  the same (engine/newgame/init.lua), so each area offers its three technologies at 2200.01.01.
+  Before, `alternatives` came only with the first day's top-up (area_day), and Select Research
+  opened an empty list.
+- **The head of research and the -25%**: the area's percentage is the research speed; without a
+  leader in a research position (NDefines TECH_RESEARCH_NO_LEADER_PENALTY, -0.25) it falls by
+  25%. A new game had no council positions at all; now CGovernment::DetermineCouncilorTypes makes
+  them with the country, InitEmpireShared's end seats leaders, and game_start.72's effects
+  (`unlock_council_slots`, `set_council_position_to_council`, `set_council_position`) are modelled
+  (docs/script_objects.md "Leaders and policies"). The UNE start: Head of Research seated, +2%
+  (councilor_research's all_technology_research_speed 0.02 x level 1) in each area.
+- The head of research's name and title show on the card; the portrait picture is a 3D portrait
+  (CPortraitObject), which no view of the renderer draws yet.
+
+Checked: `newgame scenario=tiny seed=1`, the view opened at 2200.01.01 without a day passed (Wu
+Cheng, +2%, Engineering offering Rare Crystal Mining, Weather Control Systems, Improved Corvette
+Hulls); and in a real window: New Game, Select, Play (medium galaxy), the research icon,
+Engineering's Select Research (Palash Patil, +2%, three options).
+
 ## Checked against the game's frames
 
 `headless/view.sh` and `stellar-render` with the same commands (1600x900; the renderer with

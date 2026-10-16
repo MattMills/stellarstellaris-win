@@ -478,4 +478,225 @@ function leaders.initialize_policies(country)
     return n
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- the council (CGovernment's council positions; CCouncilPosition in the save's
+-- `council_positions = { council_positions = { <id> = { country type leader } } }`, the
+-- government's `council_positions = { <ids> }` and `picked_council_types = { <types> }`,
+-- `unlocked_civic_council_slots` (+0x88, CGovernment::WriteMembers 0x1c10570) [V])
+
+local council = {}
+leaders.council = council
+
+-- the positions' store, made as the save has it (inside its `council_positions` wrapper) when a
+-- generated game has none yet
+local function position_store()
+    if world.store_blocks.council_positions then return true end
+    local tree = world.tree
+    if not tree then return false end
+    local inner = {}
+    tree[#tree + 1] = { key = { text = "council_positions" }, op = "=", value = {
+        { key = { text = "council_positions" }, op = "=", value = inner } } }
+    world.stores.council_positions, world.ids.council_positions, world.entries.council_positions = {}, {}, {}
+    world.store_blocks.council_positions = inner
+    return true
+end
+
+local function government(c)
+    local g = world.field(c, "government")
+    return type(g) == "table" and g or nil
+end
+
+local function list_block(g, key)
+    local b = world.field(g, key)
+    if type(b) ~= "table" then b = world.child(g, key) end
+    return b
+end
+
+-- council.positions(country) -> the ids of the government's council positions, in order
+function council.positions(country)
+    local c = world.object("country", country)
+    local g = c and government(c)
+    local out = {}
+    for _, v in ipairs(world.list(g and world.field(g, "council_positions"))) do
+        local id = tonumber(v)
+        if id then out[#out + 1] = id end
+    end
+    return out
+end
+
+-- CGameState::CreateCouncilPosition (0x1b489b0) and the government's two arrays (the position,
+-- the picked type): CGovernment::DetermineCouncilorTypes and PickCouncilorType (0x1c13f70) do both
+local function add_position(country, ctype)
+    local c = world.object("country", country)
+    local g = c and government(c)
+    if not g or not position_store() then return nil end
+    local b = {}
+    world.append(b, "country", country)
+    world.append(b, "type", ctype, true)
+    local id = objects.create("council_positions", b)
+    world.append_value(list_block(g, "council_positions"), id)
+    world.append_value(list_block(g, "picked_council_types"), ctype, true)
+    return id
+end
+
+local function holds(country, block, key, default)
+    local tb = block and defs.field(block, key)
+    if type(tb) ~= "table" then return default end
+    local eval = package.loaded["simscript.eval"]
+    if not eval then return default end
+    local ok, r = pcall(eval.trigger, tb, eval.new_ctx(eval.S("country", country)))
+    return ok and r and true or false
+end
+
+-- council.determine(country): CGovernment::DetermineCouncilorTypes (0x1c13780, from
+-- CCountry::InitFromDesign and SetGovernmentAndCivics): the council cleared, then every councilor
+-- type in the database's order whose `possible` holds and whose `optional` does not (an empty
+-- trigger holds: a type without `optional` is optional) gets a position. With Galactic Paragons the
+-- three regular positions are optional (`has_paragon_dlc`): game_start.72 picks them [V]
+function council.determine(country)
+    local c = world.object("country", country)
+    local g = c and government(c)
+    if not g then return 0 end
+    for _, id in ipairs(council.positions(country)) do
+        world.remove("council_positions", id)
+    end
+    world.replace(list_block(g, "council_positions"), {})
+    world.replace(list_block(g, "picked_council_types"), {})
+    local n = 0
+    for _, d in ipairs(objects.ordered("common/governments/councilors")) do
+        local b = d[2].block
+        if holds(country, b, "possible", true) and not holds(country, b, "optional", true) then
+            if add_position(country, d[1]) then n = n + 1 end
+        end
+    end
+    return n
+end
+
+-- the unlocked slots (CGovernment +0x88, `unlocked_civic_council_slots`)
+local function unlocked(g)
+    return tonumber(world.field(g, "unlocked_civic_council_slots")) or 0
+end
+
+-- unlock_council_slots = N (CUnlockCouncilSlot::ExecuteActual 0x3715700): with the Galactic
+-- Paragons DLC only, CGovernment::AddUnlockedCouncilSlots (+0x88 += N) [V]
+function systems.effects.unlock_council_slots(t)
+    local c = world.object("country", t.id)
+    local g = c and government(c)
+    if not g then return skipped("unlock_council_slots", "no government") end
+    if not t.paragons then return applied("unlock_council_slots", "no Galactic Paragons") end
+    world.set(g, "unlocked_civic_council_slots", unlocked(g) + (t.amount or 0))
+    return applied("unlock_council_slots")
+end
+
+-- set_council_position_to_council = <type> (CSetCouncilPositionToCouncil 0x3715bf0): a
+-- CUnlockCouncilPositionCommand run when valid (IsValid 0x22a7190: a slot to pick,
+-- HasAvailableCouncilorSlotPick: picked types < unlocked slots; the type not picked yet), Execute:
+-- PickCouncilorType [V; the civic's check not modelled]
+function systems.effects.set_council_position_to_council(t)
+    local c = world.object("country", t.id)
+    local g = c and government(c)
+    if not g or not defs.get("common/governments/councilors", t.ctype) then
+        return skipped("set_council_position_to_council", "no government or type")
+    end
+    local picked = world.list(world.field(g, "picked_council_types"))
+    for _, p in ipairs(picked) do
+        if unq(p) == t.ctype then return applied("set_council_position_to_council", "picked") end
+    end
+    if #picked >= unlocked(g) then return applied("set_council_position_to_council", "no slot") end
+    add_position(t.id, t.ctype)
+    return applied("set_council_position_to_council")
+end
+
+-- council.seat(position, leader): CLeaderLocation::SetLeader (0x1d3c760) on a council position:
+-- the position's `leader`, the leader's `council_location = { type = council_position
+-- assignment = none id position = 0 }` (a previous holder's taken off), one draw and
+-- on_leader_assigned (as the fleet's) [V for the form: the 2200.01.11 save]
+function council.seat(pid, lid)
+    local p = world.object("council_positions", pid)
+    local l = world.object("leaders", lid)
+    if not p or not l then return false end
+    local old = tonumber(world.field(p, "leader"))
+    if old and old ~= lid and old ~= NO_ID then
+        local ol = world.object("leaders", old)
+        local e = ol and world.entry(ol, "council_location")
+        if e then world.remove_entry(ol, e) end
+    end
+    world.set(p, "leader", lid)
+    local loc = {}
+    world.append(loc, "type", "council_position")
+    world.append(loc, "assignment", "none")
+    world.append(loc, "id", pid)
+    world.append(loc, "position", 0)
+    local e = world.entry(l, "council_location")
+    if e then
+        world.set_entry(l, e, loc)
+    else
+        local pos = #l + 1
+        for i, x in ipairs(l) do
+            if x.op and x.key and (x.key.text == "location" or x.key.text == "tier") then pos = i + 1 end
+        end
+        world.insert(l, pos, "council_location", loc)
+    end
+    local eval = package.loaded["simscript.eval"]
+    draw()
+    if eval then objects.on_action("on_leader_assigned", eval.S("leader", lid), nil) end
+    return true
+end
+
+-- set_council_position = <type> (CSetCouncilPosition 0x37b32f0, a leader): the leader seated in
+-- its owner's position of that type
+function systems.effects.set_council_position(t)
+    local l = world.object("leaders", t.leader)
+    local country = l and tonumber(world.field(l, "country"))
+    if not country then return skipped("set_council_position", "no leader") end
+    for _, pid in ipairs(council.positions(country)) do
+        local p = world.object("council_positions", pid)
+        if p and world.field(p, "type") == t.ctype then
+            council.seat(pid, t.leader)
+            return applied("set_council_position")
+        end
+    end
+    return skipped("set_council_position", "no position " .. tostring(t.ctype))
+end
+
+-- council.fill(country): the end of InitEmpireShared (0x262a605): when the country can change its
+-- councilors (CGameRules::CanCountryChangeCouncilors), each position in order takes the first of
+-- the country's leaders (owned_leaders' order) not on the council for whom the type's
+-- `is_leader_possible` holds (CCouncilPosition::IsLeaderPossible) [V; the rule's trigger: leaders.lua]
+function council.fill(country)
+    local c = world.object("country", country)
+    if not c then return 0 end
+    local okl, L = pcall(require, "engine.leaders")
+    if okl and type(L) == "table" and L.can_change_councilors and not L.can_change_councilors(country) then
+        return 0
+    end
+    local eval = package.loaded["simscript.eval"]
+    local n = 0
+    for _, pid in ipairs(council.positions(country)) do
+        local p = world.object("council_positions", pid)
+        local d = p and defs.get("common/governments/councilors", world.field(p, "type") or "")
+        local held = p and tonumber(world.field(p, "leader"))
+        if d and not (held and held ~= NO_ID) then
+            for _, v in ipairs(world.list(world.field(c, "owned_leaders"))) do
+                local lid = tonumber(v)
+                local l = lid and world.object("leaders", lid)
+                if l and world.field(l, "council_location") == nil and tonumber(world.field(c, "ruler")) ~= lid then
+                    local ok = true
+                    local ip = defs.field(d.block, "is_leader_possible")
+                    if type(ip) == "table" and eval then
+                        local good, r = pcall(eval.trigger, ip, eval.new_ctx(eval.S("leader", lid)))
+                        ok = good and r and true or false
+                    end
+                    if ok then
+                        council.seat(pid, lid)
+                        n = n + 1
+                        break
+                    end
+                end
+            end
+        end
+    end
+    return n
+end
+
 return leaders

@@ -106,4 +106,24 @@ return function(eval, O)
         if ctx.this.kind ~= "country" then return end
         push({ type = "add_council_agenda_progress", id = ctx.this.id, amount = eval.value(e.value, ctx, e) or 0 })
     end
+
+    -- the council (engine/script/objects_leaders.lua): unlock_council_slots = N (a country's; the
+    -- Galactic Paragons DLC's), set_council_position_to_council = <type> (a country's),
+    -- set_council_position = <type> (a leader's)
+    EFF["unlock_council_slots"] = function(e, ctx)
+        if ctx.this.kind ~= "country" then return end
+        push({ type = "unlock_council_slots", id = ctx.this.id, amount = O.int_of(e, ctx) or 0,
+            paragons = not E.has_dlc or E.has_dlc("Galactic Paragons") })
+        sync()
+    end
+    EFF["set_council_position_to_council"] = function(e, ctx)
+        if ctx.this.kind ~= "country" or not e.value.text then return end
+        push({ type = "set_council_position_to_council", id = ctx.this.id, ctype = unq(e.value.text) })
+        sync()
+    end
+    EFF["set_council_position"] = function(e, ctx)
+        if ctx.this.kind ~= "leader" or not e.value.text then return end
+        push({ type = "set_council_position", leader = ctx.this.id, ctype = unq(e.value.text) })
+        sync()
+    end
 end

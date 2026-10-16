@@ -560,6 +560,10 @@ function newgame.start_script(game)
                 traits = rf("trait") and { { 0, rf("trait") } } or nil })
             if lid then world.set(c, "ruler", lid) end
         end
+        -- the council's positions (CCountry::InitFromDesign -> CGovernment::DetermineCouncilorTypes:
+        -- the regular empire's research, defense and state positions without Galactic Paragons;
+        -- with it game_start.72 picks them)
+        objects.leaders.council.determine(e.index)
         -- the start technologies (start_tech = yes) whose potential and starting_potential hold
         -- for the country, evaluated by the script layer: the generator's own filter only knows a
         -- few triggers (empires.lua start_techs) [I: the game's CCountry tech init order]
@@ -654,7 +658,20 @@ function newgame.start_script(game)
                 events.on_action(oa, scope, from)
             end)
             ran.on_actions = ran.on_actions + 1
+            if oa == "empire_init_add_technologies" then
+                -- the research options (InitEmpireShared 0x2629c76: after this on_action,
+                -- CTechnologyStatus::UpdateAllTechAlternatives(false): physics, society,
+                -- engineering topped up to their number, the weighted draws of engine.research)
+                guarded("tech alternatives " .. e.index, function()
+                    local research = require("engine.research")
+                    for _, area in ipairs(research.AREAS) do
+                        research.update_alternatives(e.index, area, false)
+                    end
+                end)
+            end
         end
+        -- the council filled from the country's leaders (the end of InitEmpireShared, 0x262a605)
+        guarded("council " .. e.index, function() objects.leaders.council.fill(e.index) end)
     end
     t[3] = clock()
     init_effects(split + 1, #game.init_effects)
