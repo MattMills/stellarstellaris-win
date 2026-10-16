@@ -137,10 +137,18 @@ end
 -- scenario ("tiny"), shape (the scenario's first), empires, fallen_empires, marauders, nomads,
 -- advanced_empires, num_hyperlanes, num_gateways, num_wormhole_pairs, habitability, primitive,
 -- seed (the galaxy seed, CGalaxyGenerator::Generate's; default: from the global stream as
--- GenerateNewGalaxy does), global_seed (written as random_seed), name, start_year.
+-- GenerateNewGalaxy does), global_seed (written as random_seed), name, start_year,
+-- player_design (a prescripted design's key: the player's empire), tree_only (game.tree kept, no
+-- text written: the renderer loads the tree, engine.load), progress (a function given the game's
+-- world generation progress, 0..100, as the game sets it, for its load screen:
+-- docs/windows/newgame_start.md).
 function newgame.generate(fs, settings)
     settings = settings or {}
     local t0 = RUST.clock()
+    -- SetWorldGenerationProgress (4.5.2 Linux 0x25c95d0): 5 after the name database, 10 after the
+    -- resource clusters, 17 after the empires' systems, 70 + 30 i / n through every system in
+    -- InitializeUninitializedSystems (systems.initialize_rest)
+    local progress = settings.progress or function() end
     if type(fs) == "string" then
         fs = source.filesystem(fs)
     end
@@ -175,6 +183,8 @@ function newgame.generate(fs, settings)
     step("definitions", function()
         ctx = systems.context(fs)
     end)
+    progress(5)
+    game.progress = progress
     game.ctx = ctx
     game.defines = scenario.defines(fs).NGameplay or {}
     step("parameters", function()
@@ -204,6 +214,7 @@ function newgame.generate(fs, settings)
     step("resource clusters", function()
         galaxy.resource_clusters(inputs, r, game)
     end)
+    progress(10)
     step("hyperlanes", function()
         lanes.hyperlanes(inputs, game)
     end)
@@ -211,6 +222,7 @@ function newgame.generate(fs, settings)
         empires.init_systems(ctx, inputs, r, game)
         game.init_effects_empires = #game.init_effects
     end)
+    progress(17)
     step("empires", function()
         empires.finish(ctx, inputs, r, game)
     end)
@@ -232,7 +244,11 @@ function newgame.generate(fs, settings)
     game.random_count = global.draws
     game.meta_planets = game.meta_planets or 0
     local tree = save.gamestate(game)
-    game.text = save.write(tree)
+    if settings.tree_only then
+        game.tree = tree
+    else
+        game.text = save.write(tree)
+    end
     game.meta_text = save.meta(game)
 
     -- the summary

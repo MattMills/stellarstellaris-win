@@ -400,6 +400,12 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
         if h and h < 0 then
             h = parent.h - py + h
         end
+        -- fullScreen = yes: the window is the screen's size, whatever its `size` (the load
+        -- screen's 1024 x 768 window; its status bar is centred on the screen) [I]
+        local full = field("fullScreen") or field("fullscreen")
+        if full == "yes" and CONTAINERS[kind] then
+            w, h = parent.w, parent.h
+        end
         if over_size then
             w, h = over_size[1], over_size[2]
         end

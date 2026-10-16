@@ -171,6 +171,29 @@ function world.load(text)
     if not tree then
         return nil, message
     end
+    return world.load_tree(tree, t0)
+end
+
+-- the tree's blocks made plain tables, as the parser makes them (a builder's blocks carry
+-- methods in their metatable: engine/newgame/save.lua)
+local function plain(block)
+    setmetatable(block, nil)
+    for _, e in ipairs(block) do
+        if e.op then
+            if e.value.text == nil then
+                plain(e.value)
+            end
+        elseif e.text == nil then
+            plain(e)
+        end
+    end
+end
+
+-- world.load_tree(tree) -> true: a gamestate already in pdxscript's form (a new game's,
+-- engine/newgame/save.lua), taken as is: no text written and parsed again
+function world.load_tree(tree, t0)
+    t0 = t0 or RUST.clock()
+    plain(tree)
     world.tree = tree
     for _, e in ipairs(world.find_stores(tree, add_store)) do
         world.meta[e.key.text] = e.value.text or e.value

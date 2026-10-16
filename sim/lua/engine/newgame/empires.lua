@@ -578,7 +578,21 @@ end
 function empires.designs(ctx, inputs, G, game)
     empires.context(ctx)
     local homes = game.home_systems or {}
-    local names = empires.pick_designs(ctx, G, #homes, inputs.config.player_design)
+    local player = inputs.config.player_design
+    -- the player's own design (the empire creator's: one `key = { ... }` in the form of
+    -- user_empire_designs.txt): a design beside the prescripted ones, never an AI's pick
+    local text = inputs.config.player_design_text
+    if text and text ~= "" then
+        local tree = assert(require("pdxscript").parse(text, "player_design"))
+        for _, e in ipairs(tree) do
+            if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
+                ctx.designs[e.key.text] = { name = e.key.text, block = e.value, file = "player_design" }
+                player = e.key.text
+                break
+            end
+        end
+    end
+    local names = empires.pick_designs(ctx, G, #homes, player)
     game.empires = {}
     for i = 1, #homes do
         local name = names[i] or names[(i - 1) % math.max(#names, 1) + 1]

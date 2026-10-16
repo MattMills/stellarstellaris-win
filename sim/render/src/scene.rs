@@ -1241,7 +1241,21 @@ pub fn add_gui(
     game_dir: &str,
     states: &HashMap<String, ButtonState>,
 ) {
+    // a "clip" item (sprite kind "clip") cuts the items after it to its rectangle, until one of
+    // no size: a list's rows inside its box (a smoothListbox shows the part of a row in its box)
+    let mut scissor: Option<[f32; 4]> = None;
+    let mut mark = (0, 0, 0, 0, 0);
     for item in items {
+        if let Some(r) = scissor {
+            clip_since(batches, gui, mark, r);
+        }
+        mark = (batches.len(), batches.last().map_or(0, |b| b.quads.len()), gui.sprites.len(), gui.texts.len(), gui.buttons.len());
+        if let GuiItem::Sprite { kind, x, y, w, h, .. } = item {
+            if kind == "clip" {
+                scissor = if *w > 0.0 && *h > 0.0 { Some([*x, *y, x + w, y + h]) } else { None };
+                continue;
+            }
+        }
         match item {
             GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action, tint, disabled, clip } => {
                 // a disabled button's quads greyed (map.wgsl fs_quad mode 4)
@@ -1479,6 +1493,56 @@ pub fn add_gui(
             }
         }
     }
+    if let Some(r) = scissor {
+        clip_since(batches, gui, mark, r);
+    }
+}
+
+/// The quads, placed sprites, texts and buttons added since `mark` (batches, quads of the last
+/// batch then, sprites, texts, buttons) cut to the rectangle `r` (x0 y0 x1 y1): each quad's
+/// rectangle and texture coordinates cut the same; what is wholly outside is dropped.
+fn clip_since(batches: &mut [Batch], gui: &mut Gui, mark: (usize, usize, usize, usize, usize), r: [f32; 4]) {
+    let (b0, q0, s0, t0, n0) = mark;
+    let cut = |rect: &mut [f32; 4]| -> bool {
+        let c = [rect[0].max(r[0]), rect[1].max(r[1]), rect[2].min(r[2]), rect[3].min(r[3])];
+        if c[2] <= c[0] || c[3] <= c[1] {
+            return false;
+        }
+        *rect = c;
+        true
+    };
+    for (bi, b) in batches.iter_mut().enumerate().skip(b0.saturating_sub(1)) {
+        let from = if bi + 1 == b0 { q0 } else if bi < b0 { usize::MAX } else { 0 };
+        if from >= b.quads.len() {
+            continue;
+        }
+        let mut kept = b.quads[..from].to_vec();
+        for q in &b.quads[from..] {
+            let mut q = *q;
+            let old = q.rect;
+            if q.rot != 0.0 || !cut(&mut q.rect) {
+                if q.rot != 0.0 {
+                    kept.push(q);
+                }
+                continue;
+            }
+            let (w, h) = (old[2] - old[0], old[3] - old[1]);
+            let (du, dv) = (q.uv[2] - q.uv[0], q.uv[3] - q.uv[1]);
+            if w != 0.0 && h != 0.0 {
+                q.uv = [
+                    q.uv[0] + du * (q.rect[0] - old[0]) / w,
+                    q.uv[1] + dv * (q.rect[1] - old[1]) / h,
+                    q.uv[0] + du * (q.rect[2] - old[0]) / w,
+                    q.uv[1] + dv * (q.rect[3] - old[1]) / h,
+                ];
+            }
+            kept.push(q);
+        }
+        b.quads = kept;
+    }
+    gui.sprites = std::mem::take(&mut gui.sprites).into_iter().enumerate().filter_map(|(i, mut s)| (i < s0 || cut(&mut s.rect)).then_some(s)).collect();
+    gui.texts = std::mem::take(&mut gui.texts).into_iter().enumerate().filter_map(|(i, mut t)| (i < t0 || cut(&mut t.rect)).then_some(t)).collect();
+    gui.buttons = std::mem::take(&mut gui.buttons).into_iter().enumerate().filter_map(|(i, mut b)| (i < n0 || cut(&mut b.rect)).then_some(b)).collect();
 }
 
 /// Coloured spans broken into lines no wider than `w`: at spaces (a word wider than the line

@@ -204,6 +204,8 @@ pub enum Action {
     Zoom,
     // the screens
     Back,
+    /// a screen's Return: its next or start button (the new game's screens)
+    Accept,
     ToggleGui,
     Map2D3D,
     Continue,
@@ -240,6 +242,7 @@ pub const ACTIONS: &[(Action, &str)] = &[
     (Action::DragPlane, "drag_plane"),
     (Action::Zoom, "zoom"),
     (Action::Back, "back"),
+    (Action::Accept, "accept"),
     (Action::ToggleGui, "toggle_gui"),
     (Action::Map2D3D, "map_2d_3d"),
     (Action::Continue, "continue"),
@@ -264,6 +267,8 @@ pub enum Context {
     Map,
     Menu,
     Load,
+    /// the new game's screens: empire selection, the empire creator, the galaxy settings
+    Setup,
     Any,
 }
 
@@ -374,6 +379,12 @@ map   press escape          back             [I] main_bottom.gui ESCAPE: the gam
 load  press escape          back             [R]
 map   press v               map_2d_3d        [R] the renderer's 2D map
 menu  press c               continue         [R]
+# the new game's screens (select_empire_design.gui, game_setup/setup.gui): a button's click, its
+# shortcuts, the lists' wheel
+setup click left            select           [V] a GUI button acts on the release over the button pressed
+setup press escape          back             [V] select_empire_design_view back / gamesetup_setupview back_button: shortcut ESCAPE
+setup press return          accept           [V] select_empire_design_view next / gamesetup_setupview next_button: shortcut RETURN
+setup wheel -               zoom             [V] the list under the pointer scrolls (smoothListbox)
 menu  press q               quit             [R]
 ";
 
@@ -394,6 +405,7 @@ pub fn parse_bindings(text: &str) -> Result<Vec<Binding>, String> {
             "map" => Context::Map,
             "menu" => Context::Menu,
             "load" => Context::Load,
+            "setup" => Context::Setup,
             "any" => Context::Any,
             c => return Err(err(&format!("context {c}"))),
         };

@@ -1140,7 +1140,11 @@ systems.class_check = class_check
 -- a pick that fails its roll still counts a use (RegisterUse) and the system picks again
 function systems.initialize_rest(ctx, G, game)
     local names = ctx.by_usage.misc_system_init or {}
-    for _, sys in ipairs(game.systems) do
+    local n = #game.systems
+    for i, sys in ipairs(game.systems) do
+        if game.progress then
+            game.progress(70 + math.floor(30 * (i - 1) / n))
+        end
         if not sys.initializer then
             local chosen
             for _ = 1, 10000 do
