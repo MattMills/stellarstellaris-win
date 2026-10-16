@@ -31,6 +31,7 @@ mod clock;
 mod dds;
 mod effects;
 mod engine;
+mod events;
 mod flag;
 mod math;
 mod models;

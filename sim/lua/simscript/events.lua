@@ -177,6 +177,8 @@ local function run(ev, ctx)
         local opt
         if is_human(target_country(ctx)) and not ev.hidden then
             stats.human_options = stats.human_options + 1
+            -- the renderer's event windows hear of it (render.windows.events_data)
+            if M.opened then M.opened(ev, ctx) end
             for _, o in ipairs(ev.options) do
                 if option_ok(o, ctx) then opt = o; break end
             end

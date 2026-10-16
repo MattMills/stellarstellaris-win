@@ -140,6 +140,8 @@ pub struct App {
     pub models: models::Library,
     /// what is selected on the map
     pub selected: Option<Pickable>,
+    /// the event windows and popups open (events.rs)
+    pub events: crate::events::EventsUi,
     /// the windows over the map for the selection (the outliner, an info window)
     pub overlay_items: Vec<GuiItem>,
     /// the map labels (mapicons.gui) of what the view shows
@@ -228,6 +230,7 @@ impl App {
             model: None,
             models: models::Library::default(),
             selected: None,
+            events: Default::default(),
             overlay_items: Vec::new(),
             overlay_labels: Vec::new(),
             overlay_key: None,
@@ -1253,6 +1256,13 @@ impl App {
         // the main screen's other windows under the outliner and the selection's window
         let mut items = self.main_screen_items()?;
         items.extend(layout.items);
+        // the event windows and popups, over the others (events.rs)
+        let map = self.map.as_mut().unwrap();
+        let chunk = map.galaxy.events.clone();
+        match crate::events::items(&mut self.events, &self.runtime, &self.game_dir, map.fonts.get_or_insert_with(HashMap::new), &chunk, w, h) {
+            Ok(e) => items.extend(e),
+            Err(e) => self.log.push(format!("events: {e}")),
+        }
         let map = self.map.as_mut().unwrap();
         gui::fonts(&self.runtime, &self.game_dir, &items, map.fonts.get_or_insert_with(HashMap::new))?;
         Ok(items)
@@ -1260,6 +1270,12 @@ impl App {
 
     /// The scene must be built again (the world or the view changed).
     pub fn invalidate(&mut self) {
+        self.scene = None;
+    }
+
+    /// The windows over the map must be laid out again (their state changed) and the scene built.
+    pub fn relayout(&mut self) {
+        self.overlay_key = None;
         self.scene = None;
     }
 
@@ -1527,6 +1543,11 @@ impl App {
                 let s = if action == Some("speed_up") { (s + 1).min(clock::SPEEDS) } else { s.saturating_sub(1).max(1) };
                 self.set_speed(s)?;
             }
+            // the event windows' and popups' buttons (events.rs)
+            Some(a) if crate::events::handles(a) => {
+                self.events.act(a);
+                self.relayout();
+            }
             // the selection's window closed; an outliner row selects its planet or fleet
             Some("close") => self.select(None),
             Some(a) if a.starts_with("select:") => {
@@ -1576,6 +1597,7 @@ impl App {
         self.last_system = None;
         let capital = map.galaxy.capital.and_then(|(planet, system)| map.galaxy.systems.iter().position(|s| s.id == system).map(|i| (planet, i)));
         self.selected = None;
+        self.events = Default::default();
         self.overlay_items.clear();
         self.overlay_key = None;
         self.log.push(format!(

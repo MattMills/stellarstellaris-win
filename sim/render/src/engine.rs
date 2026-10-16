@@ -378,6 +378,11 @@ impl Engine {
                 self.app.invalidate();
                 Ok(Reply::ok(format!("gui {}", if on { "on" } else { "off" })))
             }
+            "event" => {
+                // the open player events, or one's window opened (headless.c serves it too): events.rs
+                let r = crate::events::command(&mut self.app, rest)?;
+                Ok(Reply::ok(r))
+            }
             "observe" => {
                 // the game's console `observe` (headless.c serves it too): the player an observer
                 let m = self.app.map.as_mut().ok_or("no map loaded")?;
