@@ -374,6 +374,9 @@ function M.extra(ctx, items, report)
     if state.megastructure and not state.selected then
         require("render.windows.megastructure").build(ctx, tonumber(state.megastructure), items, report)
     end
+    if state.network and not state.selected then
+        require("render.windows.network").build(ctx, tonumber(state.network), items, report)
+    end
 end
 
 -- a starbase's values in one line (the command protocol's reply)

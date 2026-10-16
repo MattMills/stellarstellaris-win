@@ -40,7 +40,7 @@ function M.build(ctx, sel, e, items, report)
     local pp = W .. "/planet_view_module_spaceport_portrait"
     if e.network then
         text[pp .. "/waystation_network/waystation_network_text"] = names.format(loc, e.network)
-        actions[pp .. "/waystation_network"] = "starbase:network"
+        actions[pp .. "/waystation_network"] = "starbase:network_open:" .. tostring(e.network_id)
     else
         hide[pp .. "/waystation_network"] = true
     end

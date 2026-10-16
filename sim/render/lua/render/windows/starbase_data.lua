@@ -548,10 +548,46 @@ function M.megastructures(game_dir)
     return out
 end
 
+-- the waystation networks by id (the save's `waystation_networks`; CWaystationNetwork::WriteMembers
+-- writes `name`, `waystations` = { starbase ids } and `networks` = { connected network ids }): their
+-- stations by station fleet, the owner theirs [I]; each station's entry gets its network (no save
+-- at hand has one)
+function M.networks(starbases)
+    local galaxy = require("render.galaxy")
+    local fleet_of = {}
+    for fleet, e in pairs(starbases) do
+        fleet_of[e.id] = fleet
+    end
+    local out = {}
+    local ok, ids = pcall(world.all, "waystation_networks")
+    for _, id in ipairs(ok and ids or {}) do
+        local n = world.object("waystation_networks", id)
+        if n then
+            local e = { id = id, stations = {}, networks = {}, owner = -1 }
+            e.name = world.field(n, "name") and galaxy.name_block(world.field(n, "name")) or nil
+            for _, sb in ipairs(world.list(world.field(n, "waystations"))) do
+                local fleet = fleet_of[tonumber(sb)]
+                if fleet then
+                    e.stations[#e.stations + 1] = fleet
+                    e.owner = e.owner == -1 and starbases[fleet].owner or e.owner
+                    starbases[fleet].network, starbases[fleet].network_id = e.name or {}, id
+                end
+            end
+            for _, v in ipairs(world.list(world.field(n, "networks"))) do
+                e.networks[#e.networks + 1] = tonumber(v)
+            end
+            out[id] = e
+        end
+    end
+    return out
+end
+
 -- data.extract(game_dir) -> the chunk (Galaxy::starbases): the starbases by station fleet, the
--- megastructures by id
+-- megastructures and waystation networks by id
 function M.extract(game_dir)
-    return M.dump({ starbases = M.starbases(game_dir), megastructures = M.megastructures(game_dir) })
+    local starbases = M.starbases(game_dir)
+    local networks = M.networks(starbases)
+    return M.dump({ starbases = starbases, megastructures = M.megastructures(game_dir), networks = networks })
 end
 
 return M

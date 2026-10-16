@@ -25,6 +25,8 @@ pub struct State {
     /// the selected starbase shown in the waystation window whatever its type (`open_starbase
     /// waystation ID`, as headless.c's ShowWaystationView on any starbase)
     pub waystation: bool,
+    /// the waystation network whose window is open (its save id)
+    pub network: Option<i64>,
 }
 
 /// The starbases' chunk (render.windows.starbase_data.extract) in the world's runtime; empty when
@@ -52,6 +54,7 @@ pub fn prepare(runtime: &Runtime, galaxy: &Galaxy, state: &State, selected: bool
         t.set("megastructure", state.megastructure)?;
         t.set("selected", selected)?;
         t.set("waystation", state.waystation)?;
+        t.set("network", state.network)?;
         // the countries the player knows (communications; none: all), for the flags shown
         if let Some(c) = &galaxy.communications {
             let k = lua.create_table()?;
@@ -85,9 +88,16 @@ pub fn command(app: &mut App, args: &[&str]) -> Result<String, String> {
             return Err(format!("open_starbase: no megastructure {id}"));
         }
         app.select(None);
+        app.starbase.network = None;
         app.starbase.megastructure = Some(id);
         app.relayout();
         return Ok(format!("open_starbase megastructure {id}{} shown", if tab.is_some() { " tab" } else { "" }));
+    }
+    if kind == "network" {
+        // its window (CInGameIdler::ShowWaystationNetworkView after selecting it)
+        prepare(&app.runtime, &galaxy, &app.starbase, false)?;
+        open_network(app, id)?;
+        return Ok(format!("open_starbase network {id} shown"));
     }
     if kind != "starbase" && kind != "waystation" {
         return Err(format!("open_starbase {kind}: not done yet"));
@@ -102,6 +112,7 @@ pub fn command(app: &mut App, args: &[&str]) -> Result<String, String> {
     let fleet = *fleet.first().ok_or(format!("open_starbase: no starbase {id}"))?;
     app.select(Some(Pickable::Fleet(fleet as u32)));
     app.starbase.megastructure = None;
+    app.starbase.network = None;
     app.starbase.waystation = kind == "waystation";
     if let Some(t) = tab {
         app.starbase.tab = t;
@@ -111,12 +122,52 @@ pub fn command(app: &mut App, args: &[&str]) -> Result<String, String> {
     Ok(format!("open_starbase {kind} {id}{} shown ({summary})", if tab.is_some() { " tab" } else { "" }))
 }
 
+/// The waystation network window on network `id` (the selection's window closes).
+fn open_network(app: &mut App, id: i64) -> Result<(), String> {
+    let e: Vec<i64> = app.runtime.lua.load(format!("return require('render.windows.network').owner({id})")).eval().map_err(|e| format!("network: {e}"))?;
+    if e.is_empty() {
+        return Err(format!("open_starbase: no waystation network {id}"));
+    }
+    app.select(None);
+    app.starbase.megastructure = None;
+    app.starbase.network = Some(id);
+    app.relayout();
+    Ok(())
+}
+
 /// A click in the window (`starbase:...`): a tab, the previous or next starbase, the camera to it,
 /// its planet's window.
 pub fn act(app: &mut App, action: &str) -> Result<(), String> {
     let rest = action.strip_prefix("starbase:").unwrap_or(action);
     // the megastructure window's: closed; the camera to its system (CMegaStructureView::OnFocus [I]:
     // the system entered)
+    // the network window's: closed; another network (the waystation window's network box, a
+    // connected network's entry); the owner's networks in turn (CWaystationNetworkView::OnPrevClick
+    // / OnNextClick [I]: by id)
+    if rest == "network_close" {
+        app.starbase.network = None;
+        app.relayout();
+        return Ok(());
+    }
+    if let Some(id) = rest.strip_prefix("network_open:") {
+        let id: i64 = id.parse().map_err(|_| format!("bad action {action}"))?;
+        return open_network(app, id);
+    }
+    if rest == "network_prev" || rest == "network_next" {
+        if let Some(id) = app.starbase.network {
+            let dir = if rest == "network_next" { 1 } else { -1 };
+            let code = format!(
+                "local d = require('render.windows.starbase').data() local n = d and d.networks or {{}} local me = n[{id}] local ids = {{}} \
+                 for k, v in pairs(n) do if me and v.owner == me.owner then ids[#ids + 1] = k end end table.sort(ids) \
+                 for i, k in ipairs(ids) do if k == {id} then return {{ ids[(i - 1 + {dir}) % #ids + 1] }} end end return {{}}"
+            );
+            let next: Vec<i64> = app.runtime.lua.load(code).eval().map_err(|e| format!("network: {e}"))?;
+            if let Some(&n) = next.first() {
+                open_network(app, n)?;
+            }
+        }
+        return Ok(());
+    }
     if rest == "mega_close" {
         app.starbase.megastructure = None;
         app.relayout();
@@ -177,6 +228,19 @@ pub fn flags(runtime: &Runtime, state: &State, map: &mut Map, items: &mut [GuiIt
         for it in items.iter_mut() {
             if let GuiItem::Sprite { path, .. } = it {
                 if path.starts_with("/waystation_view/planet_view_module_spaceport_portrait/owner/flag") {
+                    map.flags(std::slice::from_mut(it), country);
+                }
+            }
+        }
+    }
+    // the network window's list: the stations' system owner and the connected networks' owner flags,
+    // the network's owner [I]
+    if let Some(id) = state.network {
+        let owner: Vec<i64> = runtime.lua.load(format!("return require('render.windows.network').owner({id})")).eval().unwrap_or_default();
+        let country = owner.first().and_then(|&o| map.galaxy.countries.iter().position(|c| c.id as i64 == o));
+        for it in items.iter_mut() {
+            if let GuiItem::Sprite { path, .. } = it {
+                if path.starts_with("/waystation_network_view/list/") && (path.ends_with("/system_owner_flag") || path.ends_with("/owner_flag")) {
                     map.flags(std::slice::from_mut(it), country);
                 }
             }
