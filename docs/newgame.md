@@ -610,6 +610,7 @@ starts: `RecalculateCachedData`; the cosmic storm names (C); the global ship des
 | `galaxy.lua` | the parameters, stars, nebulas, the galactic map's neighbours, start clusters, empire placement, resource clusters |
 | `lanes.lua` | partitions and hyperlanes (5.6, 5.7) |
 | `systems.lua` | the initializers: picks, spawn chances, trees and neighbours, star classes, planets, moons, belts, names (6.2, 6.3) |
+| `planetgen.lua` | a new planet's modifiers and deposits (6.3), with a planet-scope trigger evaluator and the MTTH |
 | `empires.lua` | designs, the empires' systems, home planets, and their objects (6.4) |
 | `save.lua` | the result in the save's form (`gamestate` and `meta`) |
 
@@ -628,7 +629,7 @@ not:
 | partitions | 5.6 **[M]** | |
 | hyperlanes | 5.7 with both global sub-streams **[M]** | `ConnectDividedEmpirePartitions` and `ConnectEmpireSystems` not done (none added a lane in the reference) |
 | resource clusters | the draws | `CFixedPoint::Atan2` (not decoded) by `math.atan2`; `GenerateResourceRegions` not done |
-| initializers | 6.2 and 6.3: picks, rolls, uses, trees, neighbours, mandatory neighbours, classes, intervals, coordinates, radii, rings | `usage_odds` modifiers whose triggers the small evaluator does not know are left out (counted in the summary); planet modifiers (one C draw, none picked); deposits (not made); `potential` of planet classes taken as passed; orbital lines |
+| initializers | 6.2 and 6.3: picks, rolls, uses, trees, neighbours, mandatory neighbours, classes, intervals, coordinates, radii, rings; planet modifiers, deposits and asteroid names as the game draws them **[M]** | `usage_odds` modifiers whose triggers the small evaluator does not know are left out (counted in the summary); `potential` of planet classes taken as passed; orbital lines; the init_effects run after, in the start script (the game runs them inside the generation) |
 | empires | the order of 6.4, the queue, the home planet pick, the designs' pool and draws **[M]** | randomized designs (a stand-in: the first unused spawnable design, no draws), species or governments; the C++ objects made directly: species, country (the technologies with `start_tech = yes`, the default stockpile), the capital colony with the default origin's pops (standing in for `game_start.12` until the engine runs it), the starbase with its station and fleet; no leader; no fallen empires, marauders or nomads |
 | script | `newgame.start_script()` runs, on the loaded world, the init_effects in order, the empire on_actions, on_game_start and on_game_start_country | most engine effects of these are not modelled by the engine yet (section 8) |
 | save | `galactic_object`, `planets`, `nebula`, `clusters`, `species_db`, `country`, `colony`, `pop_groups`, `starbase_mgr`, `ships`, `fleet`, `galaxy`, `galaxy_radius`, `flags` | the system `index` (0-63, not traced: a hash of the id); `system_initializer_counter`, `random_name_database`, deposits, leaders, sectors, `rim_galactic_objects` |
@@ -719,7 +720,8 @@ of the design validation (8.1, the fake countries) are not made by the Lua. The 
 | hyperlanes after `GenerateHyperlanes` (each system's in order, lengths, bridges) | 196 (273 lanes) | 196 |
 | hyperlanes of the day-0 gamestate | 196 | 196 |
 | the empire initializers (sol_system_initializer, ocean_paradise_start, random_empire_init_03 and _01) | 4 | 4 |
-| Sol: every planet (class, orbit, size, coordinate, moons) | 24 | 24 |
+| Sol and ocean_paradise_start: every planet (class, orbit, size, coordinate, moons) | 40 | 40 |
+| the global draws of the empires' systems, in order (each one's call site) | 333 | 1,879 (then the init_effect, 9) |
 
 The draws, per step (G the generator's stream, C the global one):
 
@@ -732,7 +734,7 @@ The draws, per step (G the generator's stream, C the global one):
 | designs (the human's, three forced) | 3 | 3 | 5,379 | 0 (put at the game's) |
 | resource clusters | 8 | 8 | 0 | 0 |
 | hyperlanes | 0 | 0 | 2 | 2 |
-| the empires' systems | 171 | 176 | 1,879 | 1,621 |
+| the empires' systems | 171 | 175 | 1,879 | 2,095 (the same for the first 333) |
 | the empires (home planets; species, country, ship designs, colony) | 4 | 4 | 66,747 | 0 |
 | fallen empires | 5 | | 0 | |
 | the other systems | 1,500 | ~1,580 | 1,475,723 | ~12,450 |
@@ -751,8 +753,9 @@ draw a lot (four planets of the reference draw 169k, 230k, 250k and 351k values,
 about 9,000 each), the rest are deposits (`CColonyCarrier::RandomizeDeposits`), planet modifiers,
 the orbit and size intervals, names and rings; the empires' C++ creation 66,747
 (`CCountry::SetDefaultShipDesigns` 65,309 for the four, the home colony and `InitEmpireShared`).
-In the empires' systems the draws part at the first planet's deposit roll: the Lua makes no
-deposits (9).
+In the empires' systems the draws are now the same, call site by call site, for the first 333
+(two whole systems: modifiers, deposits with their district caps and blocker passes, names), and
+part at the first init_effect the game runs inside the generation (9).
 
 ## 9. What differs and what is left
 
@@ -768,8 +771,10 @@ Measured against the real game (8.1), in the order the generation meets them:
   start script, and they draw: 1.2M of the reference's 1.48M, mostly a handful of planets).
   `--global-at` stands in for them between steps; inside a step (the planets' init_effects) there is
   no stand-in yet.
-- **Deposits** (`CColonyCarrier::RandomizeDeposits` `L 0x28d8e10`) are not made, so the global
-  stream parts from the game's at the first planet roll. What they are, read from the Linux build:
+- **Deposits** (`CColonyCarrier::RandomizeDeposits` `L 0x28d8e10`) are now made (`planetgen.lua`),
+  and the reference's empire systems take the game's rolls, district additions and blocker
+  re-typings draw for draw; `num_free_districts` (blockers' weights) is not evaluated (no district
+  model: the modifier is left out). What they are, read from the Linux build:
   no deposits when the `should_spawn_deposits` rule fails or the abundance is the minimum; rolls:
   colonizable `COLONY_DEPOSITS_FIXED_BASE + trunc(size * FIXED_FROM_SIZE)` (5 + size/5) plus
   `C % (COLONY_DEPOSITS_RANDOM_BASE + trunc(size * RANDOM_FROM_SIZE) + 1)` (2 + size/5), others
@@ -785,12 +790,28 @@ Measured against the real game (8.1), in the order the generation meets them:
   type (`use_for_min_max_adjustments` deposits' `district_*_max_add`) is brought between its min
   and max by removing or adding deposits (a C coin flip on ties), and blockers are re-rolled until
   `MIN_UNBLOCKED_DEPOSITS` (3) non-blockers and `MIN_BLOCKED_DEPOSITS` (1) blocker
-  (`RandomizeDepositNonBlockersOnly` / `BlockersOnly`, a coin flip on ties). The triggers they use
+  (`RandomizeDepositNonBlockersOnly` / `BlockersOnly`, a coin flip on ties). **[M]** Details found
+  against the game: the null deposit is left out for stars too (class flags `& 0x480`); a type with
+  no `drop_weight` weighs 0, a top-level `factor` is the base; the caps work on the
+  `shared_capacity_modifier` pools (melting and hollow mountains count mining's deposits, so a
+  continental world is topped up to 5 mining); the blocker pass re-types the lowest-weight blocker
+  (the highest-weight non-blocker), starting from a best weight of 0; `ClearBlockers` (a planet's
+  `deposit_blockers = none`) re-types each blocker in place; the game keeps every deposit made in
+  its database (`killed = yes` for the removed ones), so the deposit ids give the whole roll order.
+  The planet modifiers (`CPlanet::RandomizePlanetModifiers` `L 0x2a61a40`): a global draw r and
+  `GetRandomModifier(planet, r)` (`L 0x2a8f400`: a stream of its own from r, its first value the
+  scope's, its second the pick over the `spawn_chance`s), until the null modifier. The triggers they use
   are mostly planet classes (`is_planet_class` and the scripted groups `is_wet`, `is_cold`,
   `can_have_*_deposits`), `has_star_flag`, `is_inside_nebula`, `planet_size`, and for blockers
   `num_free_districts` (a district model).
-- **Names**: the star, planet, moon and asteroid names (`TakeStarName`, `GenerateNameWithGenerator`,
-  `TakeAsteroidName`, C draws) are not the game's keys yet (the Lua writes the format keys).
+- **Names**: an unnamed asteroid takes `TakeAsteroidName` (`L 0x1ee2380`: a prefix `C % n`, then a
+  postfix of that prefix's own list, swap-removed) between its orbit and its size **[M]**; an
+  empire's home system takes a star name before the design renames it. Planets' and moons' names
+  are still the Lua's format keys (no draws in the game either).
+- **The scripted init_effects run inside the generation** in the game: with the empires' systems
+  in step, the global streams part at the 334th draw of `InitEmpireSystems`, where
+  `ocean_paradise_start`'s init_effect runs `create_nebula` (a `TakeNebulaName` draw). The Lua runs
+  init_effects after the generation, in the start script.
 - **Not done** (unchanged): fallen empires, marauders, nomads, advanced empires;
   `ConnectDividedEmpirePartitions`, `ConnectEmpireSystems`, `GeneratePrecursorCivilizations`,
   `GenerateResourceRegions`, `ProcessNeighbourContact`; the resource clusters are drawn but not
