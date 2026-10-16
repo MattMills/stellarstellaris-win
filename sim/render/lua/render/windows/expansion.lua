@@ -422,8 +422,17 @@ function ex.build(game_dir, db, screen, texture_size, loc, data, state)
         local flip = key == sort and not reverse
         actions[T .. "/" .. button] = "state:sort=" .. key .. ";reverse=" .. (flip and "1" or "0")
     end
+    -- the drop-downs: opened by their arrow (state dropdown = habitability | species), closed by
+    -- a choice or the arrow again
+    local open = state.dropdown
+    for _, dd in ipairs({ "habitability", "species" }) do
+        actions[F .. "/filter_" .. dd .. "/expand_button"] = "state:dropdown=" .. (open == dd and "" or dd)
+    end
+    -- the window under its filters (laid out after the rows, so the filters and an open list are
+    -- over them, as the .gui orders them)
     local items, report = gui.layout(game_dir, db, FILE, "expansion_planner_view", screen, {
         texture_size = texture_size, loc = loc, frames = frames, actions = actions, text = texts,
+        hide = { [F] = true },
     })
     -- the rows: an expansion_target_entry each down the list, 55 apart [I: measured on the
     -- game's frame: the entry's 54 and a spacing of 1], as many as the list shows
@@ -480,6 +489,45 @@ function ex.build(game_dir, db, screen, texture_size, loc, data, state)
                 report.missing_sprites[#report.missing_sprites + 1] = "expansion_target_entry: " .. tostring(it)
             end
             y = y + 55
+        end
+    end
+    -- the filters, an open drop-down's list: an entry per choice in its gridbox (the minimum
+    -- habitability 100 80 60 40 20 0, CHabitabilityEntry; the species: All, then the
+    -- colonisers, CSpeciesEntry)
+    local fi, fr = gui.layout(game_dir, db, FILE, "expansion_planner_view", screen, {
+        texture_size = texture_size, loc = loc, frames = frames, actions = actions, text = texts,
+        only = { expansion_target_filters = true }, hide = { [V .. "/background"] = true },
+        open = (open == "habitability" or open == "species") and { [F .. "/filter_" .. open] = true } or nil,
+    })
+    gui.merge(items, report, fi, fr)
+    local grid = open and report.grids[F .. "/filter_" .. open .. "/expanded_window/gridbox"]
+    if grid then
+        local choices = {}
+        if open == "habitability" then
+            for _, n in ipairs({ 100, 80, 60, 40, 20, 0 }) do
+                choices[#choices + 1] = { text = ex.habitability_text(n), action = "state:habitability=" .. n .. ";dropdown=" }
+            end
+        else
+            choices[1] = { text = "ALL", action = "state:species=;dropdown=" }
+            for _, s in ipairs(data.species or {}) do
+                choices[#choices + 1] = { text = s.name and names.format(loc, s.name) or "", action = "state:species=" .. s.id .. ";dropdown=" }
+            end
+        end
+        local window = open == "habitability" and "expansion_planner_habitability_dropdown_entry" or "expansion_planner_dropdown_entry"
+        for i, c in ipairs(choices) do
+            local x, y = gui.grid_slot(grid, i - 1, #choices)
+            if x then
+                local prefix = F .. "/filter_" .. open .. "/expanded_window/gridbox/" .. i
+                local p = prefix .. "/" .. window
+                local ok, it, rp = pcall(gui.layout, game_dir, db, FILE, window, screen, {
+                    texture_size = texture_size, loc = loc, prefix = prefix,
+                    text = { [p .. "/text"] = c.text }, actions = { [p] = c.action },
+                    parent = { x = x, y = y, w = 0, h = 0 },
+                })
+                if ok then
+                    gui.merge(items, report, it, rp)
+                end
+            end
         end
     end
     return items, report

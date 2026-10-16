@@ -145,6 +145,7 @@ end
 --   opts.positions: element path -> { x, y } (a window at another of its places: hide_position)
 --   opts.sprites: element path -> sprite name (an icon the game sets at run time)
 --   opts.tints: element path -> { r, g, b, a } (a sprite coloured: the map labels' relation colour)
+--   opts.open: drop-down path -> true (its expanded window laid out: the drop-down clicked open)
 --   opts.disabled: element path -> true (it and its children drawn as the game draws a disabled
 --                  button: greyed)
 --   opts.parent: the rectangle the window is laid out in (else the screen)
@@ -406,10 +407,15 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                             end
                             sprite_item(path .. "/background", bs, number(get(e.value, "frame"), vars), x, y, bw, bh, button)
                         end
-                    elseif CONTAINERS[k] or ICONS[k] or TEXTS[k] or LISTS[k] then
-                        -- a drop-down's expanded window is closed until it is clicked
-                        if not (kind == "dropdownboxtype" and get(e.value, "name") == "expanded_window") then
+                    elseif CONTAINERS[k] or ICONS[k] or TEXTS[k] or LISTS[k] or k == "expandedwindow" then
+                        -- a drop-down's expanded window (expandedWindow, or a window named
+                        -- expanded_window) is closed until it is clicked: laid out (at its
+                        -- show_position) when opts.open names the drop-down
+                        local expanded = kind == "dropdownboxtype" and (k == "expandedwindow" or get(e.value, "name") == "expanded_window")
+                        if not expanded then
                             element(k, e.value, inner, path, depth + 1, vars)
+                        elseif opts.open and opts.open[path] then
+                            element("containerwindowtype", e.value, inner, path, depth + 1, vars)
                         end
                     elseif k ~= "position" and k ~= "size" and k ~= "hide_position" and k ~= "show_position"
                         and k ~= "margin" and k ~= "if_scaled_resolution" then
