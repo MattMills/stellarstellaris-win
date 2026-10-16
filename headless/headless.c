@@ -1743,6 +1743,90 @@ static void frame_cmd(const char *arg) {
 	reply_fmt("ok frame %s %d %d %.0f %d%s", arg, w, h, ms, C.frames, diff > 0.25 ? " unsettled" : "");
 }
 
+// ---------------------------------------------------------------- the planet view (open_planet)
+//
+//   open_planet ID [TAB]  CInGameIdler::ShowPlanetView(CColonyCarrier::LookupCarrierRef(planet ID),
+//                         tab 0), as the empire view's planet entry opens it
+//                         (CEmpireViewPlanetEntry::OpenPlanetView); then, a frame later, the tab's
+//                         own click handler on the view (CInGameIdler +0xb30, AccessPlanetView):
+//                         summary, management, population, armies, corporate, arkship, decisions,
+//                         designations; the reply comes a few frames later
+//   open_planet close     CPlanetView::CloseClick (the window's close button)
+// The carrier reference is a std::variant<TPdxRef<CPlanet>, TPdxRef<CShip>> passed in a register:
+// the planet's id in the low 32 bits, the alternative's index 0 in the next byte.
+
+static uintptr_t a_ShowPlanetView, a_LookupCarrierRef, a_PlanetCloseClick;
+static uintptr_t a_PlanetTabs[8];
+static const char *g_planet_tab_names[8] = {"summary", "management", "population", "armies",
+                                            "corporate", "arkship", "decisions", "designations"};
+static struct symreq g_planet_syms[] = {
+	{"_ZN12CInGameIdler14ShowPlanetViewERK14CColonyCarrier14EPlanetViewTab", &a_ShowPlanetView},
+	{"_ZN14CColonyCarrier16LookupCarrierRefESt7variantIJ7TPdxRefI7CPlanetES1_I5CShipEEE", &a_LookupCarrierRef},
+	{"_ZN11CPlanetView10CloseClickEv", &a_PlanetCloseClick},
+	{"_ZN11CPlanetView12OnSummaryTabEv", &a_PlanetTabs[0]},
+	{"_ZN11CPlanetView15OnManagementTabEv", &a_PlanetTabs[1]},
+	{"_ZN11CPlanetView15OnPopulationTabEv", &a_PlanetTabs[2]},
+	{"_ZN11CPlanetView11OnArmiesTabEv", &a_PlanetTabs[3]},
+	{"_ZN11CPlanetView14OnCorporateTabEv", &a_PlanetTabs[4]},
+	{"_ZN11CPlanetView12OnArkshipTabEv", &a_PlanetTabs[5]},
+	{"_ZN11CPlanetView14OnDecisionsTabEv", &a_PlanetTabs[6]},
+	{"_ZN11CPlanetView17OnDesignationsTabEv", &a_PlanetTabs[7]},
+	{NULL, NULL},
+};
+
+static void open_planet_cmd(void *gs, const char *arg) {
+	static int resolved;
+	if (!resolved) {
+		if (resolve(g_planet_syms) != 0) {
+			reply_fmt("error open_planet: missing symbols");
+			return;
+		}
+		resolved = 1;
+	}
+	void *idler = *(void **)a_g_CurrentInGameIdler;
+	void *view = idler ? *(void **)((char *)idler + 0xb30) : NULL;
+	int id = -1, tab = -1;
+	char name[32] = "";
+	if (!view) {
+		reply_fmt("error open_planet: no planet view");
+		return;
+	}
+	if (!strcmp(arg, "close")) {
+		if (C.stage++ == 0) ((void (*)(void *))a_PlanetCloseClick)(view);
+		else if (++C.frames >= 4) reply_fmt("ok open_planet close");
+		return;
+	}
+	if (sscanf(arg, "%d %31s", &id, name) < 1 || !planet(gs, id)) {
+		reply_fmt("error open_planet: ID [summary|management|population|armies|corporate|...] (no planet %s)", arg);
+		return;
+	}
+	if (name[0]) {
+		for (int i = 0; i < 8; i++)
+			if (!strcmp(name, g_planet_tab_names[i])) tab = i;
+		if (tab < 0) {
+			reply_fmt("error open_planet: no tab %s", name);
+			return;
+		}
+	}
+	if (C.stage == 0) {
+		void *carrier = ((void *(*)(uint64_t))a_LookupCarrierRef)((uint64_t)(uint32_t)id);
+		if (!carrier) {
+			reply_fmt("error open_planet: no colony carrier for planet %d", id);
+			return;
+		}
+		((void (*)(void *, void *, int))a_ShowPlanetView)(idler, carrier, 0);
+		C.stage = 1;
+		return;
+	}
+	if (C.stage == 1) {
+		if (tab >= 0) ((void (*)(void *))a_PlanetTabs[tab])(view);
+		C.stage = 2;
+		return;
+	}
+	if (++C.frames < 4) return;
+	reply_fmt("ok open_planet %d %s (view tab %d)", id, name[0] ? name : "", I32((char *)view + 0xc3a0));
+}
+
 static void view_game(void *gs) {
 	if (g_in_game_frames++ == 0) {
 		hlog("view: in game after %.3f s", now() - g_t0);
@@ -1871,6 +1955,8 @@ static void view_game(void *gs) {
 		frame_cmd(arg[0] ? arg : "frame.png");
 	} else if (!strcmp(verb, "state")) {
 		state_json(gs, arg);
+	} else if (!strcmp(verb, "open_planet")) {
+		open_planet_cmd(gs, arg);
 	} else {
 		reply_fmt("error unknown command %s", verb);
 	}
