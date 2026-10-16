@@ -526,8 +526,9 @@ command per line, one reply per command, sent when the command is complete (a fr
 and written before its reply), so a client scripts exact sequences. Replies: `ok ...` or `error
 ...`. `sim/render/src/engine.rs`. **The real game speaks it too**: `headless/view.sh` (section 10)
 runs the Linux 4.5.2 build with its frames drawn and serves the same commands (`load`, `pause`,
-`step`, `view`, `focus`, `camera`, `resize`, `gui`, `frame`, `state`, `quit`), so one command file
-takes the same shots of both.
+`step`, `view`, `focus`, `camera`, `resize`, `gui`, `frame`, `state`, `quit`, and the input and
+frame commands below: real key presses and mouse input by XTest, `headless/README.md`), so one
+command file takes the same shots of both, and makes the same input in both.
 
 | command | reply / effect |
 |---|---|
@@ -541,17 +542,68 @@ takes the same shots of both.
 | `focus system ID`, `focus fleet ID` | the galaxy camera over it |
 | `camera X Y Z YAW PITCH DISTANCE` | the game's camera (section 10): its target (map x = X, map y = Z), angles in degrees, the distance in map units |
 | `orbit DYAW DPITCH`, `zoom FACTOR`, `pan DX DY` | relative moves (pan in fractions of the distance) |
-| `resize W H`, `key NAME down\|up`, `mouse X Y [left\|right down\|up]`, `scroll DY` | input (`scroll`: the wheel, a zoom step a notch about the point under the mouse) |
+| `resize W H` | the size of the frames |
+| `key CHORD [down\|up\|tap]` | a key with its modifiers (`w`, `shift+up`, `ctrl+f9`, `plus`), pressed, released, or both in one frame (`tap`, the default) |
+| `hold CHORD DURATION` | pressed, DURATION's frames run, released; DURATION is frames (`30`, `30f`) or time (`500ms`, `0.5s`: that many frames of the timestep) |
+| `mouse X Y [BUTTON [down\|up]]`, `move X Y` | the pointer to the pixel; a button (`left`, `right`, `middle`) alone clicks |
+| `button BUTTON down\|up [X Y]` | a button pressed or released (at the pixel) |
+| `click X Y [BUTTON] [double]` | pressed and released there; `double`: twice in one frame (the game's double click) |
+| `wheel NOTCHES [X Y]` (`scroll`) | wheel notches, > 0 away from the user (zoom in), a notch a frame (NOTCHES - 1 frames run) |
+| `drag BUTTON X0 Y0 X1 Y1 [STEPS [FRAMES]]` | pressed at the start, FRAMES (1) frames, then STEPS (10) moves along the line in whole pixels each followed by FRAMES frames, released at the end |
+| `timestep MS`, `timestep off` | lockstep (below): frames of MS each, run only by commands; off: input acts at once, the camera jumps |
+| `tick N` (`frames N`) | N frames run |
+| `bindings` | the bindings (section 12): `ok bindings N: CONTEXT TRIGGER INPUT ACTION SOURCE; ...` |
 | `gui off\|on` | the GUI (the top bar, the outliner, a system's orbit lines) hidden or shown |
 | `observe` | the game's console `observe` (headless.c calls OnExecute_Observe: the local human gets no country): the whole galaxy known, every country's borders, flags and names, every system's label, no sectors; the renderer's from then on, after each simulated day too (the top bar and outliner stay the player's here; the game's observer has none) |
-| `frame PATH.png` | `ok frame PATH W H MS` (MS: scene, upload, GPU and read-back) |
+| `frame PATH.png` | `ok frame PATH W H MS` (MS: scene, upload, GPU and read-back); in lockstep the input given is taken and frames run until the camera arrives (at least 2: the clock's commands), as the game's `frame` waits for its picture to settle |
+| `frame PATH.png now` | the frame as it is (no frame run): the game's shows its camera as the input left it |
 | `frame -` | `ok frame - W H MS BYTES`, then the PNG's bytes |
-| `state` | JSON: screen, view, camera, date, the clock (paused, speed, loading, days run, a day's and a snapshot's ms), the selection, systems, fleets by movement state, FTL trails, size |
+| `state` | JSON: screen, view, camera, date, the clock (paused, speed, loading, days run, a day's and a snapshot's ms), the selection, the input (pointer, buttons and keys held, the held actions going on, timestep, frames run), systems, fleets by movement state, FTL trails, size |
 | `bench SECONDS [FPS]` | frames at FPS (120) drawn as a window draws them, on the commands' one thread: what they took against the frame's time (section 12; `--bench SECONDS` measures the window's own way, the app on its UI thread) |
 | `quit` | ends the server |
 
-The game's headless serves `pause` and `step` the same way; `speed`, `wait` and `select` are the
-renderer's only (headless/ is not changed).
+The game's headless serves `pause` and `step` the same way, and the input and frame commands
+(`key` ... `drag`, `timestep`, `tick`, `wait`, `frame ... now`); `speed`, `select`, `orbit`, `zoom`,
+`pan` and `bindings` are the renderer's only (on the game, input does those).
+
+**Input, exactly, on both.** The input commands are physical input (`sim/render/src/controls.rs`):
+the renderer turns them into the game's actions through its bindings (section 12), the game gets
+them as real key and mouse events from the X server (XTest) and acts on them itself. With
+`timestep MS` both run in **lockstep**: frames run only when a command runs them (`tick`, `hold`,
+`drag`, `wheel`, a settling `frame`), each of MS (the game's camera update and its idler's frame time
+are given MS; its main thread waits for the next command between frames), and input reaches the app
+as it reaches the game: given during frame f, its events are taken at the start of frame f + 1 (the
+renderer keeps them until the next frame's update has run), and the clock's keys act one frame
+later still (the game's session commands; section 12). The game holds a frame whose input has not
+all arrived yet (its SDL event watch counts them), so a command sees its frames exactly on both.
+Without a timestep the renderer takes input at once and the camera jumps (the commands before
+input existed; `wait` real time); the game runs frames on its own meanwhile.
+
+A command file for both, then, looks like this (`sim/render/tools/pair.py` runs one against both
+and puts each frame side by side; `{OUT}` is each side's folder):
+
+```
+load /opt/stellaris-saves/autosave_2210.01.01.sav
+resize 1600 900
+timestep 16.667
+hold w 30
+frame {OUT}/w_now.png now
+wheel 2 400 300
+frame {OUT}/wheel.png
+drag right 800 450 900 480 10 1
+key space
+tick 2
+state
+```
+
+```
+python3 sim/render/tools/pair.py --game 127.0.0.1:7891 --render 127.0.0.1:7892 --file CMDS OUT
+```
+
+Things to know: release keys before a settling `frame` (the game's runs 2 s of frames, a held key
+moves it all that time); input given just before a `frame ... now` reaches the game while it waits
+for its picture (give a `tick 1` first); on the game, leave a system with `key e`, not `view galaxy`
+(headless/README.md).
 
 The client `sim/render/tools/ctl.py` (standard library only) sends commands, files of commands, or
 `--get OUT.png`; `ctl.py example SAVE OUT_DIR [SYSTEM]` loads the save, takes three galaxy shots
@@ -876,6 +928,88 @@ and how the renderer does it. Checked against the game's frame after a load (`he
 the same commands: `H:\code_working\tmp_sym\render3d\parity\7_controls.png`, the game left): the
 home system at the same place and scale, the top bar's clock, the outliner.
 
+### The controls: input, bindings, actions (`sim/render/src/controls.rs`)
+
+**Physical input is kept apart from the game's actions.** The window (winit) and the command
+protocol (section 9) both make `Input`: a key pressed or released (by its place on the keyboard,
+named as a US layout's key: the X keysym name in lower case, `w`, `up`, `pageup`, `kp_plus`,
+`equal`, `shift`), a mouse button pressed or released, the pointer moved to a pixel, wheel notches.
+`Controls` keeps the input's state (keys and buttons held, the pointer, a drag, a double click
+armed) and turns it, through the **bindings**, into effects the app carries out (`App::input`,
+`App::perform`): at events, and once a frame for what the game polls (`Controls::frame`: held keys,
+drags, the wheel). The game's own input, read from the 4.5.2 Linux build **[V]**:
+
+- **Keys are SDL key codes** (`CKeyEvent` +0: the layout's code, letters lower case; +4 the
+  modifiers, Ctrl 1, Alt 2, Shift 4) **matched with their modifiers exactly** (`CKeyEvent::Is`; -1:
+  any). `+` on a US layout is Shift and `=`: the game takes `=` with or without Shift.
+- **The clock's keys act when released** (`CInGameIdler::HandleInputEvent` @0x1c85c80, single
+  player): Space (any modifiers) pauses or runs; keypad +, `=`, Shift+`=`, Shift+Up faster (while
+  the speed is 4 or less); keypad -, `-`, Shift+Down slower; `.` the next day; Home and Backspace the
+  home system; Delete the fleets' disband window; Tab (pressed) cycles the systems. They post
+  session commands, run in the next frame **[V]** (headless view mode: a key injected in frame f is
+  seen in f + 1, the clock changed in f + 2; `App`'s `ClockCommand`s do the same): the pause is the
+  clock's state negated when the key was taken (`CPauseGame(!paused)`: two Spaces in one frame pause
+  once), the speed a step each (two keypad + in one frame: 3 to 5).
+- **The camera's keys act when pressed, without modifiers** (`CGameCamera::HandleShortcutsInput`
+  @0x2e612f0): E and M enter the system under the cursor or leave the system, R turns the camera
+  back. **W A S D and the arrows** start scrolling when pressed without a modifier and go on while
+  either key of the direction is down (`UpdateScrollingMovement` @0x2e659f0: a latch, then
+  `CKeyBoard::IsKeyDown`): Shift+Up speeds up and does not scroll. **Page Up and Page Down** zoom
+  while down, any modifiers (`UpdateZoom`: KEYBOARD_ZOOM_RATE x the idler's frame time x
+  FOCUSED_ZOOM_RATE x the distance).
+- **The mouse**: a left release selects (`DoSelection`), 4 pixels or more from the press it is the
+  box selection (16 px squared, @0x1c8613f; not done here), with Alt a map ping (not done); a second
+  left press within 500 ms with no motion between is a double click (`CSdlEvents`: any motion
+  disarms it), which focuses (enters a system); a right release orders unless the camera turned
+  (not done here); the right button held turns the camera once the pointer is more than 4 pixels
+  from the press, each frame by the frame's motion x 0.004 rad (`UpdateRotation`); the middle
+  button, or left and right together, drag the plane from the press on (`UpdateDragMovement`); the
+  wheel zooms a step toward the cursor, a frame's last notch only (`UpdateZoom` @0x2e66518), and
+  with the right button held a fifth of the distance instead.
+- **Everywhere** (`CGameIdler::Idle`): Ctrl+F9 hides the GUI (`g_bNoGUI`), Ctrl+F10 locks the
+  camera, F11 a screenshot. Escape and the views' keys are the `.gui` files' `shortcut`s (Escape:
+  `button_topbar_menu` and the windows' close buttons; Home, Backspace `home_button`; F
+  `toggle_gotobox`; O the outliner; map modes Ctrl+Z ... from `common/map_modes`); the outliner's
+  tabs Ctrl+Q/W/E/R. No Q/E turning keys.
+
+**The bindings are data**: `controls::BINDINGS`, a line each (CONTEXT TRIGGER INPUT ACTION SOURCE,
+the source the game function and address with **[V]**/**[I]**, **[R]** the renderer's own: Escape
+going back selection, system, galaxy, menu; V the 2D map; C and Q on the menu); the protocol's
+`bindings` lists them, STELLAR_RENDER_BINDINGS names a file in the same format to use instead.
+Triggers: `press`, `release` (keys, `any+` for any modifiers), `hold` (latched by a press with those
+modifiers, then while down), `poll` (while down), `click`, `drag_release`, `double`, `drag` (buttons,
+`left+right` for both), `wheel`. Actions the game has that are not done here (disband, cycle
+systems, orders, box selection, ping, the camera lock, screenshots) are bound and logged.
+
+**Checked against the game** (headless view mode, the same command files, `tools/pair.py`: the files
+and each frame side by side, the game left, in `H:\code_working\tmp_sym\render3d\controls`; 2210.01.01,
+1600x900, timestep 16.667 ms; the cameras from both `state`s, map units):
+
+| input | the game | the renderer |
+|---|---|---|
+| `hold w 30` in the home system, then `state` | target z -217.053 (mid-glide) | -217.053 |
+| ... settled | -296.032 (the system's bound) | -295.924 |
+| `wheel 2 400 300`, `tick 1` | distance 1048.332 | 1048.332; the target toward the cursor 10% off (below) |
+| `drag right 800 450 900 480 10 1` | yaw -22.918, pitch 56.876 | 337.082 (the same), 56.876 |
+| `key r` | target 0, pitch 50, yaw 0, the distance kept | the same |
+| `key space`; `key kp_plus` twice in a frame; `key space` and `key shift+down` | running at frame f + 2; speed 5; paused, speed 4 | the same, at the same frames |
+| galaxy: `key e` from the system | target (117.64, 1.825, 182.37), distance 100 | the same |
+| `drag middle 800 450 700 400` | target (110.419, 185.89) | (110.426, 185.842) |
+| `drag right 800 450 1000 450`, then 120 frames | yaw -45.837, back to 0 by 0.1 rad a frame | the same |
+| `hold d 20` | target x 98.686 | 98.692 |
+| `hold pageup 20` | distance 70.699 | 70.699 |
+| `move 1 450`, 30 frames (the edge) | target x +7.8 | +9.9 (the distances differed by then: the wheel) |
+| `key ctrl+f9` | the GUI hidden | hidden |
+| `click 800 450` on the galaxy | (below) | selects system 401 |
+| `click 800 450 double` | enters system 401 | enters system 401 |
+
+**Seen, not matched yet**: the wheel's step toward the cursor in a system puts the target about 10%
+short of where the renderer puts it (the game's pick or bound in `SetTargetZoom` @0x2e66930 is not
+read); R on the galaxy puts the target at the star's height (y 1.825), the renderer at 0; after
+leaving the home system, a single left click on the galaxy (on the star or on empty space) makes
+the game enter that system in some states and select in others (`MakeSelection` and `ToggleSystem`
+read a system id at `CInGameIdler` +0xaa4; the rule is not read); the renderer selects.
+
 ### The clock (`sim/render/src/clock.rs`)
 
 - **The simulation runs on its own thread**, which owns its Lua runtime (the save with the game's
@@ -898,9 +1032,10 @@ home system at the same place and scale, the top bar's clock, the outliner.
   10.5.0.24 a day takes 0.23 to 0.55 s and a snapshot 25 to 70 ms, so Fast and Fastest run at the
   simulation's pace.
 - **Pausing keeps the speed**; the speed changes while paused. Keys (CInGameIdler::
-  HandleInputEvent): Space pauses or runs; the keypad's + and -, `+` `=` and `-`, Shift+Up and
-  Shift+Down change the speed (ModifyGameSpeed: one step, within 1..5); `.` runs one day and
-  pauses again (CJumpToNextDayCommand).
+  HandleInputEvent, when released, a frame later: the controls above): Space pauses or runs; the
+  keypad's + and -, `=` (with or without Shift) and `-`, Shift+Up and Shift+Down change the speed
+  (ModifyGameSpeed: one step, within 1..5); `.` runs one day and pauses again
+  (CJumpToNextDayCommand).
 - **The top bar** (CMainGui::UpdateTimeWindow; `lua/render/topbar.lua`): paused, `pause_bg_stop`
   (GFX_topbar_paused) and `pause_glow`; running, `pause_bg` (GFX_topbar_running);
   `start_stop_icons` frame 1 (the pause bars) or the speed + 1; `time_description` GAME_SPEED_0
@@ -1022,10 +1157,13 @@ freed when the device is polled).
 - **Scrolling**: W A S D and the arrows held, and the cursor within EDGE_SCROLLING_PIXELS (3) of
   the screen's edge (toward it from the centre), move the target at scroll_speed (50) x
   SCROLL_SPEED (0.035) x tan(FOV / 2) x the distance a second (0.55 x the distance; diagonals not
-  normalised). The middle button drags the plane: the grabbed point stays under the cursor. The
-  right button turns (ROTATION_RADIANS_PER_MOUSE_UNIT 0.004 a pixel, from 4 pixels on); on the
-  galaxy the yaw springs back to 0 once the button is up (x 0.9 a frame while a radian or more,
-  else 0.1 a frame). A left drag is the game's box selection (not done). The target is kept in the
+  normalised; the keys start it pressed without a modifier: the controls above). The middle
+  button, or left and right together, drags the plane: the grabbed point stays under the cursor.
+  The right button turns (ROTATION_RADIANS_PER_MOUSE_UNIT 0.004 a pixel, by each frame's motion,
+  once the pointer is more than 4 pixels from the press); on the galaxy the yaw springs back to 0
+  once the button is up (x 0.9 a frame while a radian or more, else 0.1 a frame; the goal's, the
+  camera following: checked frame by frame against the game). A left drag is the game's box
+  selection (not done). The target is kept in the
   galaxy's box (+-500 map units) or the system's sphere (outer radius + SYSTEM_CAMERA_RESTRICT_
   EXTRA_SPACE). Shortcuts: R turns the camera back, E and M enter the system under the cursor or
   go between system and galaxy, Home and Backspace go to the capital's system.
@@ -1198,7 +1336,11 @@ freed when the device is polled).
   layouts overlap until each window's Update rules (which children show) are read.
 - Box selection, right-click orders; the camera's slide between systems, the system camera's
   near and far planes, the zoom on a focused object (CalcMinZoom).
-- The headless game has no `speed`, `wait` or `select` (headless/ is not changed here).
+- The headless game has no `speed` or `select` commands (input does those there: the keys, a
+  click); the game's selection is not in its `state`.
+- Bound but not done: disband, cycling the systems (Tab), orders (a right click), box selection,
+  the map ping, the camera lock, screenshots, the control groups (the digits), the `.gui`
+  shortcuts of the views (F, O, the map modes).
 
 ## Open questions
 
