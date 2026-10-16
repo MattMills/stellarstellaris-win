@@ -653,6 +653,18 @@ local function si(v)
 end
 M.si = si
 
+-- SI_NUMBER "$VALUE|1*$" (GetFormattedMilitaryPower): one decimal from 1000 on, cut [V]
+local function si1(v)
+    local a = math.abs(v)
+    local s = v < 0 and "-" or ""
+    if a < 1000 then
+        return s .. tostring(math.floor(a))
+    elseif a < 1000000 then
+        return s .. string.format("%.1fK", math.floor(a / 100) / 10)
+    end
+    return s .. string.format("%.1fM", math.floor(a / 100000) / 10)
+end
+
 -- a list's height: its items' summed, `spacing` between each two (the tab's list: -1; a group's
 -- inner list gives none and its rows come 42 apart in the game's frame, 41 high: 1 [I, measured])
 local TAB_SPACING, INNER_SPACING = -1, 1
@@ -681,9 +693,22 @@ local function group_height(g, collapsed)
 end
 
 -- the groups of a tab from the view (empty ones left out: COutlinerListViewBase::InternalUpdate)
-local function tab_groups(view, tab)
+-- `shows`: how often the tab has been shown; all but Politics sort their groups equal, so the
+-- merge sort reverses the list each time (SortedMerge, on each show): reverse enum order the
+-- first time, enum order the second ... [V for the sort; the flip seen in the game's frames:
+-- Overview after Ships shows Sectors first]
+local function tab_groups(view, tab, shows)
     local out = {}
+    local names = {}
     for _, name in ipairs(TAB_GROUPS[tab] or {}) do
+        names[#names + 1] = name
+    end
+    if tab ~= 2 and (shows or 1) % 2 == 0 then
+        for i = 1, math.floor(#names / 2) do
+            names[i], names[#names + 1 - i] = names[#names + 1 - i], names[i]
+        end
+    end
+    for _, name in ipairs(names) do
         local g = (view.groups or {})[name]
         if g and ((g.rows and #g.rows > 0) or (g.children and #g.children > 0)) then
             out[#out + 1] = {
@@ -888,7 +913,7 @@ function M.layout(ctx, data, items, report)
     end
 
     -- the tab's window and its groups (an observer has no country: its tabs are empty)
-    local groups = observe and {} or tab_groups(view, tab)
+    local groups = observe and {} or tab_groups(view, tab, (state.shows or {})[tab])
     local hs = {}
     for _, g in ipairs(groups) do
         hs[#hs + 1] = group_height(g, collapsed)
@@ -1003,7 +1028,7 @@ M.rows.military = function(row, rp, fmt, selected)
     local power = math.floor((row.power or 0) + 0.5)
     if power > 0 then
         only.offensive_power = true
-        local v = si(power)
+        local v = si1(power)
         text[p .. "/offensive_power"] = "\194\163military_power\194\163 " .. (row.power_below and colour("R", v) or v)
     end
     -- the status grid (fleet_status_grid: x -132 y -21 from the lower right, 15 apart): repair
@@ -1036,7 +1061,7 @@ M.rows.starbase = function(row, rp, fmt, selected)
             [p .. "/name"] = fmt(row.name), [p .. "/system"] = location(row, fmt, false),
             [p .. "/starbase_type"] = row.sub or "",
             -- always yellow (MILITARY_POWER_YELLOW) [V]
-            [p .. "/military_power"] = power > 0 and ("\194\163military_power\194\163 " .. colour("Y", si(power))) or "",
+            [p .. "/military_power"] = power > 0 and ("\194\163military_power\194\163 " .. colour("Y", si1(power))) or "",
         },
         actions = { [p .. "/background"] = "select:fleet:" .. tostring(row.id) },
     }
@@ -1100,7 +1125,7 @@ M.rows.country = function(row, rp, fmt)
             [p .. "/name"] = fmt(row.name), [p .. "/alliance"] = fmt(row.alliance),
             -- economy power (COUNTRY_ECON_POWER), the fleets' power, the pops [V]
             [p .. "/might"] = "\194\163economy\194\163: " .. colour("Y", tostring(math.floor(row.economy or 0))),
-            [p .. "/fleet_power"] = "\194\163military_power\194\163 " .. colour("Y", si(math.floor((row.military or 0) + 0.5))),
+            [p .. "/fleet_power"] = "\194\163military_power\194\163 " .. colour("Y", si1(math.floor((row.military or 0) + 0.5))),
             [p .. "/pops"] = "\194\163pops\194\163: " .. tostring(math.floor(row.pops or 0)),
         },
     }
