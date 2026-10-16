@@ -20,6 +20,9 @@ local gui = require("render.gui")
 
 local trade = {}
 
+-- a view of its own, not a top bar view's token (views.rs: opened by `open_view trade`)
+trade.view = true
+
 local FILE = "interface/trade_view.gui"
 local V = "/trade_view"
 
