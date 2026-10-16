@@ -381,6 +381,7 @@ any   press f11             screenshot       [V] Idle @0x1afdcf8 (not done here)
 # the windows' close buttons); the renderer's back goes selection, system, galaxy, menu
 map   press escape          back             [I] main_bottom.gui ESCAPE: the game opens its menu window
 load  press escape          back             [R]
+load  click left            select           [V] loadgame_view.gui: a session row (select) or its Load Latest Save button acts on the release
 map   press v               map_2d_3d        [R] the renderer's 2D map
 menu  press c               continue         [R]
 menu  click left            select           [V] a GUI button acts on the release over the button pressed (CButton)

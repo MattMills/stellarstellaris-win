@@ -411,6 +411,16 @@ pub enum Res<'a> {
 }
 
 /// Every GPU resource `scene` uses, as [`Renderer::upload`] takes them.
+/// Whether an uploaded mesh is the scene's: the same one, or another read of the same part (its
+/// key names the file, the shape and the part, so the same key is the same data). The UI thread
+/// and the simulation's thread each read models (each its `models::Library`), and a scene can hold
+/// both reads of a mesh (the system's bodies and its asteroids): compared by identity alone, each
+/// replaced the other in every frame's preload and the scene was never ready (a new game's window
+/// stayed at "Loading Map Graphics").
+fn same_mesh(a: &Arc<MeshData>, b: &Arc<MeshData>) -> bool {
+    Arc::ptr_eq(a, b) || (a.key == b.key && a.vertices.len() == b.vertices.len() && a.indices.len() == b.indices.len())
+}
+
 pub fn scene_resources(scene: &Scene) -> Vec<Res<'_>> {
     let mut v = Vec::new();
     if let Some(m) = scene.maps {
@@ -956,7 +966,7 @@ impl Renderer {
     }
 
     fn mesh(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, m: &Arc<MeshData>) {
-        if self.meshes.get(&m.key).is_some_and(|g| Arc::ptr_eq(&g.source, m)) {
+        if self.meshes.get(&m.key).is_some_and(|g| same_mesh(&g.source, m)) {
             return;
         }
         let buffer = |label: &str, bytes: &[u8], usage: wgpu::BufferUsages| {
@@ -1003,7 +1013,7 @@ impl Renderer {
                     img.rgba.len()
                 }
                 Res::Mesh(m) => {
-                    if self.meshes.get(&m.key).is_some_and(|g| Arc::ptr_eq(&g.source, m)) {
+                    if self.meshes.get(&m.key).is_some_and(|g| same_mesh(&g.source, m)) {
                         continue;
                     }
                     m.vertices.len() * std::mem::size_of::<MeshVertex>() + m.indices.len() * 4
