@@ -24,13 +24,23 @@ game's code (address) or files, or measured on its frames; **[I]**: inferred.
   `lua/render/windows/NAME.lua`: `extract(game_dir)` where the galaxy is read (the simulation's
   thread, or the save's world before it runs), its data carried in the snapshot
   (`Galaxy::views`, a `views::Value` tree); `build(ctx, data, state)` on the UI thread. Buttons:
-  `view_close`, `view_set:KEY=VALUE;...` (the view's state: `select`, `researched`). Escape closes
-  the open view first (the close buttons' `shortcut = "ESCAPE"`; the GUI has the input before the
-  idler, CGameIdler::Idle).
+  `view_close`, `view_set:KEY=VALUE;...` (the view's state: `select`, `researched`). Escape (the
+  close buttons' `shortcut = "ESCAPE"`; the GUI has the input before the idler,
+  CGameIdler::Idle) closes the open view's side window first, then the view: the game's frames
+  after `key escape` with the researched window open show the window closed and the view still
+  there **[V: frames]**.
+- **Clicks** (with render-controls' real input on both, `click X Y`): the left bar's technology
+  icon (`click 15 221` at 1600x900) and traditions icon (`click 15 181`) open the views in the
+  game and in the renderer; the left bar's icons are iconTypes, which take the click when an
+  action names them (gui.lua).
 - **The left bar's icons** are inside the bar in the game's frames (their left edge at x = 5, with
   and without a view open) **[V: measured]**; the renderer had them 27 px right of that, under an
-  open view. Moved by the measurement **[I: what places them is not read]**. Not drawn: the open
-  view's button state in the bar (its icon outlined, an arrow at the bar's edge).
+  open view. Moved by the measurement **[I: what places them is not read]**. The open view's
+  button (CMainGuiLeftBarButton::Update 0x2f3add0) **[V]**: its icons' frame 2 x shown + 1 (3,
+  the outlined icon of navbar_icons_*.dds) and one more child shown, the `highlight`
+  (GFX_navbar_highlight, the arrow at the bar's edge) **[I: which members, by the frame]**. A
+  button keeps a frame the game sets (not 1) under the mouse: hover and press change only a
+  button in its first frame (scene.rs) **[V: frames]**.
 
 ## The research view (CTechnologyView)
 
@@ -79,8 +89,36 @@ decelerated, when shown **[V gui]**; the renderer draws it in place).
   GFX_technology_unknown's settings; `category_icon` its first category's icon
   (common/technology/category `icon`); `icon_frame` is never changed; `risk_icon` when HasRisk
   (drawn for `is_dangerous` **[I]**); `cost` (rows only) TECH_STARTING for a starting technology,
-  else the cost. Not drawn: the `unlocks` list (TechnologyViewAddUnlocks 0x32e2d80: the modifiers,
-  prerequisites for, components, ship sizes, ...), so the rows keep the GUI's height.
+  else the cost; the `unlocks` list (below).
+- **The unlocks** (TechnologyViewAddUnlocks 0x32e2d80; `technology_unlocks.lua`) **[V]** unless
+  marked: the list cleared, then the modifier block (one technology_view_unlock_entry, a line a
+  modifier: CPdxModifier::GetFullDescription, the name, ": ", the value coloured, a sign for a
+  positive value, a percentage x 100 with "%", at most 2 decimals and none for a whole number, cut
+  not rounded; green when good, red when not, yellow when neutral). The modifiers' flags are the
+  engine's (CPdxModifierDefinition, not in the files): here `_mult`, `_speed`, `_chance` ones are
+  percentages and costs, upkeeps and damage taken are bad **[I]**. Then the kinds in ETechUnlock
+  order: ship sizes (one TECH_UNLOCK_SHIP entry with the list, then TECH_UNLOCK_STATION for the
+  stations), planet classes, armies, edicts (`edict_KEY`), buildings, districts, policy options
+  and groups (`policy_KEY`), feature flags (the technology's `feature_flags`, `feature_FLAG`),
+  diplomatic actions, components, resources, deposit blockers, intel, megastructures (with
+  `show_prereqs`), starbase modules and buildings (TECH_UNLOCK_STARBASE / ORBITAL / ARKSHIP /
+  WAYSTATION by `starbase_type`), decisions, zones (TECH_UNLOCK_ZONE "Unlocks Specialization"),
+  then the technology's custom `prereqfor_desc` titles. What a technology unlocks is the objects
+  whose `prerequisites` name it (AND/OR recursing), and for starbase modules, buildings and zones
+  their `show_in_tech` (buildings both). A typed `prereqfor_desc` (`ship = { title desc }`)
+  replaces its kind's lines with its title; `hide_prereq_for_desc = KIND` hides a kind.
+  Components: one technology_view_unlock_entry_component per component set (TECH_UNLOCK_COMPONENT
+  with the set's key), its members' size icons (GFX_component_slot_icons, frame = the slot size +
+  1: point_defence 1, small 2, medium 3, large 4, ...; strike craft 12; a core set 11) in its box,
+  26 apart, or the single_component_icon for one member; weapons, then utilities, then strike
+  craft. Each object's `show_tech_unlock_if` is the local country's: not evaluated here, `KEY =
+  yes` is taken as false, `KEY = no` as true, a DLC check (`has_*_dlc`) as the DLC owned,
+  AND/OR/NOT/NOR combined **[I: the player's ordinary empire; the vanilla conditions name nomads,
+  bio-ships, origins]**. Entries are stacked without spacing, a text entry 16 a line **[I:
+  measured]**, a component entry 35 (18 with one member). The area card's list is not resized (its
+  66; the rest scrolls: not drawn); a row's list and bg_container grow by what passes 54 and the
+  row with them **[I: by the frames]**. Not done: lines wrapping at the desc box's 345 (they are
+  cut with " ..."), resources' and deposit blockers' icon entries, a list's partly shown last row.
 - **select_window** (UpdateSelected 0x32d7f80) **[V]**: `header` SELECT_TECHNOLOGY ("$AREA$
   Research"), `desc` SELECT_TECHNOLOGY_DESC with NUM = the alternatives' maximum (3; its lines, 17
   apart **[I: measured]**), `list` the area's `alternatives` that CanResearch, one
@@ -93,7 +131,9 @@ decelerated, when shown **[V gui]**; the renderer draws it in place).
   RESARCHED_TECHNOLOGY, the area's tab active (UpdateTabVisibility: `tab_AREA_active` shown,
   `tab_AREA` hidden), `list` the researched technologies of the area newest first, a
   `technology_view_tech_researched_entry_window` per level from the current one down (105 apart
-  **[I]**). Researched toggles it and hides select_window.
+  **[I]**). Researched toggles it and hides select_window; while it shows, Researched is active
+  (UpdatePopOutButtonStates, NGuiUtil::SetButtonActive 0x2ee8fd0: the frame 4 x active - 1, 3,
+  the orange one).
 - **The costs**: the simulation's `engine.research` cost (CTechnology::GetCost with the
   modifiers) when it runs; before, the base cost with the difficulty's scaling and the galaxy's
   setting **[I: no modifiers, no empire size penalty]**.
@@ -144,18 +184,26 @@ decelerated, when shown **[V gui]**; the renderer draws it in place).
   game's fourth, Automated Colony Ships 165/1650, is missing after the simulation's day: its
   alternatives lose the always-available technology), the researched list, the traditions view
   (300 unity, 0 months, seven empty slots, eight locked perks): the same places, texts and
-  numbers. Differences: the rows' heights and unlock lists, the portrait.
+  numbers. Differences: the portrait.
 - **A test save** (2210.01.01 with country 0 researching Blue Lasers at 412.5 and Planetary
   Unification at 1250, Expansion and Discovery adopted with three traditions, a perk):
   Blue Lasers 438/1375 (the game 437), 38 months (the game 34), +4% (the game +14%: the
   simulation's modifiers do not have Discovery's adoption bonus), Planetary Unification done in
   both; traditions 606 unity, 1 / 5 and 0 / 5, the same trees, overlays and greyed traditions.
+- **The unlock lists** (the test save: Blue Lasers' card, the engineering offers, the researched
+  physics technologies): the same lines in the same order ("Army Damage: +5%", "Unlocks
+  Component: Blue Laser" with S M L, "Unlocks Orbital Ring Module: Laser Battery", "Unlocks
+  Starbase Module: Hangar Bays", the buildings and districts of High-Energy Capacitors), the rows'
+  heights as the game's. Differences: Powered Exoskeletons' job modifier is one line ("Job
+  Efficiency for Workers & Menial Drones") where the game shows two, a long line is cut where the
+  game wraps it, the researched list's fifth row (partly visible in the game) is not drawn.
 
 ## Not done
 
-- The technologies' unlock lists and the rows' heights from them; the leader's portrait; the
+- The unlock lists' line wrapping, resource and deposit blocker entries, the modifiers' engine
+  flags; the leader's portrait; the
   research view's Policies button's view; special projects in the queues.
 - Choosing a technology, cancelling, auto research, adopting a tradition or a perk: the
   simulation has no commands for them yet (`engine.traditions.activate` exists, not wired).
 - The crisis tab, the tradition category selection dialog, the ascension perk list.
-- The open view's left bar button state; the views' slide in.
+- The views' slide in; the hover box over a left bar button.
