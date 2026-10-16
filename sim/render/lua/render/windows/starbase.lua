@@ -78,11 +78,15 @@ end
 
 -- the game's remaining days of a queue item [I]: (needed - progress) a day at a time
 -- GFX_ship_class_small's frame for a fleet: matched to the game's frame by pixels (CFleet::GetIconFrame,
--- 0x294a080, not read through): military 3, construction 2, science 1; a colony ship 6 [I]
-local CLASS_FRAME = { constructor = 2, science = 1, colonizer = 6 }
+-- 0x294a080, not read through): military 3, construction 2, science 1; GFX_ship_class_medium's
+-- in the side view's frame the same, a colony ship 14, a defense platform 27 (the frames' order
+-- is the same in both sprites [I])
+local CLASS_FRAME = { constructor = 2, science = 1, colonizer = 14, military_station_small = 27, military_station_medium = 27, military_station_large = 27 }
 
 local function days_left(q)
-    return math.max(0, math.ceil((q.needed or 0) - (q.progress or 0)))
+    -- (CalcDaysLeft: what is left over the item's speed, a day up: the game's frame shows 55 for
+    -- 60 at +10%)
+    return math.max(0, math.ceil(((q.needed or 0) - (q.progress or 0)) / math.max(q.speed or 1, 0.01) - 1e-6))
 end
 
 -- a starbase's tab: whether it can be shown (CStarbaseShipsTabController::IsEnabled:
@@ -108,17 +112,39 @@ function M.current_tab(e, state)
 end
 
 -- a list's entries (a smoothListBoxType: one under the other, `spacing` apart, as many as fit)
-local function list_entries(ctx, items, report, rect, spacing, entry_h, entries, layout_one)
+-- with a `key`, the list scrolls (the wheel over it: starbase.rs wheel; the state's `scroll`
+-- KEY=PIXELS): its area and range go in M.scroll_areas, the entries that fit at the offset are drawn
+M.scroll_areas = {}
+local function scroll_of(key)
+    for k, v in tostring((RENDER_STARBASE_STATE or {}).scroll or ""):gmatch("([^,=]+)=([^,]+)") do
+        if k == key then
+            return tonumber(v) or 0
+        end
+    end
+    return 0
+end
+M.scroll_of = scroll_of
+
+local function list_entries(ctx, items, report, rect, spacing, entry_h, entries, layout_one, key)
     if not rect then
         return
     end
-    local y = rect.y
+    local off = 0
+    if key then
+        local total = #entries * (entry_h + spacing) - spacing
+        local max = math.max(0, total - rect.h)
+        off = math.min(scroll_of(key), max)
+        M.scroll_areas[#M.scroll_areas + 1] = { key = key, x = rect.x, y = rect.y, w = rect.w, h = rect.h, max = max }
+    end
+    local y = rect.y - off
     for i, ent in ipairs(entries) do
         if y + entry_h > rect.y + rect.h + 0.5 then
             break
         end
-        local ri, rr = layout_one(i, ent, { x = rect.x, y = y, w = rect.w, h = entry_h })
-        gui.merge(items, report, ri, rr)
+        if y >= rect.y - 0.5 then
+            local ri, rr = layout_one(i, ent, { x = rect.x, y = y, w = rect.w, h = entry_h })
+            gui.merge(items, report, ri, rr)
+        end
         y = y + entry_h + spacing
     end
 end
@@ -128,7 +154,7 @@ end
 -- starbase_view_current_component_grid_entry; CStarbaseComponentGridEntry::UpdateWithData: a
 -- component's icon; an empty slot unlocked below the station's capacity (CStarbase +0x14e0, its
 -- starbase_module_capacity_add), locked from it on; the green overlay only on the slot chosen)
-local function component_grid(ctx, items, report, grid, slot, slots, capacity, parts, queue, prefix, kind)
+local function component_grid(ctx, items, report, grid, slot, slots, capacity, parts, queue, prefix, kind, chosen)
     if not grid or slots <= 0 then
         return
     end
@@ -141,7 +167,10 @@ local function component_grid(ctx, items, report, grid, slot, slots, capacity, p
         local p = by_slot[i]
         local rp = prefix .. "/" .. i
         local path = rp .. "/starbase_view_current_component_grid_entry"
-        local hide = { [path .. "/planet_view_module_spaceport_buildqueue_entry_overlay"] = true, progressbar = true }
+        local hide = { progressbar = true }
+        if chosen ~= i then
+            hide[path .. "/planet_view_module_spaceport_buildqueue_entry_overlay"] = true
+        end
         local sprites, frames = {}, {}
         if p then
             hide.locked, hide.unlocked = true, true
@@ -165,26 +194,6 @@ local function component_grid(ctx, items, report, grid, slot, slots, capacity, p
     end
 end
 
--- a progress bar as the game draws a progressbarType: its empty texture under the whole bar, its
--- full texture over the part done (stretched to it [I]: the game crops it)
-local function progress_items(ctx, items, report, sprite, rect, fraction)
-    local s = ctx.db.sprites[sprite]
-    if not s or not rect then
-        return
-    end
-    if s.texture2 then
-        items[#items + 1] = { kind = "sprite", path = rect.path .. "/empty", sprite = sprite, texture = s.texture2, sprite_kind = "spriteType",
-            frame = 1, frames = 1, x = rect.x, y = rect.y, w = rect.w, h = rect.h }
-        report.sprites = report.sprites + 1
-    end
-    local f = math.max(0, math.min(1, fraction or 0))
-    if f > 0 then
-        items[#items + 1] = { kind = "sprite", path = rect.path, sprite = sprite, texture = s.texture, sprite_kind = "spriteType",
-            frame = 1, frames = 1, x = rect.x, y = rect.y, w = rect.w * f, h = rect.h }
-        report.sprites = report.sprites + 1
-    end
-end
-
 -- a queue item's icon frame, title and name (NConstruction::ApplyConstructionItemToButton:
 -- GFX_ship_class_small at the buildable's GetBuildIconFrame; its GetGuiTitle, GetGuiName):
 -- a starbase upgrade the starbase class's frame 8 (GetShipClassIconFrameFromSize; matched to the
@@ -198,13 +207,16 @@ local function queue_texts(loc, e, q)
     if q.kind == "starbase_upgrade" then
         local nl = q.next_size or e.next_size
         return 8, L("STARBASE_UPGRADE"), fmt(loc, "STARBASE_UPGRADE_NAMED", { LEVEL = nl and L(nl) or "" })
-    elseif q.kind == "starbase_module" then
-        return 22, L("sm_" .. tostring(q.key)), ""
-    elseif q.kind == "starbase_building" then
-        return 22, L("sb_" .. tostring(q.key)), ""
+    elseif q.kind == "starbase_module" or q.kind == "starbase_building" then
+        -- (a module's and a building's names: sm_<key>; the game's frame: on both lines)
+        local name = L("sm_" .. tostring(q.key))
+        return 22, name, name
     elseif q.kind == "ship" then
+        -- (the game's frames: "Construction Ship" / "Construction Ship"; "Defense Platform" /
+        -- "Buoyant Barnacle-class")
         local design = q.design and names.format(loc, q.design) or ""
-        return CLASS_FRAME[q.key or ""] or 3, fmt(loc, "BUILDABLE_SHIP_NAME", { TYPE = design }), fmt(loc, "BUILD_SHIP", { NAME = L(q.key or "") })
+        local size = L(q.key or "")
+        return CLASS_FRAME[q.key or ""] or 3, size, q.civilian and size or fmt(loc, "BUILDABLE_SHIP_NAME", { TYPE = design })
     end
     return 1, L(tostring(q.key or "")), ""
 end
@@ -212,40 +224,42 @@ end
 -- a build queue's entries (CConstructionQueueListItem: starbase_view_build_queue_list_entry, its
 -- icon, title and name, the time while it is built (BUILD_TIME_REMAINING "£time£ $DAYS$", the days
 -- CalcDaysLeft gives: what is left at one a day [I]) or its place behind (QUEUED_NUMBER), the
--- progress bar; its priority buttons enabled when the commands are valid: up from the second, down
--- before the last, for its own)
+-- progress bar (GFX_queue_progressbar, progress_startend.shader: render.gui's startend bar at the
+-- item's progress); its priority buttons enabled when the commands are valid: up from the second,
+-- down before the last, for its own (OnPriorityUp / OnPriorityDown); the entry's cancel_button
+-- (the whole entry: OnCancel) for its own)
 local function queue_list(ctx, items, report, rect, queue, prefix, e, own)
     list_entries(ctx, items, report, rect, 3, 52, queue, function(i, q, r)
         local rp = prefix .. "/" .. i
         local path = rp .. "/starbase_view_build_queue_list_entry"
         local frame, title, sub = queue_texts(ctx.loc, e, q)
-        local disabled = {}
+        local disabled, actions = {}, {}
         if not own or i == 1 then
             disabled[path .. "/priority_upwards"] = true
+        elseif q.id then
+            actions[path .. "/priority_upwards"] = "starbase:cmd:priority:" .. q.id .. ":up"
         end
         if not own or i == #queue then
             disabled[path .. "/priority_downwards"] = true
+        elseif q.id then
+            actions[path .. "/priority_downwards"] = "starbase:cmd:priority:" .. q.id .. ":down"
+        end
+        if own and q.id then
+            actions[path .. "/cancel_button"] = "starbase:cmd:cancel:" .. q.id
         end
         local ri, rr = gui.layout(ctx.game_dir, ctx.db, FILE, "starbase_view_build_queue_list_entry", ctx.screen, {
             texture_size = ctx.texture_size, loc = ctx.loc, prefix = rp, parent = r,
-            hide = { progressbar = true },
             frames = { [path .. "/icon"] = frame },
-            disabled = disabled,
+            progress = { [path .. "/progressbar"] = (q.needed or 0) > 0 and (q.progress or 0) / q.needed or 0 },
+            disabled = disabled, actions = actions,
             text = {
                 [path .. "/title"] = title,
                 [path .. "/time"] = i == 1 and fmt(ctx.loc, "BUILD_TIME_REMAINING", { DAYS = days_left(q) }) or fmt(ctx.loc, "QUEUED_NUMBER", { NUMBER = i - 1 }),
                 [path .. "/name"] = sub,
             },
         })
-        -- the progress bar where the .gui puts it (iconType progressbar at 1, 35)
-        local bar = { path = path .. "/progressbar", x = r.x + 1, y = r.y + 35, w = 210, h = 14 }
-        local s = ctx.db.sprites.GFX_queue_progressbar
-        if s and s.size then
-            bar.w, bar.h = s.size[1], s.size[2]
-        end
-        progress_items(ctx, ri, rr, "GFX_queue_progressbar", bar, (q.needed or 0) > 0 and (q.progress or 0) / q.needed or 0)
         return ri, rr
-    end)
+    end, prefix)
 end
 
 
@@ -262,7 +276,7 @@ local function fleet_list(ctx, items, report, rect, fleets, prefix)
             text = { [path .. "/name"] = names.format(ctx.loc, f.name) },
             actions = { [path] = "select:fleet:" .. f.id },
         })
-    end)
+    end, prefix)
 end
 
 -- a modifier's icon (CModifier::InitDefinitionIcons: GFX_mod_<type>, from
@@ -344,12 +358,257 @@ function M.fleet_of(id)
     return {}
 end
 
+-- the side view (CStarbaseSideView: starbase_side_view beside the window, its entries_list): the
+-- tab's catalog (CStarbaseSideView::GetTitleString: STARBASE_DEFENSES, STARBASE_SHIPS,
+-- STARBASE_MACRO_BUILDER_ARMIES; the Command tab's after a slot is clicked: STARBASE_MODULES /
+-- STARBASE_BUILDINGS), for the player's own starbase [I]
+--   designs: a sublist header each (CBuildableShipListCivilian: OUTLINER_CIVILIAN_FLEETS [I], the
+--     game's "Utility Ships"; CBuildableShipListSubList: the size's <size>_plural), its up_arrow
+--     open, down_arrow closed (ToggleOpenStatus: `starbase:sub:KEY`), then its designs
+--     (CBuildableShipListItemBase: the class icon, the design's name (a civilian's: its size's
+--     name), AUTO_GENERATED_BEST for an auto-generated military design, the build time and the
+--     cost); a click builds it (CBuildableShipListItem::Build)
+--   a slot: its component (starbase_view_panel_current_entry, Dismantle) or the buildables
+--     (starbase_view_buildable_component_list_entry: icon, name, cost; a click queues it, greyed
+--     when `possible` fails)
+local SUBLIST_H, SHIP_H, COMPONENT_H, SPACING = 40, 48, 60, 3
+
+-- a greyed entry's text (the game's frame: its name and cost grey): in textcolor t [I]
+-- whether the owner's stockpile holds a cost (the game's frames grey what it cannot pay for) [I]
+local function affordable(cat, cost)
+    for _, c in ipairs(cost or {}) do
+        if c.value > ((cat.stock or {})[c.res] or 0) + 1e-6 then
+            return false
+        end
+    end
+    return true
+end
+
+local function grey_if(grey, text)
+    if not grey then
+        return text
+    end
+    return "\194\167t" .. tostring(text):gsub("\194\167[%a!]", "") .. "\194\167!"
+end
+local ctx_loc   -- the localisation of the layout in progress (the side view's sorting by names)
+
+-- a cost (and a time): "£alloys£ 38 £time£ 180", whole numbers half up (the game's frame: 37.5 -> 38)
+local function cost_text(cost, time)
+    local parts = {}
+    for _, c in ipairs(cost or {}) do
+        parts[#parts + 1] = "\194\163" .. c.res .. "\194\163 " .. string.format("%d", math.floor(c.value + 0.5))
+    end
+    if time then
+        parts[#parts + 1] = "\194\163time\194\163 " .. string.format("%d", time)
+    end
+    return table.concat(parts, " ")
+end
+
+-- the components a slot can take, by category (CStarbaseBuildableComponentCategoryEntry: a header
+-- each, the categories by their names, the components by their cost, then their names [I: the
+-- game's frame's order]); a closed category's components left out
+local function component_entries(out, list, kind, slot, closed, loc)
+    local by, cats = {}, {}
+    for _, c in ipairs(list or {}) do
+        if not by[c.category] then
+            by[c.category] = {}
+            cats[#cats + 1] = c.category
+        end
+        local l = by[c.category]
+        l[#l + 1] = c
+    end
+    local function L(k)
+        return loc and (loc.get(k)) or k
+    end
+    table.sort(cats, function(a, b) return L(a) < L(b) end)
+    for _, cat in ipairs(cats) do
+        local key = "cat:" .. cat
+        out[#out + 1] = { kind = "header", key = key, label = cat, open = not closed[key] }
+        if not closed[key] then
+            local l = by[cat]
+            table.sort(l, function(a, b)
+                if a.total ~= b.total then return a.total < b.total end
+                return L("sm_" .. a.key) < L("sm_" .. b.key)
+            end)
+            for _, c in ipairs(l) do
+                out[#out + 1] = { kind = "component", c = c, component = kind, slot = slot }
+            end
+        end
+    end
+end
+
+local function side_entries(e, state, tab)
+    local cat = e.catalog
+    if not cat then
+        return nil
+    end
+    local out = {}
+    local closed = {}
+    for k in tostring(state.closed or ""):gmatch("[^,]+") do
+        closed[k] = true
+    end
+    if tab == 1 or tab == 2 then
+        local list = tab == 1 and cat.defenses or cat.ships
+        local last
+        for _, d in ipairs(list or {}) do
+            local key = d.civilian and "civilian" or d.size
+            if key ~= last then
+                out[#out + 1] = { kind = "header", key = key, civilian = d.civilian, size = d.size, open = not closed[key] }
+                last = key
+            end
+            if not closed[key] then
+                out[#out + 1] = { kind = "ship", d = d }
+            end
+        end
+        return out, tab == 1 and "STARBASE_DEFENSES" or "STARBASE_SHIPS"
+    elseif tab == 3 then
+        return out, "STARBASE_MACRO_BUILDER_ARMIES"
+    end
+    -- the side view of a slot of this starbase (`FLEET:kind:N`)
+    local fleet, kind, slot = tostring(state.side or ""):match("^(%d+):(%a+):(%d+)$")
+    if not kind or tonumber(fleet) ~= e.fleet then
+        return nil
+    end
+    slot = tonumber(slot)
+    -- a filled slot: its component (Dismantle), then its replacements ("Click to see replacement
+    -- options": the game's frame lists the categories under it)
+    local parts = kind == "module" and e.modules or e.buildings
+    for _, p in ipairs(parts or {}) do
+        if p.slot == slot then
+            out[#out + 1] = { kind = "current", part = p, component = kind, slot = slot }
+        end
+    end
+    component_entries(out, kind == "module" and cat.modules or cat.buildings, kind, slot, closed, ctx_loc)
+    return out, kind == "module" and "STARBASE_MODULES" or "STARBASE_BUILDINGS"
+end
+
+local function side_view(ctx, items, report, e, state, tab, win)
+    ctx_loc = ctx.loc
+    local entries, title = side_entries(e, state, tab)
+    if not entries or not win then
+        return
+    end
+    local loc = ctx.loc
+    local S = "/starbase_side_view"
+    local wi, wr = gui.layout(ctx.game_dir, ctx.db, FILE, "starbase_side_view", ctx.screen, {
+        texture_size = ctx.texture_size, loc = loc, parent = { x = win.x, y = win.y, w = win.w, h = win.h },
+        text = { [S .. "/title"] = loc and (loc.get(title)) or title },
+        -- (the panel takes the clicks over it, as the game's windows do)
+        actions = { [S] = "starbase:none" },
+    })
+    gui.merge(items, report, wi, wr)
+    local rect = wr.rects[S .. "/entries_list"]
+    if not rect then
+        return
+    end
+    -- the rows' places: a design list's rows 8 px above the listbox's position, 3 apart (the
+    -- game's frame) [I]; a component list's categories each in a starbase_view_panel_buildables_entry
+    -- (its entries list at y 10, spacing 5): 10 px below the current component or the list's top,
+    -- their rows 5 apart (the game's frames: headers at 180, 485, 660 for a citadel's buildings)
+    local components = title == "STARBASE_MODULES" or title == "STARBASE_BUILDINGS"
+    local places, y0 = {}, components and 0 or -8
+    local started = false
+    for i, ent in ipairs(entries) do
+        local h = ent.kind == "header" and SUBLIST_H or ent.kind == "ship" and SHIP_H or ent.kind == "current" and 59 or COMPONENT_H
+        if components and ent.kind ~= "current" and not started then
+            y0, started = y0 + 10, true
+        end
+        places[i] = { y0, h }
+        y0 = y0 + h + ((components and ent.kind ~= "current") and 5 or SPACING)
+    end
+    -- the list's area and how far it scrolls (the wheel over it: starbase.rs wheel)
+    local max = math.max(0, y0 - rect.h)
+    M.scroll_areas[#M.scroll_areas + 1] = { key = "side", x = rect.x, y = rect.y, w = rect.w, h = rect.h, max = max }
+    local scroll = math.min(scroll_of("side"), max)
+    for i, ent in ipairs(entries) do
+        local y, h = rect.y + places[i][1] - scroll, places[i][2]
+        if y + h > rect.y + rect.h + 0.5 then
+            break
+        end
+        if y >= rect.y - 8.5 then
+            local rp = S .. "/entries/" .. i
+            local r = { x = rect.x, y = y, w = rect.w, h = h }
+            local name, o
+            if ent.kind == "header" then
+                name = "starbase_view_buildable_list_sublist_header"
+                local path = rp .. "/" .. name
+                local label = ent.label or (ent.civilian and "OUTLINER_CIVILIAN_FLEETS" or (ent.size .. "_plural"))
+                o = {
+                    text = { [path .. "/offset/name"] = loc and (loc.get(label)) or label },
+                    hide = { [path .. "/offset/" .. (ent.open and "down_arrow" or "up_arrow")] = true },
+                    actions = { [path .. "/offset"] = "starbase:sub:" .. ent.key },
+                }
+            elseif ent.kind == "ship" then
+                name = "starbase_view_buildable_ship_list_entry"
+                local path = rp .. "/" .. name
+                local d = ent.d
+                -- a military design's "<name>-class" (BUILDABLE_SHIP_NAME), a civilian's size name
+                local label = d.civilian and (loc and (loc.get(d.size)) or d.size)
+                    or fmt(loc, "BUILDABLE_SHIP_NAME", { TYPE = d.name and names.format(loc, d.name) or d.size })
+                local can = affordable(e.catalog, d.cost)
+                o = {
+                    disabled = (not can) and { [path] = true } or nil,
+                    frames = { [path .. "/ship_type"] = CLASS_FRAME[d.size] or (d.class == "shipclass_military_station" and 27) or 3 },
+                    text = {
+                        [path .. "/type"] = grey_if(not can, label),
+                        [path .. "/auto_gen"] = (d.auto and not d.civilian) and grey_if(not can, loc and (loc.get("AUTO_GENERATED_BEST")) or "AUTO_GENERATED_BEST") or "",
+                        [path .. "/time"] = d.days and grey_if(not can, "\194\163time\194\163 " .. string.format("%d", d.days)) or "",
+                        [path .. "/cost"] = grey_if(not can, cost_text(d.cost)),
+                    },
+                    actions = can and { [path .. "/background_offset"] = "starbase:cmd:ship:" .. e.id .. ":" .. d.design } or nil,
+                }
+            elseif ent.kind == "component" then
+                name = "starbase_view_buildable_component_list_entry"
+                local path = rp .. "/" .. name
+                local c = ent.c
+                -- a building the starbase has or has queued is greyed (one of each: the game's
+                -- frame greys a citadel's three buildings) [I]; modules repeat
+                -- (`possible` is not used: the script layer evaluates some of its scopes false, a
+                -- solar_system count among them, where the game lets them be built) [I]
+                local can = affordable(e.catalog, c.cost)
+                -- a slot with an item queued takes no other (the game's frame greys them all)
+                for _, q in ipairs(e.queue or {}) do
+                    if q.kind == "starbase_" .. ent.component and q.slot == ent.slot - 1 then can = false end
+                end
+                if ent.component == "building" then
+                    for _, b in ipairs(e.buildings or {}) do
+                        if b.key == c.key then can = false end
+                    end
+                    for _, q in ipairs(e.queue or {}) do
+                        if q.kind == "starbase_building" and q.key == c.key then can = false end
+                    end
+                end
+                o = {
+                    sprites = { [path .. "/icon"] = c.icon },
+                    frames = { [path .. "/icon"] = c.frame },
+                    text = { [path .. "/name"] = grey_if(not can, loc and (loc.get("sm_" .. c.key)) or c.key), [path .. "/cost"] = grey_if(not can, cost_text(c.cost, c.days)) },
+                    disabled = (not can) and { [path] = true } or nil,
+                    actions = can and { [path] = "starbase:cmd:" .. ent.component .. ":" .. e.id .. ":" .. (ent.slot - 1) .. ":" .. c.key } or nil,
+                }
+            else
+                name = "starbase_view_panel_current_entry"
+                local path = rp .. "/" .. name
+                o = {
+                    sprites = { [path .. "/icon"] = ent.part.icon },
+                    frames = { [path .. "/icon"] = ent.part.frame },
+                    text = { [path .. "/name"] = loc and (loc.get("sm_" .. ent.part.key)) or ent.part.key },
+                    actions = { [path .. "/dismantle"] = "starbase:dialog:dismantle_component:" .. e.id .. ":" .. ent.component .. ":" .. ent.slot },
+                }
+            end
+            o.texture_size, o.loc, o.prefix, o.parent = ctx.texture_size, loc, rp, r
+            local ri, rr = gui.layout(ctx.game_dir, ctx.db, FILE, name, ctx.screen, o)
+            gui.merge(items, report, ri, rr)
+        end
+    end
+end
+
 -- the windows of this family that are not the selection's: a megastructure's (its id in
 -- RENDER_STARBASE_STATE.megastructure; a selection replaces it, as selecting does in the game)
 function M.extra(ctx, items, report)
     local state = RENDER_STARBASE_STATE or {}
     if state.megastructure and not state.selected then
         require("render.windows.megastructure").build(ctx, tonumber(state.megastructure), items, report)
+        M.dialog(ctx, items, report, state, nil)
     end
     if state.network and not state.selected then
         require("render.windows.network").build(ctx, tonumber(state.network), items, report)
@@ -395,6 +654,7 @@ function M.queue(ctx, items, report, rect, e, own)
 end
 
 function M.build(ctx, sel, items, report)
+    M.scroll_areas = {}
     local data = M.data()
     local e = data and data.starbases and data.starbases[sel.id]
     -- a waystation's own window (CInGameIdler::ShowWaystationView: a starbase type is_waystation)
@@ -482,6 +742,8 @@ function M.build(ctx, sel, items, report)
             hide[tp .. "/upgrade_info/upgrade"] = true
         elseif not (own and e.upgrade_ok and not queued) then
             disabled[tp .. "/upgrade_info/upgrade"] = true
+        else
+            actions[tp .. "/upgrade_info/upgrade"] = "starbase:cmd:upgrade:" .. e.id
         end
         -- the dismantle button: Return (occupied), Dismantle (the lowest level), Downgrade (a level
         -- below it) [I]: the conditions' order read, the level's test not
@@ -493,6 +755,13 @@ function M.build(ctx, sel, items, report)
         -- details: CShip::CanInspectShip for the player (its own; others' not [I])
         if not own then
             disabled[tp .. "/class_info/details"] = true
+        elseif e.station_ship then
+            actions[tp .. "/class_info/details"] = "fleet:ship:" .. e.station_ship
+        end
+        -- Dismantle: its dialog (the lowest level: STARBASE_DISMANTLE_DIALOG; above it the
+        -- downgrade's) [I: the level test]
+        if own then
+            actions[tp .. "/class_info/dismantle"] = "starbase:dialog:" .. (e.next_size and e.level == "starbase_level_outpost" and "dismantle" or "downgrade") .. ":" .. e.id
         end
         -- a design's starbase (its growth stage flagged) shows its design, the others their modules
         if e.uses_design then
@@ -528,7 +797,10 @@ function M.build(ctx, sel, items, report)
         disabled[tp .. "/capacity_info/upgrade"] = true
         if not own or (e.platforms or 0) == 0 then
             disabled[tp .. "/capacity_info/disband_all"] = true
+        else
+            actions[tp .. "/capacity_info/disband_all"] = "starbase:dialog:disband_all:" .. e.id .. ":" .. (e.platforms or 0)
         end
+        actions[tp .. "/build_queue_info/open_defense_designs"] = "starbase:designer:defenses"
     elseif tab == 2 then
         -- CStarbaseShipsTabController::Update (CShipsTabControllerBase): the shipyards' count, the
         -- fleets in orbit, the build queue; the queue's title by the shipyard's kind
@@ -537,6 +809,7 @@ function M.build(ctx, sel, items, report)
         if #(e.fleets or {}) > 0 then
             hide[tp .. "/fleets_info/no_orbitals"] = true
         end
+        actions[tp .. "/build_queue_info/open_ship_designs"] = "starbase:designer:ships"
     elseif tab == 3 then
         -- CStarbaseMacroBuilderTabController::Update: the sector's planets [I]: the owner's colonies
         -- in the starbase's sector
@@ -552,20 +825,86 @@ function M.build(ctx, sel, items, report)
     local rects = wr.rects
 
     if tab == 0 then
+        local side_fleet, side_kind, side_slot = tostring(state.side or ""):match("^(%d+):(%a+):(%d+)$")
+        if tonumber(side_fleet) ~= e.fleet then side_kind = nil end
+        side_slot = tonumber(side_slot)
         if not e.uses_design then
             component_grid(ctx, items, report, rects[tp .. "/modules_info/modules_grid"], 58, e.module_slots or 0,
-                e.module_capacity or 0, e.modules or {}, e.queue, W .. "/modules", "module")
+                e.module_capacity or 0, e.modules or {}, e.queue, W .. "/modules", "module", side_kind == "module" and side_slot or nil)
         end
         component_grid(ctx, items, report, rects[tp .. "/buildings_info/buildings_grid"], 60, e.building_slots or 0,
-            e.building_capacity or 0, e.buildings or {}, e.queue, W .. "/buildings", "building")
+            e.building_capacity or 0, e.buildings or {}, e.queue, W .. "/buildings", "building", side_kind == "building" and side_slot or nil)
         queue_list(ctx, items, report, rects[tp .. "/build_queue_info/build_queue_list"], e.queue or {}, W .. "/queue", e, own)
     elseif tab == 1 then
-        queue_list(ctx, items, report, rects[tp .. "/build_queue_info/build_queue_list"], {}, W .. "/defense_queue", e, own)
+        -- the build queue, all of it (the game's frame: the upgrade shows there too), and the
+        -- platforms (CStarbaseShipItem: starbase_view_ship_list_entry, its name, details, upgrade
+        -- (CStarbase::CalcCanUpgradeDefensePlatforms not evaluated: disabled [I]), disband)
+        queue_list(ctx, items, report, rects[tp .. "/build_queue_info/build_queue_list"], e.queue or {}, W .. "/defense_queue", e, own)
+        list_entries(ctx, items, report, rects[tp .. "/defense_platforms_info/platforms_list"], 3, 52, e.platform_list or {}, function(i, p, r)
+            local rp = W .. "/platforms/" .. i
+            local path = rp .. "/starbase_view_ship_list_entry"
+            local a = { [path .. "/details"] = "fleet:ship:" .. p.id }
+            if own then
+                a[path .. "/disband"] = "starbase:dialog:disband_ship:" .. e.id .. ":" .. p.id
+            end
+            return gui.layout(ctx.game_dir, ctx.db, FILE, "starbase_view_ship_list_entry", ctx.screen, {
+                texture_size = ctx.texture_size, loc = ctx.loc, prefix = rp, parent = r,
+                text = { [path .. "/name"] = names.format(ctx.loc, p.name) },
+                disabled = { [path .. "/upgrade"] = true, [path .. "/disband"] = (not own) or nil },
+                actions = a,
+            })
+        end, W .. "/platforms")
     elseif tab == 2 then
         queue_list(ctx, items, report, rects[tp .. "/build_queue_info/build_queue_list"], e.ship_queue or {}, W .. "/ship_queue", e, own)
         fleet_list(ctx, items, report, rects[tp .. "/fleets_info/fleets_list"], e.fleets or {}, W .. "/fleets")
         modifier_grid(ctx, items, report, rects[tp .. "/modifiers_info/modifiers_grid"], e.shipyard_mods or {}, W .. "/shipyard_mods")
     end
+    if own then
+        side_view(ctx, items, report, e, state, tab, rects[W])
+    end
+    M.dialog(ctx, items, report, state, e)
+end
+
+-- the confirmation dialog of a starbase command (`state.dialog` = the command: VERB:ARG...;
+-- standard_dialog.gui `standard_dialog`, its title and text the game's: MULTIPLE_SHIPS_DISBAND_*,
+-- SHIP_DISBAND_*, STARBASE_DISMANTLE_COMPONENT_DIALOG_*, STARBASE_DISMANTLE_DIALOG_*,
+-- STARBASE_DOWNGRADE_DIALOG_*); Agree runs it (`starbase:dialog_yes`), Decline closes it
+function M.dialog(ctx, items, report, state, e)
+    local d = state.dialog
+    if not d or d == "" then
+        return
+    end
+    local loc = ctx.loc
+    local verb = d:match("^(%a[%a_]*)")
+    local args = {}
+    for a in d:gmatch("[^:]+") do
+        args[#args + 1] = a
+    end
+    local title, desc
+    if verb == "disband_all" then
+        title, desc = "MULTIPLE_SHIPS_DISBAND_TITLE", fmt(loc, "MULTIPLE_SHIPS_DISBAND_DESC", { COUNT = args[3] or 0 })
+    elseif verb == "disband_ship" then
+        title, desc = "SHIP_DISBAND_TITLE", "SHIP_DISBAND_DESC"
+    elseif verb == "dismantle_component" then
+        local key
+        for _, p in ipairs((e and (args[3] == "building" and e.buildings or e.modules)) or {}) do
+            if p.slot == tonumber(args[4]) then key = p.key end
+        end
+        title, desc = "STARBASE_DISMANTLE_COMPONENT_DIALOG_TITLE", fmt(loc, "STARBASE_DISMANTLE_COMPONENT_DIALOG_DESC", { NAME = key and (loc and (loc.get("sm_" .. key)) or key) or "" })
+    elseif verb == "dismantle" then
+        title, desc = "STARBASE_DISMANTLE_DIALOG_TITLE", "STARBASE_DISMANTLE_DIALOG_DESC"
+    elseif verb == "mega_dismantle" then
+        title, desc = "MEGASTRUCTURE_DISMANTLE_DIALOG_TITLE", "MEGASTRUCTURE_DISMANTLE_DIALOG_DESC"
+    else
+        title, desc = "STARBASE_DOWNGRADE_DIALOG_TITLE", "STARBASE_DOWNGRADE_DIALOG_DESC"
+    end
+    local P = "/standard_dialog"
+    local wi, wr = gui.layout(ctx.game_dir, ctx.db, "interface/standard_dialog.gui", "standard_dialog", ctx.screen, {
+        texture_size = ctx.texture_size, loc = loc,
+        text = { [P .. "/title"] = title, [P .. "/description"] = desc },
+        actions = { [P] = "starbase:none", [P .. "/AgreeButton"] = "starbase:dialog_yes", [P .. "/DeclineButton"] = "starbase:dialog_no" },
+    })
+    gui.merge(items, report, wi, wr)
 end
 
 return M

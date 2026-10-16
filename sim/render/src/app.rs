@@ -274,7 +274,7 @@ pub struct App {
     pub controls: Controls,
     /// the clock's commands of the input, done at the next frame ([`ClockCommand`])
     commands: Vec<ClockCommand>,
-    cursor: Option<(f32, f32)>,
+    pub cursor: Option<(f32, f32)>,
     /// where the left button went down on the map (a box selection's corner: mapicons.rs)
     pub(crate) map_press: Option<(f32, f32)>,
     last_update: Option<Instant>,
@@ -2255,6 +2255,8 @@ impl App {
             }
             // the wheel over the open view's list scrolls it (the view's own `wheel`)
             Effect::Zoom(n, _) if self.view_wheel(n) => Ok(true),
+            // the wheel over the starbase window's side view scrolls its list (starbase.rs)
+            Effect::Zoom(n, _) if crate::starbase::wheel(self, n) => Ok(true),
             Effect::Zoom(n, false) => {
                 self.wheel(n);
                 Ok(true)
@@ -2345,6 +2347,15 @@ impl App {
                     Action::Back if self.diplomacy.open.is_some() => self.act("/key/escape", Some("diplo:escape"))?,
                     // the designer's close button has the shortcut ESCAPE (ship_designer.gui)
                     Action::Back if self.designer.open => self.set_designer(Default::default()),
+                    // the starbase window's dialog, then its side view (a slot's), close before the window
+                    Action::Back if self.starbase.dialog.is_some() => {
+                        self.starbase.dialog = None;
+                        self.relayout();
+                    }
+                    Action::Back if self.selected.is_some() && self.starbase.side.is_some() => {
+                        self.starbase.side = None;
+                        self.relayout();
+                    }
                     Action::Back if self.starbase.megastructure.is_some() || self.starbase.network.is_some() => {
                         self.starbase.megastructure = None;
                         self.starbase.network = None;
