@@ -65,6 +65,13 @@ function M.build(ctx, id, items, report)
         for _, n in ipairs({ "complete", "upgrade", "dismantle" }) do
             disabled[tp .. "/" .. n] = true
         end
+    else
+        -- OnUpgrade (CCountryUpgradeMegaStructureCommand), OnDismantle (its standard_dialog),
+        -- OnAbortDismantle (CAbortDismantleMegastructureCommand): starbase_commands
+        actions[tp .. "/upgrade"] = "starbase:cmd:mega_upgrade:" .. id
+        actions[tp .. "/complete"] = "starbase:cmd:mega_upgrade:" .. id
+        actions[tp .. "/dismantle"] = "starbase:dialog:mega_dismantle:" .. id
+        actions[tp .. "/abort_dismantle"] = "starbase:cmd:mega_abort:" .. id
     end
     if e.dismantling then
         hide[tp .. "/dismantle"] = true

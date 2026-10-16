@@ -27,6 +27,35 @@ pub struct State {
     pub waystation: bool,
     /// the waystation network whose window is open (its save id)
     pub network: Option<i64>,
+    /// the Command tab's side view: the slot clicked (`module:N`, `building:N`, 1-based)
+    pub side: Option<String>,
+    /// the side view's sublists closed (CBuildableShipListSubList::ToggleOpenStatus: "civilian", a
+    /// size's key, `cat:CATEGORY`)
+    pub closed: Vec<String>,
+    /// the confirmation dialog open: the command it confirms (`VERB:ARG...`)
+    pub dialog: Option<String>,
+    /// the side view's list scrolled down by this many pixels (the wheel over it)
+    pub side_scroll: f32,
+}
+
+/// The wheel over the side view's list (its area and range from the last layout: the Lua's
+/// side_area): it scrolls, 20 pixels a notch (the game's frames); whether it took the wheel.
+pub fn wheel(app: &mut App, notches: f32) -> bool {
+    let Some((x, y)) = app.cursor else { return false };
+    if app.selected.is_none() {
+        return false;
+    }
+    let area: Vec<f32> = app.runtime.lua.load("local a = package.loaded['render.windows.starbase'] and package.loaded['render.windows.starbase'].side_area return a or {}").eval().unwrap_or_default();
+    let [ax, ay, aw, ah, max] = area[..] else { return false };
+    if x < ax || x > ax + aw || y < ay || y > ay + ah {
+        return false;
+    }
+    let s = (app.starbase.side_scroll - notches * 20.0).clamp(0.0, max.max(0.0));
+    if s != app.starbase.side_scroll {
+        app.starbase.side_scroll = s;
+        app.relayout();
+    }
+    true
 }
 
 /// The starbases' chunk (render.windows.starbase_data.extract) in the world's runtime; empty when
@@ -55,6 +84,10 @@ pub fn prepare(runtime: &Runtime, galaxy: &Galaxy, state: &State, selected: bool
         t.set("selected", selected)?;
         t.set("waystation", state.waystation)?;
         t.set("network", state.network)?;
+        t.set("side", state.side.clone())?;
+        t.set("closed", state.closed.join(","))?;
+        t.set("dialog", state.dialog.clone())?;
+        t.set("side_scroll", state.side_scroll)?;
         // the countries the player knows (communications; none: all), for the flags shown
         if let Some(c) = &galaxy.communications {
             let k = lua.create_table()?;
@@ -122,6 +155,21 @@ pub fn command(app: &mut App, args: &[&str]) -> Result<String, String> {
     Ok(format!("open_starbase {kind} {id}{} shown ({summary})", if tab.is_some() { " tab" } else { "" }))
 }
 
+/// A command of the starbase windows (`VERB:ARG:...`): render.windows.starbase_commands.run in the
+/// simulation's runtime between days (its world, definitions, economy), then a snapshot published
+/// and taken. What it did, for the log.
+fn run_command(app: &mut App, cmd: &str) -> Result<String, String> {
+    let args: Vec<String> = cmd.split(':').map(|a| format!("{a:?}")).collect();
+    let code = format!("return tostring(require('render.windows.starbase_commands').run({}))", args.join(", "));
+    let map = app.map.as_mut().ok_or("no map")?;
+    map.ready()?;
+    let clock = map.clock.as_ref().ok_or("no simulation")?;
+    let r = clock.query(&code).map_err(|e| format!("render.windows.starbase_commands: {e}"))?;
+    clock.publish(true);
+    map.sync();
+    Ok(r)
+}
+
 /// The waystation network window on network `id` (the selection's window closes).
 fn open_network(app: &mut App, id: i64) -> Result<(), String> {
     let e: Vec<i64> = app.runtime.lua.load(format!("return require('render.windows.network').owner({id})")).eval().map_err(|e| format!("network: {e}"))?;
@@ -183,13 +231,77 @@ pub fn act(app: &mut App, action: &str) -> Result<(), String> {
         }
         return Ok(());
     }
+    // a command's confirmation dialog (standard_dialog): its Agree runs it (the starbase,
+    // waystation and megastructure windows')
+    if let Some(cmd) = rest.strip_prefix("dialog:") {
+        app.starbase.dialog = Some(cmd.to_string());
+        app.relayout();
+        return Ok(());
+    }
+    if rest == "dialog_no" || rest == "none" {
+        // (the dialog's background takes a click)
+        if rest == "dialog_no" {
+            app.starbase.dialog = None;
+            app.relayout();
+        }
+        return Ok(());
+    }
+    if rest == "dialog_yes" {
+        if let Some(cmd) = app.starbase.dialog.take() {
+            let r = run_command(app, &cmd)?;
+            app.log.push(format!("starbase: {r}"));
+            if cmd.starts_with("dismantle_component") && r.starts_with("ok") {
+                app.starbase.side = None;
+            }
+        }
+        app.relayout();
+        return Ok(());
+    }
+    // the megastructure window's commands (no selection)
+    if let Some(cmd) = rest.strip_prefix("cmd:mega_") {
+        let r = run_command(app, &format!("mega_{cmd}"))?;
+        app.log.push(format!("starbase: {r}"));
+        app.relayout();
+        return Ok(());
+    }
     let Some(Pickable::Fleet(fleet)) = app.selected else { return Ok(()) };
     let query = |app: &App, f: &str| -> Result<Vec<i64>, String> {
         app.runtime.lua.load(format!("return require('render.windows.starbase').{f}")).eval::<Vec<i64>>().map_err(|e| format!("starbase: {e}"))
     };
     if let Some(t) = rest.strip_prefix("tab:") {
+        // ShowTab: the tab's own side view (the Command tab's after a slot is clicked)
         app.starbase.tab = t.parse().map_err(|_| format!("bad action {action}"))?;
+        app.starbase.side = None;
+        app.starbase.side_scroll = 0.0;
         app.relayout();
+    } else if let Some(slot) = rest.strip_prefix("slot:") {
+        // a grid slot (CStarbaseComponentGridEntry, the tab controller its observer): the side view
+        // of that slot (its component, or the buildables), the same slot again closes it [I]
+        let slot = format!("{fleet}:{slot}");
+        app.starbase.side = if app.starbase.side.as_deref() == Some(slot.as_str()) { None } else { Some(slot) };
+        app.starbase.side_scroll = 0.0;
+        app.relayout();
+    } else if let Some(key) = rest.strip_prefix("sub:") {
+        // a sublist's header: open or closed
+        let key = key.to_string();
+        if let Some(i) = app.starbase.closed.iter().position(|k| *k == key) {
+            app.starbase.closed.remove(i);
+        } else {
+            app.starbase.closed.push(key);
+        }
+        app.relayout();
+    } else if let Some(cmd) = rest.strip_prefix("cmd:") {
+        // a command (render.windows.starbase_commands) in the simulation between days, then a
+        // snapshot published and taken: the window shows the world it made
+        // (the side view stays open: the game's frame greys the slot's other choices)
+        let r = run_command(app, cmd)?;
+        app.log.push(format!("starbase: {r}"));
+        app.relayout();
+    } else if rest.starts_with("designer:") {
+        // OpenShipDesigns / OpenDefenseDesigns: the ship designer (its design list) [I: the
+        // designer opens on no design]
+        app.set_designer(crate::designer::Designer { open: true, design: None });
+
     } else if rest == "prev" || rest == "next" {
         // CStarbaseView::OnPrevStarbaseClick / OnNextStarbaseClick: the owner's starbases in turn
         let dir = if rest == "next" { 1 } else { -1 };

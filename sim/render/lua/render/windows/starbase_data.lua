@@ -36,6 +36,24 @@ local function field(block, key)
     return nil
 end
 
+-- a field that is one token or a block of them (construction_type = x / { x y })
+local function defs_list(v)
+    if type(v) == "string" then
+        return { unq(v) }
+    end
+    local out = {}
+    for _, e in ipairs(type(v) == "table" and v or {}) do
+        if e.text then
+            out[#out + 1] = unq(e.text)
+        end
+    end
+    return out
+end
+
+local function galaxy_name(block)
+    return block and require("render.galaxy").name_block(block) or nil
+end
+
 local function list_of(block)
     local out = {}
     for _, e in ipairs(type(block) == "table" and block or {}) do
@@ -179,6 +197,7 @@ local function component(game_dir, key)
 end
 
 -- the construction queue items by queue id (the store construction.item_mgr.items), in id order
+local item_id = setmetatable({}, { __mode = "k" })   -- an item's block -> its id
 local function queue_items()
     local by = {}
     local store = world.stores["construction.item_mgr.items"] or {}
@@ -189,6 +208,7 @@ local function queue_items()
             local l = by[q] or {}
             by[q] = l
             l[#l + 1] = item
+            item_id[item] = id
         end
     end
     return by
@@ -196,6 +216,7 @@ end
 
 local function queue_entry(item)
     local out = {
+        id = item_id[item],
         progress = tonumber(field(item, "progress")) or 0,
         needed = tonumber(field(item, "progress_needed")) or 0,
     }
@@ -214,8 +235,10 @@ local function queue_entry(item)
                 out.key = unq(field(b, "starbase_upgrade"))
             elseif out.kind == "starbase_module" then
                 out.key = unq(field(b, "starbase_module") or field(b, "module"))
+                out.slot = tonumber(field(b, "slot"))
             elseif out.kind == "starbase_building" then
                 out.key = unq(field(b, "starbase_building") or field(b, "building"))
+                out.slot = tonumber(field(b, "slot"))
             else
                 out.key = unq(field(b, out.kind) or "")
             end
@@ -432,6 +455,23 @@ function M.starbases(game_dir)
                     -- an upgrade's level: its ship size (the entry's "Upgrade to <size>")
                     local ql = qe.kind == "starbase_upgrade" and qe.key and levels[qe.key]
                     qe.next_size = ql and unq(field(ql.block, "ship_size")) or nil
+                    -- a ship's size civilian (its entry's second line: the size's name, else the
+                    -- design's "<name>-class")
+                    local qs = qe.kind == "ship" and sizes[qe.key or ""]
+                    qe.civilian = qs and field(qs.block, "is_civilian") == "yes" or false
+                    -- the item's speed (engine.construction.speed: the starbase's mults) for the
+                    -- days left
+                    local M = node or {}
+                    if qe.kind == "ship" then
+                        qe.speed = 1 + (M.starbase_shipyard_artificial_build_speed_mult or 0) + (M.starbase_shipyard_build_speed_mult or 0)
+                            + (M["shipsize_" .. tostring(qe.key) .. "_build_speed_mult"] or 0)
+                    elseif qe.kind == "starbase_upgrade" then
+                        qe.speed = 1 + (M.starbase_upgrade_speed_mult or 0)
+                    elseif qe.kind == "starbase_module" then
+                        qe.speed = 1 + (M.starbase_module_build_speed_mult or 0)
+                    elseif qe.kind == "starbase_building" then
+                        qe.speed = 1 + (M.starbase_building_build_speed_mult or 0)
+                    end
                     list[#list + 1] = qe
                 end
                 e[q[1]] = list
@@ -446,6 +486,16 @@ function M.starbases(game_dir)
             end
             -- the defense platforms: the station fleet's other ships [I]
             e.platforms = math.max(0, #world.list(world.field(fleet, "ships")) - 1)
+            e.station_ship = station
+            -- the defense platforms' list (the station fleet's other ships: their names)
+            e.platform_list = {}
+            for _, v in ipairs(world.list(world.field(fleet, "ships"))) do
+                local sid = tonumber(v)
+                local ps = sid and sid ~= station and world.object("ship", sid)
+                if ps then
+                    e.platform_list[#e.platform_list + 1] = { id = sid, name = galaxy.name_block(world.field(ps, "name")) }
+                end
+            end
             e.orbitals = orbitals
             e.has_sector = in_sector[e.system] or false
             e.sector_planets = sector_of[e.system] and sector_colonies[sector_of[e.system]] or 0
@@ -471,6 +521,190 @@ function M.starbases(game_dir)
             end
             out[fid] = e
         end
+    end
+    return out
+end
+
+-- the side view's catalogs (CStarbaseSideView) of a starbase, where the simulation's engine is (its
+-- definitions, economy, script layer; nil without it):
+--   ships, defenses: the owner's designs a shipyard / the build queue can build
+--     (CBuildableShipListController::Update: each design of the country's collection whose
+--     CShipDesign::CanBuildAtPotential holds: the size's construction types hold the queue's
+--     (starbase_shipyard, the beastport's; starbase_defenses), its prerequisites researched, its
+--     potential_construction trigger (CShipSize::IsPotentialForConstruction) [I: the culture's
+--     sizes and the design's allow_buildable_trigger not checked]), sorted as SShipyardEntrySorter:
+--     civilian first, then the size's size_multiplier (SSortShipSizeBySizeMultiplier), then the
+--     size's place in the files [I], then the collection's order; each with its cost and build
+--     time at this starbase (engine.ai.shipbuilding: CalcCost, CalcBuildTime)
+--   modules, buildings: the definitions whose potential holds for the starbase (the side view's
+--     CStarbaseBuildableComponentEntry list), in the files' order [I]; `possible` false: greyed
+-- the special buildable designs (is_special_buildable: the global designs the save carries), found
+-- once per world
+local specials, specials_of
+local function special_designs()
+    local ids = world.ids and world.ids[world.KINDS and world.KINDS.ship_design or "ship_design"] or world.all("ship_design")
+    if specials_of ~= ids or specials == nil then
+        specials, specials_of = {}, ids
+        for _, did in ipairs(world.all("ship_design")) do
+            local d = world.object("ship_design", did)
+            if d and world.field(d, "is_special_buildable") == "yes" then
+                specials[#specials + 1] = did
+            end
+        end
+    end
+    return specials
+end
+
+local function catalog(e)
+    local edefs = package.loaded["engine.defs"]
+    local econ = package.loaded["engine.economy"]
+    if not (edefs and econ and edefs.folders and next(edefs.folders)) then
+        return nil
+    end
+    local C = require("engine.fleets.create")
+    local sbm = require("engine.ai.shipbuilding")
+    local cmds = require("render.windows.starbase_commands")
+    local eval = require("simscript.eval")
+    local owner = e.owner
+    local ctx = eval.new_ctx(eval.S("starbase", e.id), eval.S("country", owner), nil, "starbase side view")
+    -- a trigger: true, false, or (an error, a keyword the script layer does not implement yet:
+    -- simscript.eval's stats.missing grew) unknown, taken as holding [I]
+    local function misses()
+        local n = 0
+        for _, m in pairs(eval.stats and eval.stats.missing or {}) do
+            n = n + (m.count or 0)
+        end
+        return n
+    end
+    local function holds(block)
+        if type(block) ~= "table" then
+            return true
+        end
+        local before = misses()
+        local ok, r = pcall(eval.trigger, block, ctx)
+        return not ok or misses() > before or r == true
+    end
+    local Mods = econ.modifiers("starbase", e.id) or {}
+    local order = econ.resources or {}
+    local function cost_list(t)
+        local out = {}
+        for _, r in ipairs(order) do
+            local v = t and t[r]
+            if v and v ~= 0 then
+                out[#out + 1] = { res = r, value = v }
+            end
+        end
+        return out
+    end
+    local c = world.object("country", owner)
+    local techs = {}
+    local ts = c and world.field(c, "tech_status")
+    for _, k in ipairs(type(ts) == "table" and world.fields(ts, "technology") or {}) do
+        techs[unq(k)] = true
+    end
+    -- the queue types: the shipyard's (its construction type: shipyard, beastport) and the defenses'
+    local yard = { starbase_shipyard = e.shipyard, starbase_beastport = e.beastport }
+    local out = { ships = {}, defenses = {}, modules = {}, buildings = {}, stock = {} }
+    -- the owner's stockpile (an entry it cannot pay for is greyed)
+    local module = c and world.path(c, "modules", "standard_economy_module")
+    local res = type(module) == "table" and world.child(module, "resources") or nil
+    for _, r in ipairs(order) do
+        out.stock[r] = res and tonumber(world.field(res, r)) or 0
+    end
+    -- the designs: the country's collection, then the special buildable ones (global designs:
+    -- `is_special_buildable`) whose allow_buildable_trigger, a scripted trigger, holds for the
+    -- country (CShipDesign::CanCountryBuildPotential: "ship_design.<name>.allow_buildable_trigger")
+    local coll = c and world.path(c, "ship_design_collection", "ship_design")
+    local candidates = {}
+    for _, v in ipairs(world.list(coll)) do
+        candidates[#candidates + 1] = tonumber(v)
+    end
+    local cctx = eval.new_ctx(eval.S("country", owner), eval.S("country", owner), nil, "ship design")
+    for _, did in ipairs(special_designs()) do
+        local d = world.object("ship_design", did)
+        local trig = d and unq(world.field(d, "allow_buildable_trigger"))
+        local ok = trig == nil
+        if trig then
+            local okk, r = pcall(eval.trigger, { { op = "=", key = { text = trig }, value = { text = "yes" } } }, cctx)
+            ok = okk and r == true
+        end
+        if ok then
+            candidates[#candidates + 1] = did
+        end
+    end
+    for n, did in ipairs(candidates) do
+        local info = did and C.design_info(did)
+        local sd = info and info.size_block
+        if sd then
+            local cts = defs_list(edefs.field(sd, "construction_type"))
+            local kind
+            for _, ct in ipairs(cts) do
+                if yard[ct] then kind = "ships" end
+                if ct == "starbase_defenses" then kind = "defenses" end
+            end
+            local ok = kind ~= nil
+            for _, t in ipairs(ok and list_of(edefs.field(sd, "prerequisites")) or {}) do
+                ok = ok and techs[t] == true
+            end
+            ok = ok and holds(edefs.field(sd, "potential_construction"))
+            if ok then
+                local d = edefs.get("common/ship_sizes", info.size)
+                local okc, cost = pcall(sbm.ship_table, owner, did, "cost", Mods)
+                local okt, time = pcall(sbm.build_time, did, Mods)
+                -- the days shown: the build time over the item's speed (construction.speed: 1 +
+                -- the shipyard's, the artificial ships' and the size's build speed mults), whole
+                -- days down (the game's frame: 54 for 60 at +10%)
+                local speed = 1 + (Mods.starbase_shipyard_artificial_build_speed_mult or 0) + (Mods.starbase_shipyard_build_speed_mult or 0)
+                    + (Mods["shipsize_" .. tostring(info.size) .. "_build_speed_mult"] or 0)
+                local list = out[kind]
+                list[#list + 1] = {
+                    design = did, size = info.size, civilian = info.civilian, class = info.class,
+                    name = galaxy_name(world.field(info.block, "name")),
+                    auto = world.field(info.block, "auto_gen_design") == "yes",
+                    cost = okc and cost_list(cost) or {}, time = okt and time or nil,
+                    days = okt and time and math.floor(time / math.max(speed, 0.01) + 1e-6) or nil,
+                    mult = info.size_multiplier or 1, file = d and d.file or "", line = d and d.line or 0, n = n,
+                }
+            end
+        end
+    end
+    for _, k in ipairs({ "ships", "defenses" }) do
+        table.sort(out[k], function(a, b)
+            if a.civilian ~= b.civilian then return a.civilian end
+            if a.mult ~= b.mult then return a.mult < b.mult end
+            if a.file ~= b.file then return a.file < b.file end
+            if a.line ~= b.line then return a.line < b.line end
+            return a.n < b.n
+        end)
+    end
+    for _, part in ipairs({ { "modules", "common/starbase_modules" }, { "buildings", "common/starbase_buildings" } }) do
+        local list = {}
+        for key, d in pairs(edefs.folder(part[2])) do
+            -- (an inline script's own key is not a component)
+            if key ~= "inline_script" and edefs.field(d.block, "construction_days") and holds(edefs.field(d.block, "potential")) then
+                local okc, cost = pcall(cmds.def_table, owner, d, "cost", Mods)
+                local total = 0
+                for _, v in pairs(okc and cost or {}) do
+                    total = total + v
+                end
+                list[#list + 1] = {
+                    key = key, icon = unq(edefs.field(d.block, "icon")) or ("GFX_" .. key),
+                    category = unq(edefs.field(d.block, "category")) or "", total = total,
+                    frame = tonumber(edefs.field(d.block, "icon_frame")) or 1,
+                    cost = okc and cost_list(cost) or {},
+                    time = tonumber(edefs.field(d.block, "construction_days")) or 180,
+                    days = math.floor((tonumber(edefs.field(d.block, "construction_days")) or 180)
+                        / math.max(1 + (Mods[part[1] == "modules" and "starbase_module_build_speed_mult" or "starbase_building_build_speed_mult"] or 0), 0.01) + 1e-6),
+                    possible = holds(edefs.field(d.block, "possible")),
+                    file = d.file or "", line = d.line or 0,
+                }
+            end
+        end
+        table.sort(list, function(a, b)
+            if a.file ~= b.file then return a.file < b.file end
+            return a.line < b.line
+        end)
+        out[part[1]] = list
     end
     return out
 end
@@ -586,6 +820,24 @@ end
 -- megastructures and waystation networks by id
 function M.extract(game_dir)
     local starbases = M.starbases(game_dir)
+    -- the side views' catalogs of the player's starbases (where the engine is)
+    local player = 0
+    local pl = world.meta and world.meta.player
+    if type(pl) == "table" then
+        for _, b in ipairs(world.blocks(pl)) do
+            player = tonumber(world.field(b, "country")) or player
+        end
+    end
+    for _, e in pairs(starbases) do
+        if e.owner == player then
+            local ok, cat = pcall(catalog, e)
+            if ok then
+                e.catalog = cat
+            else
+                io.stderr:write("starbase catalog: " .. tostring(cat) .. "\n")
+            end
+        end
+    end
     local networks = M.networks(starbases)
     return M.dump({ starbases = starbases, megastructures = M.megastructures(game_dir), networks = networks })
 end

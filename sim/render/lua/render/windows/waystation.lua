@@ -67,10 +67,19 @@ function M.build(ctx, sel, e, items, report)
         hide[tp .. "/class_info/upgrade"] = true
     elseif not (own and e.upgrade_ok) then
         disabled[tp .. "/class_info/upgrade"] = true
+    else
+        actions[tp .. "/class_info/upgrade"] = "starbase:cmd:upgrade:" .. e.id
     end
     if not own then
         disabled[tp .. "/class_info/details"] = true
         disabled[tp .. "/class_info/dismantle"] = true
+    else
+        -- details (the station's ship view), dismantle (its dialog), cloaking (OnCloakClick)
+        if e.station_ship then
+            actions[tp .. "/class_info/details"] = "fleet:ship:" .. e.station_ship
+        end
+        actions[tp .. "/class_info/dismantle"] = "starbase:dialog:dismantle:" .. e.id
+        actions[tp .. "/cloaking_info/cloaking_button"] = "starbase:cmd:cloak:" .. e.id
     end
     if e.first_contact then
         hide[tp .. "/empty_cloaking_replacement"] = true
@@ -112,6 +121,7 @@ function M.build(ctx, sel, e, items, report)
         starbase.grids(ctx, items, report, wr.rects, e, tp .. "/waystation_info/upgrades_info/modules_info/modules_grid", nil)
         starbase.queue(ctx, items, report, wr.rects[tp .. "/waystation_info/build_queue_info/build_queue_list"], e, own)
     end
+    starbase.dialog(ctx, items, report, state, e)
 end
 
 return M
