@@ -22,9 +22,9 @@ local text = require("render.loctext")
 
 local ex = {}
 
--- Escape closes an open drop-down's list first [I], then the planner (its filters and sort stay
--- out of it)
-ex.escape_keys = { "dropdown" }
+-- Escape closes the planner at once, an open drop-down with it (the close button's ESCAPE; the
+-- game's frames: the second Escape opens the game's menu); its filters are not side windows
+ex.escape_keys = {}
 
 local FILE = "interface/expansion_planner_view.gui"
 local V = "/expansion_planner_view"

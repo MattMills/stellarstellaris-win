@@ -17,12 +17,10 @@ local text = require("render.loctext")
 
 local market = {}
 
--- the side windows Escape closes before the market (their close buttons' ESCAPE): Sell Slaves
--- (and its open group, its species), the monthly trade window
-market.escape_keys = {
-    "pool", "pool_open", "pool_species", "pool_selected", "pool_dropdown",
-    "monthly", "monthly_type", "monthly_res", "monthly_amount", "monthly_price",
-}
+-- the side windows Escape closes before the market: Sell Slaves (its close button's ESCAPE; its
+-- open group, species, selection with it). The monthly trade window has no ESCAPE: Escape closes
+-- the market, which hides it (CMarketView::Hide)
+market.escape_keys = { "pool", "pool_open", "pool_species", "pool_selected", "pool_dropdown" }
 
 local FILE = "interface/market_view.gui"
 local V = "/market_view"

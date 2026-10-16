@@ -12,8 +12,9 @@
 //! - `economy:slave:...`, `economy:trade_propose:COUNTRY`: the slave market's and the trade window's
 //!   commands, their effects not done here (logged)
 //! - `economy:goto:PLANET`: FocusCameraOnObjectOrSystem (CExpansionTargetEntry::OnClickGoto): in
-//!   the planet's system, the camera follows it; elsewhere it goes to the planet's system on the
-//!   galaxy map; the planner stays open
+//!   the planet's system, the camera follows it; from another system, that system is entered and
+//!   the planet followed; from the galaxy map, the camera slides to the system; the planner stays
+//!   open
 
 use crate::app::{App, MapView};
 use crate::scene::Pickable;
@@ -131,6 +132,11 @@ fn goto(app: &mut App, planet: u32) -> Result<(), String> {
     let Some(index) = index else { return Err(format!("planet {planet}: system {system} not known")) };
     match app.view {
         MapView::System(i) if i == index => app.focus(Pickable::Body(planet)),
+        // another system shown: the planet's entered, the camera on the planet (the game's frame
+        // after the planner's zoom from the home system: system 238, Runa III)
+        MapView::System(_) => {
+            app.enter_system(index, Some(Pickable::Body(planet)))
+        }
         _ => {
             if app.view != MapView::Galaxy {
                 app.show_galaxy();
