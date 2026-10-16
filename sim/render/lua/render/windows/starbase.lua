@@ -398,9 +398,29 @@ function M.place(fleet)
     return { e.system or -1, e.planet or -1 }
 end
 
+-- the module and building grids at their gridboxes (for the waystation window too; a path nil:
+-- that grid not drawn)
+function M.grids(ctx, items, report, rects, e, modules_path, buildings_path)
+    if modules_path then
+        component_grid(ctx, items, report, rects[modules_path], 58, e.module_slots or 0, e.module_capacity or 0, e.modules or {}, e.queue, W .. "/modules", "module")
+    end
+    if buildings_path then
+        component_grid(ctx, items, report, rects[buildings_path], 60, e.building_slots or 0, e.building_capacity or 0, e.buildings or {}, e.queue, W .. "/buildings", "building")
+    end
+end
+
+-- the build queue's entries in a list's rectangle (for the waystation window too)
+function M.queue(ctx, items, report, rect, e, own)
+    queue_list(ctx, items, report, rect, e.queue or {}, W .. "/queue", e, own)
+end
+
 function M.build(ctx, sel, items, report)
     local data = M.data()
     local e = data and data.starbases and data.starbases[sel.id]
+    -- a waystation's own window (CInGameIdler::ShowWaystationView: a starbase type is_waystation)
+    if e and (e.waystation or (RENDER_STARBASE_STATE or {}).waystation) then
+        return require("render.windows.waystation").build(ctx, sel, e, items, report)
+    end
     local h = ctx.screen.height >= 801 and 765 or 611
     if not e then
         -- no data (the starbase not in the snapshot): the frame and its name

@@ -292,13 +292,16 @@ function M.starbases(game_dir)
             sector_of[tonumber(v)] = sid
         end
     end
-    local sector_colonies = {}
+    local sector_colonies, system_colonies = {}, {}
     for pid in pairs(world.planet_colony or {}) do
         local p = world.object("planet", pid)
         local sys = p and tonumber(world.path(p, "coordinate", "origin"))
         local sid = sys and sector_of[sys]
         if sid then
             sector_colonies[sid] = (sector_colonies[sid] or 0) + 1
+        end
+        if sys then
+            system_colonies[sys] = (system_colonies[sys] or 0) + 1
         end
     end
 
@@ -446,6 +449,10 @@ function M.starbases(game_dir)
             e.orbitals = orbitals
             e.has_sector = in_sector[e.system] or false
             e.sector_planets = sector_of[e.system] and sector_colonies[sector_of[e.system]] or 0
+            -- the waystation window's colonies of the system and owner's name
+            e.colonies = system_colonies[e.system] or 0
+            local oc = world.object("country", e.owner)
+            e.owner_name = oc and galaxy.name_block(world.field(oc, "name")) or nil
             -- the shipyard's modifiers (CShipyardModifierGridController) from the station's own
             -- parts [I]: the country's and the system's shares are not added
             e.shipyard_mods = {

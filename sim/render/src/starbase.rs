@@ -22,6 +22,9 @@ pub struct State {
     pub tab: u32,
     /// the megastructure whose window is open (its save id)
     pub megastructure: Option<i64>,
+    /// the selected starbase shown in the waystation window whatever its type (`open_starbase
+    /// waystation ID`, as headless.c's ShowWaystationView on any starbase)
+    pub waystation: bool,
 }
 
 /// The starbases' chunk (render.windows.starbase_data.extract) in the world's runtime; empty when
@@ -48,6 +51,7 @@ pub fn prepare(runtime: &Runtime, galaxy: &Galaxy, state: &State, selected: bool
         t.set("player", galaxy.player)?;
         t.set("megastructure", state.megastructure)?;
         t.set("selected", selected)?;
+        t.set("waystation", state.waystation)?;
         // the countries the player knows (communications; none: all), for the flags shown
         if let Some(c) = &galaxy.communications {
             let k = lua.create_table()?;
@@ -85,7 +89,7 @@ pub fn command(app: &mut App, args: &[&str]) -> Result<String, String> {
         app.relayout();
         return Ok(format!("open_starbase megastructure {id}{} shown", if tab.is_some() { " tab" } else { "" }));
     }
-    if kind != "starbase" {
+    if kind != "starbase" && kind != "waystation" {
         return Err(format!("open_starbase {kind}: not done yet"));
     }
     prepare(&app.runtime, &galaxy, &app.starbase, true)?;
@@ -98,6 +102,7 @@ pub fn command(app: &mut App, args: &[&str]) -> Result<String, String> {
     let fleet = *fleet.first().ok_or(format!("open_starbase: no starbase {id}"))?;
     app.select(Some(Pickable::Fleet(fleet as u32)));
     app.starbase.megastructure = None;
+    app.starbase.waystation = kind == "waystation";
     if let Some(t) = tab {
         app.starbase.tab = t;
     }
@@ -165,6 +170,18 @@ pub fn act(app: &mut App, action: &str) -> Result<(), String> {
 /// The megastructure window's flag (its header's `flag`, a flagSpriteType): its owner's
 /// (CGameGraphics::ApplyCountryToButton); without an owner the sprite as it is.
 pub fn flags(runtime: &Runtime, state: &State, map: &mut Map, items: &mut [GuiItem]) {
+    // the waystation window's owner box: its owner met and not the player's (the Lua's flag_owner)
+    let way: Option<i64> = runtime.lua.load("return package.loaded['render.windows.waystation'] and package.loaded['render.windows.waystation'].flag_owner").eval().ok().flatten();
+    if let Some(o) = way {
+        let country = map.galaxy.countries.iter().position(|c| c.id as i64 == o);
+        for it in items.iter_mut() {
+            if let GuiItem::Sprite { path, .. } = it {
+                if path.starts_with("/waystation_view/planet_view_module_spaceport_portrait/owner/flag") {
+                    map.flags(std::slice::from_mut(it), country);
+                }
+            }
+        }
+    }
     let Some(id) = state.megastructure else { return };
     let owner: Vec<i64> = runtime.lua.load(format!("return require('render.windows.megastructure').owner({id})")).eval().unwrap_or_default();
     // an owner the player has no communications with shows the unknown flag (the Lua's emblem)
