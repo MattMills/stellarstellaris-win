@@ -1324,6 +1324,7 @@ freed when the device is polled).
   1.7 x upright and coloured to the game's frame by eye; centred on its place.
 
 - The fleet windows (fleet_view, ship_view, the Fleet Manager): [docs/windows/fleet.md](windows/fleet.md).
+- **Events, the Situation Log, Discoveries, first contacts**: [docs/windows/events.md](windows/events.md).
 - The left bar's views (one open at a time, `views.rs`, `lua/render/windows/NAME.lua`): the research
   and traditions views in [windows/research.md](windows/research.md).
 

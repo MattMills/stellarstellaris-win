@@ -34,6 +34,7 @@ mod designer;
 mod diplomacy;
 mod effects;
 mod engine;
+mod events;
 mod flag;
 mod fleetwin;
 mod math;

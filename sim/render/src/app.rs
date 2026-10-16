@@ -144,6 +144,8 @@ pub struct App {
     pub models: models::Library,
     /// what is selected on the map
     pub selected: Option<Pickable>,
+    /// the event windows and popups open (events.rs)
+    pub events: crate::events::EventsUi,
     /// the left bar's view open (views.rs: one at a time, CInGameIdler::ToggleTopBarView) and
     /// its own state (`view_set:KEY=VALUE`: a tab, an area chosen)
     pub open_view: Option<String>,
@@ -262,6 +264,7 @@ impl App {
             model: None,
             models: models::Library::default(),
             selected: None,
+            events: Default::default(),
             open_view: None,
             view_state: HashMap::new(),
             overlay_items: Vec::new(),
@@ -1051,6 +1054,13 @@ impl App {
             Ok(f) => items.extend(f),
             Err(e) => self.log.push(format!("fleet windows: {e}")),
         }
+        // the event windows and popups, over the others (events.rs)
+        let map = self.map.as_mut().unwrap();
+        let chunk = map.galaxy.events.clone();
+        match crate::events::items(&mut self.events, &self.runtime, &self.game_dir, map.fonts.get_or_insert_with(HashMap::new), &chunk, w, h) {
+            Ok(e) => items.extend(e),
+            Err(e) => self.log.push(format!("events: {e}")),
+        }
         // the left bar's view open (views.rs)
         if let Some(name) = self.open_view.clone() {
             let data = self.map.as_ref().and_then(|m| m.galaxy.views.get(&name).cloned());
@@ -1106,6 +1116,12 @@ impl App {
 
     /// The windows must be laid out again (a window opened or closed: their state changed).
     pub fn relayout_windows(&mut self) {
+        self.overlay_key = None;
+        self.scene = None;
+    }
+
+    /// The windows over the map must be laid out again (their state changed) and the scene built.
+    pub fn relayout(&mut self) {
         self.overlay_key = None;
         self.scene = None;
     }
@@ -1391,6 +1407,16 @@ impl App {
                 // CInGameIdler::ModifyGameSpeed: one step, within 1..5
                 self.commands.push(ClockCommand::Speed(if action == Some("speed_up") { 1 } else { -1 }));
             }
+            // the event windows' and popups' buttons (events.rs)
+            Some(a) if crate::events::handles(a) => {
+                // the first contact view replaces the top bar view (the game's Situation Log
+                // closes when "Show First Contact" opens it)
+                if a.starts_with("fc:open:") {
+                    self.close_view();
+                }
+                self.events.act(a);
+                self.relayout();
+            }
             // the diplomacy windows (diplomacy.rs): Contacts from the left bar, the others from it
             Some(a) if a == "view:contacts" || a.starts_with("diplo:") => {
                 if self.diplomacy.act(a)? {
@@ -1566,6 +1592,7 @@ impl App {
         self.last_system = None;
         let capital = map.galaxy.capital.and_then(|(planet, system)| map.galaxy.systems.iter().position(|s| s.id == system).map(|i| (planet, i)));
         self.selected = None;
+        self.events = Default::default();
         self.overlay_items.clear();
         self.overlay_key = None;
         self.log.push(format!(

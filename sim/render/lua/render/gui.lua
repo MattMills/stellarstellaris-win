@@ -364,7 +364,13 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                                 bw, bh = w, h
                                 button = { name = name, action = action }
                             end
-                            sprite_item(path .. "/background", bs, number(get(e.value, "frame"), vars), x, y, bw, bh, button)
+                            -- its own `position` moves it from the window's corner (first_contact_view's
+                            -- chapters frame at -58, -27: the game's frame shows it there); a background
+                            -- that takes the clicks stays over the window
+                            local bp = get(e.value, "position")
+                            local ox = not button and type(bp) == "table" and number(get(bp, "x"), vars) or 0
+                            local oy = not button and type(bp) == "table" and number(get(bp, "y"), vars) or 0
+                            sprite_item(path .. "/background", bs, number(get(e.value, "frame"), vars), x + ox, y + oy, bw, bh, button)
                         end
                     elseif CONTAINERS[k] or ICONS[k] or TEXTS[k] or LISTS[k] then
                         -- a drop-down's expanded window is closed until it is clicked

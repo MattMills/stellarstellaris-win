@@ -441,6 +441,11 @@ impl Engine {
                 self.app.invalidate();
                 Ok(Reply::ok(format!("gui {}", if on { "on" } else { "off" })))
             }
+            "event" => {
+                // the open player events, or one's window opened (headless.c serves it too): events.rs
+                let r = crate::events::command(&mut self.app, rest)?;
+                Ok(Reply::ok(r))
+            }
             "open_view" => {
                 // a left bar button's view toggled (headless.c serves it too): views.rs; with KEY
                 // VALUE after the name, the view open with that state (`open_view technology

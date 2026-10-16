@@ -102,6 +102,8 @@ pub struct Galaxy {
     pub sectors: Vec<(u32, Name)>,
     /// the player's sectors' capital systems (sector id -> system id)
     pub sector_capitals: HashMap<u32, u32>,
+    /// the event windows' data (render.windows.events_data: a Lua chunk; events.rs)
+    pub events: String,
     /// the left bar's views' data: each lua/render/windows module's `extract` (views.rs)
     pub views: HashMap<String, crate::views::Value>,
     /// the outliner's and the observer outliner's view of the world (render.windows.outliner)
@@ -389,6 +391,7 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
             });
         }
         Ok(Galaxy {
+            events: crate::events::extract(runtime, game_dir),
             views: crate::views::extract(runtime, game_dir),
             date: g.get("date")?,
             systems,
