@@ -113,8 +113,11 @@ ships' names (UNS); Sol Station / Sol Starbase.
 Terra incognita (post.lua): the game's UNE knows Sol and its hyperlane neighbours at day 0: `{ 11 23
 112 145 }` in tiny3_g0 (Sol's lanes 112 11 145) and `{ 11 23 112 147 }` in tiny3f_g0, the reference
 with the forced designs (Sol's lanes 147 112 11; the Lua's day-0 lanes equal the game's there);
-here `{ 23 }`. (tiny3_g0 was made with the default, randomized designs: compare a forced-design
-run with tiny3f_g0.) The exploration pass sees the capital (sensor range 1: its own system
+here `{ 23 }` with ng-effects 49b4b60. (tiny3_g0 was made with the default, randomized designs:
+compare a forced-design run with tiny3f_g0.) With ng-effects 57f28c3 (the station fleet placed, the
+game's start designs: the starport's size modifier gives its sensor range 2) and ng-headless
+56eb082 merged: the UNE knows `{ 11 23 112 147 }` and its map's runs are the game's exactly
+(`33885 3 252 9 246 17 ... 29083`); the galaxy view shows the known space only, as the game's. The exploration pass sees the capital (sensor range 1: its own system
 only) and the fleets at Sol, but every generated ship's design gives sensor range 1 and the
 starbase's station fleet (fleet 0) has no `movement_manager.coordinate.origin`, so nothing reaches
 past Sol: the start objects' data (session ng-effects), not the pass.
