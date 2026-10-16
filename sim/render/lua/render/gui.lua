@@ -350,7 +350,8 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                         local bs = get(e.value, "spriteType") or get(e.value, "quadTextureSprite")
                         local s = bs and db.sprites[bs]
                         local fill = s and s.kind == "corneredTileSpriteType"
-                        if bs and not hidden(path .. "/background", "") then
+                        -- (a window may have more than one: each is hidden by its own name too)
+                        if bs and not hidden(path .. "/background", get(e.value, "name") or "") then
                             local bw, bh
                             if fill then
                                 bw, bh = w, h

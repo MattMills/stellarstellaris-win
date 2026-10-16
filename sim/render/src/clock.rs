@@ -156,6 +156,9 @@ enum Cmd {
     /// a snapshot now (a view opened: views.rs extracts the open view's data), the reply when
     /// it is published
     Publish(Option<Sender<()>>),
+    /// Lua run in the simulation's runtime between days (its world, definitions, modifiers): the
+    /// string it returns (a window's data read where the world is)
+    Query(String, Sender<Result<String, String>>),
     Quit,
 }
 
@@ -267,6 +270,15 @@ impl Clock {
         let _ = self.tx.send(Cmd::Speed(speed));
     }
 
+    /// Runs Lua `code` in the simulation's runtime (between days) and returns the string it
+    /// returns: what a window shows of the world while the simulation runs (fleetwin.rs).
+    pub fn query(&self, code: &str) -> Result<String, String> {
+        self.wait_ready()?;
+        let (tx, rx) = mpsc::channel();
+        self.tx.send(Cmd::Query(code.to_string(), tx)).map_err(|_| "the simulation's thread has ended")?;
+        rx.recv_timeout(Duration::from_secs(10)).map_err(|_| "the simulation did not answer".to_string())?
+    }
+
     /// One day now (when paused), without waiting for it.
     pub fn next_day(&self) {
         let _ = self.tx.send(Cmd::NextDay);
@@ -375,6 +387,9 @@ impl Worker {
                     let r = self.days(days);
                     let _ = reply.send(r);
                     next = Instant::now() + day_length(self.speed);
+                }
+                Ok(Cmd::Query(code, reply)) => {
+                    let _ = reply.send(self.rt().eval::<String>(&code).map_err(|e| e.to_string()));
                 }
                 Ok(Cmd::Pause(p)) => {
                     if self.paused && !p {

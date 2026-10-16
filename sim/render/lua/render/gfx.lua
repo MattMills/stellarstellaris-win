@@ -72,6 +72,7 @@ local function read_sprite(kind, b, file)
         s.size = xy("size", "x", "y")
         local t2 = get(b, "textureFile2")
         s.texture2 = t2 and unquote(t2):gsub("\\", "/") or nil
+        s.horizontal = get(b, "horizontal") ~= "no"
     end
     -- a sprite that is a frame of another (sprite_sheet_sprite_type, default_frame)
     local sheet = get(b, "sprite_sheet_sprite_type")

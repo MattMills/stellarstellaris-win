@@ -2322,6 +2322,84 @@ static void open_designer_cmd(const char *arg) {
 		reply_fmt("ok open_designer %s", arg);
 }
 
+// ---------------------------------------------------------------- `open`: the fleet windows
+// (docs/windows/fleet.md) opened with the game's own calls: `open fleet ID` selects the fleet
+// (CInGameIdler::Select of its CSelectable, at CFleet+0x18, as CFleetOrbitalItem::SelectFleet
+// does: fleet_view opens for the selection), `open ship ID` (CInGameIdler::ShowShipView: the
+// ship_view; the fleet manager: `open_view fleet_manager`),
+// `open none` (CInGameIdler::DeselectAll, CShipView::Close: the view at CInGameIdler+0xb60,
+// CFleetManagerView::Hide).
+
+static uintptr_t a_IdlerSelect, a_IdlerDeselectAll, a_IdlerShowShipView;
+static uintptr_t a_ShipViewClose, a_FleetManagerHide;
+static uintptr_t a_FleetDb, a_ShipDb;
+
+static struct symreq g_open_syms[] = {
+	{"_ZN12CInGameIdler6SelectEPK11CSelectable", &a_IdlerSelect},
+	{"_ZN12CInGameIdler11DeselectAllEv", &a_IdlerDeselectAll},
+	{"_ZN12CInGameIdler12ShowShipViewEPK5CShip", &a_IdlerShowShipView},
+	{"_ZN9CShipView5CloseEv", &a_ShipViewClose},
+	{"_ZN17CFleetManagerView4HideEv", &a_FleetManagerHide},
+	{"_ZN7TPdxRefI6CFleetE10_pDatabaseE", &a_FleetDb},
+	{"_ZN7TPdxRefI5CShipE10_pDatabaseE", &a_ShipDb},
+	{NULL, NULL},
+};
+
+// a TPdxRef's object: the database's slots (+0x18, 16 bytes each, the object at +8; count at
+// +0x20), the object's id at `id_at` (CFleet +0x30, CShip +0x18)
+static void *pdx_ref(uintptr_t db_sym, int id, int id_at) {
+	char *db = *(char **)db_sym;
+	if (!db || id < 0) return NULL;
+	uint32_t i = (uint32_t)id & 0xffffff;
+	if (i >= *(uint32_t *)(db + 0x20)) return NULL;
+	char *o = *(char **)(*(char **)(db + 0x18) + 16 * (size_t)i + 8);
+	return o && I32(o + id_at) == id ? o : NULL;
+}
+
+static void open_cmd(const char *arg) {
+	static int resolved;
+	if (!resolved) {
+		if (resolve(g_open_syms) != 0) {
+			reply_fmt("error open: symbols missing");
+			return;
+		}
+		resolved = 1;
+	}
+	void *idler = *(void **)a_g_CurrentInGameIdler;
+	if (C.stage == 0) {
+		char what[32] = "";
+		int id = -1;
+		sscanf(arg, "%31s %d", what, &id);
+		if (!strcmp(what, "fleet")) {
+			char *f = pdx_ref(a_FleetDb, id, 0x30);
+			if (!f) {
+				reply_fmt("error open: no fleet %d", id);
+				return;
+			}
+			((void (*)(void *, void *))a_IdlerSelect)(idler, f + 0x18);
+		} else if (!strcmp(what, "ship")) {
+			void *s = pdx_ref(a_ShipDb, id, 0x18);
+			if (!s) {
+				reply_fmt("error open: no ship %d", id);
+				return;
+			}
+			((void (*)(void *, void *))a_IdlerShowShipView)(idler, s);
+		} else if (!strcmp(what, "none")) {
+			((void (*)(void *))a_IdlerDeselectAll)(idler);
+			((void (*)(void *))a_ShipViewClose)(*(void **)((char *)idler + 0xb60));
+			((void (*)(void *))a_FleetManagerHide)(*(void **)((char *)idler + 0xd78));
+		} else {
+			reply_fmt("error open fleet ID, ship ID or none (the fleet manager: open_view fleet_manager)");
+			return;
+		}
+		C.stage = 1;
+		return;
+	}
+	// a few frames for the window to show (fleet_view slides in: animation_time 200)
+	if (++C.frames < 20) return;
+	reply_fmt("ok open %s", arg);
+}
+
 // ---------------------------------------------------------------- the left bar's views (open_view)
 //
 //   open_view NAME|N   CInGameIdler::ToggleTopBarView(ETopBarView), as the left bar's buttons
@@ -2771,6 +2849,8 @@ static void view_command(void *gs) {
 		} else {
 			reply_fmt("error camera X Y Z YAW PITCH DISTANCE, or camera off");
 		}
+	} else if (!strcmp(verb, "open")) {
+		open_cmd(arg);
 	} else if (!strcmp(verb, "open_designer")) {
 		open_designer_cmd(arg);
 	} else if (!strcmp(verb, "open_diplomacy")) {

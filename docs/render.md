@@ -1323,6 +1323,7 @@ freed when the device is polled).
   the face is Orbitron's TrueType (32 px); the bitmap gfx/fonts/orbitron stands in, stretched
   1.7 x upright and coloured to the game's frame by eye; centred on its place.
 
+- The fleet windows (fleet_view, ship_view, the Fleet Manager): [docs/windows/fleet.md](windows/fleet.md).
 - The left bar's views (one open at a time, `views.rs`, `lua/render/windows/NAME.lua`): the research
   and traditions views in [windows/research.md](windows/research.md).
 

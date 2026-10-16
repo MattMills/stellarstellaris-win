@@ -16,6 +16,8 @@
 //! - the clock (clock.rs: the simulation on its own thread): `pause` (stopped, as the game's
 //!   headless), `pause off` (running), `speed 1..5`, `wait SECONDS` (real time passes)
 //! - `select system|fleet|planet|ship ID`, `select none`: the selection (marked; `state` names it)
+//! - `open fleet ID|ship ID|fleet_manager|none`: the fleet windows (fleetwin.rs; the headless
+//!   game's `open` opens the same ones)
 //! - input, as a keyboard and a mouse make it (controls.rs; headless.c makes the same in the
 //!   game by XTest): `key CHORD [down|up|tap]`, `hold CHORD DURATION`, `mouse X Y [BUTTON
 //!   [down|up]]`, `move X Y`, `button BUTTON down|up [X Y]`, `click X Y [BUTTON] [double]`,
@@ -542,6 +544,12 @@ impl Engine {
                 self.app.select(what);
                 self.flush_log();
                 Ok(Reply::ok(format!("select {}", a.join(" "))))
+            }
+            "open" => {
+                let id = a.get(1).and_then(|v| v.parse::<u32>().ok());
+                let r = self.app.fleet_open(a.first().copied().unwrap_or(""), id)?;
+                self.flush_log();
+                Ok(Reply::ok(r))
             }
             // the game's headless `open_designer` (headless.c): the ship designer (CShipDesignerBase::
             // Show, no design loaded; `design ID` loads one), a fleet in combat selected (the combat
