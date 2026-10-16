@@ -93,22 +93,56 @@ pub fn names() -> Vec<String> {
     out
 }
 
-/// Each view's data from a runtime's world (its module's `extract`; a view without one, or whose
-/// extract fails, has none: the failure goes to stderr).
+/// The game's top bar views (ETopBarView's tokens, the left bar's GFX_topbar_NAME_button): a
+/// module of lua/render/windows by one of these names is a view; another module is one when it
+/// says so (`M.view = true`). The other modules there (the outliner's, the map icons', the
+/// diplomacy windows' data, helpers) have their own callers and arguments.
+pub const TOP_BAR_VIEWS: [&str; 18] = [
+    "situation", "council", "traditions", "technology", "leaders", "species", "empire", "expansion_planner",
+    "fleet_manager", "contacts", "factions", "edicts", "view12", "view13", "government", "discoveries", "claims", "market",
+];
+
+/// The view open (App::toggle_view): the one view whose data the snapshots carry. Read where the
+/// galaxy is extracted (the simulation's thread too).
+static OPEN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn set_open(name: Option<&str>) {
+    if let Ok(mut o) = OPEN.lock() {
+        *o = name.map(String::from);
+    }
+}
+
+/// A view's data from a runtime's world (its module's `extract(game_dir)`), or none: not a view,
+/// no extract, or its extract failed (the failure goes to stderr).
+pub fn extract_one(runtime: &Runtime, game_dir: &str, name: &str) -> Option<Value> {
+    if !names().iter().any(|n| n == name) {
+        return None;
+    }
+    let read = || -> mlua::Result<Option<Value>> {
+        let m: Table = runtime.lua.load(format!("return require('render.windows.{name}')")).eval()?;
+        if !TOP_BAR_VIEWS.contains(&name) && m.get::<Option<bool>>("view")? != Some(true) {
+            return Ok(None);
+        }
+        let Some(f) = m.get::<Option<mlua::Function>>("extract")? else { return Ok(None) };
+        Ok(Some(Value::read(f.call(game_dir.replace('\\', "/"))?, 0)?))
+    };
+    match read() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("render.windows.{name}: extract: {e}");
+            None
+        }
+    }
+}
+
+/// The open view's data from a runtime's world (only the open one: a snapshot carries what is
+/// drawn; opening a view republishes it, Map::refresh_view).
 pub fn extract(runtime: &Runtime, game_dir: &str) -> HashMap<String, Value> {
     let mut out = HashMap::new();
-    for name in names() {
-        let read = || -> mlua::Result<Option<Value>> {
-            let m: Table = runtime.lua.load(format!("return require('render.windows.{name}')")).eval()?;
-            let Some(f) = m.get::<Option<mlua::Function>>("extract")? else { return Ok(None) };
-            Ok(Some(Value::read(f.call(game_dir.replace('\\', "/"))?, 0)?))
-        };
-        match read() {
-            Ok(Some(v)) => {
-                out.insert(name, v);
-            }
-            Ok(None) => {}
-            Err(e) => eprintln!("render.windows.{name}: extract: {e}"),
+    let open = OPEN.lock().ok().and_then(|o| o.clone());
+    if let Some(name) = open {
+        if let Some(v) = extract_one(runtime, game_dir, &name) {
+            out.insert(name, v);
         }
     }
     out

@@ -153,6 +153,9 @@ enum Cmd {
     Watch(Option<u32>, Option<Sender<()>>),
     /// the key `.`: one day at once, then paused again (CJumpToNextDayCommand)
     NextDay,
+    /// a snapshot now (a view opened: views.rs extracts the open view's data), the reply when
+    /// it is published
+    Publish(Option<Sender<()>>),
     Quit,
 }
 
@@ -271,6 +274,18 @@ impl Clock {
 
     /// The system whose bodies and ships the snapshots carry; with `wait`, until a snapshot has
     /// them (at most a second: a day may be running).
+    /// A snapshot published now (with `wait`, waited for up to a second).
+    pub fn publish(&self, wait: bool) {
+        if wait && self.status().ready {
+            let (tx, rx) = mpsc::channel();
+            if self.tx.send(Cmd::Publish(Some(tx))).is_ok() {
+                let _ = rx.recv_timeout(Duration::from_secs(1));
+            }
+        } else {
+            let _ = self.tx.send(Cmd::Publish(None));
+        }
+    }
+
     pub fn watch(&self, system: Option<u32>, wait: bool) {
         if wait && self.status().ready {
             let (tx, rx) = mpsc::channel();
@@ -378,6 +393,14 @@ impl Worker {
                         if let Err(e) = self.publish() {
                             eprintln!("simulation: snapshot: {e}");
                         }
+                    }
+                    if let Some(r) = reply {
+                        let _ = r.send(());
+                    }
+                }
+                Ok(Cmd::Publish(reply)) => {
+                    if let Err(e) = self.publish() {
+                        eprintln!("simulation: snapshot: {e}");
                     }
                     if let Some(r) = reply {
                         let _ = r.send(());

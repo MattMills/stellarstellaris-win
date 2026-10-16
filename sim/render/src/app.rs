@@ -1458,6 +1458,12 @@ impl App {
         }
         self.set_designer(Default::default());
         self.open_view = Some(name.to_string());
+        // its data (views.rs: the snapshots carry the open view's only)
+        crate::views::set_open(Some(name));
+        let smooth = self.smooth;
+        if let Some(m) = self.map.as_mut() {
+            m.refresh_view(name, !smooth);
+        }
         self.view_state.clear();
         self.overlay_key = None;
         self.scene = None;
@@ -1479,6 +1485,7 @@ impl App {
 
     pub fn close_view(&mut self) {
         if let Some(v) = self.open_view.take() {
+            crate::views::set_open(None);
             self.log.push(format!("view: {v} closed"));
             self.view_state.clear();
             self.overlay_key = None;
