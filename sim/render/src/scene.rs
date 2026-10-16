@@ -1325,7 +1325,7 @@ pub fn add_gui(
                 // two lines centred on its 30)
                 let max_lines = if *fixed { ((h + 0.5) / f.line_height.max(1.0)).floor() as usize } else { usize::MAX };
                 if max_lines >= 2 && *w > 8.0 && !spans.iter().any(|(s, _)| s.starts_with('\u{1}')) && (f.width(text) > w + 0.5 || text.contains('\n')) {
-                    let lines = wrap_spans(f, spans, *w);
+                    let lines = wrap_spans_font(f, spans, *w);
                     let n = lines.len().min(max_lines);
                     let block = n as f32 * f.line_height;
                     let top = match valign.as_str() {
@@ -1479,7 +1479,7 @@ pub fn add_gui(
 
 /// Coloured spans broken into lines no wider than `w`: at spaces (a word wider than the line
 /// stays whole on its own line) and at new lines.
-fn wrap_spans(f: &Font, spans: &[(String, [f32; 3])], w: f32) -> Vec<Vec<(String, [f32; 3])>> {
+fn wrap_spans_font(f: &Font, spans: &[(String, [f32; 3])], w: f32) -> Vec<Vec<(String, [f32; 3])>> {
     let mut lines: Vec<Vec<(String, [f32; 3])>> = vec![Vec::new()];
     let mut used = 0.0;
     for (s, c) in spans {

@@ -178,7 +178,7 @@ pub fn items(ui: &mut EventsUi, runtime: &Runtime, game_dir: &str, fonts: &mut H
     // the fonts the wrapped texts are measured in (the views' too: render.windows.situation)
     let probe: Vec<GuiItem> = ["cg_16b", "malgun_goth_24", "cg_16b_shadow"]
         .iter()
-        .map(|f| GuiItem::Text { path: String::new(), font: f.to_string(), text: String::new(), spans: Vec::new(), x: 0.0, y: 0.0, w: 0.0, h: 0.0, format: String::new(), valign: String::new() })
+        .map(|f| GuiItem::Text { path: String::new(), font: f.to_string(), text: String::new(), spans: Vec::new(), x: 0.0, y: 0.0, w: 0.0, h: 0.0, format: String::new(), valign: String::new(), fixed: true })
         .collect();
     for p in &probe {
         let _ = gui::fonts(runtime, game_dir, std::slice::from_ref(p), fonts);
