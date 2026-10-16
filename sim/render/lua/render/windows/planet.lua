@@ -520,10 +520,17 @@ function View:summary()
     if not self.completed then
         hide[S .. "/summary_side_window/designation_button_container"] = true
         hide[S .. "/summary_side_window/summary_build_queue_window"] = true
-    elseif colony.designation then
+    else
+        -- the designation chosen (colony +0x108: the save's `designation`), else "Auto
+        -- Designated" (the game's frame of the capital: final_designation col_capital, none chosen)
         local DB = S .. "/summary_side_window/designation_button_container"
-        text[DB .. "/designation_name"] = self:L(colony.designation)
-        sprites[DB .. "/designation_icon"] = colony.designation_icon
+        if colony.manual_designation then
+            text[DB .. "/designation_name"] = self:L(colony.manual_designation)
+            sprites[DB .. "/designation_icon"] = colony.manual_designation_icon
+        else
+            text[DB .. "/designation_name"] = self:L("COLONY_AUTOMATIC_DESIGNATION")
+            hide[DB .. "/designation_icon"] = true
+        end
     end
     if d then
         local SS = S .. "/summary_side_window/planet_summary"
@@ -2339,6 +2346,8 @@ function planet.data(game_dir, id)
             pop_groups = {}, jobs = {}, armies = {}, species = {},
         }
         col.designation_icon = dfield(block_of(game_dir, "common/colony_types", col.designation or ""), "icon")
+        col.manual_designation = unquote(world.field(c, "designation"))
+        col.manual_designation_icon = dfield(block_of(game_dir, "common/colony_types", col.manual_designation or ""), "icon")
         -- the summary's resources: production less upkeep, the empire's base on its capital
         local net, idx = {}, {}
         local function add(k, v)
