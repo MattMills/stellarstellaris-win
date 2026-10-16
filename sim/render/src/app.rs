@@ -2167,6 +2167,28 @@ impl App {
                 }
             }
         }
+        // a text box of the open view (a rename dialog's: views::text_focus) has the keyboard: a key
+        // typed goes to it (its press; its release taken too, so no shortcut fires), RETURN its OK;
+        // ESCAPE goes on to the view's Escape (the dialog's Cancel)
+        if self.screen == Screen::Map {
+            if let (Input::Key { key, down, .. }, Some(name)) = (input, self.open_view.clone()) {
+                if !matches!(key.as_str(), "shift" | "ctrl" | "alt" | "escape") && crate::views::text_focus(&self.runtime, &name, &self.view_state) {
+                    if *down {
+                        if let Some(t) = creator_key(key, self.controls.mods().shift) {
+                            let token = t.trim_start_matches("creator:").to_string();
+                            if let Some((pairs, action)) = crate::views::text_key(&self.runtime, &name, &self.view_state, &token) {
+                                let p: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                                self.set_view_state(&p);
+                                if let Some(a) = action {
+                                    self.act("/key", Some(&a))?;
+                                }
+                            }
+                        }
+                    }
+                    return Ok(true);
+                }
+            }
+        }
         // the bars' .gui shortcuts (F1..F10, F, L, Alt+B, Ctrl+Z ..., O: mainbars.rs), on release
         if self.screen == Screen::Map {
             if let Input::Key { key, down: false, .. } = input {

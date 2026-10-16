@@ -8,6 +8,7 @@
 local world = require("engine.world")
 local C = require("render.windows.empire_common")
 local leaders = require("render.windows.leaders_common")
+local rename = require("render.windows.rename")
 
 local M = {}
 
@@ -111,12 +112,19 @@ function M.build(ctx, d, state)
         hide.no_agenda_selected_container = true
         sprites[V .. "/council_agenda_container/council_agenda_button_icon"] = "GFX_council_agenda_icon_" .. d.agenda
         text[V .. "/council_agenda_container/agenda_name"] = "council_agenda_" .. d.agenda .. "_name"
-        -- launching early is not possible here (CEarlyFinishAgendaCommand::IsValid: the progress
-        -- under the cost and no early launch to pay for it [I]): the button disabled
-        hide.activate_council_agenda_button = true
-        hide.agenda_attention_glow = true
+        -- launched when its progress has reached its cost (CGovernment::IsAgendaFinished:
+        -- activate_council_agenda_button and its glow; CFinishAgendaCommand, the simulation's
+        -- cmd:council:launch; CCouncilAgenda::GetCost: agenda_cost x (1 +
+        -- EMPIRE_SIZE_COUNCIL_AGENDA_COST_PENALTY x the size over EMPIRE_SIZE_BASE)); early
+        -- (early_activate_council_agenda_button, paid in unity): disabled [not done here]
+        local cost = C.number(ctx, "common/council_agendas", d.agenda, C.field(C.defs(ctx, "common/council_agendas")[d.agenda] or {}, "agenda_cost")) or 0
+        if d.agenda_progress < cost or cost <= 0 then
+            hide.activate_council_agenda_button = true
+            hide.agenda_attention_glow = true
+        end
     else
         hide.agenda_progress_bar = true
+        hide.early_activate_council_agenda_button = true
     end
     hide.council_agenda_activation_effect_icon = true
     -- active edicts (PopulateActiveEdicts) and the fund (EDICT_UPKEEP_AND_FUND)
@@ -131,6 +139,7 @@ function M.build(ctx, d, state)
         [V .. "/council_agenda_container/council_agenda_button"] = "view_set:agendas=" .. (agendas_open and "" or "1"),
         [V .. "/choose_agenda_view/close_agenda_button"] = "view_set:agendas=",
         [V .. "/close_button"] = "view_close",
+        [V .. "/council_agenda_container/activate_council_agenda_button"] = "cmd:council:launch",
         [V .. "/tab_factions"] = "view:factions",
         [V .. "/tab_edicts_and_policies"] = "view:edicts",
         [V .. "/active_edicts_container/no_edicts_active_container/no_active_edicts_button"] = "view:edicts",
@@ -172,15 +181,19 @@ function M.build(ctx, d, state)
             local p = prefix .. "/council_position_entry/"
             local cdef = C.defs(ctx, "common/governments/councilors")[pos.type or ""]
             local icon = cdef and C.field(cdef, "icon")
-            b:add(FILE, "council_position_entry", {
+            -- the position's name button (rename_council_position: CCouncilPositionRenameDialog)
+            local ra = pos.leader_data and leaders.rename_actions(ctx, pos.leader_data).rename_leader_title
+                or rename.open("position", pos.id, C.loc(ctx, pos.type or ""), C.loc(ctx, pos.type or ""), C.loc(ctx, pos.type or ""), false)
+            b:add_named(FILE, "council_position_entry", {
                 prefix = prefix, parent = { x = x, y = gy, w = 0, h = 0 },
+                named = { actions = { rename_council_position = ra } },
                 hide = { locked_container = true, unlock_slot_container = true },
                 text = { [p .. "unlocked_container/council_position_name"] = pos.type or "" },
                 sprites = icon and { [p .. "unlocked_container/council_position_icon"] = icon } or nil,
             })
             if pos.leader_data then
                 leaders.card(ctx, b, "paragon_portrait_container_council", { x = x, y = gy, w = 188, h = 272 }, pos.leader_data,
-                    { prefix = prefix .. "/card", hide = { "council_container" } })
+                    { prefix = prefix .. "/card", hide = { "council_container" }, named_actions = leaders.rename_actions(ctx, pos.leader_data) })
             end
         end
     end
@@ -188,7 +201,7 @@ function M.build(ctx, d, state)
     if d.ruler then
         local x = gx + 2 * 198
         leaders.card(ctx, b, "paragon_portrait_container_ruler_council", { x = x, y = gy, w = rc and rc.w or 200, h = 135 }, d.ruler,
-            { prefix = "/council_ruler" })
+            { prefix = "/council_ruler", named_actions = leaders.rename_actions(ctx, d.ruler) })
     end
     -- the agenda list over everything else of the view (its councillors' cards too)
     local ar = agendas_open and b:add(FILE, "council_view", { only = { choose_agenda_view = true }, hide = { [V .. "/background"] = true },
@@ -239,6 +252,8 @@ function M.build(ctx, d, state)
             end
         end
     end
+    -- the rename dialog over the view
+    rename.build(b, ctx, "council", state, nil)
     return b.items, b.report
 end
 
@@ -285,5 +300,6 @@ end
 
 -- Escape (views.rs): the side windows in these state keys close first, else the view closes
 M.escape_keys = { "agendas" }
+rename.install(M, "council")
 
 return M
