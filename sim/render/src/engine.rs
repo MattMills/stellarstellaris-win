@@ -16,6 +16,8 @@
 //! - the clock (clock.rs: the simulation on its own thread): `pause` (stopped, as the game's
 //!   headless), `pause off` (running), `speed 1..5`, `wait SECONDS` (real time passes)
 //! - `select system|fleet|planet|ship ID`, `select none`: the selection (marked; `state` names it)
+//! - `open fleet ID|ship ID|fleet_manager|none`: the fleet windows (fleetwin.rs; the headless
+//!   game's `open` opens the same ones)
 //! - `key NAME down|up`, `mouse X Y [left|right down|up]`, `scroll DY`
 //! - `frame PATH.png` (renders the view, writes the PNG: `ok frame PATH W H MS`), `frame -`
 //! - `bench SECONDS [FPS]`: frames drawn back to back at FPS (120) as a window draws them, the
@@ -420,6 +422,12 @@ impl Engine {
                 self.app.select(what);
                 self.flush_log();
                 Ok(Reply::ok(format!("select {}", a.join(" "))))
+            }
+            "open" => {
+                let id = a.get(1).and_then(|v| v.parse::<u32>().ok());
+                let r = self.app.fleet_open(a.first().copied().unwrap_or(""), id)?;
+                self.flush_log();
+                Ok(Reply::ok(r))
             }
             "orbit" => {
                 self.app.orbit(num(a.first(), "dyaw")?, num(a.get(1), "dpitch")?);

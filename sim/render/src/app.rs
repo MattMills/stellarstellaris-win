@@ -142,11 +142,13 @@ pub struct App {
     pub selected: Option<Pickable>,
     /// the windows over the map for the selection (the outliner, an info window)
     pub overlay_items: Vec<GuiItem>,
+    /// the fleet windows open besides the selected fleet's (fleetwin.rs)
+    pub fleet: crate::fleetwin::FleetWindows,
     /// the map labels (mapicons.gui) of what the view shows
     pub overlay_labels: Vec<scene::Label>,
     /// what the windows were laid out for: the size, view, selection, snapshot, GUI shown, paused,
     /// star names' zoom, observing
-    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool)>,
+    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool, u64)>,
     /// the player holds the camera (a drag, a turn); the plane's point a drag holds; what the
     /// camera follows; the systems' cameras as they were left; the last system shown
     holding: bool,
@@ -229,6 +231,7 @@ impl App {
             models: models::Library::default(),
             selected: None,
             overlay_items: Vec::new(),
+            fleet: Default::default(),
             overlay_labels: Vec::new(),
             overlay_key: None,
             holding: false,
@@ -1037,6 +1040,7 @@ impl App {
             e.parent = Some([-225.0 + 34.0, 35.0 + 50.0 + 40.0 * i as f32, 0.0, 0.0]);
             e.only = Some(vec!["right_icon".into()]);
             e.sprites.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("GFX_topbar_{v}_button")));
+            e.actions.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("view:{v}")));
             e.prefix = Some(prefix);
             specs.push(e);
         }
@@ -1184,7 +1188,7 @@ impl App {
         let mut selected: Option<(String, u32)> = None;
         match self.selected {
             Some(Pickable::Fleet(id)) => {
-                if let Some(f) = g.fleets.iter().find(|f| f.id == id) {
+                if let Some(f) = g.fleets.iter().find(|f| f.id == id && f.station) {
                     names.push(&f.name);
                     selected = Some((if f.station { "starbase" } else { "fleet" }.into(), id));
                 }
@@ -1253,6 +1257,11 @@ impl App {
         // the main screen's other windows under the outliner and the selection's window
         let mut items = self.main_screen_items()?;
         items.extend(layout.items);
+        // the fleet windows (fleetwin.rs): the selected fleet's fleet_view, ship_view, the fleet manager
+        match self.fleet_items(w, h) {
+            Ok(f) => items.extend(f),
+            Err(e) => self.log.push(format!("fleet windows: {e}")),
+        }
         let map = self.map.as_mut().unwrap();
         gui::fonts(&self.runtime, &self.game_dir, &items, map.fonts.get_or_insert_with(HashMap::new))?;
         Ok(items)
@@ -1260,6 +1269,12 @@ impl App {
 
     /// The scene must be built again (the world or the view changed).
     pub fn invalidate(&mut self) {
+        self.scene = None;
+    }
+
+    /// The windows must be laid out again (a window opened or closed: their state changed).
+    pub fn relayout_windows(&mut self) {
+        self.overlay_key = None;
         self.scene = None;
     }
 
@@ -1343,7 +1358,7 @@ impl App {
             let (w, h) = self.size;
             let states = self.states();
             if self.screen == Screen::Map {
-                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0), m.observe));
+                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0), m.observe, self.fleet.key()));
                 if key != self.overlay_key {
                     let t = Instant::now();
                     self.overlay_items = self.selection_windows();
@@ -1529,6 +1544,7 @@ impl App {
             }
             // the selection's window closed; an outliner row selects its planet or fleet
             Some("close") => self.select(None),
+            Some(a) if a.starts_with("fleet:") || a == "view:fleet_manager" => self.fleet_act(a)?,
             Some(a) if a.starts_with("select:") => {
                 let mut it = a.split(':').skip(1);
                 let (kind, id) = (it.next().unwrap_or(""), it.next().and_then(|v| v.parse::<u32>().ok()).ok_or(format!("bad action {a}"))?);
@@ -1650,6 +1666,7 @@ impl App {
                     self.mode3d = !self.mode3d;
                     self.scene = None;
                 }
+                "escape" if self.fleet_escape() => {}
                 "escape" if self.selected.is_some() => self.select(None),
                 "escape" if self.view != MapView::Galaxy && self.map.is_some() => {
                     self.log.push(format!("escape: {:?} -> Galaxy", self.view));

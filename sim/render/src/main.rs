@@ -32,6 +32,7 @@ mod dds;
 mod effects;
 mod engine;
 mod flag;
+mod fleetwin;
 mod math;
 mod models;
 mod particles;
@@ -390,6 +391,11 @@ impl Map {
             *texture = name;
             *tint = [1.0; 4];
         }
+    }
+
+    /// Whether this runtime has the save's world (else the simulation's thread has it).
+    pub fn has_world(&self) -> bool {
+        self.world
     }
 
     /// The player's country (an index into the galaxy's countries).
