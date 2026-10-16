@@ -641,7 +641,14 @@ local function chains_and_projects(pid)
     local ev = world.field(c or {}, "events")
     for _, ch in ipairs(world.fields(type(ev) == "table" and ev or {}, "event_chain")) do
         if type(ch) == "table" then
-            chains[#chains + 1] = { key = text(world.field(ch, "event_chain")) }
+            local counters = {}
+            local cb = world.field(ch, "counter")
+            for _, e in ipairs(type(cb) == "table" and cb or {}) do
+                if e.op and e.key and e.value.text then
+                    counters[e.key.text] = tonumber(e.value.text) or 0
+                end
+            end
+            chains[#chains + 1] = { key = text(world.field(ch, "event_chain")), counters = counters }
         end
     end
     for _, sp in ipairs(world.fields(type(ev) == "table" and ev or {}, "special_project")) do
@@ -719,6 +726,19 @@ function M.read(game_dir)
     local chains, projects = chains_and_projects(pid)
     return {
         player = pid, date = date, events = events,
+        first_contacts = first_contacts(pid), situations = situations(pid), sites = sites(pid),
+        chains = chains, projects = projects, anomalies = anomalies(pid),
+    }
+end
+
+-- data.log(game_dir) -> what the Situation Log shows (render.windows.situation): the player's event
+-- chains (their counters), special projects, situations, first contacts, archaeological sites and
+-- anomalies
+function M.log(game_dir)
+    local pid = player()
+    local chains, projects = chains_and_projects(pid)
+    return {
+        player = pid, date = text(world.meta and world.meta.date) or "",
         first_contacts = first_contacts(pid), situations = situations(pid), sites = sites(pid),
         chains = chains, projects = projects, anomalies = anomalies(pid),
     }

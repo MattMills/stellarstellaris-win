@@ -169,10 +169,7 @@ fn load_data(ui: &mut EventsUi, runtime: &Runtime, chunk: &str) -> Result<(), St
 /// (the GUI and the localisation installed).
 pub fn items(ui: &mut EventsUi, runtime: &Runtime, game_dir: &str, fonts: &mut HashMap<String, Font>, chunk: &str, width: u32, height: u32) -> Result<Vec<GuiItem>, String> {
     load_data(ui, runtime, chunk)?;
-    if ui.open.is_empty() && ui.popups.is_empty() {
-        return Ok(Vec::new());
-    }
-    // the fonts the wrapped texts are measured in
+    // the fonts the wrapped texts are measured in (the views' too: render.windows.situation)
     let probe: Vec<GuiItem> = ["cg_16b", "malgun_goth_24", "cg_16b_shadow"]
         .iter()
         .map(|f| GuiItem::Text { path: String::new(), font: f.to_string(), text: String::new(), spans: Vec::new(), x: 0.0, y: 0.0, w: 0.0, h: 0.0, format: String::new(), valign: String::new() })
@@ -183,6 +180,9 @@ pub fn items(ui: &mut EventsUi, runtime: &Runtime, game_dir: &str, fonts: &mut H
     let lua = &runtime.lua;
     for (name, f) in fonts.iter() {
         export_metrics(lua, name, f).map_err(|e| e.to_string())?;
+    }
+    if ui.open.is_empty() && ui.popups.is_empty() {
+        return Ok(Vec::new());
     }
     let read = || -> mlua::Result<Vec<GuiItem>> {
         let state = lua.create_table()?;
