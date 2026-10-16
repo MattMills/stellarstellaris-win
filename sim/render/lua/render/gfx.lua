@@ -66,9 +66,12 @@ local function read_sprite(kind, b, file)
         border = type(border) == "table" and { x = tonumber(get(border, "x")) or 0, y = tonumber(get(border, "y")) or 0 } or nil,
         file = file,
     }
-    -- a progress bar's size (progressbarType `size`: its full texture drawn at it)
+    -- a progress bar's size (progressbarType `size`: its full texture drawn at it) and its empty
+    -- texture (textureFile2, under the part not done)
     if kind == "progressbarType" then
         s.size = xy("size", "x", "y")
+        local t2 = get(b, "textureFile2")
+        s.texture2 = t2 and unquote(t2):gsub("\\", "/")
     end
     -- a sprite that is a frame of another (sprite_sheet_sprite_type, default_frame)
     local sheet = get(b, "sprite_sheet_sprite_type")

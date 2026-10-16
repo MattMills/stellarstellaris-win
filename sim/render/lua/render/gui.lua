@@ -7,13 +7,20 @@
 --
 -- An element's rectangle: its parent's content area's top left (the parent's rectangle less its
 -- `margin`) + the parent's anchor point (`orientation`) + `position` - its own anchor point
--- (`origo`). Sizes may be in % of the parent ("100%%" too). An iconType or buttonType without a
--- size is the size of its sprite's frame times its `scale`. A window's background: a cornered
+-- (`origo`). Sizes may be in % of the parent ("100%%" too); a negative size is the parent's less
+-- the element's position and that much (CGuiSize::InternalGetX/Y). An iconType or buttonType without a
+-- size is the size of its sprite's frame times its `scale`; a buttonType whose sprite is a plain
+-- spriteType is drawn at that size whatever its `size` says [I] (starbase_view's two Designs
+-- buttons, 290 and 265 wide, show the same 264 x 60 frame in the game). A window's background: a cornered
 -- tile fills the window (nine slices), a plain sprite keeps its size. `if_scaled_resolution =
--- { min_height = 900 ... }` blocks replace the fields they give when the screen matches.
+-- { min_height = 900 ... }` blocks (and `if_resolution`, the same at a UI scale of 1) replace the
+-- fields they give when the screen matches, and the elements in them are laid out then. A field
+-- given twice takes its last value (each read overwrites: starbase_view's stats_label has
+-- `position` (0, 0) then (0, 8), and the game's frame shows the second).
 -- Scripted variables (`@x = 17`) are scoped: a window's own apply to it and its children, the
 -- file's to all. Texts are localisation keys (engine.localisation), split at their colour codes
--- into spans coloured with the fonts' textcolors; a button's `buttonText` is centred on it. What
+-- into spans coloured with the fonts' textcolors; a button's `buttonText` (or its `text`: the
+-- game's frame shows starbase_view's open_defense_designs label) is centred on it. What
 -- the game decides at run time (which elements show, texts, actions) comes from `opts`.
 
 local source = require("stellar.script.source")
@@ -37,6 +44,21 @@ local LISTS = { smoothlistboxtype = true, listboxtype = true, gridboxtype = true
 gui.CONTAINERS, gui.ICONS, gui.TEXTS, gui.LISTS = CONTAINERS, ICONS, TEXTS, LISTS
 
 local trees = {}   -- file -> tree, parsed once
+
+-- a block's field, its last occurrence (the game's readers overwrite a member read twice)
+local function get_last(block, key)
+    if type(block) ~= "table" then
+        return nil
+    end
+    key = key:lower()
+    for i = #block, 1, -1 do
+        local e = block[i]
+        if e.op and e.key and e.key.text:lower() == key then
+            return e.value.text or e.value
+        end
+    end
+    return nil
+end
 
 local function tree_of(game_dir, file)
     local t = trees[file]
@@ -198,8 +220,28 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                 if s.text then
                     spans[#spans + 1] = { text = s.text, colour = db.textcolors[s.colour or ""] or base }
                 elseif s.icon then
-                    -- a text icon (£name£: GFX_text_<name>): "\1texture\1frames\1frame" for the renderer
-                    local sp = db.sprites["GFX_text_" .. s.icon]
+                    -- a text icon (£name£: GFX_text_<name>; a modifier's, mod_x or MOD_X, is GFX_mod_x:
+                    -- CGameBitmapFont::GetUnitIconGuiType): "\1texture\1frames\1frame" for the renderer
+                    local key = s.icon
+                    local sp
+                    if key:lower():sub(1, 4) == "mod_" then
+                        -- a modifier's icon: its sprite, else the one CModifier::InitDefinitionIcons
+                        -- makes from gfx/interface/icons/modifiers/<mod_x>.dds (GFX_mod_unknown
+                        -- when there is no such file)
+                        local name = "GFX_" .. key:lower()
+                        sp = db.sprites[name]
+                        if not sp then
+                            local tex = "gfx/interface/icons/modifiers/" .. key:lower() .. ".dds"
+                            if opts.texture_size and opts.texture_size(tex) then
+                                sp = { texture = tex, frames = 1, kind = "spriteType" }
+                                db.sprites[name] = sp
+                            else
+                                sp = db.sprites.GFX_mod_unknown
+                            end
+                        end
+                    else
+                        sp = db.sprites["GFX_text_" .. key]
+                    end
                     if sp and sp.sheet and db.sprites[sp.sheet] then
                         sp = { texture = db.sprites[sp.sheet].texture, frames = db.sprites[sp.sheet].frames, frame = sp.default_frame }
                     end
@@ -235,23 +277,33 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
         local vars = scope_of(b, scope)
         -- the fields, with the if_scaled_resolution blocks that match the screen over them
         local over = {}
+        local function matches(c)
+            local ok = true
+            local function bound(k, cmp)
+                local v = number(get(c, k), vars)
+                if v and not cmp(v) then
+                    ok = false
+                end
+            end
+            bound("min_height", function(v) return screen.height >= v end)
+            bound("max_height", function(v) return screen.height <= v end)
+            bound("min_width", function(v) return screen.width >= v end)
+            bound("max_width", function(v) return screen.width <= v end)
+            return ok
+        end
+        -- the block's entries, with those of the blocks that match the screen in their place
+        local entries = {}
         for _, e in ipairs(b) do
-            if e.op and e.key and e.key.text:lower() == "if_scaled_resolution" and e.value.text == nil then
-                local c = e.value
-                local ok = true
-                local function bound(k, cmp)
-                    local v = number(get(c, k), vars)
-                    if v and not cmp(v) then
-                        ok = false
+            local kl = e.op and e.key and e.key.text:lower()
+            if (kl == "if_scaled_resolution" or kl == "if_resolution") and e.value.text == nil then
+                if matches(e.value) then
+                    over[#over + 1] = e.value
+                    for _, c in ipairs(e.value) do
+                        entries[#entries + 1] = c
                     end
                 end
-                bound("min_height", function(v) return screen.height >= v end)
-                bound("max_height", function(v) return screen.height <= v end)
-                bound("min_width", function(v) return screen.width >= v end)
-                bound("max_width", function(v) return screen.width <= v end)
-                if ok then
-                    over[#over + 1] = c
-                end
+            else
+                entries[#entries + 1] = e
             end
         end
         local function field(k)
@@ -261,7 +313,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                     return v
                 end
             end
-            return get(b, k)
+            return get_last(b, k)
         end
 
         -- a window the game slides in and out is laid out where it shows (show_position)
@@ -276,6 +328,14 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
         local over_size = opts.sizes and opts.sizes[path]
         local w = number(type(size) == "table" and (get(size, "width") or get(size, "x")) or nil, vars, parent.w)
         local h = number(type(size) == "table" and (get(size, "height") or get(size, "y")) or nil, vars, parent.h)
+        -- a negative size: the parent's less the position and that much (CGuiSize::InternalGetX:
+        -- size + (parent - position) when size < 0; 4.5.2 Linux 0x436d9a0)
+        if w and w < 0 then
+            w = parent.w - px + w
+        end
+        if h and h < 0 then
+            h = parent.h - py + h
+        end
         if over_size then
             w, h = over_size[1], over_size[2]
         end
@@ -315,7 +375,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                 mb = number(get(m, "bottom"), vars) or 0
             end
             local inner = { x = x + ml, y = y + mt, w = w - ml - mr, h = h - mt - mb }
-            for _, e in ipairs(b) do
+            for _, e in ipairs(entries) do
                 if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
                     local k = e.key.text:lower()
                     if k == "background" then
@@ -323,7 +383,10 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                         local bs = get(e.value, "spriteType") or get(e.value, "quadTextureSprite")
                         local s = bs and db.sprites[bs]
                         local fill = s and s.kind == "corneredTileSpriteType"
-                        if bs and not hidden(path .. "/background", "") then
+                        -- (one of several backgrounds hidden by its name: path/<name>)
+                        local bname = get(e.value, "name")
+                        local own = bname and opts.hide and opts.hide[path .. "/" .. bname]
+                        if bs and not hidden(path .. "/background", "") and not own then
                             local bw, bh
                             if fill then
                                 bw, bh = w, h
@@ -344,7 +407,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                             element(k, e.value, inner, path, depth + 1, vars)
                         end
                     elseif k ~= "position" and k ~= "size" and k ~= "hide_position" and k ~= "show_position"
-                        and k ~= "margin" and k ~= "if_scaled_resolution" then
+                        and k ~= "margin" and k ~= "if_scaled_resolution" and k ~= "if_resolution" then
                         report.skipped[k] = (report.skipped[k] or 0) + 1
                     end
                 end
@@ -354,10 +417,21 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             if kind ~= "icontype" and field("alwaysTransparent") ~= "yes" then
                 button = { name = name, id = field("id"), action = opts.actions and opts.actions[path] }
             end
+            -- a button's plain sprite keeps its frame's size (its label is centred on it)
+            local s = sprite and db.sprites[sprite]
+            if kind ~= "icontype" and s and s.kind == "spriteType" then
+                local fw, fh = frame_size(sprite)
+                if fw then
+                    w, h = fw * scale, fh * scale
+                end
+            end
             if sprite then
                 sprite_item(path, sprite, frame, x, y, w, h, button)
             end
             local bt = field("buttonText")
+            if (bt == nil or bt == "") and kind ~= "icontype" then
+                bt = field("text")
+            end
             if bt and bt ~= "" then
                 local text = opts.text and opts.text[path] or bt
                 text_item(path .. "/text", field("buttonFont") or field("font"), text, x, y, w, h, "center", "center",

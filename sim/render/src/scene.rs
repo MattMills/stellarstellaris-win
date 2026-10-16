@@ -1159,6 +1159,17 @@ fn screen_quad(rect: [f32; 4], uv: [f32; 4], colour: [f32; 4]) -> Quad {
     Quad { rect, uv, colour, rot: 0.0, kind: QuadKind::Screen, height: 0.0, least_px: 0.0, fx: [0.0; 4], fx2: [0.0; 4] }
 }
 
+/// A GUI sprite's quad: a tint with a negative alpha is a disabled button, greyed out as the
+/// game's buttonstate shaders do (map.wgsl's quad mode 4), its alpha the tint's less the sign.
+fn gui_quad(rect: [f32; 4], uv: [f32; 4], tint: [f32; 4]) -> Quad {
+    let mut q = screen_quad(rect, uv, tint);
+    if tint[3] < 0.0 {
+        q.colour[3] = -tint[3];
+        q.fx[0] = 4.0;
+    }
+    q
+}
+
 /// Adds GUI items to the batches: sprites (button frames by state, cornered tiles as nine
 /// slices; a background still in the Background layer) and texts (span by span, in their
 /// colours, vertically centred when the box says so).
@@ -1206,11 +1217,11 @@ pub fn add_gui(
                         let vs = [0.0, by / th, 1.0 - by / th, 1.0];
                         for r in 0..3 {
                             for c in 0..3 {
-                                push(batches, layer, Blend::Alpha, t, screen_quad([xs[c], ys[r], xs[c + 1], ys[r + 1]], [us[c], vs[r], us[c + 1], vs[r + 1]], *tint));
+                                push(batches, layer, Blend::Alpha, t, gui_quad([xs[c], ys[r], xs[c + 1], ys[r + 1]], [us[c], vs[r], us[c + 1], vs[r + 1]], *tint));
                             }
                         }
                     }
-                    _ => push(batches, layer, Blend::Alpha, t, screen_quad([*x, *y, x + w, y + h], [u0, 0.0, u1, 1.0], *tint)),
+                    _ => push(batches, layer, Blend::Alpha, t, gui_quad([*x, *y, x + w, y + h], [u0, 0.0, u1, 1.0], *tint)),
                 }
                 if layer == Layer::Gui {
                     let order = gui.sprites.len() + gui.texts.len();

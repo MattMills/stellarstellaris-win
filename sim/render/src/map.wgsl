@@ -238,6 +238,15 @@ fn fs_quad(i: QuadOut) -> @location(0) vec4<f32> {
         let c = lin3(texel.rgb) * mix(c0, ti_col + vec3<f32>(ba * 0.3), 1.0 - ti);
         return out_lin(c, a * ncol.a * i.colour.a);
     }
+    if (mode > 3.5 && mode < 4.5) {
+        // a disabled button (buttonstate.shader's PixelShaderDisable, utils.fxh GreyOutLuminosity
+        // with constants.fxh's GREY_OUT_VECTOR, GREY_OUT_GREYNESS 0.85, GREY_OUT_BRIGHTNESS 0.75),
+        // then the colour
+        let grey = dot(texel.rgb, vec3<f32>(0.212671, 0.715160, 0.072169));
+        let g = (vec3<f32>(grey) * 0.85 + texel.rgb * 0.15) * 0.75;
+        let gc = vec4<f32>(g, texel.a) * i.colour;
+        return output(gc.rgb, gc.a);
+    }
     let c = texel * i.colour;
     return output(c.rgb, c.a);
 }
