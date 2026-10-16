@@ -144,6 +144,8 @@ pub struct App {
     pub overlay_items: Vec<GuiItem>,
     /// the map labels (mapicons.gui) of what the view shows
     pub overlay_labels: Vec<scene::Label>,
+    /// the outliner's state: its tab, the groups collapsed (render.windows.outliner)
+    pub outliner: crate::outliner::State,
     /// what the windows were laid out for: the size, view, selection, snapshot, GUI shown, paused,
     /// star names' zoom, observing
     overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool)>,
@@ -230,6 +232,7 @@ impl App {
             selected: None,
             overlay_items: Vec::new(),
             overlay_labels: Vec::new(),
+            outliner: Default::default(),
             overlay_key: None,
             holding: false,
             drag_anchor: None,
@@ -1168,18 +1171,10 @@ impl App {
             _ => None,
         };
         let g = map.galaxy.clone();
+        let observe = map.observe;
 
-        let system_name = |id: i64| g.systems.iter().find(|s| s.id as i64 == id).map(|s| &s.name);
-        // the names to localise, in one call: each member's name and location, the sectors' names
-        let none = crate::galaxy::Name::default();
+        // the name of the selection's window, localised
         let mut names: Vec<&crate::galaxy::Name> = Vec::new();
-        for e in &g.outliner {
-            names.push(&e.name);
-            names.push(system_name(e.system).unwrap_or(&none));
-        }
-        for (_, n) in &g.sectors {
-            names.push(n);
-        }
         // the selection's window: a fleet (a station: the starbase's), a planet
         let mut selected: Option<(String, u32)> = None;
         match self.selected {
@@ -1198,58 +1193,17 @@ impl App {
             _ => {}
         }
         let texts = gui::format_names(&self.runtime, &names)?;
-        let (member_texts, rest) = texts.split_at((2 * g.outliner.len()).min(texts.len()));
-        let (sector_names, rest) = rest.split_at(g.sectors.len().min(rest.len()));
-        let mut rest = rest.iter();
+        let mut rest = texts.iter();
         let mut next = || rest.next().cloned().unwrap_or_default();
-        let row_of = |i: usize, e: &crate::galaxy::OutlinerEntry| -> gui::OutlinerRow {
-            let selected = match self.selected {
-                Some(Pickable::Fleet(f)) => e.kind != "planet" && f == e.id,
-                Some(Pickable::Body(b)) => e.kind == "planet" && b == e.id,
-                _ => false,
-            };
-            gui::OutlinerRow {
-                id: e.id,
-                name: member_texts.get(2 * i).cloned().unwrap_or_default(),
-                // the second line: a ship size, a starbase type, a colony designation (keys the
-                // layout localises)
-                sub: e.sub.clone(),
-                location: member_texts.get(2 * i + 1).cloned().unwrap_or_default(),
-                power: if e.power > 0.0 { si_number(e.power.round()) } else { String::new() },
-                selected,
-            }
+        // the outliner (render.windows.outliner, from the world's view and its own state)
+        let row_selected = match self.selected {
+            Some(Pickable::Fleet(f)) => Some(("fleet", f)),
+            Some(Pickable::Body(b)) => Some(("planet", b)),
+            _ => None,
         };
-        // the Overview tab's groups (CCountryTabbedOutliner, COutlinerSettings::GetSort on Linux:
-        // the visible groups in reverse enum order): Utility Ships, Military Fleets, Starbases,
-        // Shipyards, then Sectors (a header with the count of sectors, each sector's own header and
-        // its colonies); Colonies (PLANETS) is disabled by default; empty groups are left out
-        let mut outliner = Vec::new();
-        for (title, kind, member) in [
-            ("OUTLINER_CIVILIAN_FLEETS", "civilian", "civilian"),
-            ("OUTLINER_FLEETS", "fleet", "military"),
-            ("OUTLINER_STARBASES", "starbase", "starbase"),
-            ("OUTLINER_SHIPYARDS", "starbase", "shipyard"),
-        ] {
-            let rows: Vec<gui::OutlinerRow> = g.outliner.iter().enumerate().filter(|(_, e)| e.kind == member).map(|(i, e)| row_of(i, e)).collect();
-            if !rows.is_empty() {
-                outliner.push(gui::OutlinerGroup { title: title.into(), kind: kind.into(), rows, header: None, amount: None });
-            }
-        }
-        if !g.sectors.is_empty() {
-            outliner.push(gui::OutlinerGroup { title: "OUTLINER_SECTORS".into(), kind: "sectors".into(), rows: Vec::new(), header: None, amount: Some(g.sectors.len().to_string()) });
-            for (k, (sid, _)) in g.sectors.iter().enumerate() {
-                let rows: Vec<gui::OutlinerRow> = g.outliner.iter().enumerate().filter(|(_, e)| e.kind == "planet" && e.sector == *sid as i64).map(|(i, e)| row_of(i, e)).collect();
-                outliner.push(gui::OutlinerGroup {
-                    title: sector_names.get(k).cloned().unwrap_or_default(),
-                    kind: "planet".into(),
-                    rows,
-                    header: Some("outliner_sector_title_entry_window".into()),
-                    amount: None,
-                });
-            }
-        }
+        crate::outliner::install(&self.runtime, &g.outliner_view, &self.outliner, row_selected, observe)?;
         let selected = selected.map(|(kind, id)| gui::SelectedWindow { kind, id, name: next(), sub: String::new() });
-        let layout = gui::windows(&self.runtime, w, h, &outliner, selected.as_ref())?;
+        let layout = gui::windows(&self.runtime, w, h, &[], selected.as_ref())?;
         // the main screen's other windows under the outliner and the selection's window
         let mut items = self.main_screen_items()?;
         items.extend(layout.items);
@@ -1537,6 +1491,13 @@ impl App {
                     "system" => Pickable::System(id as usize),
                     _ => Pickable::Fleet(id),
                 }));
+            }
+            // the outliner's tabs, groups, observer list (outliner.rs State::act): laid out again
+            Some(a) if a.starts_with("outliner:") => {
+                if self.outliner.act(&a["outliner:".len()..]) {
+                    self.overlay_key = None;
+                    self.scene = None;
+                }
             }
             Some(other) => self.log.push(format!("  {other}: not done yet (its window is not laid out)")),
             None => {}
