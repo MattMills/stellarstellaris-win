@@ -543,12 +543,18 @@ end
 -- after a root effect (an event's immediate, option or after): the game updates its modifier nodes
 -- (CRootEffect::Execute -> CModifierNodeManager::Update) [V]; when a timed modifier changed, the
 -- world's graph is brought up to date then (engine.modifier_source.rebuild), not at the month's
--- update only
+-- update only. creation.defer (set by newgame.start_script) takes the update instead: the graph
+-- is brought up to date when something next reads it, which gives the same values (nothing reads
+-- the graph in between) without a rebuild after every event of the start
 function creation.after_root_effect()
     if not creation.modifiers_changed then
         return
     end
     creation.modifiers_changed = false
+    if creation.defer then
+        creation.defer()
+        return
+    end
     local engine = package.loaded["engine"]
     local source = engine and engine.modifier_source
     if source and source.rebuild then

@@ -463,33 +463,186 @@ function newgame.start_script(game)
         end
         barrier()
     end
+    -- the init_effects of one system share its tree's scope: the event targets one saves are the
+    -- others' (`exists = event_target:GuardiansTradersPlanet` guards the enclaves' planets) [I]
+    local targets_of = {}
+    local R = require("engine.script.runtime")
     local function init_effects(from, to)
         for i = from, to do
             local ie = game.init_effects[i]
             if ie then
                 local kind = ie.kind == "system" and "system" or "planet"
+                local sys = kind == "system" and ie.id or R.system_of("planet", ie.id) or -1
+                targets_of[sys] = targets_of[sys] or {}
                 guarded(string.format("%s %d init_effect (%s)", kind, ie.id, tostring(ie.initializer)), function()
-                    eval.effect(ie.block, eval.new_ctx(eval.S(kind, ie.id), nil, nil, ie.file))
+                    eval.effect(ie.block, eval.new_ctx(eval.S(kind, ie.id), nil, targets_of[sys], ie.file))
                 end)
                 ran.effects = ran.effects + 1
             end
         end
     end
+    -- the capital colony as CreateNewColony leaves it: no pops (empires.lua's stand-in pops, for a
+    -- world without the script, are taken out; game_start.12's generate_start_pops makes them)
+    local world = require("engine.world")
+    local function empty_colony(cid)
+        local c = world.object("colony", cid)
+        if not c then return end
+        local list = world.field(c, "pop_groups")
+        for _, g in ipairs(world.list(list)) do
+            world.remove("pop_groups", tonumber(g))
+        end
+        if type(list) == "table" then
+            world.replace(list, {})
+        end
+        world.index()
+    end
+    -- what the country's creation makes before the script: the ruler (CCountry::CreateRulerFromDesign
+    -- 0x2343060: an official for a regular empire [I: the design's ruler class]) and the policies
+    -- (CCountry::UpdatePolicies -> InitializePolicy: the max-ai_weight options; when the game first
+    -- runs it for a new country is not traced [I])
+    local objects = require("engine.script.objects")
+    local function country_setup(e)
+        local c = world.object("country", e.index)
+        if not c then return end
+        -- the stockpile empires.lua stands in with: the script gives it (give_starting_resources_effect)
+        local res = world.path(c, "modules", "standard_economy_module", "resources")
+        if type(res) == "table" then world.replace(res, {}) end
+        if not world.field(c, "ruler") then
+            local gestalt = false
+            for _, x in ipairs(e.ethics or {}) do
+                if x == "ethic_gestalt_consciousness" then gestalt = true end
+            end
+            -- the design's ruler (name, gender, trait, leader_class), else a class drawn from the
+            -- authority's ruler council position (ChooseLeaderClassFromData's random_ruler: one draw)
+            local defs = require("engine.defs")
+            local r = type(e.ruler) == "table" and e.ruler or nil
+            local function rf(k)
+                local v = r and defs.field(r, k)
+                return type(v) == "string" and v:gsub('^"(.*)"$', "%1") or nil
+            end
+            local class = rf("leader_class")
+            if not class then
+                local ad = e.authority and defs.get("common/governments/authorities", e.authority)
+                local pos = ad and defs.field(ad.block, "ruler_council_position")
+                local pd = pos and defs.get("common/governments/councilors", pos)
+                local lc = pd and defs.field(pd.block, "leader_class")
+                local list = {}
+                for _, x in ipairs(type(lc) == "table" and lc or {}) do
+                    if x.text then list[#list + 1] = x.text end
+                end
+                class = #list > 0 and list[RUST.rand() % #list + 1] or "official"
+            end
+            local name
+            if rf("name") then
+                name = {}
+                local fn = {}
+                world.append(fn, "key", rf("name"), true)
+                world.append(name, "full_names", fn)
+                world.append(name, "use_full_regnal_name", "yes")
+            end
+            local lid = objects.leaders.create({ country = e.index, class = class, name = name, gender = rf("gender"),
+                traits = rf("trait") and { { 0, rf("trait") } } or nil })
+            if lid then world.set(c, "ruler", lid) end
+        end
+        -- the start technologies (start_tech = yes) whose potential and starting_potential hold
+        -- for the country, evaluated by the script layer: the generator's own filter only knows a
+        -- few triggers (empires.lua start_techs) [I: the game's CCountry tech init order]
+        local defs = require("engine.defs")
+        local have = {}
+        for _, t in ipairs(world.fields(world.field(c, "tech_status"), "technology")) do
+            if type(t) == "string" then have[(t:gsub('"', ""))] = true end
+        end
+        for _, d in ipairs(objects.ordered("common/technology")) do
+            local name, b = d[1], d[2].block
+            if not have[name] and defs.field(b, "start_tech") == "yes" then
+                local ok = true
+                for _, key in ipairs({ "potential", "starting_potential" }) do
+                    local pot = defs.field(b, key)
+                    if ok and type(pot) == "table" then
+                        local good, r = pcall(eval.trigger, pot, eval.new_ctx(eval.S("country", e.index)))
+                        ok = good and r and true or false
+                    end
+                end
+                if ok then require("engine.research").add_technology(e.index, name) end
+            end
+        end
+        -- the country's default designs (CCountry::SetDefaultShipDesigns, engine.ai.designer of branch
+        -- ai-fleets, stations included) when that module is there; else designs are made on demand
+        local okd, designer = pcall(require, "engine.ai.designer")
+        if okd and type(designer) == "table" and designer.set_default_designs then
+            local made = designer.set_default_designs(e.index, true)
+            e.default_designs = made
+        end
+        objects.leaders.initialize_policies(e.index)
+        -- the starbase's station: a design of its level's size (the country's default starport
+        -- design, objects_fleets' designs.default; the 2200.01.11 save's stations have their
+        -- auto-generated starbase_<level> design)
+        local sb = e.system and e.system.starbase and world.object("starbases", e.system.starbase)
+        local station = sb and tonumber(world.field(sb, "station"))
+        local ship = station and world.object("ships", station)
+        if ship and world.field(ship, "ship_design_implementation") == nil then
+            local level = tostring(world.field(sb, "level") or ""):gsub('"', ""):gsub("^starbase_level_", "starbase_")
+            local did = e.default_designs and e.default_designs[level] or objects.fleets.designs.default(e.index, level)
+            if did then
+                local sdi = {}
+                world.append(sdi, "design", did)
+                world.append(sdi, "upgrade", 4294967295)
+                world.append(sdi, "growth_stage", 0)
+                world.insert(ship, 3, "ship_design_implementation", sdi)
+            end
+        end
+        -- the station's fleet at the station (its movement_manager's coordinate, which the sensors
+        -- and the systems' presence read; empires.lua writes the ship's only)
+        local fid = ship and tonumber(world.field(ship, "fleet"))
+        local fl = fid and world.object("fleet", fid)
+        local sc = ship and world.field(ship, "coordinate")
+        if fl and type(sc) == "table" and world.field(fl, "movement_manager") == nil then
+            local mm, c = {}, {}
+            for _, k in ipairs({ "x", "y", "origin" }) do
+                local v = world.field(sc, k)
+                if v ~= nil then world.append(c, k, v) end
+            end
+            world.append(mm, "coordinate", c)
+            world.append(mm, "state", "move_idle")
+            world.append(fl, "movement_manager", mm)
+            local g = world.object("galactic_object", tonumber(world.field(sc, "origin")))
+            if g then
+                local fp = world.field(g, "fleet_presence")
+                if type(fp) ~= "table" then fp = world.child(g, "fleet_presence") end
+                world.append_value(fp, fid)
+            end
+        end
+    end
+    -- the modifier graph brought up to date when read, not after every event (creation.defer)
+    local creation = require("engine.script.creation")
+    creation.defer = objects.touch
     local split = game.init_effects_empires or #game.init_effects
+    local clock = RUST.clock
+    local t = { clock() }
     init_effects(1, split)
+    t[2] = clock()
     for _, e in ipairs(game.empires or {}) do
+        guarded("country setup " .. e.index, function() country_setup(e) end)
         for _, oa in ipairs({ "empire_init_add_technologies", "empire_init_capital_colony", "empire_init_create_ships" }) do
             local scope = eval.S("country", e.index)
             if oa == "empire_init_capital_colony" then
-                scope = eval.S("colony", e.colony)
+                -- the colony as the simulation scopes one: its planet (the carrier; the links
+                -- and the save runs give a colony as its planet)
+                scope = e.home and eval.S("planet", e.home.id) or eval.S("colony", e.colony)
+                empty_colony(e.colony)
             end
             guarded(oa .. " " .. e.index, function()
-                events.on_action(oa, scope, nil)
+                -- empire_init_capital_colony: from the founder species (InitEmpireShared)
+                local from = oa == "empire_init_capital_colony" and e.species_id
+                    and eval.new_ctx(eval.S("species", e.species_id)) or nil
+                events.on_action(oa, scope, from)
             end)
             ran.on_actions = ran.on_actions + 1
         end
     end
+    t[3] = clock()
     init_effects(split + 1, #game.init_effects)
+    t[4] = clock()
     guarded("on_game_start", function()
         events.on_action("on_game_start", eval.NONE, nil)
     end)
@@ -500,9 +653,14 @@ function newgame.start_script(game)
         end)
         ran.on_actions = ran.on_actions + 1
     end
+    creation.defer = nil
+    objects.fresh()
+    t[5] = clock()
     local lines = {
         string.format("start script: %d init_effects and %d on_actions run; %d script effects, %d engine effects queued; %d errors",
             ran.effects, ran.on_actions, stats.script - s0, stats.engine - e0, #errors),
+        string.format("  in %.2f s: empires' systems %.2f, empires %.2f, other systems %.2f, game start %.2f",
+            t[5] - t[1], t[2] - t[1], t[3] - t[2], t[4] - t[3], t[5] - t[4]),
     }
     for i = 1, math.min(8, #errors) do
         lines[#lines + 1] = "  error: " .. errors[i]

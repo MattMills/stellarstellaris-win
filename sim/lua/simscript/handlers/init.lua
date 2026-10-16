@@ -9,8 +9,10 @@
 --   diplomacy  war, peace, relations, attitudes between countries, access and borders
 --   creation   effects that create or change things (ships, fleets, deposits, modifiers, traits,
 --              opinion modifiers, special projects, event chains, ...)
+--   objects    effects that make the game's objects (districts, buildings, pops, fleets, ships,
+--              leaders, countries, species, galaxy objects): a new game's start script
 
-local AREAS = { "runtime", "diplomacy", "creation" }
+local AREAS = { "runtime", "diplomacy", "creation", "objects" }
 
 return function(eval)
     for _, area in ipairs(AREAS) do

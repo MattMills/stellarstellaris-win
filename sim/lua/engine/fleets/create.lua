@@ -500,6 +500,7 @@ local function add_ship_name(country, key)
     end
     world.append_entry(sn, { key = { text = key, quoted = true }, op = "=", value = { text = "1" } })
 end
+create.add_ship_name = add_ship_name
 
 -- the country's name list's ship names for a size: its own list and the generic one
 local function name_lists(country, size)

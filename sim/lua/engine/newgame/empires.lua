@@ -530,6 +530,10 @@ function empires.objects(ctx, inputs, r, game)
         c:set("final_designation", "col_capital", true)
         local spr = c:child("species_refs")
         spr:value(sid)
+        -- the colony's carrier (CColony +0xf70, the save's `carrier = { type reference }`)
+        local car = c:child("carrier")
+        car:set("type", "planet")
+        car:set("reference", e.home and e.home.id or NONE)
         if e.home then
             e.home.colony = col_id
             e.home.owner = e.index

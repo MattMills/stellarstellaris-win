@@ -442,8 +442,32 @@ function W.remove(kind, id)
     end
 end
 
+-- W.ensure_store(kind) -> the store's block (engine.world.ensure_store): a store the save has no
+-- objects in made as a top-level `name = { }`
+function W.ensure_store(kind)
+    local name = W.KINDS[kind] or kind
+    if W.store_blocks[name] then return W.store_blocks[name] end
+    if not W.root then return nil end
+    local child = S.append_block(W.root, name)
+    local h = handle(child)
+    W.meta[name] = nil
+    W.stores[name], W.ids[name], W.entries[name], W.bids[name] = {}, {}, {}, {}
+    W.store_blocks[name] = h
+    return h
+end
+
+function W.next_index(kind)
+    local max = -1
+    for _, id in ipairs(W.all(kind)) do
+        local index = id % 16777216
+        if index > max then max = index end
+    end
+    return max + 1
+end
+
 function W.create(kind, id, block)
     local name = W.KINDS[kind] or kind
+    if not W.store_blocks[name] then W.ensure_store(name) end
     local holder = W.store_blocks[name] and bid_of(W.store_blocks[name])
     if not holder then return nil end
     local child, i = S.append_block(holder, tostring(id), as_bid(block))
