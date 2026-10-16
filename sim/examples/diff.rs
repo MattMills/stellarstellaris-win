@@ -4,7 +4,7 @@
 //!   sim\cargo_msvc.cmd run --release --example diff -- <from.sav> <to.sav> [top]
 //!
 //! The commands of the player and the AI between the two saves are not in them: some differences
-//! are theirs.
+//! are theirs. STELLAR_DIFF_SAVE=<file> writes the simulation's world at the end as a gamestate.
 
 use stellar_sim::{mlua, save, Runtime, Simulation};
 
@@ -52,8 +52,13 @@ fn main() {
         Some((s, c)) => println!("random: {drawn} draws here; the second save's seed {s}, position {c}"),
         None => println!("random: {drawn} draws here"),
     }
-    // the world's own date as the save writes it
-    let _ = sim.runtime.save_text().expect("date the world");
+    // the world's own date as the save writes it; STELLAR_DIFF_SAVE=<file> keeps that gamestate
+    let (world_text, _) = sim.runtime.save_text().expect("date the world");
+    if let Ok(path) = std::env::var("STELLAR_DIFF_SAVE") {
+        std::fs::write(&path, &world_text).expect("write STELLAR_DIFF_SAVE");
+        println!("the simulation's world written to {path}");
+    }
+    drop(world_text);
     let run: mlua::Function = sim.runtime.lua.load("return require('engine.diff').run").eval().expect("engine.diff");
     let text = sim.runtime.lua.create_string(&target_text).expect("text");
     drop(target_text);

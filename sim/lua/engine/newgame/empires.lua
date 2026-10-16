@@ -25,6 +25,36 @@ local NONE = save.NONE
 -- ---------------------------------------------------------------------------------------------
 -- definitions
 
+-- a design's name as save.lua's B:name writes it: a text (a prescripted design's `name =
+-- "NAME_..."`) as is; a name block (user_empire_designs' and the empire creator's `name = { key =
+-- "United Nations" literal = yes variables = { { key = "adjective" value = { ... } } } }`) as
+-- { key, literal, variables = { { name, value } } }
+local function name_of(v)
+    if type(v) ~= "table" then
+        return v
+    end
+    local key = field(v, "key")
+    if type(key) ~= "string" then
+        return nil
+    end
+    local n = { key = key, literal = field(v, "literal") == "yes" or nil }
+    local vars = field(v, "variables")
+    if type(vars) == "table" then
+        n.variables = {}
+        for _, item in ipairs(vars) do
+            if type(item) == "table" and not item.op then
+                local k = field(item, "key")
+                local value = name_of(field(item, "value"))
+                if k and value then
+                    n.variables[#n.variables + 1] = { k, value }
+                end
+            end
+        end
+    end
+    return n
+end
+empires.name_of = name_of
+
 local function texts(block)
     local out = {}
     for _, v in ipairs(type(block) == "table" and block or {}) do
@@ -125,6 +155,7 @@ function empires.context(ctx)
         return ctx
     end
     ctx.designs, ctx.design_order = designs(ctx.fs)
+    empires.add_user_designs(ctx, ctx.designs_text)
     ctx.start_techs = start_techs(ctx.fs)
     ctx.species_names = species_names(ctx.fs)
     return ctx
@@ -200,37 +231,104 @@ function empires.place(inputs, r, game, n)
 end
 
 -- ---------------------------------------------------------------------------------------------
--- designs (CalcDesignsForEmpires): prescripted designs with spawn_enabled = yes, drawn without
--- repetition; `always` first [I]
+-- the user's designs (settings.designs_text: a user_empire_designs file, the same form as
+-- prescripted_countries): name -> { block, file, user = true }, in file order
+function empires.add_user_designs(ctx, text)
+    ctx.user_design_order = {}
+    if not text or text == "" then
+        return
+    end
+    local tree = require("pdxscript").parse(text, "user_empire_designs_v3.4.txt") or {}
+    for _, e in ipairs(tree) do
+        if e.op and e.key and type(e.value) == "table" then
+            local name = e.key.text:gsub('^"(.*)"$', "%1")
+            ctx.designs[name] = { name = name, block = e.value, file = "user_empire_designs_v3.4.txt", user = true }
+            ctx.user_design_order[#ctx.user_design_order + 1] = name
+        end
+    end
+end
 
-function empires.pick_designs(ctx, r, n, player)
-    local out, used = {}, {}
-    local always, pool = {}, {}
+-- a design's `playable` (CEmpireDesign::IsPlayable 0x25068e0: the trigger, when there is one); a
+-- scripted trigger's name (playable = has_aquatics) is that trigger
+local function playable(ctx, d)
+    local p = field(d.block, "playable")
+    if p == nil then
+        return true
+    end
+    local block = p
+    if type(p) ~= "table" then
+        local st = ctx.scripted_triggers and ctx.scripted_triggers[p]
+        if not st then
+            return true
+        end
+        block = st.block
+    end
+    local yes = true
+    for _, e in ipairs(block) do
+        if e.op and e.key then
+            local r = systems.trigger(ctx, nil, e.key.text, e.value, nil)
+            if r == false or (r ~= nil and r ~= (e.op ~= "!=")) then
+                yes = false
+            end
+        end
+    end
+    return yes
+end
+
+-- the configuration's designs (CGalaxyConfiguration::ImportEmpireDesigns 0x19f85b0 Linux): the
+-- user's, then the prescripted ones that are playable, in the database's order [V: measured, the
+-- 26 designs of a default setup]
+function empires.design_pool(ctx)
+    local pool = {}
+    for _, name in ipairs(ctx.user_design_order or {}) do
+        pool[#pool + 1] = name
+    end
     for _, name in ipairs(ctx.design_order) do
-        local d = ctx.designs[name]
-        local se = field(d.block, "spawn_enabled")
-        if se == "always" then
-            always[#always + 1] = name
-        elseif se == "yes" then
+        if playable(ctx, ctx.designs[name]) then
             pool[#pool + 1] = name
         end
     end
-    if player and ctx.designs[player] then
-        out[1] = player
-        used[player] = true
-    end
-    for _, name in ipairs(always) do
-        if #out < n and not used[name] then
-            out[#out + 1] = name
-            used[name] = true
+    return pool
+end
+
+local SPAWN = { always = 2, yes = 1 }
+
+-- designs (CalcDesignsForEmpires 0x262cca0 Linux, its per-empire GetEmpireDesignForStaticGalaxyEmpire
+-- 0x262c620) [V]: an empire slot a human holds gets the human's design; otherwise the candidates
+-- are the configuration's designs not used yet with spawn_enabled = always (forced) or yes; forced
+-- ones: one G draw % their count; else, with yes ones: G % 1000 < CUSTOM_EMPIRE_SPAWN_CHANCE (50:
+-- 5%), then one G draw % their count; else (and with no candidates) a randomized design, which is
+-- not modelled: false in the list. The game also skips a design whose species portrait another
+-- spawned one uses (unless ignore_portrait_duplication) [I: not modelled]
+function empires.pick_designs(ctx, r, n, player, defines)
+    local chance = defines and tonumber(defines.CUSTOM_EMPIRE_SPAWN_CHANCE) or 50
+    local pool = empires.design_pool(ctx)
+    local out, used = {}, {}
+    for slot = 1, n do
+        local d
+        if slot == 1 and player and ctx.designs[player] then
+            d = player
+        else
+            local forced, yes = {}, {}
+            for _, name in ipairs(pool) do
+                local m = SPAWN[field(ctx.designs[name].block, "spawn_enabled") or ""]
+                if m and not used[name] then
+                    if m == 2 then
+                        forced[#forced + 1] = name
+                    else
+                        yes[#yes + 1] = name
+                    end
+                end
+            end
+            if #forced > 0 then
+                d = forced[r:below(#forced) + 1]
+            elseif #yes > 0 and r:below(1000) < chance then
+                d = yes[r:below(#yes) + 1]
+            end
         end
-    end
-    while #out < n and #pool > 0 do
-        local i = r:below(#pool) + 1
-        local name = table.remove(pool, i)
-        if not used[name] then
-            out[#out + 1] = name
-            used[name] = true
+        out[slot] = d or false
+        if d then
+            used[d] = true
         end
     end
     return out
@@ -276,11 +374,14 @@ function empires.design(ctx, game, design_name, index)
     local sp = field(b, "species") or {}
     local e = {
         index = index, design = design_name, country = index,
-        name = field(b, "name") or design_name, adjective = field(b, "adjective"),
+        name = name_of(field(b, "name")) or design_name, adjective = name_of(field(b, "adjective")),
         species = {
             class = field(sp, "class") or "MAM", portrait = field(sp, "portrait") or "mam1",
-            name = field(sp, "name") or "SPEC_Human", plural = field(sp, "plural") or "SPEC_Human_pl",
-            adjective = field(sp, "adjective"), name_list = field(sp, "name_list") or "HUMAN1",
+            -- (a user design's species names are species_name / species_plural / species_adjective)
+            name = name_of(field(sp, "name") or field(sp, "species_name")) or "SPEC_Human",
+            plural = name_of(field(sp, "plural") or field(sp, "species_plural")) or "SPEC_Human_pl",
+            adjective = name_of(field(sp, "adjective") or field(sp, "species_adjective")),
+            name_list = field(sp, "name_list") or "HUMAN1",
             traits = fields(sp, "trait"),
         },
         authority = field(b, "authority") or "auth_democratic",
@@ -288,8 +389,8 @@ function empires.design(ctx, game, design_name, index)
         civics = texts(field(b, "civics")),
         ethics = fields(b, "ethic"),
         origin = field(b, "origin") or "origin_default",
-        planet_name = field(b, "planet_name"),
-        system_name = field(b, "system_name"),
+        planet_name = name_of(field(b, "planet_name")),
+        system_name = name_of(field(b, "system_name")),
         initializer = field(b, "initializer"),
         graphical_culture = field(b, "graphical_culture") or "mammalian_01",
         city_graphical_culture = field(b, "city_graphical_culture") or field(b, "graphical_culture") or "mammalian_01",
@@ -315,8 +416,7 @@ end
 
 -- InitEmpireSystems (0x984eb0): ReorderPlayerLocations, then each empire's home system queued with
 -- its initializer (the design's, else GetRandomFromList over usage = empire_init with the
--- generator's stream), its context (the ideal planet class; a draw of the generator's stream for
--- the ideal design class) and a scope (a draw of the global stream); one InitializeQueue for all:
+-- generator's stream), its context (the ideal planet class) and a scope (a draw of the global stream); one InitializeQueue for all:
 -- the empires' systems first, then their neighbours layer by layer
 function empires.init_systems(ctx, inputs, G, game)
     local homes = {}
@@ -340,11 +440,11 @@ function empires.init_systems(ctx, inputs, G, game)
                     or "random_empire_init_01"
             end
             systems.class_check(ctx, game, e.initializer)
-            G:int()
+            -- no draw of the generator here (measured: InitEmpireSystems draws G only in
+            -- ReorderPlayerLocations and GetRandomFromList before the queue)
             game.global:int()
-            if e.system_name then
-                sys.name = e.system_name
-            end
+            -- the design's system name comes with the home planet (InitHomePlanet): the system
+            -- still takes a star name first (measured: a TakeStarName draw)
             queue[#queue + 1] = { sys = sys, name = e.initializer, empire = e }
         end
     end
@@ -370,6 +470,26 @@ function empires.home_planet(ctx, G, game, e)
         end
     end
     e.home = home
+    if e.system_name then
+        -- the planets' and moons' names made from the system's (PLANET_NAME_FORMAT's PARENT,
+        -- systems.lua) follow it: "Sol II", not the generated name's [I]
+        local old = sys.name
+        local function rename(n, depth)
+            if type(n) ~= "table" or depth > 4 then return end
+            for _, kv in ipairs(n.variables or {}) do
+                if kv[2] == old then
+                    kv[2] = e.system_name
+                else
+                    rename(kv[2], depth + 1)
+                end
+            end
+        end
+        for _, pid in ipairs(sys.planets) do
+            local p = game.planets[pid]
+            if p then rename(p.name, 0) end
+        end
+        sys.name = e.system_name
+    end
     if home then
         home.class = e.planet_class
         if e.planet_name then
@@ -460,6 +580,10 @@ function empires.objects(ctx, inputs, r, game)
         c:set("final_designation", "col_capital", true)
         local spr = c:child("species_refs")
         spr:value(sid)
+        -- the colony's carrier (CColony +0xf70, the save's `carrier = { type reference }`)
+        local car = c:child("carrier")
+        car:set("type", "planet")
+        car:set("reference", e.home and e.home.id or NONE)
         if e.home then
             e.home.colony = col_id
             e.home.owner = e.index
@@ -578,10 +702,44 @@ end
 function empires.designs(ctx, inputs, G, game)
     empires.context(ctx)
     local homes = game.home_systems or {}
-    local names = empires.pick_designs(ctx, G, #homes, inputs.config.player_design)
+    local player = inputs.config.player_design
+    -- the player's own design (the empire creator's: one `key = { ... }` in the form of
+    -- user_empire_designs.txt): a design beside the prescripted ones, never an AI's pick
+    local text = inputs.config.player_design_text
+    if text and text ~= "" then
+        local tree = assert(require("pdxscript").parse(text, "player_design"))
+        for _, e in ipairs(tree) do
+            if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
+                ctx.designs[e.key.text] = { name = e.key.text, block = e.value, file = "player_design" }
+                player = e.key.text
+                break
+            end
+        end
+    end
+    local names = empires.pick_designs(ctx, G, #homes, player, game.defines)
+    -- a randomized design (CEmpireDesign randomization: species, names, ethics, government, flag)
+    -- is not modelled: the first unused spawn_enabled design stands in for it, without draws
+    game.randomized_designs = 0
+    local taken = {}
+    for i = 1, #homes do
+        if names[i] then
+            taken[names[i]] = true
+        end
+    end
+    for i = 1, #homes do
+        if not names[i] then
+            game.randomized_designs = game.randomized_designs + 1
+            for _, name in ipairs(empires.design_pool(ctx)) do
+                if not taken[name] and field(ctx.designs[name].block, "spawn_enabled") then
+                    names[i], taken[name] = name, true
+                    break
+                end
+            end
+        end
+    end
     game.empires = {}
     for i = 1, #homes do
-        local name = names[i] or names[(i - 1) % math.max(#names, 1) + 1]
+        local name = names[i]
         if name then
             game.empires[#game.empires + 1] = empires.design(ctx, game, name, #game.empires)
         end

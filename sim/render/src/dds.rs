@@ -114,8 +114,12 @@ impl Cache {
     pub fn get(&mut self, game_dir: &str, relative: &str) -> Result<&std::sync::Arc<Image>, String> {
         let key = relative.replace('\\', "/");
         if !self.images.contains_key(&key) {
-            let path = find_case_insensitive(game_dir, &key).unwrap_or_else(|| format!("{game_dir}/{key}"));
-            // a texture the game names may be a .tga; only .dds is read here
+            // a .tga the game names where only the .dds is shipped: the .dds (settings_view.gfx's
+            // scrollbar_leftbutton.tga, drawn by the game's galaxy settings) [I]
+            let dds = key.strip_suffix(".tga").map(|b| format!("{b}.dds"));
+            let path = find_case_insensitive(game_dir, &key)
+                .or_else(|| dds.as_ref().and_then(|d| find_case_insensitive(game_dir, d)))
+                .unwrap_or_else(|| format!("{game_dir}/{key}"));
             self.images.insert(key.clone(), load(&path).map(std::sync::Arc::new));
         }
         self.images[&key].as_ref().map_err(|e| e.clone())

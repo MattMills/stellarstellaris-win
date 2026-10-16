@@ -1160,6 +1160,15 @@ E.is_inside_nebula = function(kind, id)
 end
 
 -- shipbuilding
+-- E.controlled_systems(country): the systems whose owner is the country (world.system_owner)
+E.controlled_systems = function(id)
+    local n = 0
+    for _, owner in pairs(world.system_owner or {}) do
+        if owner == id then n = n + 1 end
+    end
+    return n
+end
+
 -- E.used_naval_capacity_percent(kind, id): a country's used_naval_capacity over its naval capacity,
 -- (NAVAL_CAPACITY_BASE + country_naval_cap_add) * (1 + country_naval_cap_mult) (as
 -- engine.economy.units reads it); nil for another scope

@@ -41,8 +41,10 @@ local CONTAINERS = { containerwindowtype = true, windowtype = true, dropdownboxt
 -- states: checkboxType, expandButton)
 local ICONS = { icontype = true, buttontype = true, effectbuttontype = true, guibuttontype = true, checkboxtype = true, expandbutton = true }
 local TEXTS = { instanttextboxtype = true, textboxtype = true }
--- lists: laid out (their rectangle is recorded, for the rows the caller places) but not drawn
-local LISTS = { smoothlistboxtype = true, listboxtype = true, gridboxtype = true, overlappingelementsboxtype = true }
+-- lists: laid out (their rectangle is recorded, for the rows the caller places) but not drawn;
+-- edit boxes likewise (their text is the player's, drawn by the caller)
+local LISTS = { smoothlistboxtype = true, listboxtype = true, gridboxtype = true, overlappingelementsboxtype = true,
+    editboxtype = true }
 gui.CONTAINERS, gui.ICONS, gui.TEXTS, gui.LISTS = CONTAINERS, ICONS, TEXTS, LISTS
 
 local trees = {}   -- file -> tree, parsed once
@@ -397,6 +399,12 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
         end
         if h and h < 0 then
             h = parent.h - py + h
+        end
+        -- fullScreen = yes: the window is the screen's size, whatever its `size` (the load
+        -- screen's 1024 x 768 window; its status bar is centred on the screen) [I]
+        local full = field("fullScreen") or field("fullscreen")
+        if full == "yes" and CONTAINERS[kind] then
+            w, h = parent.w, parent.h
         end
         if over_size then
             w, h = over_size[1], over_size[2]

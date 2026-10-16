@@ -171,6 +171,29 @@ function world.load(text)
     if not tree then
         return nil, message
     end
+    return world.load_tree(tree, t0)
+end
+
+-- the tree's blocks made plain tables, as the parser makes them (a builder's blocks carry
+-- methods in their metatable: engine/newgame/save.lua)
+local function plain(block)
+    setmetatable(block, nil)
+    for _, e in ipairs(block) do
+        if e.op then
+            if e.value.text == nil then
+                plain(e.value)
+            end
+        elseif e.text == nil then
+            plain(e)
+        end
+    end
+end
+
+-- world.load_tree(tree) -> true: a gamestate already in pdxscript's form (a new game's,
+-- engine/newgame/save.lua), taken as is: no text written and parsed again
+function world.load_tree(tree, t0)
+    t0 = t0 or RUST.clock()
+    plain(tree)
     world.tree = tree
     for _, e in ipairs(world.find_stores(tree, add_store)) do
         world.meta[e.key.text] = e.value.text or e.value
@@ -637,9 +660,44 @@ function world.place(name, id, old, block, gen)
     return block
 end
 
-function world.create(kind, id, block)
+-- world.ensure_store(kind) -> the store's block: a store the save has no objects in (a generated
+-- game has no `leaders`, `districts`, `ship_design`, ...; an empty block is not read as a store)
+-- made as a top-level `name = { }`, the empty block reused when there is one
+function world.ensure_store(kind)
     local name = world.KINDS[kind] or kind
     local holder = world.store_blocks[name]
+    if holder then return holder end
+    local tree = world.tree
+    if not tree then return nil end
+    for _, e in ipairs(tree) do
+        if e.op and e.key and e.key.text == name and e.value.text == nil and #e.value == 0 then
+            holder = e.value
+            break
+        end
+    end
+    if not holder then
+        holder = {}
+        tree[#tree + 1] = { key = { text = name }, op = "=", value = holder }
+    end
+    world.meta[name] = nil
+    world.stores[name], world.ids[name], world.entries[name] = {}, {}, {}
+    world.store_blocks[name] = holder
+    return holder
+end
+
+-- world.next_index(kind) -> the next index of a store (generation 0): one past the highest index
+function world.next_index(kind)
+    local max = -1
+    for _, id in ipairs(world.all(kind)) do
+        local index = id % 16777216
+        if index > max then max = index end
+    end
+    return max + 1
+end
+
+function world.create(kind, id, block)
+    local name = world.KINDS[kind] or kind
+    local holder = world.store_blocks[name] or world.ensure_store(name)
     if not holder then
         return nil
     end

@@ -54,6 +54,40 @@ local DLCS = {
     "Plantoids Species Pack",
 }
 
+-- the DLCs the game owns, for host_has_dlc: settings.dlcs (a list of names, or a string of them
+-- separated by ';'), else the install's (dlc/*/*.dlc `name`: what the headless game owns), else
+-- every one (nil)
+local function owned_dlcs(fs, game_dir, list)
+    if type(list) == "string" then
+        local t = {}
+        for name in list:gmatch("[^;]+") do
+            t[#t + 1] = name
+        end
+        list = t
+    end
+    if type(list) ~= "table" and game_dir then
+        list = {}
+        for _, f in ipairs(RUST.list_files(game_dir, "dlc", "dlc")) do
+            for _, e in ipairs(source.parse(fs, f) or {}) do
+                if e.op and e.key and e.key.text == "name" and e.value.text then
+                    list[#list + 1] = e.value.text
+                end
+            end
+        end
+        if #list == 0 then
+            list = nil
+        end
+    end
+    if type(list) ~= "table" then
+        return nil
+    end
+    local set = {}
+    for _, name in ipairs(list) do
+        set[name] = true
+    end
+    return set
+end
+
 -- the galaxy = { } block (CGalaxyConfiguration::WriteMembers): { key, value, quoted }
 local function galaxy_settings(inputs, game)
     local cfg, sc = inputs.config, inputs.scenario
@@ -99,7 +133,7 @@ local function galaxy_settings(inputs, game)
         { "mid_game_start", 100 },
         { "end_game_start", 200 },
         { "victory_year", 300 },
-        { "num_guaranteed_colonies", 2 },
+        { "num_guaranteed_colonies", game.ctx and game.ctx.num_guaranteed_colonies or 2 },
         { "difficulty_adjusted_ai_modifiers", false },
         { "fallen_empire_strength_scale", 1 },
         { "logistics_fleet_upkeep_costs", 1 },
@@ -137,10 +171,19 @@ end
 -- scenario ("tiny"), shape (the scenario's first), empires, fallen_empires, marauders, nomads,
 -- advanced_empires, num_hyperlanes, num_gateways, num_wormhole_pairs, habitability, primitive,
 -- seed (the galaxy seed, CGalaxyGenerator::Generate's; default: from the global stream as
--- GenerateNewGalaxy does), global_seed (written as random_seed), name, start_year.
+-- GenerateNewGalaxy does), global_seed (written as random_seed), name, start_year,
+-- player_design (a prescripted design's key: the player's empire), tree_only (game.tree kept, no
+-- text written: the renderer loads the tree, engine.load), progress (a function given the game's
+-- world generation progress, 0..100, as the game sets it, for its load screen:
+-- docs/windows/newgame_start.md).
 function newgame.generate(fs, settings)
     settings = settings or {}
     local t0 = RUST.clock()
+    local game_dir = type(fs) == "string" and fs or settings.game_dir
+    -- SetWorldGenerationProgress (4.5.2 Linux 0x25c95d0): 5 after the name database, 10 after the
+    -- resource clusters, 17 after the empires' systems, 70 + 30 i / n through every system in
+    -- InitializeUninitializedSystems (systems.initialize_rest)
+    local progress = settings.progress or function() end
     if type(fs) == "string" then
         fs = source.filesystem(fs)
     end
@@ -165,18 +208,78 @@ function newgame.generate(fs, settings)
         dlcs = DLCS,
         steps = {},
     }
+    -- settings.global_at ("step=position,...", or a table): the global stream put at the game's
+    -- position (measured: headless, docs/newgame.md 8.1) when the step starts, standing in for the
+    -- global draws the Lua does not make before it (the design validation's fake countries, the
+    -- scripted init_effects run inside the game's generation); the gaps go to the summary
+    local global_at = settings.global_at
+    if type(global_at) == "string" then
+        local t = {}
+        for k, v in global_at:gmatch("([%w_ ]+)=(%d+)") do
+            t[k] = tonumber(v)
+        end
+        global_at = t
+    end
+    game.global_gaps = {}
     local function step(name, f)
+        local at = global_at and global_at[name]
+        if at and at > global.draws then
+            game.global_gaps[#game.global_gaps + 1] = string.format("%s +%d (%d -> %d)", name, at - global.draws, global.draws, at)
+            RUST.skip(at - global.draws)
+            global.draws = at
+        elseif at then
+            game.global_gaps[#game.global_gaps + 1] = string.format("%s %d (already %d)", name, at, global.draws)
+        end
         local t = RUST.clock()
         local p = r.draws
+        local gp = global.draws
+        -- NEWGAME_TRACE=STEP (NEWGAME_TRACE_OUT=FILE): every draw of the generator (G) and of the
+        -- global stream (C) in that step, with the Lua line that made it, to set beside the game's
+        -- (headless with gdb, docs/newgame.md 8.1)
+        local trace = os.getenv and os.getenv("NEWGAME_TRACE")
+        local tf
+        if trace == name then
+            tf = io.open(os.getenv("NEWGAME_TRACE_OUT") or "newgame_trace.txt", "w")
+            local function where()
+                local out = {}
+                for lv = 3, 7 do
+                    local info = debug.getinfo(lv, "Sl")
+                    if not info then break end
+                    out[#out + 1] = info.short_src:match("[^/]*$") .. ":" .. info.currentline
+                end
+                return table.concat(out, " < ")
+            end
+            r.int = function(self)
+                local v = getmetatable(self).__index.int(self)
+                tf:write("G ", self.draws, " ", v, " ", where(), "\n")
+                return v
+            end
+            global.int = function(self)
+                local v = getmetatable(self).__index.int(self)
+                tf:write("C ", self.draws, " ", v, " ", where(), "\n")
+                return v
+            end
+        end
         f()
-        game.steps[#game.steps + 1] = string.format("%s %.2fs %d draws", name, RUST.clock() - t, r.draws - p)
+        if tf then
+            tf:close()
+            r.int, global.int = nil, nil
+        end
+        game.steps[#game.steps + 1] = string.format("%s %.2fs %d draws (global %d)", name, RUST.clock() - t, r.draws - p, global.draws - gp)
     end
     local ctx
     step("definitions", function()
         ctx = systems.context(fs)
+        ctx.dlcs = owned_dlcs(fs, game_dir, settings.dlcs)
+        ctx.designs_text = settings.designs_text
     end)
+    progress(5)
+    game.progress = progress
     game.ctx = ctx
     game.defines = scenario.defines(fs).NGameplay or {}
+    -- the galaxy setting, else GUARANTEED_COLONIES_DEFAULT (2)
+    ctx.num_guaranteed_colonies = tonumber(settings.num_guaranteed_colonies)
+        or tonumber(game.defines.GUARANTEED_COLONIES_DEFAULT) or 2
     step("parameters", function()
         game.params = galaxy.parameters(inputs, r)
     end)
@@ -188,6 +291,16 @@ function newgame.generate(fs, settings)
     end)
     step("galactic map", function()
         galaxy.galactic_map(game)
+        -- NEWGAME_NEIGHBORS=FILE: each system's neighbours, in their order ("id: n1 n2 ..."), to
+        -- compare with the game's (headless HEADLESS_NG_NEIGHBORS)
+        local path = os.getenv and os.getenv("NEWGAME_NEIGHBORS")
+        if path and path ~= "" then
+            local f = io.open(path, "w")
+            for _, sys in ipairs(game.systems) do
+                f:write(sys.id, ":", #(sys.neighbors or {}) > 0 and " " .. table.concat(sys.neighbors, " ") or "", "\n")
+            end
+            f:close()
+        end
     end)
     step("start clusters", function()
         galaxy.clusters(inputs, r, game)
@@ -204,13 +317,40 @@ function newgame.generate(fs, settings)
     step("resource clusters", function()
         galaxy.resource_clusters(inputs, r, game)
     end)
+    progress(10)
     step("hyperlanes", function()
         lanes.hyperlanes(inputs, game)
+        -- NEWGAME_LANES=FILE: each system's hyperlanes right after the step ("id: to/length[b]
+        -- ...", the length in fixed point), to compare with the game's (HEADLESS_NG_LANES)
+        local ppath = os.getenv and os.getenv("NEWGAME_PARTITIONS")
+        if ppath and ppath ~= "" then
+            local f = io.open(ppath, "w")
+            for _, sys in ipairs(game.systems) do
+                f:write(sys.id, " ", sys.partition or -1, "\n")
+            end
+            for i, P in ipairs(game.partitions or {}) do
+                f:write("P ", i - 1, " ", #P.systems, " ", P.desired, " ", P.desired_bridges, " ", P.bridges, "\n")
+            end
+            f:close()
+        end
+        local path = os.getenv and os.getenv("NEWGAME_LANES")
+        if path and path ~= "" then
+            local f = io.open(path, "w")
+            for _, sys in ipairs(game.systems) do
+                f:write(sys.id, ":")
+                for _, l in ipairs(sys.lanes) do
+                    f:write(" ", l.to, "/", math.floor(l.length * 100000 + 0.5), l.bridge and "b" or "")
+                end
+                f:write("\n")
+            end
+            f:close()
+        end
     end)
     step("empire systems", function()
         empires.init_systems(ctx, inputs, r, game)
         game.init_effects_empires = #game.init_effects
     end)
+    progress(17)
     step("empires", function()
         empires.finish(ctx, inputs, r, game)
     end)
@@ -227,12 +367,26 @@ function newgame.generate(fs, settings)
     end
     -- the rim: the systems farthest out (rim_galactic_objects) [I]
     game.rim = {}
+    -- NEWGAME_DEPOSIT_LOG=FILE: every deposit made, in order ("type planet"), to set beside the
+    -- game's deposit ids
+    local dpath = os.getenv and os.getenv("NEWGAME_DEPOSIT_LOG")
+    if dpath and dpath ~= "" then
+        local f = io.open(dpath, "w")
+        for i, d in ipairs(game.deposit_log or {}) do
+            f:write(i - 1, " ", d[1], " ", d[2], "\n")
+        end
+        f:close()
+    end
     game.galaxy = galaxy_settings(inputs, game)
     game.random_seed = settings.global_seed or 0
     game.random_count = global.draws
     game.meta_planets = game.meta_planets or 0
     local tree = save.gamestate(game)
-    game.text = save.write(tree)
+    if settings.tree_only then
+        game.tree = tree
+    else
+        game.text = save.write(tree)
+    end
     game.meta_text = save.meta(game)
 
     -- the summary
@@ -262,7 +416,9 @@ function newgame.generate(fs, settings)
         "  star classes: " .. top(classes, 12),
         string.format("  initializers (%d): %s", count_keys(inits), top(inits, 12)),
         "  steps: " .. table.concat(game.steps, "; "),
+        #game.global_gaps > 0 and ("  global stream put at the game positions: " .. table.concat(game.global_gaps, "; ")) or "  (no global positions given)",
         "  hyperlanes: " .. tostring(game.lane_stats),
+        "  planet triggers not evaluated (deposits, planet modifiers): " .. top(ctx.unknown_planet_triggers or {}, 12),
         string.format("  generator draws %d, global draws %d; %.2f s", r.draws, global.draws, RUST.clock() - t0),
     }
     if next(ctx.unknown_triggers) then
@@ -323,33 +479,186 @@ function newgame.start_script(game)
         end
         barrier()
     end
+    -- the init_effects of one system share its tree's scope: the event targets one saves are the
+    -- others' (`exists = event_target:GuardiansTradersPlanet` guards the enclaves' planets) [I]
+    local targets_of = {}
+    local R = require("engine.script.runtime")
     local function init_effects(from, to)
         for i = from, to do
             local ie = game.init_effects[i]
             if ie then
                 local kind = ie.kind == "system" and "system" or "planet"
+                local sys = kind == "system" and ie.id or R.system_of("planet", ie.id) or -1
+                targets_of[sys] = targets_of[sys] or {}
                 guarded(string.format("%s %d init_effect (%s)", kind, ie.id, tostring(ie.initializer)), function()
-                    eval.effect(ie.block, eval.new_ctx(eval.S(kind, ie.id), nil, nil, ie.file))
+                    eval.effect(ie.block, eval.new_ctx(eval.S(kind, ie.id), nil, targets_of[sys], ie.file))
                 end)
                 ran.effects = ran.effects + 1
             end
         end
     end
+    -- the capital colony as CreateNewColony leaves it: no pops (empires.lua's stand-in pops, for a
+    -- world without the script, are taken out; game_start.12's generate_start_pops makes them)
+    local world = require("engine.world")
+    local function empty_colony(cid)
+        local c = world.object("colony", cid)
+        if not c then return end
+        local list = world.field(c, "pop_groups")
+        for _, g in ipairs(world.list(list)) do
+            world.remove("pop_groups", tonumber(g))
+        end
+        if type(list) == "table" then
+            world.replace(list, {})
+        end
+        world.index()
+    end
+    -- what the country's creation makes before the script: the ruler (CCountry::CreateRulerFromDesign
+    -- 0x2343060: an official for a regular empire [I: the design's ruler class]) and the policies
+    -- (CCountry::UpdatePolicies -> InitializePolicy: the max-ai_weight options; when the game first
+    -- runs it for a new country is not traced [I])
+    local objects = require("engine.script.objects")
+    local function country_setup(e)
+        local c = world.object("country", e.index)
+        if not c then return end
+        -- the stockpile empires.lua stands in with: the script gives it (give_starting_resources_effect)
+        local res = world.path(c, "modules", "standard_economy_module", "resources")
+        if type(res) == "table" then world.replace(res, {}) end
+        if not world.field(c, "ruler") then
+            local gestalt = false
+            for _, x in ipairs(e.ethics or {}) do
+                if x == "ethic_gestalt_consciousness" then gestalt = true end
+            end
+            -- the design's ruler (name, gender, trait, leader_class), else a class drawn from the
+            -- authority's ruler council position (ChooseLeaderClassFromData's random_ruler: one draw)
+            local defs = require("engine.defs")
+            local r = type(e.ruler) == "table" and e.ruler or nil
+            local function rf(k)
+                local v = r and defs.field(r, k)
+                return type(v) == "string" and v:gsub('^"(.*)"$', "%1") or nil
+            end
+            local class = rf("leader_class")
+            if not class then
+                local ad = e.authority and defs.get("common/governments/authorities", e.authority)
+                local pos = ad and defs.field(ad.block, "ruler_council_position")
+                local pd = pos and defs.get("common/governments/councilors", pos)
+                local lc = pd and defs.field(pd.block, "leader_class")
+                local list = {}
+                for _, x in ipairs(type(lc) == "table" and lc or {}) do
+                    if x.text then list[#list + 1] = x.text end
+                end
+                class = #list > 0 and list[RUST.rand() % #list + 1] or "official"
+            end
+            local name
+            if rf("name") then
+                name = {}
+                local fn = {}
+                world.append(fn, "key", rf("name"), true)
+                world.append(name, "full_names", fn)
+                world.append(name, "use_full_regnal_name", "yes")
+            end
+            local lid = objects.leaders.create({ country = e.index, class = class, name = name, gender = rf("gender"),
+                traits = rf("trait") and { { 0, rf("trait") } } or nil })
+            if lid then world.set(c, "ruler", lid) end
+        end
+        -- the start technologies (start_tech = yes) whose potential and starting_potential hold
+        -- for the country, evaluated by the script layer: the generator's own filter only knows a
+        -- few triggers (empires.lua start_techs) [I: the game's CCountry tech init order]
+        local defs = require("engine.defs")
+        local have = {}
+        for _, t in ipairs(world.fields(world.field(c, "tech_status"), "technology")) do
+            if type(t) == "string" then have[(t:gsub('"', ""))] = true end
+        end
+        for _, d in ipairs(objects.ordered("common/technology")) do
+            local name, b = d[1], d[2].block
+            if not have[name] and defs.field(b, "start_tech") == "yes" then
+                local ok = true
+                for _, key in ipairs({ "potential", "starting_potential" }) do
+                    local pot = defs.field(b, key)
+                    if ok and type(pot) == "table" then
+                        local good, r = pcall(eval.trigger, pot, eval.new_ctx(eval.S("country", e.index)))
+                        ok = good and r and true or false
+                    end
+                end
+                if ok then require("engine.research").add_technology(e.index, name) end
+            end
+        end
+        -- the country's default designs (CCountry::SetDefaultShipDesigns, engine.ai.designer of branch
+        -- ai-fleets, stations included) when that module is there; else designs are made on demand
+        local okd, designer = pcall(require, "engine.ai.designer")
+        if okd and type(designer) == "table" and designer.set_default_designs then
+            local made = designer.set_default_designs(e.index, true)
+            e.default_designs = made
+        end
+        objects.leaders.initialize_policies(e.index)
+        -- the starbase's station: a design of its level's size (the country's default starport
+        -- design, objects_fleets' designs.default; the 2200.01.11 save's stations have their
+        -- auto-generated starbase_<level> design)
+        local sb = e.system and e.system.starbase and world.object("starbases", e.system.starbase)
+        local station = sb and tonumber(world.field(sb, "station"))
+        local ship = station and world.object("ships", station)
+        if ship and world.field(ship, "ship_design_implementation") == nil then
+            local level = tostring(world.field(sb, "level") or ""):gsub('"', ""):gsub("^starbase_level_", "starbase_")
+            local did = e.default_designs and e.default_designs[level] or objects.fleets.designs.default(e.index, level)
+            if did then
+                local sdi = {}
+                world.append(sdi, "design", did)
+                world.append(sdi, "upgrade", 4294967295)
+                world.append(sdi, "growth_stage", 0)
+                world.insert(ship, 3, "ship_design_implementation", sdi)
+            end
+        end
+        -- the station's fleet at the station (its movement_manager's coordinate, which the sensors
+        -- and the systems' presence read; empires.lua writes the ship's only)
+        local fid = ship and tonumber(world.field(ship, "fleet"))
+        local fl = fid and world.object("fleet", fid)
+        local sc = ship and world.field(ship, "coordinate")
+        if fl and type(sc) == "table" and world.field(fl, "movement_manager") == nil then
+            local mm, c = {}, {}
+            for _, k in ipairs({ "x", "y", "origin" }) do
+                local v = world.field(sc, k)
+                if v ~= nil then world.append(c, k, v) end
+            end
+            world.append(mm, "coordinate", c)
+            world.append(mm, "state", "move_idle")
+            world.append(fl, "movement_manager", mm)
+            local g = world.object("galactic_object", tonumber(world.field(sc, "origin")))
+            if g then
+                local fp = world.field(g, "fleet_presence")
+                if type(fp) ~= "table" then fp = world.child(g, "fleet_presence") end
+                world.append_value(fp, fid)
+            end
+        end
+    end
+    -- the modifier graph brought up to date when read, not after every event (creation.defer)
+    local creation = require("engine.script.creation")
+    creation.defer = objects.touch
     local split = game.init_effects_empires or #game.init_effects
+    local clock = RUST.clock
+    local t = { clock() }
     init_effects(1, split)
+    t[2] = clock()
     for _, e in ipairs(game.empires or {}) do
+        guarded("country setup " .. e.index, function() country_setup(e) end)
         for _, oa in ipairs({ "empire_init_add_technologies", "empire_init_capital_colony", "empire_init_create_ships" }) do
             local scope = eval.S("country", e.index)
             if oa == "empire_init_capital_colony" then
-                scope = eval.S("colony", e.colony)
+                -- the colony as the simulation scopes one: its planet (the carrier; the links
+                -- and the save runs give a colony as its planet)
+                scope = e.home and eval.S("planet", e.home.id) or eval.S("colony", e.colony)
+                empty_colony(e.colony)
             end
             guarded(oa .. " " .. e.index, function()
-                events.on_action(oa, scope, nil)
+                -- empire_init_capital_colony: from the founder species (InitEmpireShared)
+                local from = oa == "empire_init_capital_colony" and e.species_id
+                    and eval.new_ctx(eval.S("species", e.species_id)) or nil
+                events.on_action(oa, scope, from)
             end)
             ran.on_actions = ran.on_actions + 1
         end
     end
+    t[3] = clock()
     init_effects(split + 1, #game.init_effects)
+    t[4] = clock()
     guarded("on_game_start", function()
         events.on_action("on_game_start", eval.NONE, nil)
     end)
@@ -360,10 +669,29 @@ function newgame.start_script(game)
         end)
         ran.on_actions = ran.on_actions + 1
     end
+    creation.defer = nil
+    objects.fresh()
+    t[5] = clock()
+    -- the jobs update the game runs before the first save (twice a day from the first day,
+    -- CColony::EnsurePopJobsAreUpToDate as colonies change): the colonies' jobs made from their
+    -- buildings, districts and zones, the pops into them (engine.jobs); then the emptied pop
+    -- groups, which the game removes the next day
+    guarded("jobs", function()
+        objects.fresh()
+        local jobs = require("engine.jobs")
+        jobs.update()
+        jobs.update()
+        require("engine.pops").remove_killed()
+        world.index()
+        ran.jobs = jobs.report()
+    end)
     local lines = {
         string.format("start script: %d init_effects and %d on_actions run; %d script effects, %d engine effects queued; %d errors",
             ran.effects, ran.on_actions, stats.script - s0, stats.engine - e0, #errors),
+        string.format("  in %.2f s: empires' systems %.2f, empires %.2f, other systems %.2f, game start %.2f",
+            t[5] - t[1], t[2] - t[1], t[3] - t[2], t[4] - t[3], t[5] - t[4]),
     }
+    if ran.jobs then lines[#lines + 1] = ran.jobs end
     for i = 1, math.min(8, #errors) do
         lines[#lines + 1] = "  error: " .. errors[i]
     end

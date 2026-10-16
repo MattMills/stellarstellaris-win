@@ -101,6 +101,11 @@ pub fn install(runtime: &Runtime, game_dir: &str, cache: &Rc<RefCell<Cache>>) ->
     let gd = game_dir.to_string();
     let size = lua.create_function(move |_, path: String| {
         let mut c = c.borrow_mut();
+        // a composed flag (flag::compose_spec) is its frame texture's size
+        let path = match path.strip_prefix("@flag:") {
+            Some(spec) => spec.split('|').next().unwrap_or("").to_string(),
+            None => path,
+        };
         Ok(match c.get(&gd, &path) {
             Ok(img) => (Some(img.width), Some(img.height)),
             Err(_) => (None, None),
@@ -319,6 +324,73 @@ pub fn menu(runtime: &Runtime, width: u32, height: u32, version: &str, modal: bo
         Ok(Layout { items: read_items(t.get("items")?)?, missing: missing(&report)?, note, rects: HashMap::new() })
     };
     read().map_err(|e| format!("render.frontend.menu: {e}"))
+}
+
+/// A screen of the new game (render.frontend_newgame: "select", "creator", "setup") for a screen
+/// of `width` x `height`, from the setup state RENDER_NEWGAME (in the front end's runtime).
+pub fn newgame(runtime: &Runtime, width: u32, height: u32, screen: &str) -> Result<Layout, String> {
+    let read = || -> mlua::Result<Layout> {
+        let t: Table = runtime
+            .lua
+            .load(format!(
+                "return require('render.frontend_newgame').build(RENDER_GAME_DIR, RENDER_GFX, {{ width = {width}, height = {height} }}, RENDER_TEXTURE_SIZE, RENDER_LOC, {screen:?})"
+            ))
+            .eval()?;
+        let report: Table = t.get("report")?;
+        Ok(Layout {
+            items: read_items(t.get("items")?)?,
+            missing: missing(&report)?,
+            note: t.get::<Option<String>>("note")?.unwrap_or_default(),
+            rects: HashMap::new(),
+        })
+    };
+    read().map_err(|e| format!("render.frontend_newgame.build: {e}"))
+}
+
+/// An action of the new game's screens on the setup state (the pointer at `at`: a slider's
+/// track takes the value there): the screen to go to ("menu",
+/// "select", "creator", "setup", "play"), or None to stay.
+pub fn newgame_act(runtime: &Runtime, action: &str, at: (f32, f32)) -> Result<Option<String>, String> {
+    let (x, y) = at;
+    runtime
+        .lua
+        .load(format!("return require('render.frontend_newgame').act(RENDER_GAME_DIR, {action:?}, {x}, {y})"))
+        .eval::<Option<String>>()
+        .map_err(|e| format!("render.frontend_newgame.act {action}: {e}"))
+}
+
+/// The setup state's settings in a line (what Play starts).
+pub fn newgame_summary(runtime: &Runtime) -> Result<String, String> {
+    runtime
+        .lua
+        .load("return require('render.newgame_setup').summary(RENDER_NEWGAME)")
+        .eval::<String>()
+        .map_err(|e| format!("render.newgame_setup.summary: {e}"))
+}
+
+/// The load screen for a screen of `width` x `height` (in the front end's runtime): `key`'s text
+/// (localised), the bar at `percent`, over `picture` (newgame.rs).
+pub fn load_screen(runtime: &Runtime, width: u32, height: u32, key: &str, percent: i32, picture: Option<&str>) -> Result<Layout, String> {
+    let read = || -> mlua::Result<Layout> {
+        let f: mlua::Function = runtime.lua.load("return require('render.frontend').load_screen").eval()?;
+        let g = runtime.lua.globals();
+        let screen = runtime.lua.create_table()?;
+        screen.set("width", width)?;
+        screen.set("height", height)?;
+        let t: Table = f.call((
+            g.get::<mlua::Value>("RENDER_GAME_DIR")?,
+            g.get::<mlua::Value>("RENDER_GFX")?,
+            screen,
+            g.get::<mlua::Value>("RENDER_TEXTURE_SIZE")?,
+            g.get::<mlua::Value>("RENDER_LOC")?,
+            key,
+            percent,
+            picture,
+        ))?;
+        let report: Table = t.get("report")?;
+        Ok(Layout { items: read_items(t.get("items")?)?, missing: missing(&report)?, note: format!("load screen: {key} {percent}%"), rects: HashMap::new() })
+    };
+    read().map_err(|e| format!("render.frontend.load_screen: {e}"))
 }
 
 /// A save in the load window: the empire's name, the date, the file's name.

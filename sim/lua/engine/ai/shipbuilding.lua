@@ -1,6 +1,6 @@
--- engine/ai/shipbuilding.lua : the AI's ships and armies (docs/shipbuilding.md section 5), the
--- interior minister's daily part (CAIInteriorMinister::DailyUpdate, Linux 4.5.2 0x2751e20), after
--- the research choice:
+-- engine/ai/shipbuilding.lua : the AI's ships and armies (docs/shipbuilding.md section 7,
+-- docs/ai_fleets.md), the interior minister's daily part (CAIInteriorMinister::DailyUpdate, Linux
+-- 4.5.2 0x2751e20), after the research choice:
 --
 --   BuildArmies (0x27525d0), for a type with construction or limited_construction (bits 7, 8)
 --   and a country not human recently: two unsynced AI draws (the scopes); then each colony of the
@@ -11,27 +11,23 @@
 --   AddAICommandWithCostAndUpkeepForPosting (the armies budget: expenditure and upkeep).
 --
 --   BuildShips (0x2753350), for construction or limited_military_construction (bits 7, 17):
---   BuildColonizer (not ported), then BuildShipOfOwnerType(country) (0x2764b40), one ship at most a
---   call: for each ship size in the database's order that the strategy wants (list 9, BUILD_SHIP,
---   id = the size's index): GetOrRequestDesign (0x2766270: one unsynced draw for the role; a size
---   with no role takes the country's latest design of that size; with roles, the minister's design
---   for the size, else a new design is requested: one draw more for a first entry's class name),
---   the design's cost against the size's economic category's expenditure budget
---   (CanAffordExpenditure), then each shipyard of the country with room: the lowest fill ratio
---   (owned + queued) * size_multiplier / wanted wins; the winner is posted (PostBuildCommand:
+--   BuildColonizer (not ported), the federation's fleet (not modelled), then
+--   BuildShipOfOwnerType(country) (0x2764b40), one ship at most a call: for each AI ship size
+--   (engine.ai.navy) the strategy wants (list 9, BUILD_SHIP, rebuilt monthly by engine.ai.navy):
+--   GetOrRequestDesign (0x2766270: one unsynced draw for the role; without a role the country's
+--   latest design of the size; with one the minister's design of the size, else
+--   RequestNewShipDesign, engine.ai.designer: four draws more, the design posted to be made when
+--   the commands execute and ordered the next day), the design's cost against the size's
+--   economic category's expenditure budget (CanAffordExpenditure), then each shipyard of the
+--   country with room: the lowest fill ratio have / (have + wanted) wins; the winner is posted
+--   (PostBuildCommand: its cost and its upkeep within the AI's budgets, else nothing;
 --   CAddBuildableToQueueCommand, the item in the shipyard's queue, its cost from the stockpile;
 --   the strategy's wanted count - 1 when it executes).
 --
--- Not ported: the AI's ship designer (RequestNewShipDesign / CCreateOrUpdateShipDesignCommand: a
--- design generated for the role from the components the country has): a size with roles gets no
--- design, so no military ship is ordered (STELLAR_AI_DESIGNS=latest lets the country's latest
--- design of the size stand in); the size families, CanCountryBuild, the cheaper design asked for
--- when the budget falls short, BuildColonizer, DisbandShips, the federation's and the galactic
--- community's ships, the military minister's reinforcements (CAIMilitaryMinister::
--- ReinforceFleetGroups) and fleet templates, the strategy's lists 9 and 10 rebuilt each month
--- (CreateNavyBuildData, CreateArmyBuildData: the save's values are used, decremented by the
--- orders). The game's AIs order far fewer ships than the budget allows (docs/shipbuilding.md
--- section 9): what holds them back is not found yet.
+-- Not ported: the size families, CanCountryBuild, the cheaper design asked for when a strategic
+-- resource falls short, BuildColonizer, DisbandShips, the federation's and the galactic
+-- community's ships. STELLAR_AI_DESIGNS=latest lets the country's latest design of the size stand
+-- in for the designer's (a check's variant).
 
 local world = require("engine.world")
 local slice = require("engine.slice")   -- a phase in pieces (docs/frame_timing.md)
@@ -305,35 +301,76 @@ local function months_between(a, b)
     return m(b) - m(a)
 end
 
--- GetOrRequestDesign (0x2766270): one draw for the role; a size without a role: the country's
--- latest design; with one, the minister's design of the size (its SShipSizeDesignInfo: a design
--- of that name and size, younger than SHIP_DESIGN_STALE_MONTHS), else RequestNewShipDesign (a new
--- entry draws the class name). The AI's designer is not ported: a requested design is not made,
--- so no design comes back for a size with roles, unless STELLAR_AI_DESIGNS=latest lets the latest
--- existing design stand in (a check's variant)
-function M.get_or_request_design(country, size, today)
-    draw(country) -- the role (SShipDesignPreferences::GetEffectiveRoleForShipSize)
-    if #size_roles(size) == 0 then
+-- RequestNewShipDesign (0x2765d20; engine.ai.designer): draws r1 (CreateShipDesign's seed), r2
+-- (the design's role), and with a role r3 and r4; the design of the info's name with identical
+-- components, else the newest identical one (its name then the info's), comes back with the info
+-- dated today; else a CCreateOrUpdateShipDesignCommand is posted (the design made when the
+-- commands execute) and nothing comes back this day
+function M.request_new_design(country, size, info, today, commands)
+    local designer = require("engine.ai.designer")
+    local r1 = draw(country)
+    local role = designer.role_for(country, size, draw(country))
+    if role ~= "" then
+        draw(country) -- r3: AddRandomSectionsToShipDesign, every slot filled already
+        draw(country) -- r4: AddSectionComponentsToShipDesign
+    end
+    -- the sections: rolled with seed 0 once the role is set; without a role CreateShipDesign's
+    -- (CCrudeRandom(r1)'s first value)
+    local stage = designer.plain(designer.generate(country, size, role, role == "" and designer.crude(r1):int() or 0))
+    if not stage then
+        S.no_design = S.no_design + 1
+        return nil
+    end
+    local did = designer.by_name_and_size(country, info.name, size)
+    if did and designer.identical(designer.stage_of(did), stage) then
+        info.date = today
+        designer.stats.reused = designer.stats.reused + 1
+        return did
+    end
+    did = designer.find_identical(country, stage)
+    if did then
+        info.name = designer.name_key_of(did) or info.name
+        info.date = today
+        designer.stats.reused = designer.stats.reused + 1
+        return did
+    end
+    commands[#commands + 1] = cmds.make("engine.ai.shipbuilding", "design_command", M.ctor.design_command, country, stage, info.name, role)
+    designer.stats.posted = designer.stats.posted + 1
+    S.designs_requested = S.designs_requested + 1
+    return nil
+end
+
+-- GetOrRequestDesign (0x2766270): one draw for the role (GetEffectiveRoleForShipSize); no role:
+-- the country's latest design of the size; else the minister's SShipSizeDesignInfo of the size
+-- (a name and a date, not saved; a first one draws the class name, TakeRandomShipClassNameFor-
+-- Design): the design of that name and size while the info is younger than
+-- SHIP_DESIGN_STALE_MONTHS, else RequestNewShipDesign. STELLAR_AI_DESIGNS=latest lets the
+-- latest existing design stand in for the designer's (a check's variant)
+function M.get_or_request_design(country, size, today, commands)
+    local designer = require("engine.ai.designer")
+    local role = designer.role_for(country, size, draw(country))
+    if role == "" then
         return M.latest_design(country, size)
     end
     local infos = M.design_info[country] or {}
     M.design_info[country] = infos
     local info = infos[size]
-    if info and info.design and months_between(info.date, today) < stale_months() and world.object("ship_design", info.design) then
-        return info.design
-    end
-    if not info then
-        draw(country) -- TakeRandomShipClassNameForDesign
-        info = { date = today }
+    if info then
+        if months_between(info.date, today) < stale_months() then
+            local did = designer.by_name_and_size(country, info.name, size)
+            if did then
+                return did
+            end
+        end
+    else
+        info = { date = today, name = designer.class_name(country, size, draw(country)) }
         infos[size] = info
     end
-    S.designs_requested = S.designs_requested + 1
     if os.getenv("STELLAR_AI_DESIGNS") == "latest" then
-        info.design = M.latest_design(country, size)
         info.date = today
-        return info.design
+        return M.latest_design(country, size)
     end
-    return nil
+    return M.request_new_design(country, size, info, today, commands or {})
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -468,33 +505,53 @@ local function ship_command(country, size, size_index, did, sbid, queue, cost, t
     }
 end
 
--- CAIInteriorMinister::BuildShipOfOwnerType(country): one ship at most a call. Over the sizes the
--- strategy wants (not colonizers: BuildColonizer's; not constructors and science ships for a
--- country human recently), the design (GetOrRequestDesign), its cost within the size's category's
--- expenditure budget, then for each shipyard with room the candidate's fill ratio
--- (owned + queued) * size_multiplier / wanted: the lowest wins (a tie: the queue with fewer
--- items). The winner is posted (PostBuildCommand) and its cost withdrawn.
+-- the design command (CCreateOrUpdateShipDesignCommand), executed after every AI decided
+local function design_command(country, stage, name, role)
+    return {
+        kind = "ai_ship_design", country = country,
+        execute = function()
+            require("engine.ai.designer").execute_create(country, stage, name, role)
+            return true
+        end,
+    }
+end
+
+-- CAIInteriorMinister::BuildShipOfOwnerType(country) (0x2764b40): one ship at most a call. Over
+-- the AI's ship sizes (those with ai_ship_data, the database's order) the strategy wants (list 9,
+-- slot = the size's index): the design (GetOrRequestDesign, which may ask the designer), its cost
+-- (the country's modifiers) within the size's category's expenditure budget (CanAffordExpenditure;
+-- short of a basic resource the size is skipped), not a colonizer (BuildColonizer's) nor, for a
+-- country human recently, a constructor or science ship; then for each of the country's shipyards
+-- with room the candidate's fill ratio have / (have + wanted), have = owned + queued of the size:
+-- the lowest wins (a tie: the queue with fewer items). PostBuildCommand: the item at the shipyard
+-- (its cost with the starbase's modifiers) posted through AddAICommandWithCostAndUpkeepForPosting
+-- (0x27897d0): its cost within the expenditure budget and its upkeep within the upkeep budget
+-- (CanAffordUpkeep), else nothing is posted; the cost withdrawn; the strategy's wanted count - 1
+-- (CAIAddStrategyCommand) when it executes. The size families (the ratio over a family's sizes by
+-- their naval capacity) are not modelled; no family at the 2210 tech levels.
 function M.build_ships(country, today, commands)
     local budget = require("engine.ai.budget")
-    local sizes = db_index("common/ship_sizes")
     local economy_mod = require("engine.economy")
     local owned, queued
     local best
-    for i, size in ipairs(sizes.names) do
-        local idx = i - 1
+    local human = require("engine.ai").human(country)
+    for _, entry in ipairs(require("engine.ai.navy").ai_sizes()) do
+        local size, idx = entry.name, entry.slot
         local wanted = M.strategy_value(country, 9, idx, 0)
         if wanted > 0 then
-            local did = M.get_or_request_design(country, size, today)
+            local did = M.get_or_request_design(country, size, today, commands)
             local info = did and create().design_info(did)
             if not (info and info.size == size) then
                 S.no_design = S.no_design + 1
-            elseif info.class ~= "shipclass_colonizer" then
+            else
                 local cost, category = M.ship_table(country, did, "cost", economy_mod.modifiers("country", country) or {})
                 if not budget.can_afford_expenditure(country, category, cost) then
                     S.unaffordable = S.unaffordable + 1
-                else
+                elseif info.class ~= "shipclass_colonizer"
+                    and not (human and (info.class == "shipclass_constructor" or info.class == "shipclass_science_ship")) then
                     if not owned then owned, queued = count_ships(country) end
-                    local ratio = ((owned[size] or 0) + (queued[size] or 0)) * (info.size_multiplier or 1) / wanted
+                    local have = (owned[size] or 0) + (queued[size] or 0)
+                    local ratio = have / (have + wanted)
                     local yards = M.shipyards(country, size)
                     if #yards == 0 then
                         S.no_queue = S.no_queue + 1
@@ -502,7 +559,7 @@ function M.build_ships(country, today, commands)
                     for _, y in ipairs(yards) do
                         if best == nil or ratio < best.ratio or (ratio == best.ratio and y.items < best.items) then
                             best = { ratio = ratio, size = size, idx = idx, did = did, starbase = y.starbase, queue = y.queue,
-                                     items = y.items, cost = cost, category = category }
+                                     items = y.items, category = category }
                         end
                     end
                 end
@@ -512,10 +569,20 @@ function M.build_ships(country, today, commands)
     if not best then
         return
     end
-    -- the item's own cost (the shipyard's modifiers) is what the command takes
-    local item_cost = M.ship_table(country, best.did, "cost", economy_mod.modifiers("starbase", best.starbase) or {})
+    -- PostBuildCommand: the item's own cost and upkeep (the shipyard's modifiers)
+    local smods = economy_mod.modifiers("starbase", best.starbase) or {}
+    local item_cost = M.ship_table(country, best.did, "cost", smods)
+    local item_upkeep = M.ship_table(country, best.did, "upkeep", economy_mod.modifiers("country", country) or {})
+    if not budget.can_afford_expenditure(country, best.category, item_cost) then
+        S.unaffordable = S.unaffordable + 1
+        return
+    end
+    if not budget.can_afford_upkeep(country, best.category, item_upkeep) then
+        S.upkeep_unaffordable = (S.upkeep_unaffordable or 0) + 1
+        return
+    end
     commands[#commands + 1] = cmds.make("engine.ai.shipbuilding", "ship_command", ship_command, country, best.size, best.idx, best.did, best.starbase, best.queue, item_cost, today)
-    budget.withdraw(country, best.category, best.cost)
+    budget.withdraw(country, best.category, item_cost)
     S.ship_posts = S.ship_posts + 1
     M.posted[#M.posted + 1] = { date = today, country = country, kind = "ship", design = best.did, size = best.size,
                                 queue = best.queue, cost = item_cost }
@@ -690,16 +757,32 @@ function M.daily(country, today, commands)
         S.army_days = S.army_days + 1
         M.build_armies(country, today, commands)
     end
-    if ai.setting(country, "construction") or ai.setting(country, "limited_military_construction") then
+    -- BuildShips (0x2753350): with ai.construction, BuildColonizer (not ported: no AI draws),
+    -- BuildShipOfOwnerType for the federation's fleet (owner 1) when the country is in a
+    -- federation (its leader, or a member while the progression's flag +0x2b4 is clear) or for the
+    -- galactic community's (2) when it owns the defense force, then for its own (0): the headless
+    -- game, traced, calls both for the 2210 hegemony's members each day. The federation's and the
+    -- community's ships are not modelled. With only ai.limited_military_construction, its own.
+    if ai.setting(country, "construction") then
+        S.ship_days = S.ship_days + 1
+        if require("engine.ai.navy").federation_of(country) then
+            S.federation_days = (S.federation_days or 0) + 1   -- the federation's ships: not modelled
+        end
+        M.build_ships(country, today, commands)
+    elseif ai.setting(country, "limited_military_construction") then
         S.ship_days = S.ship_days + 1
         M.build_ships(country, today, commands)
     end
 end
 
 function M.report()
-    local text = string.format("ai shipbuilding: %d country-days (%d armies, %d ships); %d unsynced draws; posted %d ships, %d armies (%d executed, %d failed); %d designs requested (the designer is not ported), %d size-days without a design, %d not affordable, %d without a free shipyard, %d armies not affordable",
+    local text = string.format("ai shipbuilding: %d country-days (%d armies, %d ships); %d unsynced draws; posted %d ships, %d armies (%d executed, %d failed); %d designs requested, %d size-days without a design, %d not affordable, %d over the upkeep budget, %d without a free shipyard, %d armies not affordable",
         S.days, S.army_days, S.ship_days, S.ai_draws, S.ship_posts, S.army_posts, S.executed, S.failed,
-        S.designs_requested, S.no_design, S.unaffordable, S.no_queue, S.army_unaffordable)
+        S.designs_requested, S.no_design, S.unaffordable, S.upkeep_unaffordable or 0, S.no_queue, S.army_unaffordable)
+    local dz = package.loaded["engine.ai.designer"]
+    if type(dz) == "table" then
+        text = text .. "\n" .. dz.report()
+    end
     for _, p in ipairs(M.posted) do
         local cost = {}
         for r, v in pairs(p.cost or {}) do cost[#cost + 1] = string.format("%s %.2f", r, v) end
@@ -710,6 +793,6 @@ function M.report()
     return text
 end
 
-M.ctor = { ship_command = ship_command, army_command = army_command }
+M.ctor = { ship_command = ship_command, army_command = army_command, design_command = design_command }
 
 return M

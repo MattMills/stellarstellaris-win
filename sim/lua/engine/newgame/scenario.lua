@@ -294,8 +294,11 @@ function scenario.read(fs, settings)
         difficulty = settings.difficulty or "ensign",
         player_locations = settings.player_locations or "normal",
         clustered = settings.clustered ~= false,
+        player_design = settings.player_design,
         seed = settings.seed or 0,
         start_year = settings.start_year or 2200,
+        player_design = settings.player_design,
+        player_design_text = settings.player_design_text,
     }
     return { scenario = s, shape = shape, config = cfg }
 end

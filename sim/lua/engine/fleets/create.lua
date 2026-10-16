@@ -500,6 +500,7 @@ local function add_ship_name(country, key)
     end
     world.append_entry(sn, { key = { text = key, quoted = true }, op = "=", value = { text = "1" } })
 end
+create.add_ship_name = add_ship_name
 
 -- the country's name list's ship names for a size: its own list and the generic one
 local function name_lists(country, size)
@@ -986,12 +987,14 @@ local function template_add(country, fid, f, info, did)
             return
         end
     end
+    -- CFleetTemplate::AddDesign (0x2a163b0): a new entry with the count added (1)
     local e = {}
     local sdi = {}
     world.append(sdi, "design", did)
     world.append(sdi, "upgrade", NO_ID)
     world.append(sdi, "growth_stage", 0)
     world.append(e, "ship_design_implementation", sdi)
+    world.append(e, "count", 1)
     world.push(list, e)
     world.set(t, "fleet_size", size + info.size_multiplier)
 end

@@ -30,8 +30,9 @@ operands when they are large, which these values never are); a division by zero 
   every growing (colony, species) has the game's integer as its floor or ceiling: **24 of 24** in the
   2210.01.01 save, **24 of 24** in 2210.07.01; in the later saves all but the clone-vat colony
   (whose captured bonus growth went stale). Assembly likewise (4.96 expected, the game 4 and 5).
-- **The new pops' category** comes from the jobs update (`NPlanetJobs::UpdatePopJobs`), not modelled:
-  pops.lua puts them in the species' civilian/unemployment group (a stand-in).
+- **The new pops' category** comes from the jobs update (`NPlanetJobs::UpdatePopJobs`, section 11,
+  [`engine/jobs.lua`](../sim/lua/engine/jobs.lua)): pops.lua puts them in the species'
+  civilian/unemployment group, the jobs pass moves them into the categories of the jobs they take.
 - **Daily, not monthly**: happiness, political power, crime, amenities and housing usage, habitability
   (`CPopGroup::DailyUpdateOnlyChangeSafePrivate`), ethics drift and factions
   (`CPopGroup::DailyUpdateSerial`), the colony's employable/unemployed/civilian counts, stability,
@@ -336,7 +337,7 @@ block only when it has entries.
 | pop group `amenities_usage`, `happiness`, `power`, `crime`, `habitability` | daily, `DailyUpdateOnlyChangeSafePrivate` (`CalcAmenitiesUsage`, `CalcHappinessWithModifier`, `CalcCrime`, `NHabitability::CalcHabitability`; power through `ApplyModifierMult`) | not modelled |
 | pop group `fractions`, `factions`, `wanted_factions`, `ethics_attraction`, `total_attraction` | daily, factions (`CheckPopFactionChange`, `CalculateFactionChange`, `CPopGroup::DailyUpdateSerial`) | [ethics.md](ethics.md): `ethos`, the attraction, `fractions` without factions (`engine/ethics.lua`) |
 | colony `amenities`, `free_amenities`, `amenities_usage`, `stability`, `crime`, `civilian`, `unemploy_pop` | daily / micro: `MicroUpdateCachedValues` (`CalcAmenities`, `CalcPlanetStability`, `CalcPlanetCrime`), `CalcCachedUnemployedPopStatus` | not modelled |
-| pop jobs `workforce`, the groups' categories | daily and monthly, `NPlanetJobs::UpdatePopJobs` | not modelled |
+| pop jobs `workforce`, the groups' categories | daily and monthly, `NPlanetJobs::UpdatePopJobs` | `engine/jobs.lua` (section 11) |
 
 ## 7. Defines **[V]** (read from `common/defines` by pops.lua)
 
@@ -390,13 +391,14 @@ pool, not the global generator.
 7. the colonies' caches (`employable_pops`, `num_sapient_pops`, `species_information`) and the
    month's bookkeeping (section 4).
 
-**The jobs' stand-in** (`pops.target`): the game adds the month's pops without a category and the
-jobs update gives them one. pops.lua adds them at once to the species' group of a civilian or
+**Where new pops go first** (`pops.target`): the game adds the month's pops without a category and the
+jobs update gives them one (section 11; `engine/jobs.lua` runs twice after the growth, as the game's
+update does). pops.lua adds them at once to the species' group of a civilian or
 unemployment category (`is_civilian_job` / `is_unemployment_job`), else to its group of the lowest
 rank, else to a new group (`civilian`, or `slave_unemployment` for an enslaved species), with the
 details the move leaves (`GROWTH`, `PROMOTION 0`). It does not create the transient group without a
-category the game creates (its id would not be the game's), and does not fill free jobs (the game's
-new specialists on colonies with open specialist jobs go to civilians here).
+category the game creates (its id would not be the game's); the jobs pass that follows moves them
+into free jobs.
 
 `engine/pops/script.lua` answers what the rules ask that the script layer does not yet, only while
 pops evaluates (on top of `engine/economy/script.lua`): `is_infertile`, `is_robotic(_species)`,
@@ -437,10 +439,159 @@ pops evaluates (on top of `engine/economy/script.lua`): `is_infertile`, `is_robo
 
 ### Not modelled
 
-- the jobs update (`NPlanetJobs::UpdatePopJobs`): categories, promotions, `pop_jobs` workforce;
+- the jobs update's virtual jobs and favorite jobs (section 11.5);
 - auto-migration (`CalcAutoMigrationSafePrivate`, `ApplyAutoMigrationResults`; no
   `GROWTH_CAT_MIGRATION` in these saves), auto-modding (`MonthlyAutoModUpdate`), designation;
 - `UpdateCanProcreate` (the save's flags are kept); purges (rates, `on_pop_displaced/purged`);
   `CalcAssemblyScoreForSpecies`; the completion of a colonization; bombardment of colonists;
 - the daily pop group and colony recalculations other than housing (section 6);
 - the transient pop groups without a category (the game's: killed the next day).
+
+## 11. The jobs update: `NPlanetJobs` (Linux 4.5.2)
+
+Which job objects a colony has (the save's `pop_jobs`), their places, and which pops work them, read
+statically from the **Linux** 4.5.2 build (`/root/re452` on hippo: `nm.txt`, `dis.sh`; the addresses
+in this section are Linux ones, not GOG RVAs). The RE notes, with offsets and pseudo-code, are in the
+side-session notes folder `ng_jobs_re/` (`available_jobs.md`, `assign.md`). Modelled by
+[`sim/lua/engine/jobs.lua`](../sim/lua/engine/jobs.lua).
+
+### 11.1 When
+
+`NPlanetJobs::UpdatePopJobs(date, colonies)` (`0x26b4520`) runs on a batch of colonies:
+
+- **twice a day** from `CGameState::DailyUpdate` through
+  `NColonyUpdate::MonthlyOrDailyUpdatePopJobsInColony` (`0x28ecf80`: once more unless its flag
+  matches a cheat flag);
+- **twice in the month's colony update** (`NColonyUpdate::MonthlyUpdate`, after growth, assembly and
+  decline: section 1, step 5);
+- for one colony from `CColony::EnsurePopJobsAreUpToDate` (`0x2864190`) and `CColony::DailyUpdateSerial`
+  when a colony changed.
+
+It calls, in order: `BuildUpdateData` (`0x26beaf0`), `CollapsePopGroups` (`0x26c2c80`),
+`CalculatePopGroupPossiblePreCalcFlags` (`0x26bd9d0`), `UpdatePopGroupsWithPossiblePreCalcFlags`,
+`UpdateAvailableJobs` (`0x26bb520`), `AssignPopsToJobs` (`0x26b5500`), `ClearRecalcPopJobFlags`.
+
+### 11.2 The batch and the collapse **[V]**
+
+`BuildUpdateData` takes, per colony, its pop groups (the save's `pop_groups` order) and its jobs (the
+colony's `pop_jobs` order) **as they are now**: the jobs `UpdateAvailableJobs` makes later in the pass
+are in the colony but take no pops until the next pass. Per (group, job) it makes two 24-byte entries
+(`SPopGroupJobWeight`): a candidate (amount `INT_MAX`) and an incumbent (the group's pops already in
+the job).
+
+`CollapsePopGroups`: the colony's groups by size (descending, stable); from the smallest, a group of at
+most `POP_GROUP_COLLAPSING_THRESHOLD` (99, under one pop) moves into an earlier group of the same
+species and category also within the threshold (`GROWTH_CAT_COLLAPSE`), its job places pointed at it.
+
+Per group the pre-trigger flags (`SPreTriggerValues`): `has_owner` (the colony's owner exists),
+`is_enslaved`, `is_being_purged`, `is_being_assimilated` (the species rights' citizenship in the owner:
+slavery, purge, assimilation), `is_sapient`, `is_robotic` (the species class's archetype),
+`has_planet` (always); and the `possible_precalc` values, the game rules `can_fill_ruler_job`,
+`can_fill_specialist_job`, `can_fill_worker_job`, `can_fill_drone_job`, `can_fill_precursor_job`
+(This = the pop group). The save shows the first three as the group's `can_fill_*_job = yes`.
+
+### 11.3 Which jobs a colony has: `UpdateAvailableJobs` **[V]**
+
+At load (`CJobTypeDatabase::PostReadInit` `0x1ce65d0`) the job types, in the database's order (the
+files of `common/pop_jobs` in load order), are split by `is_capped_by_modifier` (flags bit 0, default
+yes). Per colony (`CreateAndDestroyJobs` lambda `0x26bc3f0`, which only collects; the creation is serial
+after it):
+
+- an **uncapped** type (`civilian`, `servant`, `slave_unemployment`, `peasant`, `maintenance_drone`,
+  ...) exists while at least one of the colony's groups passes its `possible_pre_triggers` and
+  `possible_precalc` (its `possible` is not asked here). Its `max_workforce`, `workforce_limit` and
+  `automated_workforce_limit` are -1. So every inhabited colony carries the unused unemployment jobs
+  of its pops (the 2200.01.11 capitals: about 15 of them, `workforce = -1`, `bonus_workforce = 1`);
+- a **capped** type exists while `CColony::CalcMaxWorkforce(type)` (`0x289c880`) is positive:
+  `job_<t>_add + num_pops * job_<t>_per_pop + crime * job_<t>_per_crime` of the colony's modifier
+  (the buildings', districts', zones', deposits' `job_<t>_add`; 100 = one pop). Its max is
+  `CPopJob::CalcMaxWorkforce` (`0x1ea7c00`): that times `1 + job_max_workforce_mult +
+  job_<t>_max_workforce_mult`, plus `job_max_workforce_add + job_<t>_max_workforce_add`.
+
+The new jobs of a colony are made in database order, the uncapped ones first, each at the end of the
+colony's list (`CColony::AccessOrCreatePopJob` `0x286c400`, `CGameState::CreateNewPopJob`); a job that
+no longer exists is taken out by swapping the last one into its place
+(`CColony::SetToBeKilledAndRemovePopJob` `0x286c510`). A new max moves both limits: a raise adds the
+difference to `workforce_limit` and `automated_workforce_limit`, a cut clamps them. The constructor's
+limits are 0 and -1, which is why a job's automated limit is its limit less one in the saves
+(politician 200 / 200 / 199).
+
+### 11.4 Who works them: `AssignPopsToJobs` **[V]**
+
+1. **Weights** (`CalculatePopJobWeights` lambda `0x26b7a80`, per candidate entry, when
+   `CPopJob::IsPossible`: the pre-triggers, the precalc, `CJobType::_IsPossibleInternal` `0x1ce5750`
+   (a group of a higher rank than a capped job's category cannot take it, nor a group of another rank
+   an `allow_only_same_rank_pops` job, unless the job's category cannot change), then `possible`):
+   `CPopJob::CalcWeight` (`0x1ea6d10`) = the job's `weight` block (This = the pop group; 1 without
+   one; `civilian` and the unemployment jobs have 0) times `f^POP_JOB_WORKFORCE_WEIGHT_POWER` (3),
+   `f = 1 + pop_workforce_mult + pop_<job>_workforce_mult + bonus mult` (below). An incumbent entry
+   gets the weight times its category's `change_job_threshold` (default 1.05). The colony's favorite
+   job of a category: times `FAVORITE_JOB_WEIGHT_MULT` (10).
+2. **Ranks**: an incumbent entry takes the job category's rank; a candidate the **group's current**
+   rank, except in the job's reshuffle month (`(total months + the job's index in the batch) %
+   job_reshuffle_interval == 0`: ruler 13, specialist 7, worker 3), when both take the job's rank and
+   the incumbent loses the threshold.
+3. **Reset** of every job: its pop groups cleared; the automated workforce `min(job_<t>_add *
+   min(job_<t>_automated_workforce_mult + district_automated_workforce, AUTOMATED_WORKFORCE_MAX_PERC),
+   workforce_limit, automated_workforce_limit)` for jobs that can be automated with a positive limit
+   (else 0, and -1 for an uncapped job: its limits are -1); `workforce = automated`, `bonus_workforce =
+   max(-workforce, automated * bonus_automated_workforce_mult)`. So an uncapped job starts each pass at
+   workforce -1 and bonus 1: 650 civilians give `workforce = 649`, `bonus_workforce = 1 + 65`.
+4. **Spreading**: a group's free places in capped jobs of its own rank (not favorite, not
+   `first_come_first_served`) give it a share `min(1, size / free)`; each such job takes at most the
+   ceiling of its free places times the shares of the groups that can work it (at least its
+   incumbents).
+5. **Sort** (stable, `0x26b91b0`): valid entries first, `first_come_first_served` jobs first, the higher
+   rank, the higher weight, the smaller amount (incumbents before candidates).
+6. **Greedy** over the sorted entries: `n = min(entry amount, the group's pops left, the job's room)`;
+   `NPlanetJobs::TryAssignPopsToJob` (`0x26b4fd0`) takes at most
+   `ceil(max((workforce_limit - workforce) / m, 1))` for a capped job (`m = 1 + pop_workforce_mult +
+   pop_<job>_workforce_mult`, the group's), adds `n` to the job's `pop_groups`, `workforce += n * m`
+   (at most `max_workforce` for a capped job), `bonus_workforce += Δworkforce * (pop_bonus_workforce_mult
+   + pop_<job>_bonus_workforce_mult + pop_cat_<category>_bonus_workforce_mult)`, at least
+   `-workforce`.
+7. **Categories**: every job's places whose group's category is not the job's move
+   `min(size, amount)` pops into the colony's group of `{ species, job category }` (the first, else a
+   new one at the end of the colony's list) with `CPopGroup::MoveSizeFrom` (`GROWTH_CAT_PROMOTION`, for
+   demotions too), unless the group's category cannot change (`can_change_category`). An emptied group
+   leaves the colony (the last group swapped into its place) and is killed.
+
+Nothing limits promotions per day or month beyond the thresholds and the reshuffle months.
+
+### 11.5 In the simulation: `engine/jobs.lua`
+
+`jobs.update([colonies])` is one pass as above, over all colonies in store order by default (the
+batch's job indices, which phase the reshuffle months, follow that order; the game's colony array may
+be in another order **[I]**). Hooks: twice a day at the end of the daily `colonies_serial` phase
+(`jobs.daily`; the game's place in the day is not traced **[I]**), twice in `pops.monthly` after the
+growth, and twice at the end of a new game's start script (`newgame.start_script`, after the modifier
+graph is refreshed; the emptied groups are removed there). `STELLAR_JOBS=off` keeps the jobs as they
+are; `STELLAR_JOBS_DEBUG=<colony>` prints a colony's sorted entries.
+
+The month's new pops still go first to their species' civilian group (`pops.target`) instead of a
+group without a category; the jobs pass moves them on. Pop group modifiers come from the engine's
+modifier source; a group made since its last build borrows a sibling's of the same species. The
+`possible` and `weight` blocks and the rules are evaluated through `engine/pops/script.lua` and
+`engine/economy/script.lua` and cached for the day. `CPopGroup::MoveSizeFrom` is `pops.move_size`:
+sizes, ethics (the source resized, the difference to the target by ethic **[I]**), growth details.
+
+Not modelled: virtual jobs (`NPlanetUtil::UsesVirtualJobs`, which fills jobs without pops), favorite
+jobs (no `favorite_jobs` in these saves), the auto-mod traits bookkeeping, `ClearRecalcPopJobFlags`
+(every colony every pass), the job objects' economic-unit checksums.
+
+### 11.6 Checks
+
+- **One day from a save** (`tmp_sim/ngjobs/snap.lua`, `before.lua`, `after.lua` with `examples/run 1`):
+  the colonies' groups (species/category sizes) and jobs (workforce + bonus) after the day's two
+  passes against the save. 2210.01.01: groups 142 of 146 the same, jobs 1162 of 1164, no job made or
+  removed (the job sets are the game's); the difference is one pop of colony 45 (two species, a worker
+  place taken by the other species). 2210.07.01: 146/146 and 1182/1182. 2211.07.01: the same colony-45
+  pop. 2212.07.01: 155/155 groups, one bonus 1.2 against 1.4. 2200.01.11: 116 of 122 groups; the
+  differences are primitive colonies (a `primitive_priest` place, whose weight reads the group's
+  ethics, and the primitives' bonus modifiers).
+- **A new game** (`examples/newgame --scenario tiny --seed 1234`): the capitals come out like the
+  2200.01.11 save's: every capped job filled, the rest civilian (or maintenance drones for a machine
+  empire), the unemployment jobs present and unused; e.g. capital 0: ruler 200, specialist 1480,
+  worker 1800, civilian 1720, 27 jobs.
+- `examples/run 31` on 2210.01.01: 7.7 s for the month against 6.1 s without the jobs
+  (`STELLAR_JOBS=off`).

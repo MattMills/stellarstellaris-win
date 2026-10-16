@@ -162,6 +162,39 @@ function frontend.menu(game_dir, db, screen, texture_size, loc, version, modal)
     return { items = items, report = report, background = bg, background_missing = why }
 end
 
+-- the load screen (interface/load_screen.gui, window load_screen; RenderLoadScreen): the
+-- picture (gfx/loadingscreens, newgame.rs picks it) covering the screen, the status window's
+-- progress bar (GFX_progressbar_933) at `percent` and its text (`key` localised: START_NEW_GAME,
+-- LOAD_MAP_GFX, ...) in the load_screen font. The tip window is off the screen (y = -99999).
+function frontend.load_screen(game_dir, db, screen, texture_size, loc, key, percent, picture)
+    local items, report = {}, { sprites = 0, texts = 0, missing_sprites = {}, skipped = {}, rects = {} }
+    if picture then
+        local tw, th = texture_size(picture)
+        if tw then
+            local s = math.max(screen.width / tw, screen.height / th)
+            local w, h = tw * s, th * s
+            items[1] = {
+                kind = "sprite", path = "/load_screen/picture", sprite = picture, texture = picture,
+                sprite_kind = "still", frame = 1, frames = 1,
+                x = (screen.width - w) / 2, y = (screen.height - h) / 2, w = w, h = h,
+            }
+            report.sprites = 1
+        else
+            report.missing_sprites[#report.missing_sprites + 1] = picture
+        end
+    end
+    local text = loc and (loc.get(key)) or key
+    local opts = {
+        texture_size = texture_size, loc = loc,
+        hide = { tip = true },
+        text = { ["/load_screen/status/text"] = text },
+        progress = { ["/load_screen/status/progress"] = math.max(0, math.min(100, percent)) / 100 },
+    }
+    local it, r = gui.layout(game_dir, db, "interface/load_screen.gui", "load_screen", screen, opts)
+    gui.merge(items, report, it, r)
+    return { items = items, report = report }
+end
+
 -- the load game window over the menu, one LoadGameSessionEntry per save (as many as the list
 -- shows); saves = { { name, date, file } } newest first
 function frontend.load_window(game_dir, db, screen, texture_size, loc, saves)

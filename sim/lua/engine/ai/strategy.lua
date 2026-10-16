@@ -26,9 +26,9 @@
 --
 -- Kept as the save has them (not built here yet): 1 COLONIZE (AddColonyData, the synced AI draw),
 -- 3 BUILD_ORBITAL_STATION (CDepositHolder::CanBuildStation), 19 EXPAND_BORDERS (ShouldExpand),
--- 24 EXPLORE_BYPASS, 29 LOCK_BYPASS, 9 BUILD_SHIP and 10 BUILD_ARMY (CreateNavyBuildData,
--- CreateArmyBuildData), 0 CONQUER (CreateConquerData, claims), and the military minister's lists
--- (fleets).
+-- 24 EXPLORE_BYPASS, 29 LOCK_BYPASS, 10 BUILD_ARMY (CreateArmyBuildData), 0 CONQUER
+-- (CreateConquerData, claims), and the military minister's lists (fleets). 9 BUILD_SHIP
+-- (CreateNavyBuildData) is engine.ai.navy's, rebuilt here every month.
 --
 --   strategy.monthly(host, date)   the month's update (systems.lua, monthly.countries_serial)
 --   strategy.compute(country)      the ported lists of a country: { {type, id, target, value} }
@@ -714,26 +714,58 @@ function strategy.monthly(host, date)
             -- a `relations = yes` type: the colonize data (the InWar flag it also sets from the
             -- country's wars is not written: the wars are not modelled); the conquer data (claims,
             -- list 0), the navy and army build data (9, 10) and the modules' lists are kept
-            if type_flag(c, "relations") and colonize_due(id, c, ai, date) then
+            local fresh, rebuilt = {}, {}
+            -- list 9 (BUILD_SHIP): CreateNavyBuildData (engine.ai.navy), for a `relations = yes`
+            -- type with the economy module, else for an ai.limited_military_construction type;
+            -- STELLAR_AI_NAVY=off keeps the save's list 9 (decremented by the orders)
+            local relations = type_flag(c, "relations")
+            if os.getenv("STELLAR_AI_NAVY") ~= "off"
+                and ((relations and world.path(c, "modules", "standard_economy_module") ~= nil)
+                    or (not relations and require("engine.ai").setting(id, "limited_military_construction"))) then
+                local nv = require("engine.ai.navy").compute(id)
+                if nv then
+                    for _, s in ipairs(nv) do fresh[#fresh + 1] = s end
+                    rebuilt[9] = true
+                end
+            end
+            if relations and colonize_due(id, c, ai, date) then
                 strategy.stats.colonize = strategy.stats.colonize + 1
-                local fresh = strategy.compute(id)
+                for _, s in ipairs(strategy.compute(id)) do fresh[#fresh + 1] = s end
+                for t in pairs(PORTED) do rebuilt[t] = true end
+                -- list 1 (COLONIZE, AddColonyData: not ported): the save's entries kept, less the
+                -- planets someone has colonized or owns since (AddColonyData would not add them:
+                -- CPlanet::CanColonize); STELLAR_AI_LIST1=off keeps them all
+                if os.getenv("STELLAR_AI_LIST1") ~= "off" then
+                    for _, s in ipairs(strategy.entries(id, 1)) do
+                        local p = world.object("planet", s.id)
+                        local owner = p and tonumber(world.field(p, "owner"))
+                        if p and (owner == nil or owner == 4294967295) and world.planet_colony[s.id] == nil then
+                            fresh[#fresh + 1] = { type = 1, id = s.id, target = s.target, value = s.value }
+                        end
+                    end
+                    rebuilt[1] = true
+                end
                 -- the lists in memory keep the order they were made in (AddStrategy appends);
                 -- the save writes them sorted (strategy.entries)
                 local made = {}
                 for _, s in ipairs(fresh) do
                     slice.tick("strategy made")
-                    local l = made[s.type]
-                    if not l then
-                        l = {}
-                        made[s.type] = l
+                    if s.type ~= 9 then
+                        local l = made[s.type]
+                        if not l then
+                            l = {}
+                            made[s.type] = l
+                        end
+                        l[#l + 1] = { id = s.id, target = s.target, value = s.value }
                     end
-                    l[#l + 1] = { id = s.id, target = s.target, value = s.value }
                 end
                 strategy.made[id] = made
-                strategy.stats.entries = strategy.stats.entries + write(ai, fresh, PORTED)
                 -- HasCreatedColonizeData set, DirtyExpandStrategy cleared
                 world.set(ai, "colonize", "yes")
                 remove_key(ai, "dirty_expand_strategy")
+            end
+            if next(rebuilt) then
+                strategy.stats.entries = strategy.stats.entries + write(ai, fresh, rebuilt)
             end
             -- every country: NeedStrategicWarData cleared; _bInitializedStrategy set,
             -- _bRecalculateStrategy cleared

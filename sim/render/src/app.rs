@@ -40,6 +40,53 @@ pub enum Screen {
     Menu,
     Load,
     Map,
+    /// the new game: empire selection (select_empire_design.gui), the empire creator (session
+    /// ng-creator's render.newgame_creator), the galaxy settings (game_setup/setup.gui)
+    SelectEmpire,
+    Creator,
+    GameSetup,
+    /// the load screen of a new game (newgame.rs)
+    Loading,
+}
+
+impl Screen {
+    /// One of the new game's screens (render.frontend_newgame): its name there.
+    pub fn newgame(self) -> Option<&'static str> {
+        match self {
+            Screen::SelectEmpire => Some("select"),
+            Screen::Creator => Some("creator"),
+            Screen::GameSetup => Some("setup"),
+            _ => None,
+        }
+    }
+}
+
+/// A new game on its way (App::start_new_game): the simulation's thread generating and loading
+/// it, the load screen's bar, then RestoreDeviceObjects' part (`map_gfx`: the map made, the bar at
+/// LOAD_MAP_GFX's steps) before the map is shown.
+pub struct Pending {
+    pub settings: crate::newgame::NewGameSettings,
+    pub progress: std::sync::Arc<crate::newgame::Progress>,
+    clock: Option<clock::Clock>,
+    pub bar: crate::newgame::Bar,
+    pub picture: Option<String>,
+    pub started: Instant,
+    /// RestoreDeviceObjects' step (0..100) once the game is made
+    pub map_gfx: Option<i32>,
+    /// when the map was made (the wait for the capital system's bodies)
+    pub map_at: Option<Instant>,
+    /// what the simulation's thread reported when it was done
+    pub report: Option<String>,
+}
+
+impl Pending {
+    /// The load screen's text and bar now.
+    pub fn shown(&self) -> (&'static str, i32) {
+        match self.map_gfx {
+            Some(k) => ("LOAD_MAP_GFX", crate::newgame::map_gfx_percent(k)),
+            None => ("START_NEW_GAME", self.bar.percent()),
+        }
+    }
 }
 
 /// A save the load window lists.
@@ -181,7 +228,12 @@ pub struct App {
     pub tooltips: Option<Box<dyn Tooltips>>,
     hover: Option<String>,
     pressed: Option<String>,
-    items: Option<((u32, u32, Screen), Vec<GuiItem>)>,
+    items: Option<((u32, u32, Screen, (&'static str, i32)), Vec<GuiItem>)>,
+    /// a new game starting (its load screen shown), and the setup the menu's Start begins one
+    /// from (the galaxy settings and the empire: the setup screens fill it; none: the scenario's
+    /// defaults)
+    pub pending: Option<Pending>,
+    pub newgame_setup: Option<crate::newgame::NewGameSettings>,
     /// the scene built (shared with the render thread once published: ui.rs)
     scene: Option<std::sync::Arc<Scene>>,
     generation: u64,
@@ -288,6 +340,8 @@ impl App {
             hover: None,
             pressed: None,
             items: None,
+            pending: None,
+            newgame_setup: None,
             scene: None,
             generation: 0,
             controls: Controls::from_env()?,
@@ -453,7 +507,8 @@ impl App {
         match self.screen {
             Screen::Map => Context::Map,
             Screen::Menu => Context::Menu,
-            Screen::Load => Context::Load,
+            Screen::Load | Screen::Loading => Context::Load,
+            Screen::SelectEmpire | Screen::Creator | Screen::GameSetup => Context::Setup,
         }
     }
 
@@ -489,6 +544,17 @@ impl App {
                 Ok(c) => changed |= c,
                 Err(e) => self.log.push(format!("input: {e}")),
             }
+        }
+        if self.screen == Screen::Loading {
+            return match self.loading(dt) {
+                Ok(c) => changed | c,
+                Err(e) => {
+                    self.log.push(format!("new game: {e}"));
+                    self.pending = None;
+                    self.show(Screen::Menu);
+                    true
+                }
+            };
         }
         if self.screen != Screen::Map {
             return changed;
@@ -577,6 +643,9 @@ impl App {
 
     /// Whether frames are due without input: the simulation runs or loads, the camera moves.
     pub fn animating(&self) -> bool {
+        if self.screen == Screen::Loading {
+            return true;
+        }
         if self.screen != Screen::Map {
             return false;
         }
@@ -1147,13 +1216,38 @@ impl App {
 
     /// The GUI items of the menu or the load window (laid out once per size).
     fn items(&mut self) -> Result<Vec<GuiItem>, String> {
-        let key = (self.size.0, self.size.1, self.screen);
+        let shown = match (&self.pending, self.screen) {
+            (Some(p), Screen::Loading) => p.shown(),
+            _ => ("", 0),
+        };
+        let key = (self.size.0, self.size.1, self.screen, shown);
         if let Some((k, items)) = &self.items {
             if *k == key {
                 return Ok(items.clone());
             }
         }
         let (w, h) = self.size;
+        if let Some(name) = self.screen.newgame() {
+            let l = gui::newgame(&self.runtime, w, h, name)?;
+            self.notes = vec![l.note.clone()];
+            if !l.missing.is_empty() {
+                self.notes.push(format!("sprites without a definition or texture: {}", l.missing.join(", ")));
+            }
+            gui::fonts(&self.runtime, &self.game_dir, &l.items, &mut self.fonts)?;
+            self.items = Some((key, l.items.clone()));
+            return Ok(l.items);
+        }
+        if self.screen == Screen::Loading {
+            let picture = self.pending.as_ref().and_then(|p| p.picture.clone());
+            let l = gui::load_screen(&self.runtime, w, h, shown.0, shown.1, picture.as_deref())?;
+            self.notes = vec![l.note.clone()];
+            if !l.missing.is_empty() {
+                self.notes.push(format!("sprites without a definition or texture: {}", l.missing.join(", ")));
+            }
+            gui::fonts(&self.runtime, &self.game_dir, &l.items, &mut self.fonts)?;
+            self.items = Some((key, l.items.clone()));
+            return Ok(l.items);
+        }
         let menu = gui::menu(&self.runtime, w, h, &self.version, self.screen == Screen::Load)?;
         self.notes = vec![menu.note.clone()];
         let mut items = menu.items;
@@ -1396,8 +1490,16 @@ impl App {
         self.log.push(format!("click: {path} -> {}", action.unwrap_or("no action")));
         match action {
             Some("exit") => self.exit = true,
+            // the main menu's New Game: the empire selection with a new setup (render.newgame_setup)
+            Some("new_game") => self.newgame_act("ng:open")?,
+            Some(a) if a.starts_with("ng:") || a.starts_with("creator:") => self.newgame_act(a)?,
             Some("open_load") => self.show(Screen::Load),
             Some("close_load") => self.show(Screen::Menu),
+            // the galaxy setup's Start (CFrontEndIdler::LaunchNewGame): a new game from the setup
+            Some("start_new_game") => {
+                let settings = self.newgame_setup.clone().unwrap_or_default();
+                self.start_new_game(settings)?;
+            }
             Some(a) if a.starts_with("load:") => {
                 let i: usize = a[5..].parse().map_err(|_| format!("bad action {a}"))?;
                 let path = self.saves().get(i - 1).map(|s| s.path.clone()).ok_or(format!("no save {i}"))?;
@@ -1566,6 +1668,41 @@ impl App {
         }
     }
 
+    /// An action of the new game's screens (render.frontend_newgame.act on the setup state
+    /// RENDER_NEWGAME): the screen it goes to, laid out again.
+    fn newgame_act(&mut self, action: &str) -> Result<(), String> {
+        let to = gui::newgame_act(&self.runtime, action, self.cursor.unwrap_or((0.0, 0.0)))?;
+        self.log.push(format!("new game: {action} -> {}", to.as_deref().unwrap_or("-")));
+        self.items = None;
+        self.scene = None;
+        match to.as_deref() {
+            Some("menu") => self.show(Screen::Menu),
+            Some("select") => self.show(Screen::SelectEmpire),
+            Some("creator") => self.show(Screen::Creator),
+            Some("setup") => self.show(Screen::GameSetup),
+            Some("play") => self.newgame_play()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Play on the galaxy settings (and Return there): a new game from the setup state
+    /// (render.newgame_setup.settings of RENDER_NEWGAME, newgame.rs NewGameSettings::from_lua).
+    fn newgame_play(&mut self) -> Result<(), String> {
+        let settings = {
+            let t: stellar_sim::mlua::Table = self
+                .runtime
+                .lua
+                .load("return require('render.newgame_setup').settings(RENDER_NEWGAME)")
+                .eval()
+                .map_err(|e| format!("render.newgame_setup.settings: {e}"))?;
+            crate::newgame::NewGameSettings::from_lua(&self.runtime.lua, &t).map_err(|e| format!("the new game's settings: {e}"))?
+        };
+        let summary = gui::newgame_summary(&self.runtime)?;
+        self.log.push(format!("new game: play {summary}"));
+        self.start_new_game(settings)
+    }
+
     fn show(&mut self, screen: Screen) {
         self.screen = screen;
         self.hover = None;
@@ -1580,7 +1717,122 @@ impl App {
 
     pub fn load_as(&mut self, path: &str, sim: bool) -> Result<(), String> {
         let t0 = std::time::Instant::now();
-        let mut map = if sim { Map::load_sim(&self.game_dir, path)? } else { Map::load(&self.game_dir, path)? };
+        let map = if sim { Map::load_sim(&self.game_dir, path)? } else { Map::load(&self.game_dir, path)? };
+        self.pending = None;
+        self.show_map(map, path, t0)
+    }
+
+    /// A new game started from `settings` (the setup's: newgame.rs): the load screen shown while
+    /// the simulation's thread generates, loads and starts it ([`App::advance`] moves the bar and
+    /// shows the game when it is ready, paused, on the player's capital).
+    pub fn start_new_game(&mut self, settings: crate::newgame::NewGameSettings) -> Result<(), String> {
+        let progress = std::sync::Arc::new(crate::newgame::Progress::default());
+        self.log.push(format!("new game: {}", settings.describe()));
+        // the previous game's simulation stops (the game destroys its game state first)
+        self.map = None;
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+        let seed = std::env::var("STELLAR_LOADSCREEN").ok().and_then(|v| v.parse().ok()).unwrap_or(seed);
+        let clock = clock::Clock::start_from(&self.game_dir, clock::Source::NewGame(settings.clone(), progress.clone()), true, clock::DEFAULT_SPEED, None);
+        self.pending = Some(Pending {
+            settings,
+            progress,
+            clock: Some(clock),
+            bar: Default::default(),
+            picture: crate::newgame::background(&self.game_dir, seed),
+            started: Instant::now(),
+            map_gfx: None,
+            map_at: None,
+            report: None,
+        });
+        self.show(Screen::Loading);
+        Ok(())
+    }
+
+    /// A frame of the load screen: the bar moved as the game moves it while the game is made, then
+    /// the map made (LOAD_MAP_GFX at 0) and shown (at 100). Whether the screen changed.
+    fn loading(&mut self, dt: f32) -> Result<bool, String> {
+        let Some(p) = self.pending.as_mut() else {
+            self.show(Screen::Menu);
+            return Ok(true);
+        };
+        let before = p.shown();
+        match p.map_gfx {
+            None => {
+                let status = p.clock.as_ref().map(|c| c.status()).unwrap_or_default();
+                if let Some(e) = status.error {
+                    return Err(e);
+                }
+                if status.ready {
+                    // LaunchNewGame draws 50 when the task is done, then the in-game idler's
+                    // RestoreDeviceObjects begins at its step 0
+                    p.report = status.report;
+                    p.map_gfx = Some(0);
+                } else {
+                    p.bar.advance(dt, p.progress.stage(), p.progress.world_gen());
+                }
+            }
+            Some(0) => {
+                let clock = p.clock.take().ok_or("no simulation")?;
+                let t0 = p.started;
+                let map = Map::of_clock(&self.game_dir, "new game", clock)?;
+                self.show_map(map, "a new game", t0)?;
+                let p = self.pending.as_mut().unwrap();
+                p.map_gfx = Some(100);
+                self.screen = Screen::Loading;
+                self.scene = None;
+            }
+            Some(_) => {
+                // the capital's system as the simulation sends it (its bodies and ships: its
+                // thread reads the models' index first, seconds on a medium galaxy): the load
+                // screen stays at LOAD_MAP_GFX until it has come, as RestoreDeviceObjects makes
+                // the map's graphics before DestroyLoadScreen (at most 60 s)
+                if let (MapView::System(i), Some(map)) = (self.view, self.map.as_mut()) {
+                    let id = map.galaxy.systems[i].id;
+                    map.sync();
+                    let has = map.snapshot.as_ref().and_then(|s| s.system.as_ref()).is_some_and(|(sid, _)| *sid == id);
+                    let p = self.pending.as_mut().unwrap();
+                    let since = *p.map_at.get_or_insert_with(Instant::now);
+                    if !has && since.elapsed() < std::time::Duration::from_secs(60) {
+                        return Ok(false);
+                    }
+                }
+                // DestroyLoadScreen: the game is shown
+                let p = self.pending.take().unwrap();
+                self.log.push(format!("new game ({}) started in {:.1} s", p.settings.describe(), p.started.elapsed().as_secs_f64()));
+                if let Some(r) = p.report {
+                    self.log.push(r);
+                }
+                self.show(Screen::Map);
+                return Ok(true);
+            }
+        }
+        let p = self.pending.as_ref().unwrap();
+        if p.shown() != before {
+            self.scene = None;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Waits for the new game in progress to be shown (commands: `newgame` without `async`,
+    /// `loaded`), a frame of `dt` each 16 ms; what it took.
+    pub fn finish_loading(&mut self) -> Result<String, String> {
+        let t0 = Instant::now();
+        while self.screen == Screen::Loading && self.pending.is_some() {
+            self.loading(0.016)?;
+            if self.pending.is_some() {
+                std::thread::sleep(std::time::Duration::from_millis(16));
+            }
+        }
+        if self.screen != Screen::Map {
+            return Err("the new game did not start (see the log)".into());
+        }
+        Ok(format!("{:.1} s", t0.elapsed().as_secs_f64()))
+    }
+
+    /// The map made the app's, its galaxy camera and the capital's system set up as the game does
+    /// after a load; the map screen shown.
+    fn show_map(&mut self, mut map: Map, path: &str, t0: Instant) -> Result<(), String> {
         // the speeds' names (time_description), from the front end's localisation
         map.speed_names = self
             .runtime
@@ -1629,12 +1881,33 @@ impl App {
     /// Physical input (controls.rs): the bindings' effects carried out. `now_ms`: the input's
     /// time (a double click's). Whether something changed.
     pub fn input(&mut self, input: &Input, now_ms: f64) -> Result<bool, String> {
+        // the empire creator's text fields (render.newgame_creator): with one focused, a key
+        // typed goes to it (the game's CEditBox takes the keyboard), Shift giving capitals
+        if self.screen == Screen::Creator {
+            if let Input::Key { key, down: true, .. } = input {
+                if !matches!(key.as_str(), "shift" | "ctrl" | "alt") && self.creator_focused() {
+                    if let Some(a) = creator_key(key, self.controls.mods().shift) {
+                        self.newgame_act(&a)?;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
         let ctx = self.context();
         let mut changed = false;
         for e in self.controls.input(input, now_ms, ctx) {
             changed |= self.apply(e)?;
         }
         Ok(changed)
+    }
+
+    /// Whether a text field of the empire creator has the keyboard.
+    fn creator_focused(&self) -> bool {
+        self.runtime
+            .lua
+            .load("return RENDER_NEWGAME ~= nil and RENDER_NEWGAME.creator ~= nil and RENDER_NEWGAME.creator.focus ~= nil")
+            .eval::<bool>()
+            .unwrap_or(false)
     }
 
     /// An effect of the input.
@@ -1685,6 +1958,10 @@ impl App {
                 self.drag(None);
                 Ok(true)
             }
+            Effect::Zoom(n, _) if self.screen.newgame().is_some() => {
+                self.newgame_act(&format!("ng:wheel:{n}"))?;
+                Ok(true)
+            }
             Effect::Zoom(n, false) => {
                 self.wheel(n);
                 Ok(true)
@@ -1707,6 +1984,14 @@ impl App {
             (Action::Back, Screen::Load) => {
                 self.log.push(format!("escape: {:?} -> Menu", self.screen));
                 self.show(Screen::Menu);
+                Ok(true)
+            }
+            (Action::Back, s) if s.newgame().is_some() => {
+                self.newgame_act("ng:back")?;
+                Ok(true)
+            }
+            (Action::Accept, s) if s.newgame().is_some() => {
+                self.newgame_act("ng:accept")?;
                 Ok(true)
             }
             (Action::Continue, Screen::Menu) => {
@@ -1804,4 +2089,22 @@ pub fn si_number(v: f32) -> String {
     } else {
         format!("{s}{:.1}M", (a / 100_000.0).trunc() / 10.0)
     }
+}
+
+/// A key typed into the empire creator's focused field: its character (`creator:text:C`) or an
+/// editing key (`creator:key:NAME`); keys are named by their place on a US layout (controls.rs).
+fn creator_key(key: &str, shift: bool) -> Option<String> {
+    let c = match key {
+        "space" => " ".to_string(),
+        "minus" => if shift { "_" } else { "-" }.to_string(),
+        "apostrophe" => if shift { "\"" } else { "'" }.to_string(),
+        "period" => ".".to_string(),
+        "comma" => ",".to_string(),
+        "backspace" | "return" | "escape" | "tab" | "delete" => return Some(format!("creator:key:{key}")),
+        k if k.len() == 1 && k.chars().all(|c| c.is_ascii_alphanumeric()) => {
+            if shift { k.to_ascii_uppercase() } else { k.to_string() }
+        }
+        _ => return None,
+    };
+    Some(format!("creator:text:{c}"))
 }

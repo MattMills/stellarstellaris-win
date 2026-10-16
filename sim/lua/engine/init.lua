@@ -26,14 +26,20 @@ engine.systems = require("engine.systems")
 local host = require("simscript.host")
 engine.host = host
 
--- engine.load(game_dir, gamestate[, docs_dir]) -> report: the definitions, the script, the world
+-- engine.load(game_dir, gamestate[, docs_dir]) -> report: the definitions, the script, the world.
+-- gamestate: a save's text, or a tree in pdxscript's form (a new game's: engine.newgame)
 function engine.load(game_dir, gamestate, docs_dir)
     host.init(game_dir, docs_dir)
     local db = require("simscript.db")
     engine.defs.load(db.fs, game_dir)
     local lines = { "definitions: " .. engine.defs.summary() }
     if gamestate then
-        local ok, message = engine.world.load(gamestate)
+        local ok, message
+        if type(gamestate) == "table" then
+            ok, message = engine.world.load_tree(gamestate)
+        else
+            ok, message = engine.world.load(gamestate)
+        end
         lines[#lines + 1] = ok and ("world: " .. engine.world.summary()) or ("world: not loaded: " .. tostring(message))
         if ok then
             -- the script's flags and variables are the save's
@@ -92,7 +98,7 @@ function engine.load(game_dir, gamestate, docs_dir)
             local function have(m) return package.searchpath(m, package.path) ~= nil end
             for _, m in ipairs({ "engine.ai.attitudes", "engine.ethics", "engine.exploration", "engine.colonies",
                 "engine.construction", "engine.first_contact", "engine.research", "engine.situations",
-                "engine.ai.strategy", "engine.leaders", "engine.pops", "engine.fleets.orders", "engine.fleets.movement",
+                "engine.ai.strategy", "engine.leaders", "engine.pops", "engine.jobs", "engine.fleets.orders", "engine.fleets.movement",
                 "engine.ai", "engine.ai.research", "engine.ai.budget", "engine.ai.shipbuilding", "engine.diplomacy",
                 "engine.traditions" }) do
                 if have(m) then require(m) end
@@ -204,7 +210,7 @@ function engine.report()
     if engine.modifier_source then
         lines[#lines + 1] = engine.modifier_source.report()
     end
-    for _, m in ipairs({ "engine.research", "engine.leaders", "engine.construction", "engine.traditions", "engine.ai", "engine.ai.attitudes", "engine.ai.strategy", "engine.ai.traditions", "engine.pops", "engine.colonies", "engine.ethics", "engine.situations", "engine.first_contact", "engine.script.creation" }) do
+    for _, m in ipairs({ "engine.research", "engine.leaders", "engine.construction", "engine.traditions", "engine.ai", "engine.ai.attitudes", "engine.ai.strategy", "engine.ai.traditions", "engine.pops", "engine.jobs", "engine.colonies", "engine.ethics", "engine.situations", "engine.first_contact", "engine.script.creation", "engine.script.objects" }) do
         local mod = package.loaded[m]
         if type(mod) == "table" and mod.report then
             lines[#lines + 1] = mod.report()

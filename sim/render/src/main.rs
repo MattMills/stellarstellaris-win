@@ -29,6 +29,7 @@ mod border;
 mod camera;
 mod clock;
 mod controls;
+mod creator;
 mod dds;
 mod designer;
 mod diplomacy;
@@ -49,6 +50,7 @@ mod galaxymap;
 mod outliner;
 mod mapicons;
 mod mapnames;
+mod newgame;
 mod gui;
 mod render;
 mod scene;
@@ -199,11 +201,17 @@ impl Map {
     /// world: this map's runtime has the game's files only, and what is drawn of the world comes
     /// with the simulation's snapshots.
     pub fn load_sim(game_dir: &str, save_path: &str) -> Result<Map, String> {
-        let runtime = galaxy::files_runtime()?;
         let clock = Clock::start(game_dir, save_path, true, clock::DEFAULT_SPEED, None);
         clock.wait_ready()?;
+        Map::of_clock(game_dir, save_path, clock)
+    }
+
+    /// The map of a simulation loaded on its thread (a save's, or a new game's: newgame.rs; `name`
+    /// says which), from its first snapshot.
+    pub fn of_clock(game_dir: &str, name: &str, clock: Clock) -> Result<Map, String> {
+        let runtime = galaxy::files_runtime()?;
         let snap = clock.latest().ok_or("the simulation published no snapshot")?;
-        let mut map = Map::new(runtime, false, game_dir, save_path, snap.galaxy.clone(), snap.images.borders.clone(), snap.images.borders_image.clone());
+        let mut map = Map::new(runtime, false, game_dir, name, snap.galaxy.clone(), snap.images.borders.clone(), snap.images.borders_image.clone());
         map.clock = Some(clock);
         map.sync();
         Ok(map)

@@ -301,6 +301,15 @@ function save.gamestate(game)
         t[#t + 1] = { key = { text = extra[1] }, op = "=", value = extra[2] }
     end
 
+    if game.deposits and #game.deposits > 0 then
+        local dep = save.block()
+        for i, d in ipairs(game.deposits) do
+            local b = dep:child(tostring(i - 1))
+            b:str("type", d.type)
+            b:set("planet", d.planet)
+        end
+        t[#t + 1] = { key = { text = "deposit" }, op = "=", value = dep }
+    end
     local planets = t:child("planets"):child("planet")
     for _, id in ipairs(game.planet_ids) do
         write_planet(planets, game.planets[id])
