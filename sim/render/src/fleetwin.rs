@@ -24,6 +24,9 @@ pub struct FleetWindows {
     /// the fleet manager shown (CFleetManagerView::Show), its selected fleet
     pub manager: bool,
     pub manager_fleet: Option<u32>,
+    /// its side panel (the Build Queue): shown when it was opened on a fleet's template
+    /// (ShowFleetManagerView: SelectTemplate), not from the left bar (the game's frames) [I]
+    pub manager_side: bool,
 }
 
 impl FleetWindows {
@@ -31,7 +34,8 @@ impl FleetWindows {
     pub fn key(&self) -> u64 {
         let mut k = self.ship.map_or(0, |s| s as u64 + 1);
         k = k.wrapping_mul(1_000_003).wrapping_add(self.manager as u64);
-        k.wrapping_mul(1_000_003).wrapping_add(self.manager_fleet.map_or(0, |f| f as u64 + 1))
+        k = k.wrapping_mul(1_000_003).wrapping_add(self.manager_fleet.map_or(0, |f| f as u64 + 1));
+        k.wrapping_mul(3).wrapping_add(self.manager_side as u64)
     }
 }
 
@@ -78,6 +82,7 @@ impl App {
             // close (the game's frame after the click [V], the selection's end there [I])
             ("manager", id) => {
                 self.fleet.manager = true;
+                self.fleet.manager_side = true;
                 self.fleet.ship = None;
                 if id.is_some() {
                     self.fleet.manager_fleet = id;
@@ -86,7 +91,10 @@ impl App {
             }
             // the left bar's button (`view:fleet_manager`): toggles it, as
             // CInGameIdler::ToggleTopBarView does a top bar view (ETopBarView 8)
-            ("fleet_manager", _) => self.fleet.manager = !self.fleet.manager,
+            ("fleet_manager", _) => {
+                self.fleet.manager = !self.fleet.manager;
+                self.fleet.manager_side = false;
+            }
             ("close_manager", _) => self.fleet.manager = false,
             ("manager_fleet", Some(id)) => self.fleet.manager_fleet = Some(id),
             ("select", Some(id)) => self.select(Some(Pickable::Fleet(id))),
@@ -128,7 +136,11 @@ impl App {
             calls.push(format!("ship = fd.ship_view({id}),"));
         }
         if self.fleet.manager {
-            calls.push(format!("manager = fd.manager(nil, {}),", self.fleet.manager_fleet.map_or("nil".into(), |f| f.to_string())));
+            calls.push(format!(
+                "manager = (function() local m = fd.manager(nil, {}) m.side = {} return m end)(),",
+                self.fleet.manager_fleet.map_or("nil".into(), |f| f.to_string()),
+                self.fleet.manager_side
+            ));
         }
         let source = self.fleet_world_query(&format!("return fd.serialize({{ {} }})", calls.join(" ")))?;
         let lua = &self.runtime.lua;

@@ -159,7 +159,9 @@ Minister of Defense's fleet organizer, +15%]; the reinforcement line
 BUILDABLE_SHIP_NAME, Auto-Generated, the count (FULL, UPGRADABLE_COUNT with the arrow, or
 COUNT: ships of the design against ships of the slot), minus disabled at the template's count;
 the actions (reinforce disabled when complete, repair undamaged, upgrade without a newer design).
-The side panel in its default mode, Build Queue (empty). Space Fauna and Reinforce All disabled.
+The side panel in its default mode, Build Queue (empty), only when the manager was opened on a
+fleet's template (ShowFleetManagerView: the fleet and ship views' buttons); from the left bar
+(`open_view fleet_manager`, ToggleTopBarView) the game shows none [V: both frames]. Space Fauna and Reinforce All disabled.
 
 **Not computed:** a design's own strength (NCombatRules::CalcMilitaryPower: the row shows the
 fleet's, "169" where the game shows "163/184"); the upgradable count's icon frame (|2) is drawn

@@ -1384,9 +1384,10 @@ function fleet.manager_view(ctx, d)
             end
         end
     end
-    -- the side panel: the Build Queue (CFleetManagerSideView's default mode), empty
+    -- the side panel: the Build Queue (CFleetManagerSideView's default mode), empty; only when
+    -- opened on a fleet's template (not from the left bar: the game's frames) [I]
     local win = wr.rects[W]
-    if win then
+    if win and d.side then
         layout(ctx, MANAGER_GUI, "fleet_manager_side_view", {
             parent = { x = win.x, y = win.y, w = win.w, h = win.h },
             hide = { available_window = true, retrofit_window = true },
