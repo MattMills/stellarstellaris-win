@@ -370,7 +370,16 @@ function systems.effects.create_ship(t)
         did = designs.find_random(country, t.size)
         if not did then
             -- NUtil::CanBuildShipOfSize then CreateAndAddDefaultShipDesign, and the pick again
-            if designs.default(country, t.size) then did = designs.find_random(country, t.size) end
+            -- the AI's designer (engine.ai.designer, branch ai-fleets: CCountry::CreateShipDesign) when
+            -- it is there, else the stand-in
+            local ok, designer = pcall(require, "engine.ai.designer")
+            local made
+            if ok and type(designer) == "table" and designer.design_for then
+                made = designer.design_for(country, t.size)
+            else
+                made = designs.default(country, t.size)
+            end
+            if made then did = designs.find_random(country, t.size) end
         end
     elseif t.design then
         did = t.design
