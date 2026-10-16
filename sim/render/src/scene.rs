@@ -1231,9 +1231,64 @@ pub fn add_gui(
                     gui.buttons.push(PlacedButton { path: path.clone(), rect: [*x, *y, x + w, y + h], action: action.clone() });
                 }
             }
-            GuiItem::Text { path, font, text, spans, x, y, w, h, format, valign } => {
+            GuiItem::Text { path, font, text, spans, x, y, w, h, format, valign, wrap } => {
                 let Some(f) = fonts.get(font) else { continue };
                 let Some(t) = tex.game(cache, game_dir, &f.texture) else { continue };
+                // a text that wraps (its box holds two lines or more): its words line under line,
+                // as many lines as the box holds, the last one cut; drawn as one text a line
+                let fits = (*h / f.line_height.max(1.0)).floor() as usize;
+                if *wrap && fits >= 2 && *w > 8.0 && f.width(text) > w + 0.5 && !spans.iter().any(|(s, _)| s.starts_with('\u{1}')) {
+                    let mut lines: Vec<Vec<(String, [f32; 3])>> = vec![Vec::new()];
+                    let mut used = 0.0;
+                    for (s, c) in spans {
+                        for word in s.split_inclusive(' ') {
+                            let ww = f.width(word.trim_end());
+                            let full = f.width(word);
+                            if used > 0.0 && used + ww > *w && lines.len() < fits {
+                                lines.push(Vec::new());
+                                used = 0.0;
+                            }
+                            let line = lines.last_mut().unwrap();
+                            match line.last_mut() {
+                                Some(last) if last.1 == *c => last.0.push_str(word),
+                                _ => line.push((word.to_string(), *c)),
+                            }
+                            used += full;
+                        }
+                    }
+                    let lh = f.line_height;
+                    let n = lines.len() as f32;
+                    let top = match valign.as_str() {
+                        "center" | "centre" => y + (h - n * lh) / 2.0,
+                        "bottom" => y + h - n * lh,
+                        _ => *y,
+                    };
+                    let items: Vec<GuiItem> = lines
+                        .into_iter()
+                        .enumerate()
+                        .map(|(k, mut line)| {
+                            if let Some(last) = line.last_mut() {
+                                let trimmed = last.0.trim_end().to_string();
+                                last.0 = trimmed;
+                            }
+                            GuiItem::Text {
+                                path: format!("{path}#{k}"),
+                                font: font.clone(),
+                                text: line.iter().map(|l| l.0.as_str()).collect(),
+                                spans: line,
+                                x: *x,
+                                y: top + k as f32 * lh,
+                                w: *w,
+                                h: lh,
+                                format: format.clone(),
+                                valign: "top".into(),
+                                wrap: false,
+                            }
+                        })
+                        .collect();
+                    add_gui(batches, gui, &items, fonts, tex, cache, game_dir, states);
+                    continue;
+                }
                 // a text wider than its box is cut, " ..." at its end (as the game's outliner
                 // shows a long name)
                 let cut;

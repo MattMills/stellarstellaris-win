@@ -46,6 +46,9 @@ pub enum GuiItem {
         h: f32,
         format: String,
         valign: String,
+        /// wrapped at spaces when its box holds two lines or more (an instantTextBox's default;
+        /// `multiline = no` keeps it on one line)
+        wrap: bool,
     },
 }
 
@@ -201,6 +204,7 @@ fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
                 h: it.get("h")?,
                 format: it.get("format")?,
                 valign: it.get::<Option<String>>("valign")?.unwrap_or_else(|| "top".into()),
+                wrap: it.get::<Option<bool>>("wrap")?.unwrap_or(false),
             });
         }
     }

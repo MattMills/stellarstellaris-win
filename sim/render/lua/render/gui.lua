@@ -207,7 +207,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
     end
 
     -- a text's spans: localised, split at colour codes, coloured
-    local function text_item(path, font, text, x, y, w, h, format, valign, colour_code)
+    local function text_item(path, font, text, x, y, w, h, format, valign, colour_code, wrap)
         local spans = {}
         local base = db.textcolors[colour_code or ""] or { 1, 1, 1 }
         if loc then
@@ -260,6 +260,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
         items[#items + 1] = {
             kind = "text", path = path, font = font or "cg_16b", text = table.concat(plain), spans = spans,
             x = x, y = y, w = w, h = h, format = (format or "left"):lower(), valign = valign or "top",
+            wrap = wrap or nil,
         }
         report.texts = report.texts + 1
     end
@@ -443,8 +444,10 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                 text = field("text") or ""
             end
             local valign = field("vertical_alignment")
+            -- an instantTextBox wraps its text unless `multiline = no` (the game's frame:
+            -- megastructure_view's desc, four lines in its 65-high box)
             text_item(path, field("font"), tostring(text), x, y, w, h, field("format"),
-                valign and valign:lower() or "top", field("text_color_code"))
+                valign and valign:lower() or "top", field("text_color_code"), field("multiline") ~= "no")
         end
     end
 
