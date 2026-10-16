@@ -30,6 +30,7 @@ end
 
 -- where the world is: the player's relics, minor artifacts and the artifact actions shown
 function M.extract(game_dir)
+    M.game_dir = game_dir
     local world = require("engine.world")
     local data = require("render.windows.events_data")
     local pid = data.player()
@@ -80,6 +81,68 @@ function M.extract(game_dir)
         return a.order < b.order
     end)
     return { relics = relics, minor_artifacts = stock, balance = balance, actions = actions }
+end
+
+-- M.run_action(game_dir, key) -> "done" | why not: an artifact action taken (CArtifactActionCommand:
+-- valid when its potential and allow hold and the stockpile pays its cost; then the cost paid and
+-- its `effect` run), where the simulation's scripts run [I: the command's checks read off the
+-- action's definition, not the code]
+function M.run_action(game_dir, key)
+    local world = require("engine.world")
+    local data = require("render.windows.events_data")
+    local ev = package.loaded["simscript.eval"]
+    local sdb = package.loaded["simscript.db"]
+    if not (ev and ev.effect and sdb and type(sdb.events) == "table" and next(sdb.events)) then
+        return "no simulation"
+    end
+    local pid = data.player()
+    local roots = { this = { kind = "country", id = pid }, root = { kind = "country", id = pid } }
+    for _, f in ipairs(source.files(game_dir, "common/artifact_actions", "txt")) do
+        local tree = source.parse(game_dir, f)
+        local vars = {}
+        for _, e in ipairs(tree or {}) do
+            if e.op and e.key and e.key.text:sub(1, 1) == "@" and e.value.text then
+                vars[e.key.text] = tonumber(e.value.text)
+            end
+        end
+        for _, e in ipairs(tree or {}) do
+            if e.op and e.key and e.key.text == key and e.value.text == nil then
+                local b = e.value
+                if not data.trigger(get(b, "potential"), roots, pid) then
+                    return "not potential"
+                end
+                if not data.trigger(get(b, "allow"), roots, pid) then
+                    return "not allowed"
+                end
+                local cost = get(get(get(b, "resources") or {}, "cost") or {}, "minor_artifacts")
+                cost = cost and (vars[cost] or tonumber(cost)) or 0
+                local c = world.object("country", pid)
+                local stock = tonumber(world.path(c or {}, "modules", "standard_economy_module", "resources", "minor_artifacts")) or 0
+                if stock < cost then
+                    return "cannot pay " .. cost
+                end
+                local ctx = ev.new_ctx(ev.S("country", pid), ev.NONE, {})
+                if cost > 0 then
+                    -- paid from the stockpile through the world's writer (as empire_commands' pay)
+                    world.set(world.path(c, "modules", "standard_economy_module", "resources"), "minor_artifacts", stock - cost)
+                end
+                local eff = get(b, "effect")
+                if type(eff) == "table" then
+                    ev.effect(eff, ctx)
+                end
+                return "done"
+            end
+        end
+    end
+    return "no action " .. key
+end
+
+-- M.command(verb, ...): `artifact KEY` (views.rs `cmd:discoveries:artifact:KEY`)
+function M.command(verb, key)
+    if verb == "artifact" then
+        return M.run_action(M.game_dir or RENDER_GAME_DIR, key)
+    end
+    return "no command " .. tostring(verb)
 end
 
 local function number(v)
@@ -148,7 +211,7 @@ function M.build(ctx, data, state)
     if grid then
         local n = math.max(6, #(data.relics or {}))
         for i = 1, n do
-            local relic = data.relics[i]
+            local relic = (data.relics or {})[i]
             local p = "/relics/" .. i
             local path = p .. "/relic_grid_entry"
             local ri, rr = gui.layout(ctx.game_dir, db, FILE, "relic_grid_entry", ctx.screen, {
@@ -174,14 +237,20 @@ function M.build(ctx, data, state)
                     -- (a cost above the stockpile in red, as the frame shows [I])
                     [path .. "/cost"] = a.cost > 0 and ("£minor_artifacts£" .. ((data.minor_artifacts or 0) < a.cost and ("§R" .. number(a.cost) .. "§!") or number(a.cost))) or "",
                 },
-                -- (the button over the entry shows no frame in the game's frame [I]; its action would
-                -- post the artifact action, which the simulation does not take)
-                hide = { button = true },
+                -- the button over the entry: shown and taking clicks when the action can be taken
+                -- (run_action, in the simulation: views.rs `cmd:`); else none, as the
+                -- game's frame shows it for the player without artifacts [I]
+                hide = not (a.allowed and (data.minor_artifacts or 0) >= a.cost) and { button = true } or nil,
+                actions = { [path .. "/button"] = "cmd:discoveries:artifact:" .. a.key },
             })
             gui.merge(items, report, ai, ar)
         end
     end
     return items, report
 end
+
+-- no side windows: Escape closes the view (its close button has the shortcut ESCAPE), its tab and
+-- selection are not windows to close first (views.rs escape_keys)
+M.escape_keys = {}
 
 return M

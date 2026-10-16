@@ -202,7 +202,7 @@ local function event_window(ctx, ev, k, items, report)
     local w = 490
     local hide = { tts_button = true, event_chain_subview = true, situations_progress_subview = true, description = true }
     local positions = { [root .. "/description_frame"] = { 0, frame_y } }
-    if not ev.location then
+    if not ev.location or not ev.location_system then
         hide.focus_button = true
         positions[root .. "/message_settings_button"] = { 415, 19 }
     end
@@ -239,7 +239,8 @@ local function event_window(ctx, ev, k, items, report)
             texture_size = ctx.texture_size, loc = loc, prefix = op,
             parent = { x = win.x + 7, y = win.y + first + (i - 1) * 30, w = 0, h = 0 },
             hide = { selector_gui_presence_icon = true },
-            actions = { [path .. "/event_option_button"] = "event:option:" .. ev.id .. ":" .. i },
+            -- the option's index among the event's options (simscript.events.answer)
+            actions = { [path .. "/event_option_button"] = "event:option:" .. ev.id .. ":" .. (o.index or i) },
         })
         gui.merge(items, report, oi, orr)
         -- the option's name on its button (the .gui gives the button no buttonText: the game sets
@@ -291,16 +292,22 @@ end
 
 local FC_FILE = "interface/first_contact_view.gui"
 
-local function first_contact_window(ctx, fc, items, report)
+local function first_contact_window(ctx, fc, items, report, open_ids)
     local loc, db = ctx.loc, ctx.db
     local root = "/first_contact_view"
     local view = fc.view or {}
     local picture = fc.picture or view.picture
+    -- the contact's event answered (no longer an open player event): "nothing to report", its
+    -- text and options gone (the view's no_report_icon and no_report_text) [I]
+    local answered = fc.player_event and not open_ids[fc.player_event]
     local hide = {
-        no_report_icon = true, no_report_text = true, tts_button = true, leader_window = true,
+        no_report_icon = not answered or nil, no_report_text = not answered or nil, tts_button = true, leader_window = true,
         chapter_progress = true, chapter_difficulty = true, chapter_modifiers = true, block_window = true,
         species = true, species_type = true,
     }
+    if answered then
+        hide.expedition_window, hide.options_box_container, hide.chapter_subtitle = true, true, true
+    end
     local sprites = {}
     if picture and db.sprites[picture] then
         sprites[root .. "/site_type_window/event_picture"] = picture
@@ -319,7 +326,7 @@ local function first_contact_window(ctx, fc, items, report)
         actions = {
             [root] = "fc:front",
             [root .. "/close"] = "fc:close",
-            [root .. "/goto_site_button"] = "fc:front",
+            [root .. "/goto_site_button"] = fc.location and ("fc:focus:" .. fc.location) or nil,
         },
     })
     gui.merge(items, report, wi, wr)
@@ -339,7 +346,7 @@ local function first_contact_window(ctx, fc, items, report)
         end
     end
     -- the description, from the text list's top (no name: moved up to the name's place)
-    local list = wr.rects[root .. "/expedition_window/text_list"]
+    local list = not answered and wr.rects[root .. "/expedition_window/text_list"]
     if list then
         local desc = resolve(loc, view.desc or "", view)
         local lines, lh = wrap(loc, desc, "cg_16b", 520, db, db.textcolors.W or { 1, 1, 1 })
@@ -353,7 +360,7 @@ local function first_contact_window(ctx, fc, items, report)
         end
     end
     -- the options
-    local ob = wr.rects[root .. "/options_box_container/options_box"]
+    local ob = not answered and wr.rects[root .. "/options_box_container/options_box"]
     if ob then
         for i, o in ipairs(view.options or {}) do
             local p = "/fc_options/" .. i
@@ -362,7 +369,8 @@ local function first_contact_window(ctx, fc, items, report)
                 texture_size = ctx.texture_size, loc = loc, prefix = p,
                 parent = { x = ob.x, y = ob.y + (i - 1) * 35, w = 0, h = 0 },
                 text = { [path .. "/text"] = resolve(loc, o.name or "OK", view) },
-                actions = { [path] = "fc:option:" .. i },
+                -- (the contact's event is an open player event: the option answers it)
+                actions = { [path] = "fc:option:" .. tostring(fc.player_event or -1) .. ":" .. (o.index or i) },
             })
             gui.merge(items, report, oi, orr)
         end
@@ -377,7 +385,11 @@ function M.build(game_dir, db, screen, texture_size, loc, data, state)
     if state and state.first_contact then
         for _, fc in ipairs(data and data.first_contacts or {}) do
             if fc.id == state.first_contact then
-                local ok, err = pcall(first_contact_window, ctx, fc, items, report)
+                local open_ids = {}
+                for _, ev in ipairs(data.events or {}) do
+                    open_ids[ev.id] = true
+                end
+                local ok, err = pcall(first_contact_window, ctx, fc, items, report, open_ids)
                 if not ok then
                     report.missing_sprites[#report.missing_sprites + 1] = "first contact: " .. tostring(err)
                 end

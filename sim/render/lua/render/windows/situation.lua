@@ -69,6 +69,7 @@ local function categories(game_dir)
             key = k, priority = tonumber(get(b, "priority")) or 0, icon = unquote(get(b, "icon")),
             loc = unquote(get(b, "localization")) or k, findings = get(b, "target_tab") == "anomalies",
             default = get(b, "default") == "yes",
+            collapsible = get(b, "collapsible") ~= "no",
         }
     end
     table.sort(list, function(a, b)
@@ -139,7 +140,7 @@ local function entries(ctx, data)
             out[#out + 1] = {
                 kind = "first_contact", key = tostring(f.id), category = "first_contacts", name = f.name, title = "",
                 icon = "GFX_category_first_contact", picture = v.picture, desc = v.desc, view = v,
-                days_left = f.days_left, difficulty = f.difficulty, leader = f.leader,
+                days_left = f.days_left, difficulty = f.difficulty, leader = f.leader, location = f.location,
             }
         end
     end
@@ -181,7 +182,8 @@ function M.build(ctx, data, state)
         if c.findings == findings then
             local members = {}
             for _, e in ipairs(list) do
-                local ec = e.category
+                -- a pinned entry is in "priority" ("Pinned by the player": the game moves it there)
+                local ec = state["pin:" .. e.kind .. ":" .. e.key] and "priority" or e.category
                 local known = false
                 for _, cc in ipairs(cats) do
                     if cc.key == ec then
@@ -298,6 +300,11 @@ function M.build(ctx, data, state)
         actions = {
             [root] = "view_set:noop=",
             [root .. "/close"] = "view_close",
+            -- goto: the galaxy over the entry's place (events.rs); track: the entry tracked or not
+            -- (its dot in the list) [I: the map's tracking marker not drawn]
+            [root .. "/goto"] = selected and selected.location and ("sitlog:focus:" .. selected.location) or nil,
+            [root .. "/track"] = selected and ("view_set:track:" .. selected.kind .. ":" .. selected.key .. "="
+                .. (state["track:" .. selected.kind .. ":" .. selected.key] and "" or "1")) or nil,
             [root .. "/tab_log"] = "view_set:tab=",
             [root .. "/tab_anomalies"] = "view_set:tab=anomalies",
             -- "Show First Contact": the first contact view (events.rs)
@@ -329,23 +336,29 @@ function M.build(ctx, data, state)
         for ci, s in ipairs(shown) do
             local hp = "/sitlog/" .. ci
             local hpath = hp .. "/situation_log_entry"
+            -- a click on a collapsible category's header folds it (the arrow's frame 1) or opens it
+            local ck = "collapsed:" .. s.cat.key
+            local collapsed = s.cat.collapsible and state[ck]
             local hi, hr = gui.layout(ctx.game_dir, db, FILE, "situation_log_entry", ctx.screen, {
                 texture_size = ctx.texture_size, loc = loc, prefix = hp,
                 parent = { x = lr.x, y = y, w = 0, h = 0 },
                 hide = { selected = true, completed = true, tracked = true, subentries = true },
                 -- the arrow of an expanded category (GFX_entry_expand frame 2)
-                frames = { [hpath .. "/expand_button"] = 2 },
+                frames = { [hpath .. "/expand_button"] = collapsed and 1 or 2 },
+                actions = { [hpath .. "/button"] = s.cat.collapsible and ("view_set:" .. ck .. "=" .. (collapsed and "" or "1")) or nil },
                 sprites = { [hpath .. "/entry_icon"] = s.cat.icon },
                 text = { [hpath .. "/name"] = s.cat.loc },
             })
             gui.merge(items, report, hi, hr)
             y = y + 39
-            for ei, e in ipairs(s.members) do
+            for ei, e in ipairs(collapsed and {} or s.members) do
                 local ep = hp .. "/" .. ei
                 local epath = ep .. "/situation_log_subentry"
                 local is_sel = selected == e
+                local pk = "pin:" .. e.kind .. ":" .. e.key
                 local ehide = {
-                    progressbar = true, cost_icon = true, completed = true, tracked = true, subentries = true,
+                    progressbar = true, cost_icon = true, completed = true, subentries = true,
+                    tracked = not state["track:" .. e.kind .. ":" .. e.key] or nil,
                     situation_entry_icon_background = true, situation_entry_icon = true, situation_name = true,
                     situations_progress_subview = true, selected = not is_sel or nil,
                     -- the pin: not on the tutorials' entries [I: by the frame]
@@ -355,9 +368,13 @@ function M.build(ctx, data, state)
                     texture_size = ctx.texture_size, loc = loc, prefix = ep,
                     parent = { x = lr.x, y = y, w = 0, h = 0 },
                     hide = ehide,
-                    sprites = { [epath .. "/entry_icon"] = e.icon },
+                    sprites = { [epath .. "/entry_icon"] = e.icon, [epath .. "/pin_button"] = state[pk] and "GFX_button_pin_pinned" or nil },
                     text = { [epath .. "/name"] = e.name and require("render.names").format(loc, e.name) or e.title },
-                    actions = { [epath .. "/button"] = "view_set:selected=" .. e.kind .. ":" .. e.key },
+                    actions = {
+                        [epath .. "/button"] = "view_set:selected=" .. e.kind .. ":" .. e.key,
+                        -- the pin: to Priorities and back
+                        [epath .. "/pin_button"] = "view_set:" .. pk .. "=" .. (state[pk] and "" or "1"),
+                    },
                 })
                 gui.merge(items, report, ei_items, ei_report)
                 y = y + 44
@@ -368,5 +385,9 @@ function M.build(ctx, data, state)
     end
     return items, report
 end
+
+-- no side windows: Escape closes the view (its close button has the shortcut ESCAPE), its tab and
+-- selection are not windows to close first (views.rs escape_keys)
+M.escape_keys = {}
 
 return M

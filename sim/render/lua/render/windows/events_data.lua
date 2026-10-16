@@ -484,6 +484,27 @@ local function choose(def, key, field, roots, pid)
     return fallback
 end
 
+-- an event's `location` (solar_system, root, from, event_target:NAME ...) -> its system's id [I: the
+-- scope's own system, or the system it is in]
+function M.location_system(loc, roots, pid)
+    if type(loc) ~= "string" then
+        return nil
+    end
+    local key = loc:lower():gsub("^event_target:", "")
+    local sc = roots[key]
+    if not sc and roots.this then
+        sc = link(roots.this, key, pid) or (key == "solar_system" and link(roots.this, "system", pid))
+    end
+    if not sc then
+        return nil
+    end
+    if sc.kind == "system" then
+        return sc.id
+    end
+    local sys = link(sc, "system", pid)
+    return sys and sys.id or nil
+end
+
 local function event_entry(game_dir, e, pid)
     local def = event_block(game_dir, e.event)
     local out = { id = e.id, event = e.event, expires = e.expires, fired = e.fired, kind = def and e.kind }
@@ -499,7 +520,8 @@ local function event_entry(game_dir, e, pid)
     out.location = get(def, "location") ~= nil
     out.diplomatic = get(def, "diplomatic") == "yes"
     out.options = {}
-    for _, o in ipairs(blocks_of(def, "option")) do
+    out.location_system = M.location_system(get(def, "location"), e.roots, pid)
+    for index, o in ipairs(blocks_of(def, "option")) do
         local show = get(o, "default_hide_option") ~= "yes" and get(o, "is_dialog_only") ~= "yes"
         local t = get(o, "trigger")
         if show and type(t) == "table" then
@@ -510,7 +532,7 @@ local function event_entry(game_dir, e, pid)
             if type(n) == "table" then
                 n = get(n, "text")
             end
-            out.options[#out.options + 1] = { name = text(n) or "OK", allow = true }
+            out.options[#out.options + 1] = { name = text(n) or "OK", allow = true, index = index }
         end
     end
     out.names = names_of(e.roots, pid)
@@ -554,6 +576,10 @@ local function hook()
     end
     -- (simscript.events calls `opened(ev, ctx, option)` for a human's event it answers)
     events.opened = M.on_opened
+    -- the event stays open until the player answers it (M.answer) or it times out
+    events.defer = function()
+        return true
+    end
     if os.getenv("STELLAR_EVENTS_DEBUG") then
         local st = events and package.loaded["simscript.eval"] and package.loaded["simscript.eval"].stats
         io.stderr:write("events_data: hooked simscript.events (human options so far: " .. tostring(st and st.human_options) .. ")\n")
@@ -579,12 +605,120 @@ function M.on_opened(ev, ctx)
     end
     local date = today()
     local e = { id = next_id, event = ev.id, roots = roots, fired = true, date = date,
-        expires = date_after_months(date, 9) }
+        expires = date_after_months(date, 9), def = ev, ctx = ctx }
     next_id = next_id + 1
     M.opened[#M.opened + 1] = e
     -- a bounded list (the newest kept)
     while #M.opened > 50 do
         table.remove(M.opened, 1)
+    end
+end
+
+M.answered = M.answered or {}   -- the save's open events answered here (id -> true)
+
+-- a simscript context from a save's scope roots (as the triggers' above)
+local function sim_ctx(roots)
+    local ev = package.loaded["simscript.eval"]
+    if not (ev and ev.new_ctx and roots and roots.this) then
+        return nil
+    end
+    local function S(s)
+        return s and ev.S(s.kind, s.id) or ev.NONE
+    end
+    local targets = {}
+    for k, s in pairs(roots) do
+        if k ~= "this" and k ~= "root" and k ~= "from" and k ~= "fromfrom" then
+            targets[k] = S(s)
+        end
+    end
+    local ctx = ev.new_ctx(S(roots.this), S(roots.from), targets)
+    ctx.root = S(roots.root)
+    ctx.fromfrom = S(roots.fromfrom)
+    return ctx
+end
+
+-- data.answer(id, k) -> "answered" | "closed" | "error ..." | "no event": the player's option k (an
+-- index of the event's options) for the open event `id` (COpenPlayerEvent::OnOptionSelected): run in
+-- the simulation (simscript.events.answer: the option's effects, then `after`) and the event is no
+-- longer open (the save's `player_event` taken out of the world, as the game drops it). k nil: the
+-- default option (a timed-out event). Without the simulation's scripts the event only closes.
+function M.answer(id, k)
+    local events = package.loaded["simscript.events"]
+    local sdb = package.loaded["simscript.db"]
+    local function run(def, ctx)
+        if not (events and events.answer and def and ctx) then
+            return "closed"
+        end
+        local ok, err = pcall(events.answer, def, ctx, k)
+        return ok and "answered" or ("error " .. tostring(err))
+    end
+    for i, e in ipairs(M.opened) do
+        if e.id == id then
+            table.remove(M.opened, i)
+            return run(e.def, e.ctx)
+        end
+    end
+    for i, en in ipairs(world.tree or {}) do
+        if en.op and en.key and en.key.text == "player_event" and en.value.text == nil
+            and tonumber(world.field(en.value, "id")) == id then
+            local b = en.value
+            local name = text(world.field(b, "event"))
+            table.remove(world.tree, i)
+            M.answered[id] = true
+            local def = sdb and sdb.events and sdb.events[name]
+            return run(def, sim_ctx(save_scope(world.field(b, "scope"))))
+        end
+    end
+    return "no event"
+end
+
+-- data.command(verb, ...): the windows' commands in the simulation (views.rs `command`):
+-- `answer ID K` (an event's option); `fire NAME`: the event fired for the player's country, as the
+-- game's console `event NAME` does (the window then opens, the simulation keeps it open)
+function M.command(verb, a, b)
+    if verb == "answer" then
+        return M.answer(tonumber(a), tonumber(b))
+    end
+    if verb == "fire" then
+        local events, ev = package.loaded["simscript.events"], package.loaded["simscript.eval"]
+        if not (events and ev) then
+            return "no simulation"
+        end
+        hook()
+        local ok = events.fire(a, ev.S("country", player()))
+        local c = world.object("country", player())
+        return "fired " .. tostring(a) .. " " .. tostring(ok) .. "; influence "
+            .. tostring(world.path(c or {}, "modules", "standard_economy_module", "resources", "influence"))
+    end
+    if verb == "influence" then
+        local c = world.object("country", player())
+        return "influence " .. tostring(world.path(c or {}, "modules", "standard_economy_module", "resources", "influence"))
+    end
+    return "no command " .. tostring(verb)
+end
+
+-- the open events past their time (EVENT_AUTOSELECT_MONTHS: the simulation's 9 months after they
+-- opened; a save's at its `date`) answered with their default option, where the simulation runs
+local function time_out(date)
+    if not package.loaded["simscript.events"] then
+        return
+    end
+    local due = {}
+    for _, e in ipairs(M.opened) do
+        if e.expires and e.expires <= date then
+            due[#due + 1] = e.id
+        end
+    end
+    for _, en in ipairs(world.tree or {}) do
+        if en.op and en.key and en.key.text == "player_event" and en.value.text == nil then
+            local d = text(world.field(en.value, "date"))
+            if d and d <= date then
+                due[#due + 1] = tonumber(world.field(en.value, "id"))
+            end
+        end
+    end
+    for _, id in ipairs(due) do
+        M.answer(id, nil)
     end
 end
 
@@ -651,6 +785,8 @@ local function first_contacts(pid, game_dir)
                 -- its event's picture and index (the stage the first contact view shows: index + 1 [I])
                 picture = type(ev) == "table" and text(world.field(ev, "picture")) or nil,
                 index = type(ev) == "table" and tonumber(world.field(ev, "index")) or 0,
+                -- the open player event it is (its window's options answer it)
+                player_event = type(ev) == "table" and tonumber(world.field(ev, "player_event")) or nil,
             }
         end
     end
@@ -760,13 +896,15 @@ function M.read(game_dir)
     hook()
     local pid = player()
     local date = today() or ""
+    time_out(date)
     local list = {}
     for _, e in ipairs(world.tree or {}) do
         if e.op and e.key and e.key.text == "player_event" and e.value.text == nil then
             local b = e.value
             -- (until the day it expires: the game drops first_contact.1 at its 2210.03.04)
             local expires = text(world.field(b, "date"))
-            if tonumber(world.field(b, "country")) == pid and (not expires or expires > date) then
+            if tonumber(world.field(b, "country")) == pid and (not expires or expires > date)
+                and not M.answered[tonumber(world.field(b, "id"))] then
                 list[#list + 1] = {
                     id = tonumber(world.field(b, "id")), event = text(world.field(b, "event")),
                     expires = expires, roots = save_scope(world.field(b, "scope")),

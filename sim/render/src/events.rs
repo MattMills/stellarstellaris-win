@@ -7,8 +7,10 @@
 //! message system opens it, CMessageSystem::Update -> CInGameIdler::AddEventWindow); the events
 //! open in a loaded save do not (the game's frame after a load shows none: the alert or the
 //! Situation Log leads to them), `event ID` opens one as the headless game's `event ID` does.
-//! Choosing an option closes the window: the simulation has already taken the first valid option
-//! for the human player (simscript.events), so the click sends it no command [I].
+//! Choosing an option runs it where the world is (the simulation keeps a human player's event
+//! open, simscript.events `defer`; render.windows.events_data `answer` runs the option's effects
+//! and `after`, the save's own open events too) and closes the window; unanswered, an event times
+//! out with its default option after EVENT_AUTOSELECT_MONTHS.
 
 use std::collections::{HashMap, HashSet};
 
@@ -43,9 +45,125 @@ pub struct EventsUi {
     chunk: String,
 }
 
-/// The actions these windows' buttons carry.
+/// The actions these windows' buttons carry: the event windows' (`event:`), the popups'
+/// (`popup:`), the first contact view's (`fc:`), and the Situation Log's that move the camera
+/// (`sitlog:`). (Discoveries' artifact actions are `cmd:discoveries:artifact:KEY`, views.rs.)
 pub fn handles(action: &str) -> bool {
-    action.starts_with("event:") || action.starts_with("popup:") || action.starts_with("fc:")
+    ["event:", "popup:", "fc:", "sitlog:"].iter().any(|p| action.starts_with(p))
+}
+
+/// A command of a windows module run in the simulation between days (views.rs' frame: the
+/// simulation started if it is not, a snapshot published and taken after): what it did.
+fn world_do(app: &mut App, module: &str, args: &[&str]) -> Result<String, String> {
+    let m = app.map.as_mut().ok_or("no map loaded")?;
+    crate::views::command(m, module, args)
+}
+
+/// The system the camera goes to (NGuiUtil::FocusOnScope: the game enters it, `state` reads
+/// `system ID` after a click on the event window's focus button).
+fn focus_system(app: &mut App, system: i64) -> Result<(), String> {
+    let i = app.map.as_ref().and_then(|m| m.galaxy.systems.iter().position(|s| s.id as i64 == system)).ok_or(format!("no system {system}"))?;
+    app.focus(crate::scene::Pickable::System(i))
+}
+
+/// The galaxy over a system (the Situation Log's goto: the game shows the galaxy, the camera's
+/// target at the system, at the distance it leaves a system with: `state` after the click reads
+/// view galaxy, target 2 x the system's map place, distance 198.6, pitch 57.5).
+fn galaxy_focus(app: &mut App, system: i64) -> Result<(), String> {
+    let (x, y) = app.map.as_ref().and_then(|m| m.galaxy.systems.iter().find(|s| s.id as i64 == system).map(|s| (s.x, s.y))).ok_or(format!("no system {system}"))?;
+    app.show_galaxy();
+    if let Some(mut c) = app.camera {
+        c.target = crate::math::V3(x, 0.0, y);
+        app.set_camera(c);
+    }
+    Ok(())
+}
+
+/// A number of the windows' data (RENDER_EVENTS_DATA): `expr` evaluated with `d` the data.
+fn data_number(app: &App, expr: &str) -> Option<i64> {
+    app.runtime.lua.load(format!("local d = RENDER_EVENTS_DATA or {{}} return {expr}")).eval::<Option<i64>>().ok().flatten()
+}
+
+/// A key released over the map: the action of these windows' .gui shortcuts, the top window's
+/// first: a popup's RETURN (AgreeButton); the top event window's first option (Setup gives it
+/// RETURN) and its focus button's Q; the Situation Log's and Discoveries' tabs (Z, X).
+pub fn key(app: &App, key: &str) -> Option<String> {
+    let ui = &app.events;
+    if !ui.popups.is_empty() {
+        return (key == "return").then(|| format!("popup:agree:{}", ui.popups.len()));
+    }
+    if ui.first_contact.is_none() {
+        if let Some(&id) = ui.open.last() {
+            return match key {
+                "return" => {
+                    let k = data_number(app, &format!("(function() for _, e in ipairs(d.events or {{}}) do if e.id == {id} then local o = (e.options or {{}})[1] return o and (o.index or 1) or 1 end end end)()"))?;
+                    Some(format!("event:option:{id}:{k}"))
+                }
+                "q" => Some(format!("event:focus:{id}")),
+                _ => None,
+            };
+        }
+    }
+    match (app.open_view.as_deref(), key) {
+        (Some("situation"), "z") => Some("view_set:tab=".into()),
+        (Some("situation"), "x") => Some("view_set:tab=anomalies".into()),
+        (Some("discoveries"), "z") => Some("view_set:tab=relics".into()),
+        _ => None,
+    }
+}
+
+/// Escape (the controls' Back) on these windows, the top one first: a popup's DeclineButton
+/// (ESCAPE: popup.gui's invisible button), the first contact view's close (ESCAPE). The event window's
+/// close has no shortcut. Whether it closed something.
+pub fn escape(app: &mut App) -> bool {
+    let a = if !app.events.popups.is_empty() {
+        format!("popup:decline:{}", app.events.popups.len())
+    } else if app.events.first_contact.is_some() {
+        "fc:close".to_string()
+    } else {
+        return false;
+    };
+    app.events.act(&a);
+    app.relayout();
+    true
+}
+
+/// A click on one of these windows' buttons (App::act's arm for [`handles`]).
+pub fn app_act(app: &mut App, action: &str) -> Result<(), String> {
+    let parts: Vec<&str> = action.split(':').collect();
+    let num = |k: usize| parts.get(k).and_then(|v| v.parse::<i64>().ok());
+    match parts.as_slice() {
+        // an option: CEventWindow::PostEventOptionSelection posts the option's command, its effects
+        // run (COpenPlayerEvent::OnOptionSelected) and the event is no longer open
+        ["event", "option", ..] | ["fc", "option", ..] => {
+            if let (Some(id), Some(k)) = (num(2), num(3)) {
+                let r = world_do(app, "events_data", &["answer", &id.to_string(), &k.to_string()])?;
+                app.log.push(format!("event {id} option {k}: {r}"));
+            }
+        }
+        // the focus button (CEventWindow::FocusOn): the event's location
+        ["event", "focus", ..] => {
+            if let Some(id) = num(2) {
+                let sys = data_number(app, &format!("(function() for _, e in ipairs(d.events or {{}}) do if e.id == {id} then return e.location_system end end end)()"));
+                if let Some(s) = sys {
+                    focus_system(app, s)?;
+                }
+            }
+        }
+        // the Situation Log's and the first contact view's goto: the galaxy over the system
+        ["sitlog", "focus", ..] | ["fc", "focus", ..] => {
+            if let Some(s) = num(2) {
+                galaxy_focus(app, s)?;
+            }
+        }
+        // the first contact view replaces the top bar view (the game's Situation Log closes when
+        // "Show First Contact" opens it)
+        ["fc", "open", ..] => app.close_view(),
+        _ => {}
+    }
+    app.events.act(action);
+    app.relayout();
+    Ok(())
 }
 
 impl EventsUi {
@@ -78,7 +196,13 @@ impl EventsUi {
             // the first contact view (CFirstContactView): opened, closed; an option chosen closes it
             // (the simulation has answered the event) [I]
             ["fc", "open", ..] => self.first_contact = id(2),
-            ["fc", "close"] | ["fc", "option", ..] => self.first_contact = None,
+            ["fc", "close"] => self.first_contact = None,
+            ["fc", "option", ..] => {
+                self.first_contact = None;
+                if let Some(id) = id(2) {
+                    self.open.retain(|e| *e != id);
+                }
+            }
             ["popup", _, k] => {
                 if let Ok(k) = k.parse::<usize>() {
                     if k >= 1 && k <= self.popups.len() {
@@ -230,6 +354,14 @@ pub fn command(app: &mut App, arg: &str) -> Result<String, String> {
         app.events.act(&if rest.is_empty() { "fc:close".to_string() } else { format!("fc:open:{rest}") });
         app.relayout();
         return Ok(format!("event fc {rest}"));
+    }
+    // `event fire NAME`: the event fired for the player in the simulation (the game's console
+    // `event NAME`); `event influence`: the stockpile's influence (to check an option's cost)
+    if let Some(name) = arg.strip_prefix("fire ") {
+        return world_do(app, "events_data", &["fire", name.trim()]).map(|r| format!("event {r}"));
+    }
+    if arg == "influence" {
+        return world_do(app, "events_data", &["influence"]).map(|r| format!("event {r}"));
     }
     if arg.is_empty() {
         let names: Vec<String> = list.iter().map(|(id, name, _)| format!(" {id}:{name}")).collect();
