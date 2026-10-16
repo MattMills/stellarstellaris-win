@@ -2223,11 +2223,11 @@ static void frame_cmd(const char *arg) {
 // (docs/windows/fleet.md) opened with the game's own calls: `open fleet ID` selects the fleet
 // (CInGameIdler::Select of its CSelectable, at CFleet+0x18, as CFleetOrbitalItem::SelectFleet
 // does: fleet_view opens for the selection), `open ship ID` (CInGameIdler::ShowShipView: the
-// ship_view), `open fleet_manager` (CFleetManagerView::Show, the view at CInGameIdler+0xd78),
+// ship_view; the fleet manager: `open_view fleet_manager`),
 // `open none` (CInGameIdler::DeselectAll, CShipView::Close: the view at CInGameIdler+0xb60,
 // CFleetManagerView::Hide).
 
-static uintptr_t a_IdlerSelect, a_IdlerDeselectAll, a_IdlerShowShipView, a_FleetManagerShow;
+static uintptr_t a_IdlerSelect, a_IdlerDeselectAll, a_IdlerShowShipView;
 static uintptr_t a_ShipViewClose, a_FleetManagerHide;
 static uintptr_t a_FleetDb, a_ShipDb;
 
@@ -2235,7 +2235,6 @@ static struct symreq g_open_syms[] = {
 	{"_ZN12CInGameIdler6SelectEPK11CSelectable", &a_IdlerSelect},
 	{"_ZN12CInGameIdler11DeselectAllEv", &a_IdlerDeselectAll},
 	{"_ZN12CInGameIdler12ShowShipViewEPK5CShip", &a_IdlerShowShipView},
-	{"_ZN17CFleetManagerView4ShowEv", &a_FleetManagerShow},
 	{"_ZN9CShipView5CloseEv", &a_ShipViewClose},
 	{"_ZN17CFleetManagerView4HideEv", &a_FleetManagerHide},
 	{"_ZN7TPdxRefI6CFleetE10_pDatabaseE", &a_FleetDb},
@@ -2282,14 +2281,12 @@ static void open_cmd(const char *arg) {
 				return;
 			}
 			((void (*)(void *, void *))a_IdlerShowShipView)(idler, s);
-		} else if (!strcmp(what, "fleet_manager")) {
-			((void (*)(void *))a_FleetManagerShow)(*(void **)((char *)idler + 0xd78));
 		} else if (!strcmp(what, "none")) {
 			((void (*)(void *))a_IdlerDeselectAll)(idler);
 			((void (*)(void *))a_ShipViewClose)(*(void **)((char *)idler + 0xb60));
 			((void (*)(void *))a_FleetManagerHide)(*(void **)((char *)idler + 0xd78));
 		} else {
-			reply_fmt("error open fleet ID, ship ID, fleet_manager or none");
+			reply_fmt("error open fleet ID, ship ID or none (the fleet manager: open_view fleet_manager)");
 			return;
 		}
 		C.stage = 1;

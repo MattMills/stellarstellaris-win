@@ -25,9 +25,10 @@ Marks as in docs/render.md: **[V]** read in the game's code or files, or measure
 | the left bar's Fleet Manager, the fleet view's and ship view's Fleet Manager buttons | `CFleetManagerView::Show` (the view at CInGameIdler+0xd78, ETopBarView 8; `ShowFleetManagerView(template)` = Show + `SelectTemplate`) [V] | `fleet:manager`, `view:fleet_manager` (toggles), `open fleet_manager` |
 | close | `header/close`, an entry's `top/deselect`; `CShipView::Close`; `CFleetManagerView::Hide` [V] | `close`, `fleet:close_ship`, `fleet:close_manager`; Escape closes the ship view, then the manager, then the selection |
 
-The headless game has the same command, `open fleet ID|ship ID|fleet_manager|none`
+The headless game has `open fleet ID|ship ID|none` and win-research's `open_view fleet_manager`
+(CInGameIdler::ToggleTopBarView, as the left bar button)
 (`headless/headless.c`, `open_cmd`, the calls above; `none` = `DeselectAll` + `CShipView::Close` +
-`CFleetManagerView::Hide`); it replies 20 frames later (fleet_view slides in in 200 ms). Fleets and
+`CFleetManagerView::Hide`); `open` replies 20 frames later (fleet_view slides in in 200 ms). Fleets and
 ships by `TPdxRef` (the database's slots of 16 bytes at +0x18, count +0x20, the object at +8 of a
 slot; CFleet's id at +0x30, CShip's at +0x18) [V].
 
