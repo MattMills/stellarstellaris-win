@@ -36,6 +36,9 @@ pub enum GuiItem {
         /// drawn as the game draws a disabled button (buttonstate.shader's Disable effect: the
         /// texel greyed, GreyOutLuminosity 0.85, brightness 0.75)
         disabled: bool,
+        /// the part of its frame drawn, u0..u1 (a progress bar's two textures; the rectangle cut
+        /// the same)
+        clip: [f32; 2],
     },
     Text {
         path: String,
@@ -151,7 +154,7 @@ fn colour(t: &Table) -> mlua::Result<[f32; 3]> {
 }
 
 /// The items of a layout table (render.gui's).
-fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
+pub(crate) fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
     let mut out = Vec::new();
     for it in items.sequence_values::<Table>() {
         let it = it?;
@@ -184,6 +187,10 @@ fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
                     None => [1.0; 4],
                 },
                 disabled: it.get::<Option<bool>>("disabled")?.unwrap_or(false),
+                clip: match it.get::<Option<Table>>("clip")? {
+                    Some(c) => [c.get(1)?, c.get(2)?],
+                    None => [0.0, 1.0],
+                },
             });
         } else {
             let mut spans = Vec::new();

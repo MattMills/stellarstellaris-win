@@ -379,20 +379,26 @@ impl Engine {
                 Ok(Reply::ok(format!("gui {}", if on { "on" } else { "off" })))
             }
             "open_view" => {
-                // a left or top bar view opened by its button's name (market,
-                // expansion_planner, ...), `open_view` alone (or `none`) closes it; KEY=VALUE
-                // words set its state (a tab, the entry chosen)
-                match a.first().copied() {
-                    None | Some("none") => self.app.open_view_named(None),
-                    Some(v) => self.app.open_view_named(Some(v)),
-                }
-                for kv in a.iter().skip(1) {
-                    if let Some((k, v)) = kv.split_once('=') {
-                        self.app.set_view_state(k, v);
+                // a left bar button's view toggled (headless.c serves it too): views.rs; with KEY
+                // VALUE after the name, the view open with that state (`open_view technology
+                // select physics`: its select_window, as headless.c's CTechnologyView::Show)
+                match (a.first(), a.get(1), a.get(2)) {
+                    (Some(name), Some(key), Some(value)) => {
+                        if self.app.open_view.as_deref() != Some(*name) {
+                            self.app.toggle_view(name);
+                        }
+                        self.app.view_state.clear();
+                        self.app.set_view_state(&[(*key, *value)]);
+                        self.flush_log();
+                        Ok(Reply::ok(format!("open_view {}", a.join(" "))))
                     }
+                    (Some(name), _, _) => {
+                        let shown = self.app.toggle_view(name);
+                        self.flush_log();
+                        Ok(Reply::ok(format!("open_view {name} {}", if shown { "shown" } else { "hidden" })))
+                    }
+                    _ => Err("open_view NAME [KEY VALUE]".into()),
                 }
-                self.flush_log();
-                Ok(Reply::ok(format!("open_view {}", a.join(" "))))
             }
             "observe" => {
                 // the game's console `observe` (headless.c serves it too): the player an observer
