@@ -1117,6 +1117,10 @@ static _Bool my_CheckTick(void *idler, float dt) {
 //                      ETopBarView token is NAME (technology, traditions, situation, ...: the
 //                      GFX_topbar_NAME_button names); it closes the other views and shows it, or
 //                      hides it when shown: `ok open_view NAME shown|hidden`
+//   open_view technology select|researched AREA   the research view with its select_window
+//                      (CTechnologyView::Show(ETechArea): the area's offered technologies) or its
+//                      researched_window (OnResearched(ETechArea)) open; AREA physics, society or
+//                      engineering (ETechArea 0, 1, 2)
 //   frame PATH.png     waits for the picture to settle (from HEADLESS_FRAME_WAIT seconds, 2, and
 //                      HEADLESS_FRAME_MIN frames, 10, on: two captures in a row nearly equal, or
 //                      HEADLESS_FRAME_TIMEOUT seconds, 30), captures the window (X11 XGetImage),
@@ -1156,6 +1160,9 @@ static uintptr_t a_ExecuteObserve;        // OnExecute_Observe(CPdxArray<CString
 static uintptr_t a_ToggleTopBarView;      // CInGameIdler::ToggleTopBarView(ETopBarView)
 static uintptr_t a_TopBarViewToken;       // int EnumToToken<ETopBarView>(ETopBarView const&)
 static uintptr_t a_TokenToString;         // TokenToString(int const&): the static lexer's CString
+static uintptr_t a_TechViewShowArea;      // CTechnologyView::Show(ETechArea)
+static uintptr_t a_TechViewOnResearched;  // CTechnologyView::OnResearched(ETechArea)
+static uintptr_t a_TechViewVtable;        // vtable for CTechnologyView
 
 static struct symreq g_view_syms[] = {
 	{"_ZN11CGameCamera6UpdateEPK9CKeyBoardP6CMousePK18CPdxGameControllerR5CListI11CInputEventEf", &a_GameCameraUpdate},
@@ -1174,6 +1181,9 @@ static struct symreq g_view_syms[] = {
 	{"_ZN12CInGameIdler16ToggleTopBarViewE11ETopBarView", &a_ToggleTopBarView},
 	{"_Z11EnumToTokenI11ETopBarViewEiRKT_", &a_TopBarViewToken},
 	{"_Z13TokenToStringRKi", &a_TokenToString},
+	{"_ZN15CTechnologyView4ShowE9ETechArea", &a_TechViewShowArea},
+	{"_ZN15CTechnologyView12OnResearchedE9ETechArea", &a_TechViewOnResearched},
+	{"_ZTV15CTechnologyView", &a_TechViewVtable},
 	{NULL, NULL},
 };
 
@@ -1757,8 +1767,10 @@ static void frame_cmd(const char *arg) {
 // (CInGameIdler::ToggleTopBarView: the views at idler +0xd38, one per ETopBarView 0..18, the 19 of
 // EnumToToken's table; a shown one is hidden, else the others are closed and it is shown; IsShown
 // is the view's vfunc +0x78). TokenToString gives the static lexer's CString: its data at +0x10.
-static void open_view_cmd(const char *arg) {
+static void open_view_cmd(const char *line) {
 	char *idler = *(char **)a_g_CurrentInGameIdler;
+	char arg[64] = "", sub[32] = "", area[32] = "";
+	sscanf(line, "%63s %31s %31s", arg, sub, area);
 	if (!idler) {
 		reply_fmt("error open_view: not in game");
 		return;
@@ -1768,8 +1780,23 @@ static void open_view_cmd(const char *arg) {
 		char *str = ((char *(*)(const int *))a_TokenToString)(&tok);
 		const char *name = str ? *(const char **)(str + 0x10) : NULL;
 		if (!name || strcmp(name, arg)) continue;
-		((_Bool (*)(void *, int))a_ToggleTopBarView)(idler, e);
 		void *v = *(void **)(idler + 0xd38 + 8 * (size_t)e);
+		if (sub[0]) {
+			// the research view's side windows: the view must be the CTechnologyView (its vtable)
+			int a = !strcmp(area, "physics") ? 0 : !strcmp(area, "society") ? 1 : !strcmp(area, "engineering") ? 2 : -1;
+			if (!v || *(uintptr_t *)v != a_TechViewVtable + 16 || a < 0 || (strcmp(sub, "select") && strcmp(sub, "researched"))) {
+				reply_fmt("error open_view %s: technology select|researched physics|society|engineering", line);
+				return;
+			}
+			if (!((_Bool (*)(void *))(*(void ***)v)[0x78 / 8])(v)) ((_Bool (*)(void *, int))a_ToggleTopBarView)(idler, e);
+			if (!strcmp(sub, "select"))
+				((void (*)(void *, int))a_TechViewShowArea)(v, a);
+			else
+				((void (*)(void *, int))a_TechViewOnResearched)(v, a);
+			reply_fmt("ok open_view %s %s %s", arg, sub, area);
+			return;
+		}
+		((_Bool (*)(void *, int))a_ToggleTopBarView)(idler, e);
 		_Bool shown = v && ((_Bool (*)(void *))(*(void ***)v)[0x78 / 8])(v);
 		reply_fmt("ok open_view %s %s", arg, shown ? "shown" : "hidden");
 		return;
