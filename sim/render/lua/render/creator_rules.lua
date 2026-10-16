@@ -312,7 +312,8 @@ function rules.load(game_dir)
     R.name_lists, R.name_list = {}, {}
     for _, k in ipairs(nns) do
         local b = nds[k]
-        local n = { key = k, block = b, category = field(b, "category"), playable = raw_field(b, "playable") or field(b, "playable") }
+        local n = { key = k, block = b, category = field(b, "category"), playable = raw_field(b, "playable") or field(b, "playable"),
+            selectable = raw_field(b, "selectable") }
         R.name_lists[#R.name_lists + 1] = n
         R.name_list[k] = n
     end
@@ -586,17 +587,24 @@ function rules.default_design(R)
         authority = nil, government = nil, civics = {}, ethics = {}, origin = "origin_default",
         room = "", planet_name = "", planet_class = "pc_continental", system_name = "", initializer = "",
         graphical_culture = "mammalian_01", city_graphical_culture = "mammalian_01",
+        -- the flag: the game rolls one (CEmpireDesign::RandomizeFlag, its random stream); this is
+        -- one it rolled, as its Save wrote it [I]
         empire_flag = {
-            icon = { category = "domination", file = "flag_domination_1.dds" },
-            background = { category = "backgrounds", file = "00_solid.dds" },
-            colors = { "orange", "dark_blue", "null", "null" },
+            icon = { category = "domination", file = "domination_11.dds" },
+            background = { category = "backgrounds", file = "circle.dds" },
+            colors = { "orange", "indigo", "black", "orange", "orange", "indigo" },
         },
+        -- the ruler: the game's Save of a new design: human_female_04 (Phenotype 4 / 5), clothes 4
+        -- (Clothing 5 / 7) [V]
         ruler = { name = "", gender = "female", portrait = first and first.portrait or "human", texture = 0,
-            attachment = 0, clothes = 0, leader_class = "official", traits = {},
+            attachment = 0, clothes = 4, phenotype = 3, leader_class = "official", traits = {},
             ruler_title = "", ruler_title_female = "", heir_title = "", heir_title_female = "", biography = "" },
-        biography = "",
+        room = "default_room",
+        biography = "", literal = {},
     }
     rules.apply_class_traits(R, d)
+    local po = rules.portrait_options(R, d)
+    d.ruler.portrait = po.phenotypes[po.phenotype] or d.ruler.portrait
     return d
 end
 
@@ -667,16 +675,27 @@ function rules.category_portraits(R, category)
             for _, p in ipairs(s.portraits) do
                 out[#out + 1] = { portrait = p, class = s.class, set = sk }
             end
+            -- (conditional ones whose `playable` fails are listed locked: the game shows unowned
+            -- content unless Hide Unowned Content is ticked)
             for _, cp in ipairs(s.conditional) do
-                if rules.trigger(R, cp.playable) then
-                    for _, p in ipairs(cp.portraits) do
-                        out[#out + 1] = { portrait = p, class = s.class, set = sk }
-                    end
+                local ok = rules.trigger(R, cp.playable)
+                for _, p in ipairs(cp.portraits) do
+                    out[#out + 1] = { portrait = p, class = s.class, set = sk, locked = not ok or nil }
                 end
             end
         end
     end
-    return out
+    -- the playable ones first, then the locked ones, each in order [V: the game's Save of a new
+    -- design has `human` (the humans set's first), not the cybernetic set's that comes before it;
+    -- its frame shows the locked portraits in the last row]
+    local open, locked = {}, {}
+    for _, p in ipairs(out) do
+        table.insert(p.locked and locked or open, p)
+    end
+    for _, p in ipairs(locked) do
+        open[#open + 1] = p
+    end
+    return open
 end
 
 -- the categories the editor lists (CSpeciesPortraitEditor::IsCategoryEligible [I]: its class is
@@ -701,6 +720,129 @@ function rules.set_portrait(R, d, portrait, class)
         rules.apply_class_traits(R, d)
     end
     d.ruler.portrait = portrait
+end
+
+-- the portraits' definitions (gfx/portraits/portraits: `portraits = { name = {...} }` and
+-- `portrait_groups = { name = { default game_setup = { add = { trigger portraits } } } }`) and
+-- the asset selectors (gfx/portraits/asset_selectors), read once
+local function portrait_db(R)
+    if R.portrait_db then
+        return R.portrait_db
+    end
+    local source = require("stellar.script.source")
+    local db = { portraits = {}, groups = {}, selectors = {} }
+    for _, f in ipairs(source.files(R.ctx.game_dir, "gfx/portraits/portraits", "txt") or {}) do
+        for _, e in ipairs(source.parse(R.ctx.game_dir, f) or {}) do
+            if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
+                local into = e.key.text == "portraits" and db.portraits or e.key.text == "portrait_groups" and db.groups
+                for _, x in ipairs(into and e.value or {}) do
+                    if x.op and x.key and type(x.value) == "table" then
+                        into[x.key.text] = x.value
+                    end
+                end
+            end
+        end
+    end
+    for _, f in ipairs(source.files(R.ctx.game_dir, "gfx/portraits/asset_selectors", "txt") or {}) do
+        for _, e in ipairs(source.parse(R.ctx.game_dir, f) or {}) do
+            if e.op and e.key and type(e.value) == "table" then
+                db.selectors[e.key.text] = e.value
+            end
+        end
+    end
+    R.portrait_db = db
+    return db
+end
+
+-- the distinct texture files an asset selector names (its options) [I: the editor's spinners
+-- step through them, CEmpireRulerEditor::ChangeOutfitOption]
+local function selector_options(sel)
+    local seen, n = {}, 0
+    local function walk(t, depth)
+        for _, e in ipairs(type(t) == "table" and t or {}) do
+            local s = (e.text and e.text) or (e.op and e.key and e.key.text)
+            if s and s:find("%.dds") and not seen[s] then
+                seen[s] = true
+                n = n + 1
+            end
+            if e.op and type(e.value) == "table" and depth < 5 then
+                if e.value.text and e.value.text:find("%.dds") and not seen[e.value.text] then
+                    seen[e.value.text] = true
+                    n = n + 1
+                elseif not e.value.text then
+                    walk(e.value, depth + 1)
+                end
+            end
+        end
+    end
+    walk(sel, 0)
+    return math.max(1, n)
+end
+
+-- the ruler's portrait options: { phenotypes = { portrait names }, textures, attachments, clothes,
+-- attachment_label } for the design's portrait (a group: its game_setup portraits for the
+-- ruler's gender) [I]
+function rules.portrait_options(R, d)
+    local db = portrait_db(R)
+    local key = d.species.portrait or ""
+    local list = {}
+    local g = db.groups[key]
+    if g then
+        local gs = raw_field(g, "game_setup")
+        for _, add in ipairs(fields(gs, "add")) do
+            if type(add) == "table" then
+                local trig = raw_field(add, "trigger")
+                local ruler = trig and raw_field(trig, "ruler")
+                local ok = true
+                if ruler then
+                    ok = false
+                    local function scan(t)
+                        for _, e in ipairs(t) do
+                            if e.op and e.key and e.key.text == "gender" and strip(e.value.text) == d.ruler.gender then
+                                ok = true
+                            elseif e.op and type(e.value) == "table" and not e.value.text then
+                                scan(e.value)
+                            end
+                        end
+                    end
+                    scan(ruler)
+                end
+                if ok then
+                    for _, p in ipairs(tokens(raw_field(add, "portraits"))) do
+                        list[#list + 1] = p
+                    end
+                end
+            end
+        end
+    end
+    if #list == 0 then
+        list = { key }
+    end
+    local i = math.max(1, math.min(#list, (d.ruler.phenotype or 0) + 1))
+    local p = db.portraits[list[i]] or {}
+    local tex = tokens(raw_field(p, "character_textures"))
+    local att = field(p, "attachment_selector")
+    local clo = field(p, "clothes_selector")
+    return {
+        phenotypes = list, phenotype = i,
+        textures = math.max(1, #tex),
+        attachments = (att and att ~= "no_texture" and db.selectors[att]) and selector_options(db.selectors[att]) or 1,
+        clothes = (clo and db.selectors[clo]) and selector_options(db.selectors[clo]) or 1,
+        attachment_label = field(p, "custom_attachment_label"),
+    }
+end
+
+-- the ruler's titles (the government type's ruler_title / _female, heir_title / _female)
+-- [I: with no authority chosen the game's frame shows President: gov_representative_democracy's]
+function rules.ruler_titles(R, d)
+    local g = R.governments[d.government or "gov_representative_democracy"] or {}
+    local b = g.block or {}
+    local a = R.authority[d.authority or ""]
+    local heir = a and field(a.block, "has_heir") == "yes"
+    return {
+        ruler = field(b, "ruler_title"), ruler_female = field(b, "ruler_title_female"),
+        heir = heir and field(b, "heir_title") or nil, heir_female = heir and field(b, "heir_title_female") or nil,
+    }
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -752,7 +894,16 @@ function rules.click_ethic(R, d, key)
                 table.remove(d.ethics, j)
             end
         end
+        -- kept in the ethics' database order (the game's Save writes ethic_fanatic_egalitarian
+        -- before ethic_xenophile, chosen the other way round) [V]
         d.ethics[#d.ethics + 1] = key
+        local index = {}
+        for i, x in ipairs(R.ethics) do
+            index[x.key] = i
+        end
+        table.sort(d.ethics, function(x, y)
+            return (index[x] or 0) < (index[y] or 0)
+        end)
     else
         return false
     end
@@ -804,12 +955,21 @@ function rules.civic_points_left(R, d)
     return R.civic_points - rules.civic_cost(R, d)
 end
 
--- the civics the list shows (potential), each { civic, possible }
+-- the civics the list shows: those whose potential and possible hold with the design as it is,
+-- and the chosen ones [I: the game's frame lists no civic whose ethics are missing (Agrarian
+-- Idyll, Beacon of Liberty) before ethics are chosen]
 function rules.civic_list(R, d)
     local out = {}
     local cfg = rules.config(R, d)
+    local chosen = set(d.civics)
     for _, g in ipairs(R.civics) do
-        if g.pickable and rules.requirements(R, g.potential, cfg) and rules.trigger(R, g.playable, cfg) ~= false then
+        local cfg_without = cfg
+        if chosen[g.key] then
+            cfg_without = rules.config(R, d)
+            cfg_without.civics[g.key] = nil
+        end
+        if chosen[g.key] or (g.pickable and rules.requirements(R, g.potential, cfg) and rules.requirements(R, g.possible, cfg_without)
+            and rules.trigger(R, g.playable, cfg) ~= false) then
             out[#out + 1] = g
         end
     end
@@ -868,15 +1028,37 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- origins (CEmpireOriginEditor)
 
+-- the origins the editor lists (potential), the playable ones (their DLC owned) first, then the
+-- others, each in file order [I: the game's frame: Prosperous Unification, then Overlord's
+-- origins (owned) before the base game's later ones]
 function rules.origin_list(R, d)
-    local out = {}
+    local owned, other = {}, {}
     local cfg = rules.config(R, d)
     for _, g in ipairs(R.origins) do
         if g.pickable and rules.requirements(R, g.potential, cfg) then
-            out[#out + 1] = g
+            if rules.trigger(R, g.playable, cfg) then
+                owned[#owned + 1] = g
+            else
+                other[#other + 1] = g
+            end
         end
     end
-    return out
+    for _, g in ipairs(other) do
+        owned[#owned + 1] = g
+    end
+    return owned
+end
+
+-- a graphical culture's name: the species class that uses it ("Humanoid" for humanoid_01: the
+-- game's "$CULTURE$ City", CITY_GRAPHICS_NAME) [I]
+function rules.culture_class(R, culture)
+    local best
+    for k, c in pairs(R.class) do
+        if c.culture == culture and (not best or k < best) and not k:match("^PRE_") then
+            best = k
+        end
+    end
+    return best
 end
 
 function rules.origin_ok(R, d, key)
@@ -1312,86 +1494,134 @@ function rules.validate(R, d)
 end
 
 -- ---------------------------------------------------------------------------------------------
--- the design as a prescripted country (prescripted_countries' form; engine/newgame/empires.lua
--- reads it as a design block)
+-- the design as the game writes a user's design (user_empire_designs_v3.4.txt, read from the
+-- game's own Save of a design made in its creator [V]): names as `{ key literal = yes }` blocks
+-- (a localisation key without literal), the empire adjective through %ADJ%, the ruler's name in
+-- full_names, the flag's six colours. engine/newgame reads it as a design block (ng-start).
 
 local function q(s)
     s = tostring(s or "")
-    return '"' .. s:gsub('\\', '\\\\'):gsub('"', '\\"') .. '"'
+    -- (a quote in the player's text would end the string: kept out, as an apostrophe [I])
+    return '"' .. (s:gsub('"', "'")) .. '"'
 end
 
 function rules.to_text(d, key)
-    key = key or (d.key ~= "" and d.key) or "user_design"
+    local lit = d.literal or {}
+    key = key or (d.key ~= "" and d.key) or (d.name ~= "" and d.name) or "user_design"
     local L = {}
     local function w(s)
         L[#L + 1] = s
     end
-    w(key .. " = {")
-    w("\tname = " .. q(d.name))
-    w("\tadjective = " .. q(d.adjective))
-    w("\tspawn_enabled = " .. (d.spawn_enabled or "yes"))
-    w("\tship_prefix = " .. q(d.ship_prefix))
+    local function name(indent, k, v, literal)
+        w(indent .. k .. "=")
+        w(indent .. "{")
+        w(indent .. "\tkey=" .. q(v))
+        if literal then
+            w(indent .. "\tliteral=yes")
+        end
+        w(indent .. "}")
+    end
+    w(q(key) .. "=")
+    w("{")
+    w("\tkey=" .. q(key))
+    name("\t", "ship_prefix", d.ship_prefix or "", lit.ship_prefix and (d.ship_prefix or "") ~= "")
     local sp = d.species
-    w("\tspecies = {")
-    w("\t\tclass = " .. q(sp.class))
-    w("\t\tportrait = " .. q(sp.portrait))
-    w("\t\tname = " .. q(sp.name))
-    w("\t\tplural = " .. q(sp.plural))
-    w("\t\tadjective = " .. q(sp.adjective))
-    w("\t\tname_list = " .. q(sp.name_list))
+    w("\tspecies=")
+    w("\t{")
+    w("\t\tclass=" .. q(sp.class))
+    w("\t\tportrait=" .. q(sp.portrait))
+    name("\t\t", "species_name", sp.name, lit.species_name)
+    name("\t\t", "species_plural", sp.plural, lit.species_plural)
+    name("\t\t", "species_adjective", sp.adjective, lit.species_adjective)
+    w("\t\tname_list=" .. q(sp.name_list))
+    w("\t\tgender=" .. (sp.gender or "not_set"))
     for _, t in ipairs(sp.traits or {}) do
-        w("\t\ttrait = " .. q(t))
+        w("\t\ttrait=" .. q(t))
     end
     w("\t}")
-    if d.room and d.room ~= "" then
-        w("\troom = " .. q(d.room))
+    name("\t", "name", d.name, lit.name)
+    if lit.adjective then
+        w("\tadjective=")
+        w("\t{")
+        w("\t\tkey=\"%ADJ%\"")
+        w("\t\tvariables=")
+        w("\t\t{")
+        w("\t\t\t{")
+        w("\t\t\t\tkey=\"adjective\"")
+        name("\t\t\t\t", "value", d.adjective, true)
+        w("\t\t\t}")
+        w("\t\t}")
+        w("\t}")
+    else
+        name("\t", "adjective", d.adjective, false)
     end
     if d.authority then
-        w("\tauthority = " .. q(d.authority))
+        w("\tauthority=" .. q(d.authority))
     end
-    local cv = {}
-    for _, c in ipairs(d.civics or {}) do
-        cv[#cv + 1] = q(c)
+    if #(d.civics or {}) > 0 then
+        local cv = {}
+        for _, c in ipairs(d.civics) do
+            cv[#cv + 1] = q(c)
+        end
+        w("\tcivics={ " .. table.concat(cv, " ") .. " }")
     end
-    w("\tcivics = { " .. table.concat(cv, " ") .. " }")
     if d.government then
-        w("\tgovernment = " .. d.government)
+        w("\tgovernment=" .. q(d.government))
     end
-    for _, e in ipairs(d.ethics or {}) do
-        w("\tethic = " .. q(e))
-    end
-    w("\torigin = " .. q(d.origin))
-    w("\tplanet_name = " .. q(d.planet_name))
-    w("\tplanet_class = " .. q(d.planet_class))
-    if d.initializer and d.initializer ~= "" then
-        w("\tinitializer = " .. q(d.initializer))
-    end
-    w("\tsystem_name = " .. q(d.system_name))
-    w("\tgraphical_culture = " .. q(d.graphical_culture))
-    w("\tcity_graphical_culture = " .. q(d.city_graphical_culture))
+    w("\tis_nomadic=no")
+    name("\t", "planet_name", d.planet_name, lit.planet_name)
+    w("\tplanet_class=" .. q(d.planet_class))
+    w("\tship_size=\"civilian_arkship_tier_1\"")
+    name("\t", "system_name", d.system_name, lit.system_name)
+    w("\tinitializer=" .. q(d.initializer or ""))
+    w("\tgraphical_culture=" .. q(d.graphical_culture))
+    w("\tcity_graphical_culture=" .. q(d.city_graphical_culture))
     local f = d.empire_flag or {}
-    w("\tempire_flag = {")
-    w("\t\ticon = { category = " .. q(f.icon and f.icon.category) .. " file = " .. q(f.icon and f.icon.file) .. " }")
-    w("\t\tbackground = { category = " .. q(f.background and f.background.category) .. " file = " .. q(f.background and f.background.file) .. " }")
-    local cs = {}
-    for i = 1, 4 do
-        cs[#cs + 1] = q((f.colors or {})[i] or "null")
+    w("\tempire_flag=")
+    w("\t{")
+    w("\t\ticon=")
+    w("\t\t{")
+    w("\t\t\tcategory=" .. q(f.icon and f.icon.category))
+    w("\t\t\tfile=" .. q(f.icon and f.icon.file))
+    w("\t\t}")
+    w("\t\tbackground=")
+    w("\t\t{")
+    w("\t\t\tcategory=" .. q(f.background and f.background.category or "backgrounds"))
+    w("\t\t\tfile=" .. q(f.background and f.background.file))
+    w("\t\t}")
+    w("\t\tcolors=")
+    w("\t\t{")
+    for _, c in ipairs(f.colors or {}) do
+        w("\t\t\t" .. q(c))
     end
-    w("\t\tcolors = { " .. table.concat(cs, " ") .. " }")
+    w("\t\t}")
     w("\t}")
     local r = d.ruler or {}
-    w("\truler = {")
-    w("\t\tname = " .. q(r.name))
-    w("\t\tgender = " .. (r.gender or "female"))
-    w("\t\tportrait = " .. q(r.portrait or sp.portrait))
-    w("\t\ttexture = " .. tostring(r.texture or 0))
-    w("\t\tattachment = " .. tostring(r.attachment or 0))
-    w("\t\tclothes = " .. tostring(r.clothes or 0))
+    w("\truler=")
+    w("\t{")
+    w("\t\tgender=" .. (r.gender or "female"))
+    w("\t\tname=")
+    w("\t\t{")
+    name("\t\t\t", "full_names", r.name or "", lit.ruler_name)
+    w("\t\t}")
+    w("\t\tportrait=" .. q(r.portrait or sp.portrait))
+    w("\t\ttexture=" .. tostring(r.texture or 0))
+    w("\t\tevolution_mask=0")
+    w("\t\tattachment=" .. tostring(r.attachment or 0))
+    w("\t\tclothes=" .. tostring(r.clothes or 0))
     for _, t in ipairs(r.traits or {}) do
-        w("\t\ttrait = " .. q(t))
+        w("\t\ttrait=" .. q(t))
     end
-    w("\t\tleader_class = " .. (r.leader_class or "official"))
+    w("\t\tleader_class=" .. q(r.leader_class or "official"))
     w("\t}")
+    w("\tspawn_as_fallen=no")
+    w("\tignore_portrait_duplication=no")
+    w("\troom=" .. q((d.room and d.room ~= "") and d.room or "default_room"))
+    w("\tspawn_enabled=" .. (d.spawn_enabled or "yes"))
+    for _, e in ipairs(d.ethics or {}) do
+        w("\tethic=" .. q(e))
+    end
+    w("\torigin=" .. q(d.origin))
     w("}")
     return table.concat(L, "\n") .. "\n"
 end
@@ -1408,13 +1638,32 @@ function rules.to_block(d, key)
     return nil
 end
 
--- a design table from a prescripted country's block (prescripted_countries/, a user design):
--- what the creator edits when the player picks Edit on it
+-- a design table from a prescripted country's block (prescripted_countries/) or a user design's
+-- (user_empire_designs_v3.4.txt: names as `{ key literal = yes }` blocks): what the creator
+-- edits when the player picks Edit on it
 function rules.from_block(b, key)
+    local literal = {}
     local function f(blk, k)
         local v = raw_field(blk, k)
         if type(v) == "string" then
             return strip(v)
+        end
+        -- a name block: its key (the template's variable for %ADJ%), literal or a key
+        if type(v) == "table" and (raw_field(v, "key") or raw_field(v, "full_names")) then
+            local n = raw_field(v, "full_names") or v
+            local kk = strip(raw_field(n, "key"))
+            if kk == "%ADJ%" then
+                for _, var in ipairs(type(raw_field(v, "variables")) == "table" and raw_field(v, "variables") or {}) do
+                    local val = type(var) == "table" and raw_field(var, "value")
+                    if type(val) == "table" then
+                        n, kk = val, strip(raw_field(val, "key"))
+                    end
+                end
+            end
+            if field(n, "literal") == "yes" then
+                literal[k] = true
+            end
+            return kk
         end
         return v
     end
@@ -1428,9 +1677,12 @@ function rules.from_block(b, key)
     local d = {
         key = key or "", name = f(b, "name") or "", adjective = f(b, "adjective") or "",
         ship_prefix = f(b, "ship_prefix") or "", spawn_enabled = f(b, "spawn_enabled") or "yes",
+        literal = literal,
         species = {
-            class = f(sp, "class") or "HUM", portrait = f(sp, "portrait") or "", name = f(sp, "name") or "",
-            plural = f(sp, "plural") or "", adjective = f(sp, "adjective") or "",
+            class = f(sp, "class") or "HUM", portrait = f(sp, "portrait") or "",
+            name = f(sp, "name") or f(sp, "species_name") or "",
+            plural = f(sp, "plural") or f(sp, "species_plural") or "",
+            adjective = f(sp, "adjective") or f(sp, "species_adjective") or "",
             name_list = f(sp, "name_list") or "", gender = f(sp, "gender") or "not_set", traits = fields(sp, "trait"),
         },
         authority = f(b, "authority"), government = f(b, "government"), civics = tokens(raw_field(b, "civics")),
@@ -1449,6 +1701,31 @@ function rules.from_block(b, key)
         },
         biography = "",
     }
+    -- which names are the player's own text (literal = yes) rather than localisation keys
+    local function is_lit(blk, k)
+        local v = raw_field(blk, k)
+        if type(v) ~= "table" then
+            return false
+        end
+        local n = raw_field(v, "full_names") or v
+        if strip(raw_field(n, "key")) == "%ADJ%" then
+            for _, var in ipairs(type(raw_field(v, "variables")) == "table" and raw_field(v, "variables") or {}) do
+                local val = type(var) == "table" and raw_field(var, "value")
+                if type(val) == "table" then
+                    n = val
+                end
+            end
+        end
+        return field(n, "literal") == "yes"
+    end
+    d.literal = {
+        name = is_lit(b, "name"), adjective = is_lit(b, "adjective"), planet_name = is_lit(b, "planet_name"),
+        system_name = is_lit(b, "system_name"), species_name = is_lit(sp, "species_name"),
+        species_plural = is_lit(sp, "species_plural"), species_adjective = is_lit(sp, "species_adjective"),
+        ruler_name = is_lit(ru, "name"), ship_prefix = is_lit(b, "ship_prefix"),
+    }
+    d.ruler.phenotype = 0
+    d.empire_flag.colors = #d.empire_flag.colors > 0 and d.empire_flag.colors or { "null", "null", "null", "null" }
     return d
 end
 

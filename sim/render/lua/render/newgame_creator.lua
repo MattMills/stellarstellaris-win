@@ -127,13 +127,20 @@ creator.err_text = err_text
 -- the menu (customize_species_view's `menu`, its list of sections)
 local function build_menu(ctx, b, st, R, d, errors)
     local pos = positions(ctx.game_dir)
+    -- Save and Done greyed while the design has errors (CCustomizeSpeciesView::UpdateControlButtons
+    -- [I: the game's frames show them grey until every editor is valid])
+    local valid = true
+    for _, errs in pairs(errors) do
+        valid = valid and #errs == 0
+    end
     local r = b:add(MAIN, "customize_species_view", {
         hide = { species_preview_done_button = true, locked_content_checkbox = true },
         actions = {
-            [V .. "/menu/save"] = "creator:save",
-            [V .. "/menu/next"] = "creator:done",
+            [V .. "/menu/save"] = valid and "creator:save" or nil,
+            [V .. "/menu/next"] = valid and "creator:done" or nil,
             [V .. "/menu/back"] = "creator:cancel",
         },
+        disabled = { [V .. "/menu/save"] = not valid or nil, [V .. "/menu/next"] = not valid or nil },
     })
     -- the checkbox at its positionType (the gui file puts it off screen; CCustomizeSpeciesView
     -- moves it to locked_content_checkbox_position) [V: the file's comment, the game's frame]
@@ -146,7 +153,6 @@ local function build_menu(ctx, b, st, R, d, errors)
             positions = { [V .. "/menu/locked_content_checkbox"] = { cb[1], cb[2] } },
             actions = { [V .. "/menu/locked_content_checkbox"] = "creator:toggle_locked" },
             frames = { [V .. "/menu/locked_content_checkbox"] = st.hide_locked and 2 or 1 },
-            prefix = "/locked",
         })
     end
     local list = r.rects[V .. "/menu/editors_list"]
@@ -172,10 +178,12 @@ local function build_menu(ctx, b, st, R, d, errors)
                 local p = pos["customize_species_view_menu_button_pos_" .. i] or { -2, 33 + 27 * (i - 1) }
                 positions_[path] = { p[1], p[2] }
                 actions[path] = "creator:menu:" .. e.key
-                -- an editor with errors: its label red (CCustomizeSpeciesViewEditorMenuSectionItem::
-                -- UpdateEntry; the game's frame) [I: the colour code]
+                -- its label: the menu's static label (s_MenuButtonSections: the game's frame shows
+                -- "Ruler Appearance", "Shipsets", not the .gui's buttonText), red with errors
+                -- (CCustomizeSpeciesViewEditorMenuSectionItem::UpdateEntry) [I: the colour code]
+                text[path] = C.loc(ctx, e.label)
                 if #(errors[e.key] or {}) > 0 then
-                    text[path] = "§R" .. C.loc(ctx, editors.button_text(ctx, e)) .. "§!"
+                    text[path] = "§R" .. text[path] .. "§!"
                 end
                 -- the open editor's button: its selected frame [I: the game's frame shows it lit]
                 if st.editor == e.key then
@@ -205,11 +213,59 @@ function creator.build(game_dir, db, screen, texture_size, loc, state, base)
     local _, errors = rules.validate(R, d)
     st.errors = errors
     -- the preview (its lower part under the editor), the editor over it, the menu
-    preview.build(ctx, b, d, { hide_lower = true, actions = {} })
+    -- (the ship set editor covers the whole preview: its background only)
+    preview.build(ctx, b, d, { hide_lower = true, actions = {}, only_background = st.editor == "shipset" })
     editors.build(ctx, b, st, R, d)
     build_menu(ctx, b, st, R, d, errors)
+    -- a popup over everything (interface/popup.gui), the rest not taking clicks
+    if st.popup then
+        for _, it in ipairs(b.items) do
+            it.button = nil
+        end
+        local p = st.popup
+        local win = p.kind == "errors" and "ok_popup_window" or "yes_no_popup_window"
+        local Pp = "/" .. win
+        b:add("interface/popup.gui", win, {
+            text = { [Pp .. "/title"] = C.loc(ctx, p.title), [Pp .. "/description"] = p.text },
+            actions = p.kind == "errors" and { [Pp .. "/AgreeButton"] = "creator:popup_ok" }
+                or { [Pp .. "/AgreeButton"] = "creator:popup_yes", [Pp .. "/DeclineButton"] = "creator:popup_no" },
+            hide = { [Pp .. "/DeclineButton"] = p.kind == "errors" or nil },
+        })
+    end
     b.report.note = "empire creator: " .. st.editor
     return { items = b.items, report = b.report }
+end
+
+-- the design's errors as the game lists them (IsEmpireDesignValid: each editor with errors, its
+-- menu label, then its errors, a line each)
+local function error_list(R, d, loc)
+    local ctx = { loc = loc }
+    local _, all = rules.validate(R, d)
+    local out = {}
+    for _, sec in ipairs(rules.SECTIONS) do
+        for _, k in ipairs(sec.editors) do
+            local errs = all[k] or {}
+            if #errs > 0 then
+                out[#out + 1] = C.loc(ctx, rules.BY_KEY[k].label) .. ":"
+                for _, e in ipairs(errs) do
+                    out[#out + 1] = err_text(ctx, e)
+                end
+            end
+        end
+    end
+    return table.concat(out, "\n")
+end
+
+-- CCustomizeSpeciesView::CheckAndConfirmUnspentPoints: ethic points or civic picks left, then
+-- else ruler trait points left: one question (UNSPENT_POINTS_*, UNSPENT_RULER_TRAIT_POINTS_*) [V]
+local function unspent_popup(R, d, after)
+    if rules.ethic_points_left(R, d) > 0 or rules.civic_points_left(R, d) > 0 then
+        return { kind = "unspent", title = "UNSPENT_POINTS_NAME", text_key = "UNSPENT_POINTS_DESC", after = after }
+    end
+    if rules.ruler_points_left(R, d) > 0 then
+        return { kind = "unspent_ruler", title = "UNSPENT_RULER_TRAIT_POINTS_NAME", text_key = "UNSPENT_RULER_TRAIT_POINTS_DESC", after = after }
+    end
+    return nil
 end
 
 -- the design valid: handed to the setup (render.newgame_setup.set_design)
@@ -221,6 +277,17 @@ local function finish(state, st)
         state.empire = { kind = "custom", design = st.design }
     end
     state.creator = nil
+end
+
+-- Done or Save confirmed: Done hands the design to the setup and leaves; Save keeps it among the
+-- user's designs (CEmpireDesignDatabase::SaveDesign) and stays [I: the setup's list]
+function creator.confirmed(state, st, verb)
+    if verb == "save" then
+        st.saved = rules.copy(st.design)
+        return nil
+    end
+    finish(state, st)
+    return "done"
 end
 
 function creator.act(state, action)
@@ -236,24 +303,32 @@ function creator.act(state, action)
         state.creator = nil
         return "cancel"
     elseif verb == "done" or verb == "save" then
-        -- OnDone / OnSave: with errors, ShowFirstEditorWithError; else the design is kept
-        local ok, all = rules.validate(R, d)
+        -- OnDone / OnSave: an invalid design: the errors' popup (EMPIRE_DESIGN_INVALID,
+        -- EMPIRE_DESIGN_HAS_ERRORS and the list) [V]; else the unspent points' questions, then
+        -- OnDoneConfirmedUnspentPoints / OnSaveConfirmedUnspentPoints
+        local ok = rules.validate(R, d)
+        local loc = RENDER_LOC
         if not ok then
-            for _, k in ipairs(order(R, d)) do
-                if #(all[k] or {}) > 0 then
-                    st.editor = k
-                    break
-                end
-            end
+            st.popup = { kind = "errors", title = "EMPIRE_DESIGN_INVALID",
+                text = C.loc({ loc = loc }, "EMPIRE_DESIGN_HAS_ERRORS") .. "\n\n" .. error_list(R, d, loc) }
             return nil
         end
-        if verb == "save" then
-            -- CEmpireDesignDatabase::SaveDesign: the user's designs [I: kept in the setup's list]
-            st.saved = true
+        local p = unspent_popup(R, d, verb)
+        if p then
+            p.text = C.loc({ loc = loc }, p.text_key)
+            st.popup = p
             return nil
         end
-        finish(state, st)
-        return "done"
+        return creator.confirmed(state, st, verb)
+    elseif verb == "popup_ok" or verb == "popup_no" then
+        st.popup = nil
+        return nil
+    elseif verb == "popup_yes" then
+        -- (one question only: the game's frame goes on to Game Details after Yes on Unspent
+        -- Points with the ruler's trait point unspent too)
+        local p = st.popup
+        st.popup = nil
+        return p and creator.confirmed(state, st, p.after) or nil
     elseif verb == "menu" then
         if rules.BY_KEY[rest] then
             st.editor = rest

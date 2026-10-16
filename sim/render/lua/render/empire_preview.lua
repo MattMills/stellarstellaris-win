@@ -100,8 +100,11 @@ function preview.flag_texture(ctx, sprite, flag)
     end
     local cols = preview.flag_colours(ctx.game_dir)
     local cs = {}
+    -- (@grey and @white: the flag editor's background patterns, drawn in greys)
+    local plain = { ["@grey"] = { 0.4, 0.4, 0.4 }, ["@white"] = { 0.85, 0.85, 0.85 } }
     for i = 1, 4 do
-        local c = cols[(flag.colors or {})[i] or ""]
+        local n = (flag.colors or {})[i] or ""
+        local c = plain[n] or cols[n]
         cs[i] = c and string.format("%.4f,%.4f,%.4f", c[1], c[2], c[3]) or "0,0,0"
     end
     local icon = flag.icon or {}
@@ -171,16 +174,30 @@ function preview.build(ctx, b, design, opts)
     -- the room under the window's frames: the city behind, the room over it, cut to the window
     local r0 = b:add(FILE, "species_preview", { only = { background = true }, hide = { empire_name = true, origin_window = true,
         portrait_window = true, empire_flag = true, home_world = true, government_and_ethics = true, species_description_bg = true } })
+    if opts.only_background then
+        return r0, d
+    end
     local pw = r0.rects and r0.rects[P .. "/portrait_window"]
     local wrect = r0.rects and r0.rects[P]
     if wrect then
         -- the portrait window's place (its own layout gives it; laid out below)
         local px, py = wrect.x + 6, wrect.y + 60
+        -- (cut to the portrait window, 771 x 285, which clips: `clipping = yes`)
+        b.items[#b.items + 1] = { kind = "sprite", path = "/clip", sprite = "", texture = "", sprite_kind = "clip",
+            frame = 1, frames = 1, x = px + 4, y = py + 4, w = 952 * 0.8, h = 340 * 0.8 }
         if d then
             local s = 0.8
             local rw, rh = 952 * s, 340 * s
             local city = "gfx/portraits/city_sets/" .. (d.city_graphical_culture or "mammalian_01") .. "_city_l03.dds"
             local tw, th = ctx.texture_size(city)
+            -- the home world's landscape behind the city (species_preview_backgrounds) [I]
+            local sky = "gfx/portraits/species_preview_backgrounds/species_preview_bg_"
+                .. (d.planet_class or "pc_continental"):gsub("^pc_", "") .. ".dds"
+            local sw, sh = ctx.texture_size(sky)
+            if tw and sw then
+                local cw, ch = tw * 0.714 * s, th * 0.714 * s
+                b:texture("/preview/sky", sky, px + 4 + rw - cw, py + 4 - 23 * s, cw, ch)
+            end
             if tw then
                 local cw, ch = tw * 0.714 * s, th * 0.714 * s
                 b:texture("/preview/city", city, px + 4 + rw - cw, py + 4 - 23 * s, cw, ch)
@@ -190,6 +207,8 @@ function preview.build(ctx, b, design, opts)
                 b:texture("/preview/room", room, px + 4, py + 4, rw, rh)
             end
         end
+        b.items[#b.items + 1] = { kind = "sprite", path = "/clip", sprite = "", texture = "", sprite_kind = "clip",
+            frame = 1, frames = 1, x = 0, y = 0, w = 0, h = 0 }
     end
     -- the window (its background already drawn)
     o.hide[P .. "/background"] = true
