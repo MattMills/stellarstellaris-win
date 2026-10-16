@@ -1119,6 +1119,12 @@ impl App {
             e.sprites.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("GFX_topbar_{v}_button")));
             // a click toggles its view (CInGameIdler::ToggleTopBarView)
             e.actions.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("view:{v}")));
+            // its view shown (CMainGuiLeftBarButton::Update): the icons' frame 3 (2 x shown + 1)
+            // and the highlight shown [V; which children: I, by the game's frame]
+            if self.open_view.as_deref() == Some(*v) {
+                e.only = Some(vec!["right_icon".into(), "highlight".into()]);
+                e.frames.push((format!("{prefix}/maingui_left_bar_button/right_icon"), 3));
+            }
             e.prefix = Some(prefix);
             specs.push(e);
         }
