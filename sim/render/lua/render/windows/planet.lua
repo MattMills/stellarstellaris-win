@@ -125,7 +125,7 @@ local function settle_texts(game_dir, db, items, first, texture_size)
             local f = font_metrics(game_dir, db, it.font)
             local lines_fit = f and math.floor((it.h + 1) / f.line) or 1
             local multi = f and (lines_fit >= 2 or it.text:find("\n", 1, true))
-            if f and it.w == 100 and it.h == 16 and (it.format == "left") and not it.text:find("\n", 1, true) then
+            if f and it.w == 100 and lines_fit < 2 and (it.format == "left") and not it.text:find("\n", 1, true) then
                 it.w = 0
                 out[#out + 1] = it
             elseif multi and #it.spans > 0 then
@@ -338,10 +338,14 @@ function View:entry(window, prefix, x, y, w, h, o)
     o = o or {}
     o.prefix = prefix
     o.parent = { x = x, y = y, w = w or 0, h = h or 0 }
-    -- a list's entry is at its slot, its own position not added **[I]** (the game's deposits list:
-    -- planet_deposit_entry's position y = 82 is not where its first entry shows)
-    o.positions = o.positions or {}
-    o.positions[prefix .. "/" .. window] = { 0, 0 }
+    -- a smooth list's entry is at its slot, its own position not added; a grid box's keeps it
+    -- **[I]** (the game's frames: planet_deposit_entry's y = 82 is not where the deposits list's
+    -- first entry shows; colonize_district_entry's 10, 12 is where the colonize window's districts
+    -- show)
+    if not o.grid then
+        o.positions = o.positions or {}
+        o.positions[prefix .. "/" .. window] = { 0, 0 }
+    end
     return self:lay(window, o)
 end
 
@@ -474,7 +478,9 @@ local function resource_text(list, want, decimals)
                     s = "+" .. s
                 end
             end
-            parts[#parts + 1] = "\194\163" .. k .. "|1\194\163 " .. col(v > 0 and "G" or v == 0 and "Y" or "R", s)
+            -- (the research resources' text icons are £physics£, £society£, £engineering£)
+            local icon = k:gsub("_research$", "")
+            parts[#parts + 1] = "\194\163" .. icon .. "|1\194\163 " .. col(v > 0 and "G" or v == 0 and "Y" or "R", s)
         end
     end
     return table.concat(parts, " ")
@@ -558,7 +564,7 @@ function View:district_boxes(entry_window, prefix, rect, dist)
         if rs and self.ctx.db.sprites[rs] then
             self.resprite[p .. "/rectangle_district_grid_box_entry/background"] = rs
         end
-        self:entry("rectangle_district_grid_box_entry", p, x, y, g.w, g.h)
+        self:entry("rectangle_district_grid_box_entry", p, x, y, g.w, g.h, { grid = true })
     end
 end
 
@@ -589,7 +595,7 @@ function View:buildings(grid, rect, prefix, zone)
             hide[E .. "/building_slot_icons/building_bg"] = true
             hide[E .. "/building_slot_icons/building_icon"] = true
         end
-        self:entry("planet_building_entry", p, x, y, grid.w, grid.h, { hide = hide })
+        self:entry("planet_building_entry", p, x, y, grid.w, grid.h, { hide = hide, grid = true })
     end
 end
 
@@ -686,7 +692,7 @@ function View:district_entry(window, prefix, x, y, w, h, dist)
             self.hide_e, self.text_e = {}, {}
             local z = dist.zones[i]
             local bgrid = self:zone_slot("zone_entry", zp, Z, z, { "buildings_box" })
-            local zr2 = self:entry("zone_entry", zp, zx, zy, zg.w, zg.h, { hide = self.hide_e, text = self.text_e, sprites = self.zone_sprites })
+            local zr2 = self:entry("zone_entry", zp, zx, zy, zg.w, zg.h, { hide = self.hide_e, text = self.text_e, sprites = self.zone_sprites, grid = true })
             if bgrid and z then
                 self:buildings(bgrid, zr2.rects[Z .. "/buildings_box"], Z .. "/bb", z)
             end
@@ -781,6 +787,10 @@ function planet.build(ctx, sel, items, report)
         f(r)
     end
     v:portrait(r, first)
+    -- the colonize window, over the planet view
+    if st.colonize and d and d.colonizable then
+        v:colonize_window()
+    end
     -- sprites the game sets from a texture (district and building icons, the unknown flag), the
     -- frames of backgrounds
     for i = first, #items do
@@ -789,10 +799,22 @@ function planet.build(ctx, sel, items, report)
             local base = it.path
             local tex = v.retexture[base]
             if tex then
+                -- the new texture at the element's scale (an icon without a size is its sprite's
+                -- frame x its `scale`: the same scale of the new texture)
+                local ow, oh
+                if it.texture and it.texture:sub(1, 1) ~= "@" then
+                    ow, oh = ctx.texture_size(it.texture)
+                    ow = ow and ow / math.max(1, it.frames or 1)
+                end
                 it.texture, it.sprite, it.frame, it.frames, it.sprite_kind = tex, tex, 1, 1, "spriteType"
-                local tw, th = ctx.texture_size(tex)
+                local tw, th = nil, nil
+                if tex:sub(1, 1) ~= "@" then
+                    tw, th = ctx.texture_size(tex)
+                end
                 if tw and (it.w == 0 or it.h == 0) then
                     it.w, it.h = tw, th
+                elseif tw and ow and oh and ow > 0 and oh > 0 then
+                    it.w, it.h = it.w * tw / ow, it.h * th / oh
                 end
             end
             local rs = v.resprite[base]
@@ -816,6 +838,17 @@ function planet.build(ctx, sel, items, report)
         end
     end
     settle_texts(ctx.game_dir, ctx.db, items, first, ctx.texture_size)
+    -- PLANET_DUMP=<text>: the window's items whose path has the text, to stderr
+    local dump = os.getenv("PLANET_DUMP")
+    if dump then
+        for i = first, #items do
+            local it = items[i]
+            if it.path and it.path:find(dump, 1, true) then
+                io.stderr:write(string.format("planet item %s %s %s %.1f %.1f %.1f %.1f\n", it.kind, it.path, tostring(it.texture or it.text),
+                    it.x or 0, it.y or 0, it.w or 0, it.h or 0))
+            end
+        end
+    end
     return r
 end
 
@@ -1051,7 +1084,7 @@ function View:available_districts(r)
         local x, y = slot(g, rect, i)
         local p = H .. "/" .. i
         self.icon_frames[p .. "/available_planet_district_grid_box_entry/icon"] = i <= free and 2 or 3
-        self:entry("available_planet_district_grid_box_entry", p, x, y, g.w, g.h)
+        self:entry("available_planet_district_grid_box_entry", p, x, y, g.w, g.h, { grid = true })
     end
 end
 
@@ -1464,18 +1497,210 @@ function View:pop_category(c, p, x, y, h)
 end
 
 -- ---------------------------------------------------------------------------------------------
+-- the colonize window (interface/colonize_planet_view.gui, expansion_planner_surface_view;
+-- CSurfaceView::ShowWithPlanet @0x2bcabb0, Update @0x2bd0050): opened by the planet view's
+-- colonize button (CPlanetView::OnColonize -> NExpansionView::OpenColoniseView)
+
+local CFILE = "interface/colonize_planet_view.gui"
+local CW = "/expansion_planner_surface_view"
+
+function View:colonize_window()
+    local d = self.d
+    local c = d.colonize or { species = {}, cost = {} }
+    local text, hide, actions = {}, {}, {}
+    text[CW .. "/title"] = self:F("EXPANSION_PLANNER_SURFACE_VIEW", { TARGET_PLANET = self.name })
+    actions[CW .. "/close"] = "colonize_close"
+    -- (no hostiles known: HasHostiles **[I]**)
+    hide[CW .. "/has_intel_hostile"] = true
+    text[CW .. "/modifiers_container/planet_class_container/planet_class_name"] = self:L(d.class)
+    text[CW .. "/modifiers_container/planet_class_container/planet_size_container/planet_size_amount"] = tostring(d.size)
+    hide[CW .. "/designation_container/designation_desc_container"] = true
+    -- the districts' header: the planet's slots (DASH while not surveyed)
+    local DH = CW .. "/districts_window/districts_window_title_bar/planet_total_districts_container"
+    text[DH .. "/planet_num_districts/planet_districts_amount"] = d.surveyed and d.district_slots and tostring(d.district_slots.max) or self:L("DASH")
+    local r = self:lay("expansion_planner_surface_view", {
+        file = CFILE, text = text, hide = hide, actions = actions, tints = { [CW .. "/colonize_button"] = { 0.45, 0.45, 0.45, 1 } },
+    })
+    -- the checkboxes: the founder-species filter and the automation, unchecked
+    for _, cb in ipairs({ { CW .. "/expansion_source/expansion_source_container_title_bar/main_species_filter", "checked" },
+        { CW .. "/designation_container/designation_container_title_bar/automation_toggle", "automation_checkbox" } }) do
+        local rr = r.rects[cb[1]]
+        if rr then
+            self:checkbox(cb[1] .. "/" .. cb[2], "GFX_checkbox_20_20_01", rr.x, rr.y, false)
+        end
+    end
+    -- the colonizing species (expansion_source_planet_sub_entry)
+    local lr = r.rects[CW .. "/expansion_source/expansion_source_list_container/expansion_source_list"]
+    if lr then
+        local h = 77
+        for i, s in ipairs(c.species) do
+            local y = lr.y + (i - 1) * h
+            local p = CW .. "/sources/" .. i
+            local E = p .. "/expansion_source_planet_sub_entry"
+            local hab = math.floor((s.habitability or 0) * 100 + 1e-6)
+            local cost = {}
+            for _, k in ipairs(c.cost) do
+                cost[#cost + 1] = "\194\163" .. k[1] .. "\194\163" .. k[2]
+            end
+            local er = self:entry("expansion_source_planet_sub_entry", p, lr.x, y, 725, h, {
+                file = CFILE,
+                text = {
+                    [E .. "/species_container/species_name_text"] = require("render.names").format(self.loc, s.name),
+                    [E .. "/species_container/ship_type_text"] = self:L("colonizer"),
+                    [E .. "/habitability_container/habitability_percentage"] = col(hab > 0 and "G" or "R", hab .. "%"),
+                    [E .. "/colonization_cost_container/colony_ship_cost"] = table.concat(cost, " "),
+                },
+                hide = { [E .. "/selected_overlay"] = true },
+                frames = { [E .. "/habitability_container/habitability_icon"] = hab > 0 and 2 or 1 },
+            })
+            -- the species' traits, side by side at the entry's right (traits_list)
+            local tr = er.rects[E .. "/traits_list"]
+            if tr then
+                -- an overlapping elements box: the icons overlap to fit its width
+                local n = #(s.traits or {})
+                local step = n > 1 and math.min(24, (tr.w - 24) / (n - 1)) or 24
+                for k, icon in ipairs(s.traits or {}) do
+                    local tx = tr.x + (k - 1) * step
+                    self.items[#self.items + 1] = {
+                        kind = "sprite", path = E .. "/traits_list/" .. k, sprite = icon, texture = icon, sprite_kind = "spriteType",
+                        frame = 1, frames = 1, x = tx, y = tr.y, w = 24, h = 24,
+                    }
+                end
+            end
+        end
+    end
+    -- the districts shown on uncolonized planets: their icons, "?" until surveyed
+    local gr = r.rects[CW .. "/districts_window/districts_grid_container/districts_grid_box"]
+    if gr then
+        local k = 0
+        for _, dist in ipairs(d.districts or {}) do
+            k = k + 1
+            if k > 4 then
+                break
+            end
+            local p = CW .. "/districts/" .. k
+            local E = p .. "/colonize_district_entry"
+            self.retexture[E .. "/district_icon"] = dist.icon
+            self:entry("colonize_district_entry", p, gr.x + (k - 1) * 70, gr.y, 70, 80, {
+                file = CFILE, grid = true,
+                hide = { [E .. "/district_box"] = not d.surveyed or nil, [E .. "/not_surveyed"] = d.surveyed or nil },
+                text = { [E .. "/district_box/district_amount_text"] = tostring(dist.max or 0) },
+            })
+        end
+    end
+    -- the planet's deposits (colonize_deposit_entry), sorted as the planet view's
+    local dr = r.rects[CW .. "/deposits_window/deposits_list_container/deposits_list"]
+    if dr then
+        local list = {}
+        for _, dep in ipairs(d.deposits) do
+            if dep.listed then
+                list[#list + 1] = dep
+            end
+        end
+        table.sort(list, function(a, b)
+            if a.blocker ~= b.blocker then
+                return a.blocker
+            end
+            if a.important ~= b.important then
+                return a.important
+            end
+            return a.index < b.index
+        end)
+        local y = dr.y
+        for i, dep in ipairs(list) do
+            if y + 90 > dr.y + dr.h + 1 then
+                break
+            end
+            local p = CW .. "/deposits/" .. i
+            local E = p .. "/colonize_deposit_entry"
+            local effects = {}
+            for _, m in ipairs(dep.modifiers) do
+                local v = m[2]
+                effects[#effects + 1] = (m[1]:match("district") and "\194\163district\194\163 " or "") .. col(v >= 0 and "G" or "R", (v > 0 and "+" or "") .. v)
+            end
+            local cost = {}
+            if dep.time then
+                cost[#cost + 1] = "\194\163time\194\163" .. dep.time
+            end
+            for _, cc in ipairs(dep.cost) do
+                cost[#cost + 1] = "\194\163" .. cc[1] .. "\194\163" .. cc[2]
+            end
+            self.retexture[E .. "/deposit_icon"] = dep.icon
+            if dep.swap_icon then
+                self.retexture[E .. "/clear_blocker_deposit_icon"] = dep.swap_icon
+            end
+            self:entry("colonize_deposit_entry", p, dr.x, y, 270, 90, {
+                file = CFILE,
+                text = {
+                    [E .. "/deposit_name/deposit_name"] = "\194\167H" .. self:L(dep.type) .. "\194\167!",
+                    [E .. "/deposit_effects"] = table.concat(effects, "\n"),
+                    [E .. "/clear_blocker_cost"] = dep.blocker and table.concat(cost, " ") or "",
+                },
+                -- a blocker's frame 2: not clearable by the player on a planet not its own **[I]**
+                frames = { [E .. "/blocker_frame"] = 2 },
+                hide = {
+                    [E .. "/blocker_frame"] = not dep.blocker or nil, [E .. "/rare_deposit_frame"] = not (not dep.blocker and dep.important) or nil,
+                    [E .. "/clear_blocker_deposit_icon"] = not (dep.blocker and dep.swap_icon) or nil,
+                },
+            })
+            y = y + 90 + 4
+        end
+    end
+    -- the designations: the automatic one first (CColonyDesignationEntry with no type)
+    local dg = r.rects[CW .. "/designation_container/designation_list/designation_grid_container/designation_gridbox"]
+    if dg then
+        local p = CW .. "/designations/1"
+        local E = p .. "/designation_grid_entry"
+        self:entry("designation_grid_entry", p, dg.x, dg.y, 120, 80, {
+            file = CFILE, grid = true,
+            text = { [E .. "/designation_name"] = self:L("COLONY_AUTOMATIC_DESIGNATION") },
+            sprites = { [E .. "/designation_icon"] = "GFX_colony_type_automatic" },
+        })
+    end
+    -- the planet's picture in the designation's frame (planet_portrait_button, the masked
+    -- portrait: its environment without a city)
+    local B = r.rects[CW .. "/designation_container/planet_portrait_window/planet_portrait_container/planet_portrait_button"]
+    local C = r.rects[CW .. "/designation_container/planet_portrait_window/planet_portrait_container"]
+    if B and C and d.picture then
+        local y0, y1 = math.max(B.y, C.y), math.min(B.y + 400, C.y + C.h)
+        local x0, x1 = math.max(B.x, C.x), math.min(B.x + 800, C.x + C.w)
+        if y1 > y0 and x1 > x0 then
+            local name = string.format("@planet_portrait:%s::0:%d:%d:%d:%d", d.picture, math.floor(y0 - B.y + 0.5), math.floor(y1 - y0 + 0.5),
+                math.floor(x0 - B.x + 0.5), math.floor(x1 - x0 + 0.5))
+            local item = {
+                kind = "sprite", path = CW .. "/designation_container/planet_portrait_window/planet_portrait_container/planet_portrait_button",
+                sprite = name, texture = name, sprite_kind = "spriteType", frame = 1, frames = 1, x = x0, y = y0, w = x1 - x0, h = y1 - y0,
+            }
+            -- under the frame's art: before the portrait window's other items
+            local at = #self.items + 1
+            for i = 1, #self.items do
+                local ip = self.items[i].path
+                if ip and ip:find(CW .. "/designation_container/planet_portrait_window", 1, true) == 1 then
+                    at = i
+                    break
+                end
+            end
+            table.insert(self.items, at, item)
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------------------------
 -- the data: in the world's runtime (engine.world, a save loaded), plain tables of what the window
 -- shows, for the front end's runtime (planet.encode, planet.decode carry them across)
 
-local defs_cache, order_cache = {}, {}
+local defs_cache, order_cache, vars_cache = {}, {}, {}
 
 -- the game's definitions of a directory (common/...): name -> { block, file, line }
 local function defs(game_dir, subdir)
     local d = defs_cache[subdir]
     if not d then
         local source = require("stellar.script.source")
-        d = source.definitions(game_dir, subdir) or {}
+        local v
+        d, _, v = source.definitions(game_dir, subdir)
+        d = d or {}
         defs_cache[subdir] = d
+        vars_cache[subdir] = v or {}
     end
     return d
 end
@@ -1597,6 +1822,20 @@ local function trigger(game_dir, block, kind, id, from_kind, from_id)
         -- the flags and variables where the save keeps them (engine.load installs this; the
         -- window's triggers only read them)
     end
+    -- the definitions the engine's triggers read (engine.defs: E.district_set and the like), a
+    -- folder read when first asked for: the map's runtime loads none (engine.load_world)
+    local edefs = require("engine.defs")
+    if next(edefs.folders) == nil and not getmetatable(edefs.folders) then
+        local source = require("stellar.script.source")
+        edefs.fs = edefs.fs or db.fs
+        setmetatable(edefs.folders, {
+            __index = function(t, folder)
+                local d = source.definitions(edefs.fs, folder) or {}
+                rawset(t, folder, d)
+                return d
+            end,
+        })
+    end
     local eval0 = require("simscript.eval")
     -- the planet climate triggers the script layer does not have yet (is_wet: the planet class's
     -- `climate`; the farming districts' anglers names need it), only where it has none
@@ -1632,6 +1871,18 @@ local function trigger(game_dir, block, kind, id, from_kind, from_id)
             trigger_errors[#trigger_errors + 1] = tostring(r)
         end
         return nil
+    end
+    -- PLANET_TRIGGER_DEBUG=1: a false trigger's statements, each with its own result (planet.rs
+    -- prints them)
+    if not r and os.getenv("PLANET_TRIGGER_DEBUG") and #trigger_errors < 60 then
+        local parts = {}
+        for _, e in ipairs(block) do
+            if e.op and e.key then
+                local ok2, r2 = pcall(eval.trigger, { e }, ctx)
+                parts[#parts + 1] = e.key.text .. "=" .. tostring(ok2 and r2)
+            end
+        end
+        trigger_errors[#trigger_errors + 1] = kind .. " " .. tostring(id) .. ": " .. table.concat(parts, " ")
     end
     return r and true or false
 end
@@ -1749,8 +2000,9 @@ local function districts_of(game_dir, world, p, id, colony_block, d)
         elseif colonized then
             show = trigger(game_dir, dfield(def, "potential"), "planet", id)
         else
+            -- (its FROM: the observing country, the player)
             local su = dfield(def, "show_on_uncolonized")
-            show = su ~= nil and trigger(game_dir, su, "planet", id)
+            show = su ~= nil and trigger(game_dir, su, "planet", id, "country", d.player)
         end
         if show then
             shown[#shown + 1] = t
@@ -1827,6 +2079,105 @@ local function districts_of(game_dir, world, p, id, colony_block, d)
         list[#list + 1] = e
     end
     return list
+end
+
+-- the game's scripted variables (common/scripted_variables: `@name = value`), read once
+local scripted_vars
+local function var(game_dir, text, file_vars)
+    if type(text) ~= "string" or text:sub(1, 1) ~= "@" then
+        return tonumber(text)
+    end
+    -- the file's own variables first (source.definitions: without the @)
+    if file_vars and file_vars[text:sub(2)] then
+        return tonumber(file_vars[text:sub(2)])
+    end
+    if not scripted_vars then
+        scripted_vars = {}
+        local source = require("stellar.script.source")
+        for _, f in ipairs(source.files(game_dir, "common/scripted_variables", "txt")) do
+            local tree = source.parse(game_dir, f)
+            for _, e in ipairs(tree or {}) do
+                if e.op and e.key and e.key.text:sub(1, 1) == "@" and e.value and e.value.text then
+                    scripted_vars[e.key.text] = tonumber(e.value.text)
+                end
+            end
+        end
+    end
+    return scripted_vars[text]
+end
+
+-- The colonize window's data (CSurfaceView::ShowWithPlanet, RefreshExpansionSources): the
+-- player's colonizing species (its founder species **[I]**: CCountry::ListColonizerSpecies not
+-- read further), each one's habitability (the species' traits' pc_<class>_habitability; an
+-- aquatic species +0.2 on a wet planet, -0.2 elsewhere **[I]**: the game's frames, 100% on an
+-- ocean world and 0% on a desert for the Uthabulan, ocean preference and aquatic), its
+-- traits; the colony ship's cost (the colonizer ship size's costs whose triggers hold, their
+-- @variables the game's).
+local function colonize_of(game_dir, world, galaxy, p, id, d, pc)
+    local out = { species = {}, cost = {} }
+    if not pc then
+        return out
+    end
+    local climate = dfield(block_of(game_dir, "common/planet_classes", d.class), "climate")
+    local fs = num(world.field(pc, "founder_species_ref"))
+    local s = fs and world.object("species", fs)
+    if s then
+        local traits, hab = {}, 0
+        local aquatic = false
+        for _, t in ipairs(world.fields(s, "traits")) do
+            local tr = type(t) == "table" and world.fields(t, "trait") or { t }
+            for _, name in ipairs(tr) do
+                name = unquote(name)
+                local tdef = block_of(game_dir, "common/traits", name or "")
+                local tfile = defs(game_dir, "common/traits")[name or ""]
+                local fvars = tfile and vars_cache["common/traits"][tfile.file] or nil
+                if tdef then
+                    -- its icon: the trait's `icon`, else gfx/interface/icons/traits/<key>.dds
+                    -- where there is one
+                    local icon = dfield(tdef, "icon") or ("gfx/interface/icons/traits/" .. name .. ".dds")
+                    local fh = io.open(game_dir .. "/" .. icon, "rb")
+                    if fh then
+                        fh:close()
+                        traits[#traits + 1] = icon
+                    end
+                    for k, v in world.statements(dfield(tdef, "modifier")) do
+                        if k == d.class .. "_habitability" then
+                            hab = hab + (var(game_dir, v, fvars) or 0)
+                        end
+                    end
+                    aquatic = aquatic or name == "trait_aquatic"
+                end
+            end
+        end
+        if aquatic then
+            hab = hab + (climate == "wet" and 0.2 or -0.2)
+        end
+        out.species[1] = {
+            id = fs, name = galaxy.name_block(world.field(s, "name")), traits = traits,
+            habitability = math.max(0, math.min(1, hab)),
+        }
+    end
+    local rorder = {}
+    for i, n in ipairs(ordered(game_dir, "common/strategic_resources")) do
+        rorder[n] = i
+    end
+    local sdef = block_of(game_dir, "common/ship_sizes", "colonizer")
+    for _, cb in ipairs(dblocks(dfield(sdef, "resources"), "cost")) do
+        local ct = dfield(cb, "trigger")
+        if ct == nil or trigger(game_dir, ct, "planet", id, "country", d.player) then
+            for k, v in world.statements(cb) do
+                local n = var(game_dir, v)
+                if n and k ~= "mult" then
+                    out.cost[#out.cost + 1] = { k, n }
+                end
+            end
+        end
+    end
+    -- in the resources' database order (CResourceTable::BuildString)
+    table.sort(out.cost, function(a, b)
+        return (rorder[a[1]] or 1e9) < (rorder[b[1]] or 1e9)
+    end)
+    return out
 end
 
 -- planet.data(game_dir, id) -> table | nil: the planet `id` of the world as the window shows it
@@ -1952,6 +2303,7 @@ function planet.data(game_dir, id)
         d.base = amounts(world, world.path(owner, "budget", "current_month", "income", "country_base"))
     end
     -- the sector of the planet's system (sectors.<id>.systems), its owner the planet's
+    local pc = world.object("country", player)
     for _, sid in ipairs(world.all("sectors")) do
         local sec = world.object("sectors", sid)
         if sec and num(world.field(sec, "owner")) == d.owner then
@@ -2204,6 +2556,9 @@ function planet.data(game_dir, id)
         d.colony = col
     elseif not colonizable_class then
         d.habitability = 0
+    end
+    if d.colonizable then
+        d.colonize = colonize_of(game_dir, world, galaxy, p, id, d, pc)
     end
     if #trigger_errors > 0 then
         d.errors = trigger_errors

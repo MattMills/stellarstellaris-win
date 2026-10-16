@@ -19,6 +19,8 @@ pub const TABS: [&str; 5] = ["summary", "management", "population", "armies", "c
 pub struct State {
     pub id: Option<u32>,
     pub tab: String,
+    /// the colonize window (colonize_planet_view.gui, CSurfaceView), open for this planet
+    pub colonize: Option<u32>,
 }
 
 impl State {
@@ -59,14 +61,16 @@ pub fn data(map: &Map, id: u32) -> Result<Option<String>, String> {
 }
 
 /// Hands planet `id`'s data and the tab shown to the front end's runtime (`RENDER_PLANET =
-/// { id, tab, data }`, render.windows reads it); returns the planet's owner (a country id).
-pub fn prepare(front: &Runtime, map: &Map, id: u32, tab: &str) -> Result<Option<u32>, String> {
+/// { id, tab, colonize, data }`, render.windows reads it); returns the planet's owner (a country
+/// id).
+pub fn prepare(front: &Runtime, map: &Map, id: u32, tab: &str, colonize: bool) -> Result<Option<u32>, String> {
     let data = data(map, id)?;
     let lua = &front.lua;
     let set = || -> mlua::Result<Option<u32>> {
         let t = lua.create_table()?;
         t.set("id", id)?;
         t.set("tab", tab)?;
+        t.set("colonize", colonize)?;
         let mut owner = None;
         if let Some(d) = &data {
             lua.globals().set("RENDER_PLANET_TEXT", d.as_str())?;
@@ -186,10 +190,16 @@ fn compose(game_dir: &str, name: &str) -> Option<crate::dds::Image> {
             }
         }
     }
+    // the rows (and, given, the columns) the window shows
+    let left = p.next().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(w);
+    let cols = p.next().and_then(|v| v.parse::<usize>().ok()).unwrap_or(w).min(w - left);
     let top = (top as usize).min(h);
     let rows = (height as usize).min(h - top);
-    let rgba = img.rgba[top * w * 4..(top + rows) * w * 4].to_vec();
-    Some(crate::dds::Image { width: w as u32, height: rows as u32, rgba, format: "planet portrait".into() })
+    let mut rgba = Vec::with_capacity(rows * cols * 4);
+    for y in top..top + rows {
+        rgba.extend_from_slice(&img.rgba[(y * w + left) * 4..(y * w + left + cols) * 4]);
+    }
+    Some(crate::dds::Image { width: cols as u32, height: rows as u32, rgba, format: "planet portrait".into() })
 }
 
 /// Forgets the window's data in the front end's runtime (another selection).

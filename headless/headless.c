@@ -1750,15 +1750,19 @@ static void frame_cmd(const char *arg) {
 //                         (CEmpireViewPlanetEntry::OpenPlanetView); then, a frame later, the tab's
 //                         own click handler on the view (CInGameIdler +0xb30, AccessPlanetView):
 //                         summary, management, population, armies, corporate, arkship, decisions,
-//                         designations; the reply comes a few frames later
+//                         designations; or a button's: colonize (OnColonize: the colonize window,
+//                         CSurfaceView), resettle (OnResettle: the manual resettlement window when
+//                         the player has two colonies to resettle between); the reply comes a few
+//                         frames later
 //   open_planet close     CPlanetView::CloseClick (the window's close button)
 // The carrier reference is a std::variant<TPdxRef<CPlanet>, TPdxRef<CShip>> passed in a register:
 // the planet's id in the low 32 bits, the alternative's index 0 in the next byte.
 
 static uintptr_t a_ShowPlanetView, a_LookupCarrierRef, a_PlanetCloseClick;
-static uintptr_t a_PlanetTabs[8];
-static const char *g_planet_tab_names[8] = {"summary", "management", "population", "armies",
-                                            "corporate", "arkship", "decisions", "designations"};
+static uintptr_t a_PlanetTabs[10];
+static const char *g_planet_tab_names[10] = {"summary", "management", "population", "armies",
+                                             "corporate", "arkship", "decisions", "designations",
+                                             "colonize", "resettle"};
 static struct symreq g_planet_syms[] = {
 	{"_ZN12CInGameIdler14ShowPlanetViewERK14CColonyCarrier14EPlanetViewTab", &a_ShowPlanetView},
 	{"_ZN14CColonyCarrier16LookupCarrierRefESt7variantIJ7TPdxRefI7CPlanetES1_I5CShipEEE", &a_LookupCarrierRef},
@@ -1771,6 +1775,8 @@ static struct symreq g_planet_syms[] = {
 	{"_ZN11CPlanetView12OnArkshipTabEv", &a_PlanetTabs[5]},
 	{"_ZN11CPlanetView14OnDecisionsTabEv", &a_PlanetTabs[6]},
 	{"_ZN11CPlanetView17OnDesignationsTabEv", &a_PlanetTabs[7]},
+	{"_ZN11CPlanetView10OnColonizeEv", &a_PlanetTabs[8]},
+	{"_ZN11CPlanetView10OnResettleEv", &a_PlanetTabs[9]},
 	{NULL, NULL},
 };
 
@@ -1801,7 +1807,7 @@ static void open_planet_cmd(void *gs, const char *arg) {
 		return;
 	}
 	if (name[0]) {
-		for (int i = 0; i < 8; i++)
+		for (int i = 0; i < 10; i++)
 			if (!strcmp(name, g_planet_tab_names[i])) tab = i;
 		if (tab < 0) {
 			reply_fmt("error open_planet: no tab %s", name);

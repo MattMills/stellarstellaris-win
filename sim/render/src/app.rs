@@ -1272,7 +1272,8 @@ impl App {
         match selected.as_ref() {
             Some(s) if s.kind == "planet" => {
                 let tab = self.planet_view.tab_for(s.id).to_string();
-                planet_owner = crate::planet::prepare(&self.runtime, self.map.as_ref().unwrap(), s.id, &tab)?;
+                let colonize = self.planet_view.colonize == Some(s.id);
+                planet_owner = crate::planet::prepare(&self.runtime, self.map.as_ref().unwrap(), s.id, &tab, colonize)?;
             }
             _ => crate::planet::clear(&self.runtime),
         }
@@ -1564,10 +1565,18 @@ impl App {
             }
             // the selection's window closed; an outliner row selects its planet or fleet
             Some("close") => self.select(None),
-            // the planet view's tabs (planet.rs)
+            // the planet view's tabs, its colonize button and the colonize window's close (planet.rs)
             Some(a) if a.starts_with("planet_tab:") => {
                 if let Some(Pickable::Body(id)) = self.selected {
                     self.open_planet(id, &a["planet_tab:".len()..])?;
+                }
+            }
+            Some("planet_colonize") | Some("colonize_close") => {
+                if let Some(Pickable::Body(id)) = self.selected {
+                    self.planet_view.colonize = if action == Some("planet_colonize") { Some(id) } else { None };
+                    self.log.push(format!("planet view: colonize window {}", if action == Some("planet_colonize") { "open" } else { "closed" }));
+                    self.overlay_key = None;
+                    self.scene = None;
                 }
             }
             Some(a) if a.starts_with("select:") => {

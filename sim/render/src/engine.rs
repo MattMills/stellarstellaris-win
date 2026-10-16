@@ -433,7 +433,15 @@ impl Engine {
                 // without a tab the window keeps its own (the game's `open_planet ID` too)
                 let tab = a.get(1).copied().unwrap_or(self.app.planet_view.tab.as_str()).to_string();
                 let tab = if tab.is_empty() { "summary".to_string() } else { tab };
-                self.app.open_planet(id, &tab)?;
+                // `colonize`: the planet view's colonize button (the colonize window); `resettle`:
+                // its resettle button (no window unless the player has two colonies: render.windows.planet)
+                let button = tab == "colonize" || tab == "resettle";
+                let keep = if self.app.planet_view.tab.is_empty() { "summary".to_string() } else { self.app.planet_view.tab.clone() };
+                self.app.open_planet(id, if button { &keep } else { &tab })?;
+                if tab == "colonize" {
+                    self.app.planet_view.colonize = Some(id);
+                    self.app.invalidate();
+                }
                 // laid out now: what went wrong in the reply
                 self.app.scene()?;
                 let log: Vec<String> = self.flush_log().into_iter().filter(|l| l.starts_with("windows:")).collect();
