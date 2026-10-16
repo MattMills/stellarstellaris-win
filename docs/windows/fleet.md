@@ -6,7 +6,8 @@ ship's **ship_view** (`interface/ship_view.gui`) and the **Fleet Manager**
 
 | file | |
 |---|---|
-| `sim/render/src/fleetwin.rs` | what is open, `open`, the `fleet:...` clicks, Escape; the derived textures (greyed buttons, filled bars) |
+| `sim/render/src/fleetwin.rs` | the fleet and ship views: what is open, `open`, the `fleet:...` clicks, Escape; the derived textures (greyed buttons, filled bars) for every window's items |
+| `sim/render/lua/render/windows/fleet_manager.lua` | the Fleet Manager as a left bar view (views.rs: one view at a time) |
 | `sim/render/lua/render/windows/fleet_data.lua` | the save's values, read where the world is (the map's runtime, else the simulation's thread through `Clock::query`), as Lua source |
 | `sim/render/lua/render/windows/fleet.lua` | the layout (render.gui) and what the game computes from its definitions |
 
@@ -22,8 +23,9 @@ Marks as in docs/render.md: **[V]** read in the game's code or files, or measure
 |---|---|---|
 | a fleet selected (outliner, map, `select fleet ID`) | `CInGameIdler::Select(CSelectable*)`, the CSelectable at CFleet+0x18 (as `CFleetOrbitalItem::SelectFleet`) [V] | fleet_view for a fleet that is not a station (a station keeps the starbase window) |
 | a ship row's inspect button | `CInGameIdler::ShowShipView(CShip*)` → `CShipView::Show` (the view at CInGameIdler+0xb60) [V] | action `fleet:ship:ID`, `open ship ID` |
-| the left bar's Fleet Manager, the fleet view's and ship view's Fleet Manager buttons | `CFleetManagerView::Show` (the view at CInGameIdler+0xd78, ETopBarView 8; `ShowFleetManagerView(template)` = Show + `SelectTemplate`) [V] | `fleet:manager`, `view:fleet_manager` (toggles), `open fleet_manager` |
-| close | `header/close`, an entry's `top/deselect`; `CShipView::Close`; `CFleetManagerView::Hide` [V] | `close`, `fleet:close_ship`, `fleet:close_manager`; Escape closes the ship view, then the manager, then the selection |
+| the left bar's Fleet Manager | `CInGameIdler::ToggleTopBarView` (ETopBarView 8; the view at CInGameIdler+0xd78) [V] | the shared left bar view (views.rs, `lua/render/windows/fleet_manager.lua`): `view:fleet_manager`, `open_view fleet_manager`; no side panel, as the game |
+| the fleet view's and ship view's Fleet Manager buttons | `ShowFleetManagerView(template)` = Show + `SelectTemplate` [V] | `fleet:manager:ID`: the same view with state `fleet=ID side=1` (the Build Queue shown, as the game); the ship and fleet views close |
+| close | `header/close`, an entry's `top/deselect`; `CShipView::Close`; `CFleetManagerView::Hide` [V] | `close`, `fleet:close_ship`, the view's `view_close`; Escape closes the ship view, then the open view (views.rs), then the selection |
 
 The headless game has `open fleet ID|ship ID|none` and win-research's `open_view fleet_manager`
 (CInGameIdler::ToggleTopBarView, as the left bar button)

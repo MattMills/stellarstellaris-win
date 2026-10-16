@@ -303,6 +303,34 @@ impl Engine {
         }
     }
 
+    fn open_designer(&mut self, a: &[&str]) -> Result<Reply, String> {
+        use crate::designer::Designer;
+        match (a.first().copied(), a.get(1)) {
+            (None, _) => self.app.set_designer(Designer { open: true, design: None }),
+            (Some("design"), Some(_)) => self.app.set_designer(Designer { open: true, design: Some(num(a.get(1), "id")?) }),
+            (Some("combat"), id) => {
+                let map = self.app.map.as_ref().ok_or("no map loaded")?;
+                let fleet = match id {
+                    Some(_) => Some(num(a.get(1), "id")?).filter(|&f| crate::designer::in_combat(&map.runtime, f)),
+                    None => crate::designer::first_in_combat(&map.runtime),
+                };
+                let fleet = fleet.ok_or("open_designer: no fleet in combat")?;
+                self.app.select(Some(Pickable::Fleet(fleet)));
+                self.flush_log();
+                return Ok(Reply::ok(format!("open_designer combat {fleet}")));
+            }
+            (Some("close"), _) => {
+                self.app.set_designer(Designer::default());
+                if matches!(self.app.selected, Some(Pickable::Fleet(_))) {
+                    self.app.select(None);
+                }
+            }
+            other => return Err(format!("open_designer {other:?}: [design ID | combat [FLEET] | close]")),
+        }
+        self.flush_log();
+        Ok(Reply::ok(format!("open_designer {}", a.join(" "))))
+    }
+
     fn system_index(&self, id: u32) -> Result<usize, String> {
         let m = self.app.map.as_ref().ok_or("no map loaded")?;
         m.galaxy.systems.iter().position(|s| s.id == id).ok_or(format!("no system {id}"))
@@ -413,6 +441,61 @@ impl Engine {
                 self.app.invalidate();
                 Ok(Reply::ok(format!("gui {}", if on { "on" } else { "off" })))
             }
+            "open_view" => {
+                // a left bar button's view toggled (headless.c serves it too): views.rs; with KEY
+                // VALUE after the name, the view open with that state (`open_view technology
+                // select physics`: its select_window, as headless.c's CTechnologyView::Show)
+                match (a.first(), a.get(1), a.get(2)) {
+                    (Some(name), Some(key), Some(value)) => {
+                        if self.app.open_view.as_deref() != Some(*name) {
+                            self.app.toggle_view(name);
+                        }
+                        self.app.view_state.clear();
+                        self.app.set_view_state(&[(*key, *value)]);
+                        self.flush_log();
+                        Ok(Reply::ok(format!("open_view {}", a.join(" "))))
+                    }
+                    (Some(name), _, _) => {
+                        let shown = self.app.toggle_view(name);
+                        self.flush_log();
+                        Ok(Reply::ok(format!("open_view {name} {}", if shown { "shown" } else { "hidden" })))
+                    }
+                    _ => Err("open_view NAME [KEY VALUE]".into()),
+                }
+            }
+            "open_diplomacy" => {
+                // the diplomacy windows (headless.c serves it too, with the game's own calls):
+                // contacts, country ID, community, federation ID, war ID, close
+                // (contacts TAB: 0 contacts, 1 agreements, 2 the shroud, as CGalaxyView::Show)
+                if let ["contacts", tab] = a {
+                    if self.app.diplomacy.open != Some(crate::diplomacy::Open::Contacts) {
+                        self.app.action("view:contacts")?;
+                    }
+                    let name = match *tab {
+                        "1" => "agreements",
+                        "2" => "shroud",
+                        _ => "contacts",
+                    };
+                    self.app.action(&format!("diplo:tab:{name}"))?;
+                    self.flush_log();
+                    return Ok(Reply::ok(format!("open_diplomacy {rest}")));
+                }
+                let action = match a {
+                    ["contacts"] => "view:contacts".to_string(),
+                    ["close"] => "diplo:close".to_string(),
+                    ["community"] => "diplo:community".to_string(),
+                    [what @ ("country" | "federation" | "war"), id] => format!("diplo:{what}:{id}"),
+                    [what @ ("select" | "tab" | "sort"), v] => format!("diplo:{what}:{v}"),
+                    _ => return Err("open_diplomacy contacts|country ID|community|federation ID|war ID|close (or select ID, tab NAME, sort NAME)".into()),
+                };
+                // (the left bar's button toggles Contacts; the command opens it)
+                if action == "view:contacts" && self.app.diplomacy.open == Some(crate::diplomacy::Open::Contacts) {
+                    return Ok(Reply::ok("open_diplomacy contacts"));
+                }
+                self.app.action(&action)?;
+                self.flush_log();
+                Ok(Reply::ok(format!("open_diplomacy {rest}")))
+            }
             "observe" => {
                 // the game's console `observe` (headless.c serves it too): the player an observer
                 let m = self.app.map.as_mut().ok_or("no map loaded")?;
@@ -467,6 +550,36 @@ impl Engine {
                 let r = self.app.fleet_open(a.first().copied().unwrap_or(""), id)?;
                 self.flush_log();
                 Ok(Reply::ok(r))
+            }
+            // the game's headless `open_designer` (headless.c): the ship designer (CShipDesignerBase::
+            // Show, no design loaded; `design ID` loads one), a fleet in combat selected (the combat
+            // view: the first in combat without ID), `close`
+            "open_designer" => self.open_designer(a),
+            "open_planet" => {
+                // the planet view (planet.rs; headless.c serves it too): `open_planet ID [TAB]`,
+                // `open_planet close`
+                if a.first().copied() == Some("close") {
+                    self.app.select(None);
+                    self.flush_log();
+                    return Ok(Reply::ok("open_planet close"));
+                }
+                let id: u32 = num(a.first(), "planet id")?;
+                // without a tab the window keeps its own (the game's `open_planet ID` too)
+                let tab = a.get(1).copied().unwrap_or(self.app.planet_view.tab.as_str()).to_string();
+                let tab = if tab.is_empty() { "summary".to_string() } else { tab };
+                // `colonize`: the planet view's colonize button (the colonize window); `resettle`:
+                // its resettle button (no window unless the player has two colonies: render.windows.planet)
+                let button = tab == "colonize" || tab == "resettle";
+                let keep = if self.app.planet_view.tab.is_empty() { "summary".to_string() } else { self.app.planet_view.tab.clone() };
+                self.app.open_planet(id, if button { &keep } else { &tab })?;
+                if tab == "colonize" {
+                    self.app.planet_view.colonize = Some(id);
+                    self.app.invalidate();
+                }
+                // laid out now: what went wrong in the reply
+                self.app.scene()?;
+                let log: Vec<String> = self.flush_log().into_iter().filter(|l| l.starts_with("windows:")).collect();
+                Ok(Reply::ok(format!("open_planet {id} {tab}{}", if log.is_empty() { String::new() } else { format!(" ({})", log.join("; ")) })))
             }
             "orbit" => {
                 self.app.orbit(num(a.first(), "dyaw")?, num(a.get(1), "dpitch")?);

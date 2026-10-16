@@ -1,14 +1,15 @@
 //! The fleet windows (docs/windows/fleet.md): the selected fleet's `fleet_view`
-//! (interface/fleet_view.gui), a ship's `ship_view` (ship_view.gui) and the left bar's Fleet
-//! Manager (`fleet_manager_view`, fleet_manager_view.gui). What they show is read from the map's
-//! world by `lua/render/windows/fleet_data.lua` (in the map's runtime, which has the world) and
-//! laid out by `lua/render/windows/fleet.lua` (in the front end's runtime: the GUI's database and
-//! localisation); the data crosses between the two runtimes as Lua source.
+//! (interface/fleet_view.gui) and a ship's `ship_view` (ship_view.gui); the left bar's Fleet
+//! Manager (`fleet_manager_view`) is a left bar view (views.rs, `lua/render/windows/
+//! fleet_manager.lua`), opened here from the fleet and ship views' buttons. What the windows show
+//! is read from the world by `lua/render/windows/fleet_data.lua` (in the map's runtime while it has
+//! the world, else the simulation's thread) and laid out by `lua/render/windows/fleet.lua` (in the
+//! front end's runtime: the GUI's database and localisation); the data crosses between the
+//! runtimes as Lua source.
 //!
 //! The windows open as the game opens them: a fleet selected (the outliner, the map, `select
 //! fleet ID`) shows its fleet_view; a ship row's inspect button (or `open ship ID`) its
-//! ship_view, over the fleet_view; the left bar's Fleet Manager button (or `open fleet_manager`)
-//! the fleet manager. Clicks carry actions `fleet:...` (FleetWindows::act).
+//! ship_view, over the fleet_view. Clicks carry actions `fleet:...` (App::fleet_act).
 
 use stellar_sim::mlua::{self, Table};
 
@@ -21,27 +22,22 @@ use crate::scene::Pickable;
 pub struct FleetWindows {
     /// the ship_view's ship (CInGameIdler::ShowShipView)
     pub ship: Option<u32>,
-    /// the fleet manager shown (CFleetManagerView::Show), its selected fleet
-    pub manager: bool,
-    pub manager_fleet: Option<u32>,
-    /// its side panel (the Build Queue): shown when it was opened on a fleet's template
-    /// (ShowFleetManagerView: SelectTemplate), not from the left bar (the game's frames) [I]
-    pub manager_side: bool,
 }
 
 impl FleetWindows {
     /// What the windows were laid out for (a change lays them out again).
     pub fn key(&self) -> u64 {
-        let mut k = self.ship.map_or(0, |s| s as u64 + 1);
-        k = k.wrapping_mul(1_000_003).wrapping_add(self.manager as u64);
-        k = k.wrapping_mul(1_000_003).wrapping_add(self.manager_fleet.map_or(0, |f| f as u64 + 1));
-        k.wrapping_mul(3).wrapping_add(self.manager_side as u64)
+        self.ship.map_or(0, |s| s as u64 + 1)
     }
 }
 
+/// The left bar view of the Fleet Manager (ETopBarView 8, `fleet_manager`).
+const MANAGER: &str = "fleet_manager";
+
 impl App {
-    /// `open fleet ID`, `open ship ID`, `open fleet_manager`, `open none` (the headless game's
-    /// command: the same windows opened with the game's own calls).
+    /// `open fleet ID`, `open ship ID`, `open fleet_manager` (the left bar's view, as
+    /// `open_view fleet_manager`), `open none` (the headless game's command: the same windows
+    /// opened with the game's own calls).
     pub fn fleet_open(&mut self, what: &str, id: Option<u32>) -> Result<String, String> {
         match (what, id) {
             ("fleet", Some(id)) => {
@@ -55,11 +51,16 @@ impl App {
                 self.fleet.ship = Some(id);
             }
             ("fleet_manager", _) => {
-                self.fleet.manager = true;
+                if self.open_view.as_deref() != Some(MANAGER) {
+                    self.toggle_view(MANAGER);
+                }
             }
             ("none", _) => {
                 self.select(None);
                 self.fleet = FleetWindows::default();
+                if self.open_view.as_deref() == Some(MANAGER) {
+                    self.close_view();
+                }
             }
             _ => return Err("open fleet ID, ship ID, fleet_manager or none".into()),
         }
@@ -68,8 +69,8 @@ impl App {
     }
 
     /// A click on a fleet window's button: `fleet:ship:ID` (a ship row's inspect: the ship_view),
-    /// `fleet:close_ship`, `fleet:manager` (open), `fleet:close_manager`, `fleet:manager_fleet:ID`
-    /// (a fleet manager entry selected), `fleet:select:ID` (a fleet selected).
+    /// `fleet:close_ship`, `fleet:manager:ID` (the fleet and ship views' Fleet Manager button),
+    /// `fleet:select:ID` (a fleet selected).
     pub fn fleet_act(&mut self, action: &str) -> Result<(), String> {
         let mut it = action.split(':').skip(1);
         let verb = it.next().unwrap_or("");
@@ -78,25 +79,19 @@ impl App {
             ("ship", Some(id)) => self.fleet.ship = Some(id),
             ("close_ship", _) => self.fleet.ship = None,
             // the fleet view's and ship view's Fleet Manager button (ShowFleetManagerView(the
-            // fleet's template)): the manager with that fleet; the ship view and the fleet view
-            // close (the game's frame after the click [V], the selection's end there [I])
+            // fleet's template)): the left bar's view, one at a time, on that fleet with its side
+            // panel (`side`: SelectTemplate shows the Build Queue; from the left bar the game
+            // shows none [I: the game's frames]); the ship view and the fleet view close (the
+            // game's frame after the click [V], the selection's end there [I])
             ("manager", id) => {
-                self.fleet.manager = true;
-                self.fleet.manager_side = true;
-                self.fleet.ship = None;
-                if id.is_some() {
-                    self.fleet.manager_fleet = id;
+                if self.open_view.as_deref() != Some(MANAGER) {
+                    self.toggle_view(MANAGER);
                 }
+                let fleet = id.map(|f| f.to_string()).unwrap_or_default();
+                self.set_view_state(&[("fleet", fleet.as_str()), ("side", "1")]);
+                self.fleet.ship = None;
                 self.select(None);
             }
-            // the left bar's button (`view:fleet_manager`): toggles it, as
-            // CInGameIdler::ToggleTopBarView does a top bar view (ETopBarView 8)
-            ("fleet_manager", _) => {
-                self.fleet.manager = !self.fleet.manager;
-                self.fleet.manager_side = false;
-            }
-            ("close_manager", _) => self.fleet.manager = false,
-            ("manager_fleet", Some(id)) => self.fleet.manager_fleet = Some(id),
             ("select", Some(id)) => self.select(Some(Pickable::Fleet(id))),
             _ => self.log.push(format!("  {action}: not done yet")),
         }
@@ -104,10 +99,9 @@ impl App {
         Ok(())
     }
 
-    /// Escape closes the topmost fleet window (the ship_view, then the fleet manager: their
-    /// close buttons' shortcut); whether one was closed.
+    /// Escape closes the ship_view (its close button's shortcut); whether it was open.
     pub fn fleet_escape(&mut self) -> bool {
-        if self.fleet.ship.take().is_some() || std::mem::take(&mut self.fleet.manager) {
+        if self.fleet.ship.take().is_some() {
             self.relayout_windows();
             return true;
         }
@@ -122,10 +116,10 @@ impl App {
     }
 
     /// The fleet windows' items for a screen of `w` x `h`: fleet_view (the selected fleet),
-    /// ship_view, the fleet manager, in the game's order (later ones over earlier ones).
+    /// ship_view, in the game's order (later ones over earlier ones).
     pub fn fleet_items(&mut self, w: u32, h: u32) -> Result<Vec<GuiItem>, String> {
         let fleet = self.fleet_view_id();
-        if fleet.is_none() && self.fleet.ship.is_none() && !self.fleet.manager {
+        if fleet.is_none() && self.fleet.ship.is_none() {
             return Ok(Vec::new());
         }
         let mut calls = Vec::new();
@@ -134,13 +128,6 @@ impl App {
         }
         if let Some(id) = self.fleet.ship {
             calls.push(format!("ship = fd.ship_view({id}),"));
-        }
-        if self.fleet.manager {
-            calls.push(format!(
-                "manager = (function() local m = fd.manager(nil, {}) m.side = {} return m end)(),",
-                self.fleet.manager_fleet.map_or("nil".into(), |f| f.to_string()),
-                self.fleet.manager_side
-            ));
         }
         let source = self.fleet_world_query(&format!("return fd.serialize({{ {} }})", calls.join(" ")))?;
         let lua = &self.runtime.lua;
@@ -198,7 +185,7 @@ impl App {
 /// at VALUE 0..100: progress.shader takes texture one where the bar's coordinate is within the
 /// state, else texture two; a vertical bar fills from its bottom [I]). Made once, into the map's
 /// textures.
-fn derived_textures(m: &mut crate::Map, items: &[GuiItem]) {
+pub(crate) fn derived_textures(m: &mut crate::Map, items: &[GuiItem]) {
     for it in items {
         let GuiItem::Sprite { texture, .. } = it else { continue };
         if !texture.starts_with('@') || m.textures.find(texture).is_some() {

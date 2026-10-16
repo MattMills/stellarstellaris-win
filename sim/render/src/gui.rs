@@ -33,6 +33,9 @@ pub enum GuiItem {
         action: Option<String>,
         /// its colour multiplied in (the relation colour of a map label)
         tint: [f32; 4],
+        /// the part of its frame drawn, u0..u1 (a progress bar's two textures; the rectangle cut
+        /// the same)
+        clip: [f32; 2],
     },
     Text {
         path: String,
@@ -146,7 +149,7 @@ fn colour(t: &Table) -> mlua::Result<[f32; 3]> {
 }
 
 /// The items of a layout table (render.gui's).
-pub fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
+pub(crate) fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
     let mut out = Vec::new();
     for it in items.sequence_values::<Table>() {
         let it = it?;
@@ -177,6 +180,10 @@ pub fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
                 tint: match it.get::<Option<Table>>("tint")? {
                     Some(t) => [t.get(1)?, t.get(2)?, t.get(3)?, t.get::<Option<f32>>(4)?.unwrap_or(1.0)],
                     None => [1.0; 4],
+                },
+                clip: match it.get::<Option<Table>>("clip")? {
+                    Some(c) => [c.get(1)?, c.get(2)?],
+                    None => [0.0, 1.0],
                 },
             });
         } else {

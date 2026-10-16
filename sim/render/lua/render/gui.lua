@@ -30,7 +30,8 @@ local ANCHOR = {
 
 -- element kinds drawn (lists, scrollbars, edit boxes are filled at run time: not drawn)
 local CONTAINERS = { containerwindowtype = true, windowtype = true, dropdownboxtype = true }
-local ICONS = { icontype = true, buttontype = true, effectbuttontype = true, guibuttontype = true }
+-- (a checkbox is a button whose frame is its state: the caller's opts.frames)
+local ICONS = { icontype = true, buttontype = true, effectbuttontype = true, guibuttontype = true, checkboxtype = true }
 local TEXTS = { instanttextboxtype = true, textboxtype = true }
 -- lists: laid out (their rectangle is recorded, for the rows the caller places) but not drawn
 local LISTS = { smoothlistboxtype = true, listboxtype = true, gridboxtype = true, overlappingelementsboxtype = true }
@@ -122,6 +123,9 @@ end
 --   opts.positions: element path -> { x, y } (a window at another of its places: hide_position)
 --   opts.sprites: element path -> sprite name (an icon the game sets at run time)
 --   opts.tints: element path -> { r, g, b, a } (a sprite coloured: the map labels' relation colour)
+--   opts.progress: element path -> 0..1 (a progressbarType's state: progress.shader draws its
+--                 textureFile1 where u <= the state, its textureFile2 after; an item's `clip` is
+--                 the { u0, u1 } of its frame drawn, its rectangle cut the same)
 --   opts.parent: the rectangle the window is laid out in (else the screen)
 --   opts.prefix: a path prefix for the window's elements (else "")
 --   opts.texture_size(path) -> w, h (the renderer's: the texture's pixels)
@@ -161,12 +165,33 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
         return tw / math.max(1, s.frames), th
     end
 
-    local function sprite_item(path, name, frame, x, y, w, h, button)
+    local sprite_item
+    -- a progress bar at its state: its two textures, each over its part
+    local function progress_items(path, name, frame, x, y, w, h, button, p)
+        local s = db.sprites[name]
+        p = math.max(0, math.min(1, p))
+        local fw, fh = frame_size(name)
+        w, h = w or fw, h or fh
+        local first = sprite_item(path, name, frame, x, y, w, h, button, { 0, p }, true)
+        if s.texture2 and p < 1 then
+            local item = sprite_item(path .. "/empty", name, frame, x, y, w, h, nil, { p, 1 }, true)
+            if item then
+                item.texture = s.texture2
+            end
+        end
+        return first
+    end
+
+    function sprite_item(path, name, frame, x, y, w, h, button, clip, plain)
         name, frame = resolve(name, frame)
         local s = db.sprites[name]
         if not s or not s.texture then
             report.missing_sprites[#report.missing_sprites + 1] = tostring(name)
             return nil
+        end
+        local p = not plain and opts.progress and opts.progress[path]
+        if p and s.kind == "progressbarType" then
+            return progress_items(path, name, frame, x, y, w, h, button, p)
         end
         local fw, fh = frame_size(name)
         if not fw then
@@ -177,7 +202,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             kind = "sprite", path = path, sprite = name, texture = s.texture, sprite_kind = s.kind,
             frame = math.max(1, frame or 1), frames = s.frames, x = x, y = y, w = w or fw, h = h or fh,
             border = s.kind == "corneredTileSpriteType" and s.border or nil, button = button,
-            tint = opts.tints and opts.tints[path] or nil,
+            tint = opts.tints and opts.tints[path] or nil, clip = clip,
         }
         items[#items + 1] = item
         report.sprites = report.sprites + 1
@@ -199,7 +224,9 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                     spans[#spans + 1] = { text = s.text, colour = db.textcolors[s.colour or ""] or base }
                 elseif s.icon then
                     -- a text icon (£name£: GFX_text_<name>): "\1texture\1frames\1frame" for the renderer
-                    local sp = db.sprites["GFX_text_" .. s.icon]
+                    -- (a resource's icon has no GFX_text_ sprite: its GFX_resource_ one, as the
+                    -- game's frames show £food£ and £alloys£)
+                    local sp = db.sprites["GFX_text_" .. s.icon] or db.sprites["GFX_resource_" .. s.icon]
                     if sp and sp.sheet and db.sprites[sp.sheet] then
                         sp = { texture = db.sprites[sp.sheet].texture, frames = db.sprites[sp.sheet].frames, frame = sp.default_frame }
                     end
@@ -352,17 +379,21 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             end
         elseif ICONS[kind] then
             local button
-            if kind ~= "icontype" and field("alwaysTransparent") ~= "yes" then
+            -- buttons, and an icon the game takes clicks on (opts.actions names it: the left
+            -- bar's view icons)
+            if (kind ~= "icontype" or (opts.actions and opts.actions[path])) and field("alwaysTransparent") ~= "yes" then
                 button = { name = name, id = field("id"), action = opts.actions and opts.actions[path] }
             end
             if sprite then
                 sprite_item(path, sprite, frame, x, y, w, h, button)
             end
-            -- a button's text: its buttonText, else its `text` (the game draws both: the fleet
-            -- manager's add_ship_design, "Add Ship")
+            -- its buttonText (or `text`: the galactic community's assign_button shows its
+            -- LEADER_ASSIGNMENT in the game's frame), or a text the game sets at run time
+            -- (CButton::SetText)
             local bt = field("buttonText") or (kind ~= "icontype" and field("text") or nil)
-            if bt and bt ~= "" then
-                local text = opts.text and opts.text[path] or bt
+            local given = opts.text and opts.text[path]
+            if (bt and bt ~= "") or (given and kind ~= "icontype") then
+                local text = given or bt
                 text_item(path .. "/text", field("buttonFont") or field("font"), text, x, y, w, h, "center", "center",
                     field("text_color_code"))
             end
