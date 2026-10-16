@@ -31,11 +31,12 @@ end
 -- file, then file order), those whose potential holds and whose prerequisites are researched
 function M.edicts(ctx, d)
     local out = {}
+    local f = d.facts or { techs = {}, traditions = {}, ethics = {}, civics = {} }
     for _, k in ipairs(C.def_order(ctx, "common/edicts")) do
         local e = C.defs(ctx, "common/edicts")[k]
-        local ok = C.trigger(C.raw_field(e, "potential") or {}, d.facts)
+        local ok = C.trigger(C.raw_field(e, "potential") or {}, f)
         for _, t in ipairs(C.strings(C.raw_field(e, "prerequisites"))) do
-            if not d.facts.techs[t] then
+            if not f.techs[t] then
                 ok = false
             end
         end
@@ -57,7 +58,54 @@ local function amount(ctx, key, which)
     return v
 end
 
+-- the policy groups the country has (CPoliciesView::UpdatePolicies: HasPolicyData and
+-- IsPotential), by category, each sorted by its name; and a group's options (those whose
+-- potential holds)
+function M.policy_groups(ctx, d)
+    local by_cat = {}
+    for _, k in ipairs(C.def_order(ctx, "common/policies")) do
+        local g = C.defs(ctx, "common/policies")[k]
+        -- (CCountry::HasPolicyData: the groups the country has an active_policies entry for; their
+        -- potential is not evaluated [I])
+        if (d.policies or {})[k] then
+            local cat = C.field(g, "category") or "uncategorized"
+            by_cat[cat] = by_cat[cat] or {}
+            table.insert(by_cat[cat], { key = k, name = C.loc(ctx, "policy_" .. k) })
+        end
+    end
+    for _, list in pairs(by_cat) do
+        table.sort(list, function(a, b2)
+            return a.name < b2.name
+        end)
+    end
+    return by_cat
+end
+
+function M.policy_options(ctx, d, key)
+    local out = {}
+    local g = C.defs(ctx, "common/policies")[key]
+    for _, e in ipairs(g or {}) do
+        if e.op and e.key and e.key.text == "option" and type(e.value) == "table" and e.value.text == nil then
+            local name = C.field(e.value, "name")
+            if name and C.trigger(C.raw_field(e.value, "potential") or {}, d.facts or {}, true) then
+                out[#out + 1] = name
+            end
+        end
+    end
+    return out
+end
+
 function M.build(ctx, d, state)
+    d = d or {}
+    -- (before the view's data has come, its frame alone: the data is nil until the snapshot
+    -- carries it)
+    if d.facts == nil then
+        local b0 = C.builder(ctx)
+        b0:add(FILE, "edicts_and_policies_view", { only = { background = true, close = true, close_button = true, heading = true }, actions = { [V .. "/close"] = "view_close" } })
+        return b0.items, b0.report
+    end
+    d.active = d.active or {}
+    d.policies = d.policies or {}
     local b = C.builder(ctx)
     local actions = {
         [V .. "/close"] = "view_close",
@@ -67,23 +115,43 @@ function M.build(ctx, d, state)
     local text = {
         [V .. "/edicts_view/edict_fund"] = require("render.windows.council").fund_text(ctx, d),
     }
-    local r = b:add(FILE, "edicts_and_policies_view", { actions = actions, text = text, hide = { in_breach_container = true } })
 
     -- the policy categories (CPoliciesView::UpdatePolicies): those with policies, by their names,
-    -- `uncategorized` last; all collapsed at first
+    -- `uncategorized` last; all collapsed at first (the collapsed set starts with every key); a
+    -- header's click expands or collapses it (ToggleCategoryCollapsed), collapse_all_button
+    -- collapses every one, or expands every one when all are collapsed
+    -- (ToggleAllCategoriesCollapsed)
+    local groups = M.policy_groups(ctx, d)
+    local cats = {}
+    for _, k in ipairs(C.def_order(ctx, "common/policy_categories")) do
+        if k ~= "uncategorized" and groups[k] then
+            cats[#cats + 1] = { key = k, name = C.loc(ctx, "policy_category_" .. k) }
+        end
+    end
+    table.sort(cats, function(a, b2)
+        return a.name < b2.name
+    end)
+    if groups.uncategorized then
+        cats[#cats + 1] = { key = "uncategorized", name = C.loc(ctx, "policy_category_uncategorized") }
+    end
+    local any_open = false
+    for _, cat in ipairs(cats) do
+        any_open = any_open or state["cat_" .. cat.key] == "1"
+    end
+    local all = {}
+    for _, cat in ipairs(cats) do
+        all[#all + 1] = "cat_" .. cat.key .. "=" .. (any_open and "" or "1")
+    end
+    actions[V .. "/policies_view/collapse_all_button"] = "view_set:" .. table.concat(all, ";")
+    local r = b:add(FILE, "edicts_and_policies_view", { actions = actions, text = text, hide = { in_breach_container = true } })
+
     local list = r.rects[V .. "/policies_view/policy_list_window/policy_list"]
     if list then
-        local cats = {}
-        for _, k in ipairs(C.def_order(ctx, "common/policy_categories")) do
-            if k ~= "uncategorized" then
-                cats[#cats + 1] = { key = k, name = C.loc(ctx, "policy_category_" .. k) }
-            end
-        end
-        table.sort(cats, function(a, b2)
-            return a.name < b2.name
-        end)
-        local y = list.y
+        local y, bottom = list.y, list.y + list.h
         for i, cat in ipairs(cats) do
+            if y + 28 > bottom then
+                break
+            end
             local cdef = C.defs(ctx, "common/policy_categories")[cat.key]
             local icon = cdef and C.field(cdef, "icon")
             local prefix = "/policy_categories/" .. i
@@ -92,17 +160,60 @@ function M.build(ctx, d, state)
             if icon then
                 name = "£" .. icon .. "£ " .. name
             end
+            local open = state["cat_" .. cat.key] == "1"
             b:add(FILE, "policy_category_header_entry", {
                 prefix = prefix, parent = { x = list.x, y = y, w = 0, h = 0 },
+                -- (the status dot: every policy of the category can be changed here [I])
                 hide = { icon_bad = true, icon_neutral = true },
                 text = { [p .. "category_name"] = "§H" .. name .. "§!" },
-                frames = { [p .. "expand_icon"] = 1 },
+                -- the arrow: 1 collapsed, 2 expanded
+                frames = { [p .. "expand_icon"] = open and 2 or 1 },
+                actions = { [p .. "background"] = "view_set:cat_" .. cat.key .. "=" .. (open and "" or "1") },
             })
             y = y + 28 + 1
+            -- its policies (empire_policy_entry): the name and the option selected; a click
+            -- shows its options (policy_option_entry), the selected one's radio button set; an
+            -- option's click changes the policy (the simulation's command: cmd:edicts:policy)
+            for j, g in ipairs(open and groups[cat.key] or {}) do
+                if y + 30 > bottom then
+                    break
+                end
+                local gp = prefix .. "/policies/" .. j
+                local q = gp .. "/empire_policy_entry/"
+                local expanded = state["pol_" .. g.key] == "1"
+                local selected = d.policies[g.key]
+                b:add(FILE, "empire_policy_entry", {
+                    prefix = gp, parent = { x = list.x, y = y, w = 0, h = 0 },
+                    text = { [q .. "policy_name"] = "policy_" .. g.key, [q .. "selected_option_name"] = selected or "" },
+                    -- (can_change: on, the policies can be changed here [I: CanChangePolicy's
+                    -- cooldown not read])
+                    frames = { [q .. "can_change"] = 2, [q .. "expand_icon"] = expanded and 2 or 1 },
+                    actions = { [q .. "background"] = "view_set:pol_" .. g.key .. "=" .. (expanded and "" or "1") },
+                })
+                y = y + 30
+                if expanded then
+                    for k2, opt in ipairs(M.policy_options(ctx, d, g.key)) do
+                        if y + 30 > bottom then
+                            break
+                        end
+                        local op = gp .. "/options/" .. k2
+                        local o = op .. "/policy_option_entry/"
+                        b:add(FILE, "policy_option_entry", {
+                            prefix = op, parent = { x = list.x + 15, y = y, w = 0, h = 0 },
+                            text = { [o .. "name"] = opt },
+                            frames = { [o .. "is_selected"] = opt == selected and 2 or 1 },
+                            actions = { [o .. "option_button"] = opt ~= selected and ("cmd:edicts:policy:" .. g.key .. ":" .. opt) or nil },
+                        })
+                        y = y + 30
+                    end
+                end
+                y = y + 1
+            end
         end
     end
 
-    -- the edicts
+    -- the edicts: the checkbox takes an edict or ends a perpetual one (CEdictsEntry::Select:
+    -- CAddEdictCommand / CRemoveEdictCommand, the simulation's command: cmd:edicts:edict)
     local el = r.rects[V .. "/edicts_view/edict_list_window/edict_list"]
     if el then
         local y = el.y
@@ -127,6 +238,7 @@ function M.build(ctx, d, state)
                     [p .. "cost"] = cost and ("§Y£unity£" .. math.floor(cost) .. "§!") or "",
                     [p .. "upkeep"] = upkeep and ("§Y£unity£" .. math.floor(upkeep) .. "§!") or "",
                 },
+                actions = { [p .. "select_button"] = "cmd:edicts:edict:" .. (active and "remove" or "add") .. ":" .. k },
             })
             y = y + 40 + 1
         end
@@ -140,5 +252,14 @@ end
 function M.extract(game_dir)
     return M.data(require("render.topbar").player(), {})
 end
+
+
+-- its buttons' commands in the simulation (views.rs: `cmd:edicts:VERB:ARG...`, between days)
+function M.command(...)
+    return require("render.windows.empire_commands").run(...)
+end
+
+-- Escape (views.rs): the side windows in these state keys close first, else the view closes
+M.escape_keys = {}
 
 return M
