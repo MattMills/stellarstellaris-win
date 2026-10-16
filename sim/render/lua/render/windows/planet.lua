@@ -340,6 +340,8 @@ function View:entry(window, prefix, x, y, w, h, o)
     o = o or {}
     o.prefix = prefix
     o.parent = { x = x, y = y, w = w or 0, h = h or 0 }
+    -- the clicks: the view's own actions (the window's `planet:` actions)
+    o.actions = o.actions or self.actions
     -- a smooth list's entry is at its slot, its own position not added; a grid box's keeps it
     -- **[I]** (the game's frames: planet_deposit_entry's y = 82 is not where the deposits list's
     -- first entry shows; colonize_district_entry's 10, 12 is where the colonize window's districts
@@ -368,6 +370,10 @@ function View:header()
     local d, only, hide, text, sprites = self.d, self.only, self.hide, self.text, self.sprites
     text[P .. "/planet_name"] = self.name
     self.actions[P .. "/header_actions/close"] = "close"
+    -- previous / next planet of the owner's, the camera to the planet (planet.rs act)
+    self.actions[P .. "/header_actions/previous_planet"] = "planet:prev"
+    self.actions[P .. "/header_actions/next_planet"] = "planet:next"
+    self.actions[P .. "/header_actions/zoom_to_planet_button"] = "planet:zoom"
     -- the header's buttons: previous / next planet for a planet with an owner, move capital on
     -- a colony of the player's not the capital, the orbital ring's with a ring, the observation
     -- post's on an observed world; close and zoom always
@@ -452,7 +458,7 @@ function View:tabs()
     for _, t in ipairs(TABS) do
         only[t .. "_tab"] = t ~= self.tab or nil
         only[t .. "_tab_active"] = t == self.tab or nil
-        self.actions[P .. "/" .. t .. "_tab"] = "planet_tab:" .. t
+        self.actions[P .. "/" .. t .. "_tab"] = "planet:tab:" .. t
     end
     only.tabs_transparent_bg = true
     only[self.tab .. "_window"] = true
@@ -532,6 +538,12 @@ function View:summary()
         -- the designation chosen (colony +0x108: the save's `designation`), else "Auto
         -- Designated" (the game's frame of the capital: final_designation col_capital, none chosen)
         local DB = S .. "/summary_side_window/designation_button_container"
+        if self.mine then
+            self.actions[DB .. "/designation_button"] = "planet:side:designation"
+            -- the gear: the automation settings in the side bar (the game's frames: the button
+            -- keeps its frame, the side bar shows Automation Settings)
+            self.actions[DB .. "/automated_development_button"] = "planet:side:automation"
+        end
         if colony.manual_designation then
             text[DB .. "/designation_name"] = self:L(colony.manual_designation)
             sprites[DB .. "/designation_icon"] = colony.manual_designation_icon
@@ -549,8 +561,17 @@ function View:summary()
         self:sprite(SS .. "/management_planet_class_icon", d.class_icon_large)
         hide[SS .. "/terraform_label"] = true
         -- terraforming a star: disabled (IsTerraformable; the game's frame of the home star)
-        if d.star then
+        if d.star or not d.can_terraform then
             self:disable(SS .. "/terraform_button")
+        else
+            self.actions[SS .. "/terraform_button"] = "planet:side:terraform"
+        end
+        if self.mine then
+            self.actions[SS .. "/decisions_button"] = "planet:side:decisions"
+        end
+        -- the build queue (CConstructionQueueListController)
+        self.later[#self.later + 1] = function(r)
+            self:queue_list(r.rects[S .. "/summary_side_window/summary_build_queue_window/build_queue_subwindow/build_queue"], S .. "/queue")
         end
         hide[SS .. "/decisions_button"] = not self.mine or nil
     end
@@ -610,16 +631,30 @@ function View:buildings(grid, rect, prefix, zone)
             if b.icon then
                 self.retexture[E .. "/building_slot_icons/building_icon"] = b.icon
             end
+            -- a click: its details in the side bar (the building's own entry: building_details)
+            if b.id then
+                self.actions[E .. "/open_building_button"] = "planet:side:building:" .. b.id
+                if self.side == "building:" .. b.id then
+                    hide[E .. "/selected_building_icon"] = nil
+                end
+            end
         else
             hide[E .. "/building_slot_icons/building_bg"] = true
             hide[E .. "/building_slot_icons/building_icon"] = true
+            -- an empty slot: the buildings the zone takes (construction, the player's colony)
+            if self.mine and zone.id then
+                self.actions[E .. "/open_building_button"] = "planet:side:construction:" .. zone.id .. ":" .. i
+                if self.side == "construction:" .. zone.id .. ":" .. i then
+                    hide[E .. "/selected_building_icon"] = nil
+                end
+            end
         end
         self:entry("planet_building_entry", p, x, y, grid.w, grid.h, { hide = hide, grid = true })
     end
 end
 
 -- a zone slot: its zone's buildings, else the new-zone button, else what unlocks it
-function View:zone_slot(entry_window, base, zpath, zone, inner)
+function View:zone_slot(entry_window, base, zpath, zone, inner, dist)
     local hide, text = self.hide_e, self.text_e
     hide[zpath .. "/selection_highlight"] = true
     hide[zpath .. "/progressbar"] = true
@@ -647,6 +682,10 @@ function View:zone_slot(entry_window, base, zpath, zone, inner)
             hide[zpath .. "/zone_available"] = true
         else
             text[zpath .. "/zone_available"] = self:L("zone_available")
+            -- the zones the slot takes (zone_construction)
+            if dist and dist.district_id and zone.slot then
+                self.actions[zpath .. "/zone_button"] = "planet:side:zone_construction:" .. dist.district_id .. ":" .. zone.slot
+            end
         end
     else
         -- a locked slot: what unlocks it (zone_unavailable_tech and the slot's unlock tooltip)
@@ -668,6 +707,14 @@ function View:district_entry(window, prefix, x, y, w, h, dist)
     }
     if not self.mine then
         self.hide_e[E .. "/build_district"] = true
+    else
+        -- Build: the district's next level queued (the simulation: planet.command)
+        self.actions[E .. "/build_district"] = "planet:cmd:build_district:" .. dist.type
+    end
+    -- a click on the entry: the district's details in the side bar
+    self.actions[E .. "/district_button"] = "planet:side:district:" .. dist.type
+    if self.side == "district:" .. dist.type then
+        self.hide_e[E .. "/selection_highlight"] = nil
     end
     if dist.icon then
         self.retexture[E .. "/district_icon"] = dist.icon
@@ -688,7 +735,7 @@ function View:district_entry(window, prefix, x, y, w, h, dist)
     end
     -- the first zone slot in the entry's `zone`
     local zone = dist.zones and dist.zones[1]
-    local zgrid = self:zone_slot(window, E, E .. "/zone", zone, { "zone", "buildings_box" })
+    local zgrid = self:zone_slot(window, E, E .. "/zone", zone, { "zone", "buildings_box" }, dist)
     if not (dist.zones and #dist.zones > 0) then
         self.hide_e[E .. "/zone"] = true
     end
@@ -710,7 +757,7 @@ function View:district_entry(window, prefix, x, y, w, h, dist)
             local Z = zp .. "/zone_entry"
             self.hide_e, self.text_e = {}, {}
             local z = dist.zones[i]
-            local bgrid = self:zone_slot("zone_entry", zp, Z, z, { "buildings_box" })
+            local bgrid = self:zone_slot("zone_entry", zp, Z, z, { "buildings_box" }, dist)
             local zr2 = self:entry("zone_entry", zp, zx, zy, zg.w, zg.h, { hide = self.hide_e, text = self.text_e, sprites = self.zone_sprites, grid = true })
             if bgrid and z then
                 self:buildings(bgrid, zr2.rects[Z .. "/buildings_box"], Z .. "/bb", z)
@@ -785,8 +832,12 @@ function planet.build(ctx, sel, items, report)
     v.can_open = can
     local first = #items + 1
 
+    v.side = st.side
     v:header()
     v:tabs()
+    if v.side and v.completed then
+        v:side_bar()
+    end
     if v.tab == "summary" then
         v:summary()
     elseif v.tab == "management" and v.management then
@@ -900,6 +951,241 @@ local function height_of(game_dir, window)
     return tonumber(type(s) == "table" and (get(s, "height") or get(s, "y")) or nil) or 0
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- the side bar (side_bar_window; CPlanetView +0x390, UpdateSidebarContents @0x306b870): the
+-- window of what was clicked, its list, its buttons
+
+local SB = P .. "/side_bar_window"
+local SIDE_WINDOWS = {
+    district = "district_details_window", building = "building_details_window", construction = "construction_window",
+    zone_construction = "zone_construction_window", designation = "designation_selection_window",
+    decisions = "decisions_window", terraform = "terraform_window", automation = "automation_settings_window",
+    queue = "build_queue_window", pop = "pop_details_window", job = "job_summary_window",
+}
+local ALL_SIDE = {
+    "building_details_window", "district_details_window", "pop_details_window", "terraform_window",
+    "automation_settings_window", "decisions_window", "job_summary_window", "designation_selection_window",
+    "construction_window", "district_construction_window", "zone_construction_window", "build_queue_window",
+}
+
+-- a cost as the game's GetCostDesc writes it: its days, then its resources
+local function cost_text(cost, time)
+    local parts = {}
+    if time and time > 0 then
+        parts[#parts + 1] = "\194\163time\194\163 " .. math.floor(time + 0.5)
+    end
+    for _, c in ipairs(cost or {}) do
+        parts[#parts + 1] = "\194\163" .. c[1] .. "\194\163 " .. col("Y", math.floor(c[2] + 0.5))
+    end
+    return table.concat(parts, " ")
+end
+
+function View:side_bar()
+    local kind = self.side:match("^([%w_]+)")
+    local win = SIDE_WINDOWS[kind or ""]
+    if not win then
+        return
+    end
+    self.only.side_bar_window = true
+    for _, w in ipairs(ALL_SIDE) do
+        if w ~= win then
+            self.hide[SB .. "/" .. w] = true
+        end
+    end
+    self.hide[SB .. "/category_tabs"] = true
+    self.actions[SB .. "/close"] = "planet:side_close"
+    local sd = self.d.side or {}
+    local text, hide = self.text, self.hide
+    if kind == "district" then
+        local W = SB .. "/district_details_window"
+        local dist
+        for _, x in ipairs(self.d.districts or {}) do
+            if x.type == sd.type then
+                dist = x
+            end
+        end
+        text[W .. "/district_info/district_name/district_name"] = self:L(sd.type or "")
+        -- (its effects, upkeep and jobs, and the specializations' details: not done here)
+        text[W .. "/district_info/district_effects"] = ""
+        if dist and dist.icon then
+            self.retexture[W .. "/district_info/district_icon/district_icon"] = dist.icon
+        end
+        if dist and dist.overlay then
+            self.sprites[W .. "/district_info/district_icon/district_overlay_icon"] = dist.overlay
+        else
+            hide[W .. "/district_info/district_icon/district_overlay_icon"] = true
+        end
+        if self.mine then
+            self.actions[W .. "/build_district"] = "planet:cmd:build_district:" .. (sd.type or "")
+        end
+        -- (downgrade, replace, clear blocker: their frames as the game's, their effects not done
+        -- here)
+    elseif kind == "building" then
+        local W = SB .. "/building_details_window"
+        text[W .. "/building_info/building_name/building_name"] = self:L(sd.type or "")
+        text[W .. "/building_info/building_effects"] = ""
+        if sd.icon then
+            self.retexture[W .. "/building_info/building_icon/building_icon"] = sd.icon
+        end
+        hide[W .. "/building_info/building_icon/ruined_building_icon"] = true
+        -- the destroy button: Downgrade for a building something upgrades into (the game's
+        -- frames: the capital's) **[I]** (disable, downgrade, replace, repair: their frames as the
+        -- game's, their effects not done here)
+        text[W .. "/destroy_building"] = self:L(sd.downgrade and "DOWNGRADE" or "DESTROY")
+        if #(sd.upgrades or {}) == 0 then
+            hide[W .. "/upgrades"] = true
+        end
+        self.later[#self.later + 1] = function(r)
+            self:side_list(r.rects[W .. "/upgrades/upgrades_list"], W .. "/up", "planet_construction_entry", sd.upgrades or {}, function(E, e)
+                return {
+                    [E .. "/building_name/building_name"] = self:L(e.type),
+                    [E .. "/building_cost"] = cost_text(e.cost, e.time),
+                    [E .. "/building_effects"] = "",
+                }, { [E .. "/building_icon/building_icon"] = e.icon },
+                    self.mine and ("planet:cmd:upgrade_building:" .. sd.id .. ":" .. e.type) or nil, E .. "/button_build"
+            end)
+        end
+    elseif kind == "construction" then
+        local W = SB .. "/construction_window"
+        -- by name (the game's frames: Alloy Foundries, Civilian Industries, Commercial Zones, ...)
+        -- **[I]** (the category tabs above: not done here)
+        local list = {}
+        for i, e in ipairs(sd.list or {}) do
+            list[i] = e
+        end
+        table.sort(list, function(x, y) return self:L(x.type) < self:L(y.type) end)
+        self.later[#self.later + 1] = function(r)
+            self:side_list(r.rects[W .. "/constructions_list"], W .. "/c", "planet_construction_entry", list, function(E, e)
+                return {
+                    [E .. "/building_name/building_name"] = self:L(e.type),
+                    [E .. "/building_cost"] = cost_text(e.cost, e.time),
+                    [E .. "/building_effects"] = "",
+                }, { [E .. "/building_icon/building_icon"] = e.icon },
+                    (self.mine and e.allowed) and ("planet:cmd:build_building:" .. sd.zone .. ":" .. e.type) or nil, E .. "/button_build"
+            end)
+        end
+    elseif kind == "zone_construction" then
+        local W = SB .. "/zone_construction_window"
+        self.later[#self.later + 1] = function(r)
+            self:side_list(r.rects[W .. "/zone_constructions_list"], W .. "/z", "planet_zone_construction_entry", sd.list or {}, function(E, e)
+                return {
+                    [E .. "/zone_name/zone_name"] = self:L(e.type),
+                    [E .. "/zone_cost"] = cost_text(e.cost, e.time),
+                    [E .. "/zone_effects"] = "",
+                }, {}, (self.mine and e.allowed) and ("planet:cmd:build_zone:" .. sd.district .. ":" .. sd.slot .. ":" .. e.type) or nil,
+                    E .. "/button_build", { [E .. "/zone_icon/zone_icon"] = e.icon }
+            end)
+        end
+    elseif kind == "designation" then
+        local W = SB .. "/designation_selection_window"
+        self.later[#self.later + 1] = function(r)
+            self:side_list(r.rects[W .. "/designations_list"], W .. "/d", "planet_designation_entry", sd.list or {}, function(E, e)
+                -- the automatic entry: SET_DESIGNATION_AUTOMATIC and its _DESC (the game's frames)
+                -- **[I]** its icon (the game's is a planet with a gear)
+                local auto = e.type == "auto"
+                return {
+                    [E .. "/designation_name/designation_name"] = self:L(auto and "SET_DESIGNATION_AUTOMATIC" or e.type),
+                    [E .. "/designation_effects/designation_effects"] = self:L(auto and "SET_DESIGNATION_AUTOMATIC_DESC" or (e.type .. "_desc")),
+                }, {}, self.mine and ("planet:cmd:designation:" .. e.type) or nil, E .. "/button_designation",
+                    { [E .. "/designation_icon"] = e.icon }
+            end)
+        end
+    elseif kind == "decisions" then
+        local W = SB .. "/decisions_window"
+        -- by name (the game's frames: Declare Population Controls, Distribute Luxury Goods, ...)
+        local list = {}
+        for i, e in ipairs(sd.list or {}) do
+            list[i] = e
+        end
+        table.sort(list, function(x, y) return self:L(x.type) < self:L(y.type) end)
+        self.later[#self.later + 1] = function(r)
+            self:side_list(r.rects[W .. "/decisions_list"], W .. "/d", "planet_decision_entry", list, function(E, e)
+                -- (enacting a decision, its effects' text: not done here)
+                local icon = e.icon and ("GFX_" .. e.icon)
+                return {
+                    [E .. "/decision_name/decision_name"] = self:L(e.type),
+                    [E .. "/decision_effects/decision_effects"] = "",
+                    [E .. "/decision_cost"] = cost_text(e.cost),
+                }, {}, nil, nil, { [E .. "/decision_icon"] = icon and self.ctx.db.sprites[icon] and icon or nil }
+            end)
+        end
+    elseif kind == "terraform" then
+        local W = SB .. "/terraform_window"
+        hide[W .. "/terraforming_ongoing_window"] = true
+        self.later[#self.later + 1] = function(r)
+            self:side_list(r.rects[W .. "/terraform_list"], W .. "/t", "planet_terraforming_entry", sd.list or {}, function(E, e)
+                -- (terraforming: not done here)
+                return {
+                    [E .. "/planet_class_name/planet_class_name"] = self:L(e.to or ""),
+                    [E .. "/planet_class_name/habitability"] = "",
+                    [E .. "/terraforming_cost"] = "",
+                    [E .. "/terraforming_time"] = e.duration and ("\194\163time\194\163 " .. e.duration) or "",
+                }, {}, nil, nil, { [E .. "/planet_class_from_icon"] = self.d.class_icon, [E .. "/planet_class_to_icon"] = e.icon }
+            end)
+        end
+    elseif kind == "queue" then
+        local W = SB .. "/build_queue_window"
+        self.later[#self.later + 1] = function(r)
+            self:queue_list(r.rects[W .. "/build_queue_subwindow/build_queue"], W .. "/q")
+        end
+    end
+end
+
+-- a side bar list: an entry per element (fill(E, e) -> texts, retextures, action, the button the
+-- action is on, sprites), the list's spacing, entries while they fit
+function View:side_list(rect, prefix, window, list, fill)
+    if not rect then
+        return
+    end
+    local h = height_of(self.ctx.game_dir, window)
+    local y = rect.y
+    for i, e in ipairs(list) do
+        if y + h > rect.y + rect.h + 1 then
+            break
+        end
+        local p = prefix .. "/" .. i
+        local E = p .. "/" .. window
+        local texts, tex, action, button, sprites = fill(E, e)
+        for k, v in pairs(tex or {}) do
+            self.retexture[k] = v
+        end
+        if action and button then
+            self.actions[button] = action
+        end
+        self:entry(window, p, rect.x, y, rect.w, h, { text = texts, sprites = sprites or {} })
+        y = y + h + 4
+    end
+end
+
+-- the planet's build queue (planet_build_queue_item_entry): the item being built, its time left
+-- (BUILD_TIME_REMAINING "£time£ N" in the active slots, else QUEUED_NUMBER "#N"), its progress
+function View:queue_list(rect, prefix)
+    if not rect then
+        return
+    end
+    local h = height_of(self.ctx.game_dir, "planet_build_queue_item_entry")
+    for i, q in ipairs(self.d.queue or {}) do
+        local y = rect.y + (i - 1) * h
+        if y + h > rect.y + rect.h + 1 then
+            break
+        end
+        local p = prefix .. "/" .. i
+        local E = p .. "/planet_build_queue_item_entry"
+        local left = math.max(0, (q.needed or 0) - (q.progress or 0))
+        local frac = (q.needed or 0) > 0 and (q.progress or 0) / q.needed or 0
+        self.icon_frames[E .. "/progressbar"] = math.max(1, math.min(100, math.floor(frac * 100 + 0.5)))
+        -- (cancelling, reordering: not done here)
+        self:entry("planet_build_queue_item_entry", p, rect.x, y, rect.w, h, {
+            text = {
+                [E .. "/title"] = self:L(q.type or ""),
+                [E .. "/time"] = q.active and self:F("BUILD_TIME_REMAINING", { DAYS = math.ceil(left) }) or self:F("QUEUED_NUMBER", { NUMBER = q.position }),
+                [E .. "/name"] = "",
+            },
+            hide = { [E .. "/priority_upwards"] = true, [E .. "/priority_downwards"] = true },
+        })
+    end
+end
+
 -- entries down a smooth list box at `rect`: each laid out by fill(i, x, y) -> its height, or nil
 -- to stop (the renderer does not clip: an entry is drawn while it fits, where the game shows the
 -- last one cut)
@@ -931,7 +1217,7 @@ end
 
 -- a checkbox (checkboxType, which render.gui does not draw): its sprite's frame 1 unchecked, 2
 -- checked **[I]**
-function View:checkbox(path, sprite, x, y, checked)
+function View:checkbox(path, sprite, x, y, checked, action)
     local s = self.ctx.db.sprites[sprite]
     if not s or not s.texture then
         return
@@ -944,7 +1230,7 @@ function View:checkbox(path, sprite, x, y, checked)
     self.items[#self.items + 1] = {
         kind = "sprite", path = path, sprite = sprite, texture = s.texture, sprite_kind = s.kind,
         frame = checked and math.min(2, frames) or 1, frames = frames, x = x, y = y, w = tw / frames, h = th,
-        button = { name = path:match("[^/]+$") },
+        button = { name = path:match("[^/]+$"), action = action },
     }
     self.report.sprites = self.report.sprites + 1
 end
@@ -977,7 +1263,9 @@ function View:armies()
         local sw = r.rects[D .. "/armies_stats_window"]
         if sw then
             for _, c in ipairs({ { "deploy_in_orbit_checkbox", 470, -7 }, { "army_builder_checkbox", 470, 14 } }) do
-                self:checkbox(D .. "/armies_stats_window/" .. c[1], "GFX_checkbox_20_20_01", sw.x + c[2], sw.y + c[3], true)
+                local on = c[1] == "deploy_in_orbit_checkbox" and colony.deploy_in_orbit ~= false or c[1] == "army_builder_checkbox" and colony.army_builder ~= false
+                self:checkbox(D .. "/armies_stats_window/" .. c[1], "GFX_checkbox_20_20_01", sw.x + c[2], sw.y + c[3], on,
+                    self.mine and ("planet:cmd:" .. (c[1] == "deploy_in_orbit_checkbox" and "deploy_in_orbit" or "army_builder")) or nil)
             end
         end
         -- the colony's armies, in the save's order
@@ -995,6 +1283,8 @@ function View:armies()
             local hd = {}
             if not self.mine then
                 hd[E .. "/disband_army"] = true
+            else
+                self.actions[E .. "/disband_army"] = "planet:cmd:disband:" .. a.id
             end
             local species = a.species and self.species_names[a.species]
             if not species then
@@ -1035,6 +1325,8 @@ function View:armies()
             local a = rec[i]
             local p = D .. "/recruit/" .. i
             local E = p .. "/planet_recruitment_entry"
+            -- a click recruits it (the army queue: the simulation)
+            self.actions[E .. "/recruit_button"] = "planet:cmd:recruit:" .. a.type .. ":" .. tostring(a.species or "")
             self:entry("planet_recruitment_entry", p, x, y, 310, rh, {
                 text = {
                     [E .. "/army_name"] = self:L(a.type),
@@ -1539,7 +1831,7 @@ function View:colonize_window()
     local c = d.colonize or { species = {}, cost = {} }
     local text, hide, actions = {}, {}, {}
     text[CW .. "/title"] = self:F("EXPANSION_PLANNER_SURFACE_VIEW", { TARGET_PLANET = self.name })
-    actions[CW .. "/close"] = "colonize_close"
+    actions[CW .. "/close"] = "planet:colonize_close"
     -- (no hostiles known: HasHostiles **[I]**)
     hide[CW .. "/has_intel_hostile"] = true
     text[CW .. "/modifiers_container/planet_class_container/planet_class_name"] = self:L(d.class)
@@ -1981,14 +2273,14 @@ local function districts_of(game_dir, world, p, id, colony_block, d)
                 for k, zid in ipairs(world.list(world.field(db, "zones"))) do
                     local z = tonumber(zid) and tonumber(zid) < 4294967295 and world.object("zones", tonumber(zid))
                     if z then
-                        local ze = { type = unquote(world.field(z, "type")), buildings = {} }
+                        local ze = { id = tonumber(zid), slot = k - 1, type = unquote(world.field(z, "type")), buildings = {} }
                         for _, bid in ipairs(world.list(world.field(z, "buildings"))) do
                             local bb = world.object("buildings", tonumber(bid))
                             local bt = bb and unquote(world.field(bb, "type"))
                             if bt then
                                 local bdef = block_of(game_dir, "common/buildings", bt)
                                 ze.buildings[#ze.buildings + 1] = {
-                                    type = bt, icon = "gfx/interface/icons/buildings/" .. (dfield(bdef, "icon") or bt) .. ".dds",
+                                    id = tonumber(bid), type = bt, icon = "gfx/interface/icons/buildings/" .. (dfield(bdef, "icon") or bt) .. ".dds",
                                     ruined = world.field(bb, "ruined") == "yes", disabled = world.field(bb, "disabled") == "yes",
                                 }
                             end
@@ -2084,7 +2376,7 @@ local function districts_of(game_dir, world, p, id, colony_block, d)
                     local unlock = dfield(sdef, "unlock")
                     local ok = e.built > 0 and trigger(game_dir, unlock, "planet", id)
                     if ok then
-                        e.zones[k] = { open = true }
+                        e.zones[k] = { open = true, slot = k - 1 }
                     else
                         local requires
                         for _, ct in ipairs(dblocks(unlock, "custom_tooltip")) do
@@ -2107,6 +2399,7 @@ local function districts_of(game_dir, world, p, id, colony_block, d)
         else
             e.zones = {}
         end
+        e.district_id = e.ids and e.ids[1] or nil
         e.ids = nil
         list[#list + 1] = e
     end
@@ -2212,8 +2505,237 @@ local function colonize_of(game_dir, world, galaxy, p, id, d, pc)
     return out
 end
 
--- planet.data(game_dir, id) -> table | nil: the planet `id` of the world as the window shows it
-function planet.data(game_dir, id)
+
+-- ---------------------------------------------------------------------------------------------
+-- the side bar's data (CPlanetView +0x390's windows), read only for the window open, and the
+-- planet's build queue
+
+-- a buildable's cost and build time (engine.ai.economy.buildables: with the colony's modifiers);
+-- the definition's own first cost table where that cannot be read
+local function buildable_cost(b)
+    local ok, B = pcall(require, "engine.ai.economy.buildables")
+    if ok then
+        local ok2, cost = pcall(B.cost, b)
+        local ok3, time = pcall(B.build_time, b)
+        if ok2 and type(cost) == "table" then
+            local list = {}
+            for r, v in pairs(cost) do
+                if v ~= 0 then
+                    list[#list + 1] = { r, v }
+                end
+            end
+            table.sort(list, function(x, y) return x[1] < y[1] end)
+            return list, ok3 and tonumber(time) or nil
+        end
+    end
+    return {}, nil
+end
+
+-- the definitions of a folder whose `<sets_key>` share a set with `sets`, in load order
+local function in_sets(game_dir, folder, sets_key, sets)
+    local want = {}
+    for _, s in ipairs(sets) do
+        want[s] = true
+    end
+    local out = {}
+    for _, name in ipairs(ordered(game_dir, folder)) do
+        local def = expand(game_dir, block_of(game_dir, folder, name))
+        for _, s in ipairs(words(dfield(def, sets_key))) do
+            if want[s] then
+                out[#out + 1] = name
+                break
+            end
+        end
+    end
+    return out
+end
+
+-- the planet's construction queue: its items (construction.item_mgr.items) in order, each its
+-- kind, type, progress (CConstructionQueueListController: the planet queue's items)
+local function queue_items(world, p)
+    local out = {}
+    local qid = tonumber(world.field(p, "build_queue"))
+    local q = qid and world.object("construction.queue_mgr.queues", qid)
+    local simultaneous = q and tonumber(world.field(q, "simultaneous")) or 1
+    for i, iid in ipairs(q and world.list(world.field(q, "items")) or {}) do
+        local item = world.object("construction.item_mgr.items", tonumber(iid))
+        if item then
+            local kind, b
+            for k, v in world.statements(item) do
+                if k:sub(1, 10) == "buildable_" then
+                    kind, b = k:sub(11), v
+                end
+            end
+            local t = b and unquote(world.field(b, kind == "district" and "district" or kind == "zone" and "zone" or "building"))
+            local progress = tonumber(world.field(item, "progress")) or 0
+            local needed = tonumber(world.field(item, "progress_needed")) or 0
+            out[#out + 1] = {
+                id = tonumber(iid), kind = kind, type = t, progress = progress, needed = needed,
+                active = i <= simultaneous, position = i,
+            }
+        end
+    end
+    return out
+end
+
+local function side_of(game_dir, world, p, id, d, side)
+    local kind, a1, a2 = side:match("^([%w_]+):?([^:]*):?([^:]*)$")
+    local out = { kind = kind }
+    local cid = d.colony and d.colony.id
+    local b0 = { colony = cid, planet = id, owner = d.owner }
+    if kind == "construction" then
+        -- the buildings a zone takes (99_HOW_TO_ZONE: `include` names buildings or `all`,
+        -- included_building_sets the building's building_sets; `exclude` and
+        -- excluded_building_sets take them out), then can_build, the owner's technologies,
+        -- potential and allow **[I]** the game's lists also by category tab
+        local zone = world.object("zones", tonumber(a1))
+        local ztype = zone and unquote(world.field(zone, "type"))
+        local zdef = ztype and expand(game_dir, block_of(game_dir, "common/zones", ztype))
+        local function set_of(key)
+            local t = {}
+            for _, w in ipairs(words(dfield(zdef, key))) do
+                t[w] = true
+            end
+            return t
+        end
+        local include, exclude = set_of("include"), set_of("exclude")
+        local inc_sets, exc_sets = set_of("included_building_sets"), set_of("excluded_building_sets")
+        local techs = techs_of(world, world.object("country", d.owner)) or {}
+        local list = {}
+        for _, name in ipairs(ordered(game_dir, "common/buildings")) do
+            local def = block_of(game_dir, "common/buildings", name)
+            local sets = words(dfield(def, "building_sets"))
+            local inside, outside = include.all or include[name], exclude[name]
+            for _, s in ipairs(sets) do
+                inside = inside or inc_sets[s]
+                outside = outside or exc_sets[s]
+            end
+            local ok = inside and not outside and dfield(def, "can_build") ~= "no"
+            for _, pre in ipairs(words(dfield(def, "prerequisites"))) do
+                ok = ok and techs[pre] == true
+            end
+            ok = ok and trigger(game_dir, dfield(def, "potential"), "planet", id, "country", d.owner) ~= false
+            if ok then
+                local b = { colony = cid, planet = id, owner = d.owner, kind = "planet_building", type = name, zone = tonumber(a1) }
+                local cost, time = buildable_cost(b)
+                list[#list + 1] = {
+                    type = name, icon = "gfx/interface/icons/buildings/" .. (dfield(def, "icon") or name) .. ".dds",
+                    cost = cost, time = time,
+                    allowed = trigger(game_dir, dfield(def, "allow"), "planet", id, "country", d.owner) ~= false,
+                }
+            end
+        end
+        out.zone, out.list = tonumber(a1), list
+    elseif kind == "zone_construction" then
+        -- the zones a district's slot takes (the slot's included_zone_sets, the zone's zone_sets;
+        -- potential and unlock in the planet's scope)
+        local did, slot = tonumber(a1), tonumber(a2)
+        local dist = world.object("districts", did)
+        local dtype = dist and unquote(world.field(dist, "type"))
+        local ddef = dtype and expand(game_dir, block_of(game_dir, "common/districts", dtype))
+        local sname = words(dfield(ddef, "zone_slots"))[(slot or 0) + 1]
+        local sdef = sname and block_of(game_dir, "common/zone_slots", sname)
+        local list = {}
+        for _, name in ipairs(in_sets(game_dir, "common/zones", "zone_sets", words(dfield(sdef, "included_zone_sets")))) do
+            local def = expand(game_dir, block_of(game_dir, "common/zones", name))
+            if trigger(game_dir, dfield(def, "potential"), "planet", id, "country", d.owner) ~= false then
+                local b = { colony = cid, planet = id, owner = d.owner, kind = "zone", type = name, district = did, zone_slot = slot }
+                local cost, time = buildable_cost(b)
+                list[#list + 1] = {
+                    type = name, icon = dfield(def, "icon"), cost = cost, time = time,
+                    allowed = trigger(game_dir, dfield(def, "unlock"), "planet", id, "country", d.owner) ~= false,
+                }
+            end
+        end
+        out.district, out.slot, out.list = did, slot, list
+    elseif kind == "building" then
+        -- a building: its type, icon, the types it upgrades to (`upgrades`) with their costs
+        local bb = world.object("buildings", tonumber(a1))
+        local btype = bb and unquote(world.field(bb, "type"))
+        local def = btype and block_of(game_dir, "common/buildings", btype)
+        out.id, out.type = tonumber(a1), btype
+        out.icon = btype and ("gfx/interface/icons/buildings/" .. (dfield(def, "icon") or btype) .. ".dds")
+        out.upgrades = {}
+        -- a building something upgrades into: its destroy button reads Downgrade (the game's
+        -- frames of the capital; Demolish otherwise)
+        for _, name in ipairs(btype and ordered(game_dir, "common/buildings") or {}) do
+            for _, u in ipairs(words(dfield(block_of(game_dir, "common/buildings", name), "upgrades"))) do
+                out.downgrade = out.downgrade or u == btype
+            end
+        end
+        -- the upgrades shown: their technologies researched, their potential (the capital's
+        -- major capital is not listed without tech_colonial_centralization)
+        local techs = techs_of(world, world.object("country", d.owner)) or {}
+        for _, up in ipairs(words(dfield(def, "upgrades"))) do
+            local udef = block_of(game_dir, "common/buildings", up)
+            local shown = trigger(game_dir, dfield(udef, "potential"), "planet", id, "country", d.owner) ~= false
+            for _, pre in ipairs(words(dfield(udef, "prerequisites"))) do
+                shown = shown and techs[pre] == true
+            end
+            if shown then
+                local b = { colony = cid, planet = id, owner = d.owner, kind = "planet_upgrade_building", type = up, upgrade_building = tonumber(a1) }
+                local cost, time = buildable_cost(b)
+                out.upgrades[#out.upgrades + 1] = {
+                    type = up, icon = "gfx/interface/icons/buildings/" .. (dfield(udef, "icon") or up) .. ".dds", cost = cost, time = time,
+                }
+            end
+        end
+    elseif kind == "district" then
+        -- a district type: its cost and time for the next one
+        local b = { colony = cid, planet = id, owner = d.owner, kind = "district", type = a1 }
+        out.type = a1
+        out.cost, out.time = buildable_cost(b)
+    elseif kind == "designation" then
+        -- the colony types whose potential holds (CColonyType::IsPotential, the planet's scope,
+        -- the owner as FROM), the automatic one first
+        local list = { { type = "auto" } }
+        for _, name in ipairs(ordered(game_dir, "common/colony_types")) do
+            local def = block_of(game_dir, "common/colony_types", name)
+            if trigger(game_dir, dfield(def, "potential"), "planet", id, "country", d.owner) == true then
+                list[#list + 1] = { type = name, icon = dfield(def, "icon") }
+            end
+        end
+        out.list = list
+    elseif kind == "decisions" then
+        -- the planet decisions whose potential holds (common/decisions, the planet's scope)
+        local list = {}
+        for _, name in ipairs(ordered(game_dir, "common/decisions")) do
+            local def = block_of(game_dir, "common/decisions", name)
+            if trigger(game_dir, dfield(def, "potential"), "planet", id, "country", d.owner) == true then
+                -- its cost (resources.cost: resource = amount)
+                local cost = {}
+                local cb = dfield(dfield(def, "resources"), "cost")
+                for _, e in ipairs(type(cb) == "table" and cb or {}) do
+                    if e.op and e.key and e.value and e.value.text and tonumber(e.value.text) then
+                        cost[#cost + 1] = { e.key.text, tonumber(e.value.text) }
+                    end
+                end
+                list[#list + 1] = {
+                    type = name, icon = dfield(def, "icon"), cost = cost,
+                    allowed = trigger(game_dir, dfield(def, "allow"), "planet", id, "country", d.owner) ~= false,
+                }
+            end
+        end
+        out.list = list
+    elseif kind == "terraform" then
+        -- the terraforming links from the planet's class (common/terraform: from, to)
+        local list = {}
+        for _, name in ipairs(ordered(game_dir, "common/terraform")) do
+            local def = block_of(game_dir, "common/terraform", name)
+            if dfield(def, "from") == d.class then
+                local to = dfield(def, "to")
+                local cdef = block_of(game_dir, "common/planet_classes", to or "")
+                list[#list + 1] = { to = to, icon = dfield(cdef, "icon"), duration = tonumber(dfield(def, "duration")) }
+            end
+        end
+        out.list = list
+    end
+    return out
+end
+
+-- planet.data(game_dir, id[, side]) -> table | nil: the planet `id` of the world as the window
+-- shows it; `side`: the side bar's window open (its data too)
+function planet.data(game_dir, id, side)
     local world = require("engine.world")
     local galaxy = require("render.galaxy")
     if not world.colony_planet and world.index then
@@ -2374,6 +2896,11 @@ function planet.data(game_dir, id)
         }
         col.designation_icon = dfield(block_of(game_dir, "common/colony_types", col.designation or ""), "icon")
         col.manual_designation = unquote(world.field(c, "designation"))
+        -- the summary's automation button, the armies tab's checkboxes (planet.command flips them)
+        local auto = world.field(c, "automation")
+        col.automation = type(auto) == "table" and world.field(auto, "enabled") == "yes"
+        col.deploy_in_orbit = world.field(p, "deploy_armies_in_orbit") ~= "no"
+        col.army_builder = world.field(c, "include_in_army_builder") ~= "no"
         col.manual_designation_icon = dfield(block_of(game_dir, "common/colony_types", col.manual_designation or ""), "icon")
         -- the summary's resources: production less upkeep, the empire's base on its capital
         local net, idx = {}, {}
@@ -2596,10 +3123,180 @@ function planet.data(game_dir, id)
     if d.colonizable then
         d.colonize = colonize_of(game_dir, world, galaxy, p, id, d, pc)
     end
+    if c then
+        d.queue = queue_items(world, p)
+    end
+    -- the terraform button: the player's tech_terraforming (the game's frames of the capital at
+    -- 2210 show it greyed without it) **[I]** the game's own test (CanTerraform: a link the
+    -- player may use)
+    local ptechs = d.player and techs_of(world, world.object("country", d.player))
+    d.can_terraform = (not d.star) and ptechs ~= nil and ptechs.tech_terraforming == true
+    if side and side ~= "" and c then
+        d.side = side_of(game_dir, world, p, id, d, side)
+    end
     if #trigger_errors > 0 then
         d.errors = trigger_errors
     end
     return d
+end
+
+
+-- ---------------------------------------------------------------------------------------------
+-- the planet view's changes to the game, done in the simulation's world (planet.rs run_pending:
+-- Clock::query): what the game's commands do, through the simulation's own construction orders
+-- (engine.ai.economy.orders, buildables: the cost with the colony's modifiers, paid from the
+-- stockpile, the item appended to the planet's queue; engine.construction finishes it)
+--
+--   planet.command(game_dir, planet, verb, args...) -> "ok ..." | "invalid ..." | "not done ..."
+
+local function colony_of(world, planet)
+    local p = world.object("planet", planet)
+    local cid = p and tonumber(world.field(p, "colony"))
+    return p, cid, cid and world.object("colony", cid), p and tonumber(world.field(p, "owner"))
+end
+
+-- the resources in the stockpile's order (the cost's write order)
+local function cost_order(cost)
+    local o = {}
+    for r in pairs(cost) do
+        o[#o + 1] = r
+    end
+    table.sort(o)
+    return o
+end
+
+-- a buildable queued as the game's CAddBuildableToQueueCommand does (IsValid: the planet the
+-- player's, the cost payable)
+local function queue_buildable(world, b)
+    local B = require("engine.ai.economy.buildables")
+    local orders = require("engine.ai.economy.orders")
+    local cost = B.cost(b)
+    if not orders.can_pay(b.owner, cost) then
+        return "invalid: cannot pay"
+    end
+    local queue = B.queue(b)
+    if not queue then
+        return "invalid: no build queue"
+    end
+    local id, why = orders.add({
+        country = b.owner, colony = b.colony, queue = queue, kind = b.kind, fields = B.fields(b),
+        cost = cost, cost_order = cost_order(cost), build_time = B.build_time(b),
+    })
+    return id and ("ok queued " .. b.kind .. " " .. b.type .. " item " .. id) or ("invalid: " .. tostring(why))
+end
+
+-- an army type's cost for the colony (CArmyType::GetCost: its cost tables whose triggers hold,
+-- the colony's modifiers)
+local function army_cost(country, colony, planet, army_type)
+    local defs = require("engine.defs")
+    local d = defs.get("common/armies", army_type)
+    local e = require("engine.economy")
+    e.init()
+    local block = d and defs.field(require("engine.economy.units").expanded(d), "resources")
+    local t = block and e.template(block, d.file)
+    if not t then
+        return {}
+    end
+    local eval = require("simscript.eval")
+    local ctx = eval.new_ctx(eval.S("planet", planet), eval.S("country", country), nil, d.file)
+    local base = {}
+    for _, b in ipairs(t.cost or {}) do
+        local ok, holds = true, true
+        if b.trigger then
+            ok, holds = pcall(eval.trigger, b.trigger, ctx)
+        end
+        if ok and holds then
+            local m = b.mult and e.value_of(b.mult, ctx) or 1
+            for _, rv in ipairs(b.values) do
+                local okv, v = pcall(e.value_of, rv[2], ctx)
+                if okv and v then
+                    base[rv[1]] = (base[rv[1]] or 0) + v * m
+                end
+            end
+        end
+    end
+    return e.apply(t.category or "armies", "cost", base, 1, e.modifiers("colony", colony) or {}, ctx)
+end
+
+function planet.command(game_dir, planet_id, verb, a1, a2, a3)
+    local world = require("engine.world")
+    local p, cid, c, owner = colony_of(world, planet_id)
+    if not p then
+        return "invalid: no planet " .. tostring(planet_id)
+    end
+    local player = 0
+    local pl = world.meta and world.meta.player
+    if type(pl) == "table" then
+        for _, b in ipairs(world.blocks(pl)) do
+            player = tonumber(world.field(b, "country")) or player
+        end
+    end
+    -- the game's commands are the player's own planet's (IsValid: the owner is the sender)
+    if not c or owner ~= player then
+        return "invalid: not the player's colony"
+    end
+    local b = { colony = cid, planet = planet_id, owner = owner }
+    if verb == "build_district" then
+        -- CPlanetDistrictEntry's Build: the district's next level (buildable_district)
+        b.kind, b.type = "district", a1
+        return queue_buildable(world, b)
+    elseif verb == "build_zone" then
+        -- a zone in a district's slot (zone construction's entry)
+        b.kind, b.district, b.zone_slot, b.type = "zone", tonumber(a1), tonumber(a2), a3
+        return queue_buildable(world, b)
+    elseif verb == "build_building" then
+        -- a building in a zone's free slot (the construction window's entry)
+        b.kind, b.zone, b.type = "planet_building", tonumber(a1), a2
+        return queue_buildable(world, b)
+    elseif verb == "upgrade_building" then
+        b.kind, b.upgrade_building, b.type = "planet_upgrade_building", tonumber(a1), a2
+        return queue_buildable(world, b)
+    elseif verb == "recruit" then
+        -- the recruitment entry: an army of the type (and species) in the planet's army queue,
+        -- as the AI's army command does (engine.ai.shipbuilding)
+        local sb = require("engine.ai.shipbuilding")
+        local cost = army_cost(owner, cid, planet_id, a1)
+        local cmd = sb.ctor.army_command(owner, cid, planet_id, a1, tonumber(a2), cost)
+        return cmd.execute() and ("ok queued army " .. a1) or "invalid: cannot pay or no army queue"
+    elseif verb == "designation" then
+        -- CSetColonyTypeCommand: the colony's chosen designation (`designation`; empty: automatic)
+        if a1 == nil or a1 == "" or a1 == "auto" then
+            local e = world.entry(c, "designation")
+            if e then
+                world.remove_entry(c, e)
+            end
+            return "ok designation automatic"
+        end
+        world.set(c, "designation", '"' .. a1 .. '"')
+        return "ok designation " .. a1
+    elseif verb == "automation" then
+        -- the colony's automation on or off (automation.enabled)
+        local auto = world.field(c, "automation")
+        if type(auto) ~= "table" then
+            return "invalid: no automation block"
+        end
+        local on = world.field(auto, "enabled") == "yes"
+        world.set(auto, "enabled", on and "no" or "yes")
+        return "ok automation " .. (on and "off" or "on")
+    elseif verb == "deploy_in_orbit" or verb == "army_builder" then
+        -- the armies tab's checkboxes (planet +0xcb4 bit 0x40 `deploy_armies_in_orbit`; colony
+        -- +0x1060 bit 0x8 `include_in_army_builder`): checked by default, the save writes `no`
+        -- when unchecked **[I]** the keys
+        local holder, key = verb == "deploy_in_orbit" and p or c, verb == "deploy_in_orbit" and "deploy_armies_in_orbit" or "include_in_army_builder"
+        local now = world.field(holder, key) ~= "no"
+        world.set(holder, key, now and "no" or "yes")
+        return "ok " .. key .. " " .. (now and "no" or "yes")
+    elseif verb == "disband" then
+        -- CDisbandArmyCommand: the army gone, from the colony's list
+        local aid = tonumber(a1)
+        if not world.object("army", aid) then
+            return "invalid: no army " .. tostring(a1)
+        end
+        world.remove_value(world.field(c, "army"), tostring(aid))
+        world.remove("army", aid)
+        return "ok disbanded " .. aid
+    end
+    return "not done: " .. tostring(verb)
 end
 
 -- planet.encode(value) -> text: a Lua expression of plain data (numbers, strings, booleans, tables)

@@ -645,6 +645,16 @@ impl Engine {
                     self.flush_log();
                     return Ok(Reply::ok("open_planet close"));
                 }
+                // `open_planet act ACTION`: a `planet:` action as its button sends it (planet.rs act),
+                // the reply the simulation's answer to a command
+                if a.first().copied() == Some("act") {
+                    let action = rest["act".len()..].trim().to_string();
+                    crate::planet::act(&mut self.app, &action)?;
+                    crate::planet::run_pending(&mut self.app)?;
+                    self.app.scene()?;
+                    self.flush_log();
+                    return Ok(Reply::ok(format!("open_planet act {action}: {}", self.app.planet_view.last)));
+                }
                 let id: u32 = num(a.first(), "planet id")?;
                 // without a tab the window keeps its own (the game's `open_planet ID` too)
                 let tab = a.get(1).copied().unwrap_or(self.app.planet_view.tab.as_str()).to_string();

@@ -231,3 +231,78 @@ containers), the pie charts, the Economy tab's upkeep and production boxes (the 
 the planet modifiers row, the build queues, the side bar's other windows (building, district,
 decisions, terraform), ShouldDisplayPlanetInfo, the window during a running simulation, scrolling
 and clipping of long lists (an entry is drawn while it fits).
+
+## Buttons (wire-planet)
+
+Clicks send `planet:` actions to `planet::act` (planet.rs). Changes to the game go through
+`render.windows.planet.command` (planet.lua), which runs on the simulation's thread. A click on a
+save loaded world-only starts the simulation and runs the command once it is ready. The window
+then reads its data again. What each button does in the game comes from the RE of its handlers
+(`CButtonObserverGlue` members, `/root/wp/re_buttons.md` on .24).
+
+The script verb `open_planet act ACTION` sends one action the way a button does, and the reply is
+the simulation's answer (for example `ok queued district district_city item N`).
+
+| Element | In the game | Here |
+| --- | --- | --- |
+| Tabs (infrastructure, management, economy, armies, holdings) | the tab (`On*Tab`) | wired `planet:tab:X`, closes the side bar **[V]** |
+| header close | closes the view | wired **[V]** |
+| previous / next planet | `JumpToColony`, the owner's colonies | wired: the player's colonies (`galaxy.planets`) **[I]** for another owner's planet |
+| zoom_to_planet_button | camera focus | wired: the system, then the planet |
+| move_capital | `CMoveCapitalDialog` → `CMoveCapitalCommand` | shown as in the game; **[not done here]** |
+| rename (planet name) | `CColonyRenameDialog` | **[not done here]** (no text input) |
+| header colonize button | the colonize window | wired `planet:colonize`; disabled as in the game's frames |
+| colonize window close | closes it | wired, and Escape too **[V]** |
+| colonize window colonize / designation tiles | `CFleetColonizePlanetCommand` / `CCountryExpansionCommand`; tiles select a designation | **[not done here]** |
+| resettle | the manual resettlement window | **[not done here]** (needs two colonies) |
+| district tile (`district_button`) | side bar 9, district details | wired `planet:side:district:TYPE`, selection highlight **[V]** |
+| district Build (tile and details) | `CAddBuildableToQueueCommand` | wired `planet:cmd:build_district:TYPE`: cost paid, queued **[V]** |
+| district Downgrade / Replace / Clear Blocker | confirm dialog / side bar 10 / queue a blocker | frames as the game's **[V]**; effects **[not done here]** |
+| empty building slot "+" | side bar 7, construction | wired `planet:side:construction:ZONE:SLOT` **[V]** |
+| construction entry (`button_build`) | `CAddBuildableToQueueCommand` | wired `planet:cmd:build_building:ZONE:TYPE` **[V]** (list: see below) |
+| building | side bar 8, building details | wired `planet:side:building:ID` **[V]** |
+| building upgrade entry | `CAddBuildableToQueueCommand` (upgrade) | wired `planet:cmd:upgrade_building:ID:TYPE`; the list only with the upgrade's technologies **[V]** |
+| building Disable / Downgrade-Demolish / Replace / Repair | `CToggleBuildingEnabledCommand` / `CDestroyBuildingDialog` / side bar 7 / queue a repair | frames and labels as the game's **[V]**; effects **[not done here]** |
+| open zone slot (`zone_button`) | side bar 5, zone construction | wired `planet:side:zone_construction:DISTRICT:SLOT` |
+| zone construction entry | `CAddBuildableToQueueCommand` | wired `planet:cmd:build_zone:DISTRICT:SLOT:TYPE` |
+| designation button | side bar 4 (toggles) | wired `planet:side:designation` **[V]** |
+| designation entry | `CSetColonyTypeCommand` | wired `planet:cmd:designation:TYPE` (`auto`: the automatic one) |
+| automation gear | side bar 1, automation settings (toggles) | wired `planet:side:automation` **[V]**; its settings list **[not done here]** |
+| decisions button | side bar 3 (toggles) | wired `planet:side:decisions` **[V]** |
+| decision entry | `CEnactDecisionCommand` | UI only; **[not done here]** |
+| terraform button | side bar 2 (toggles); greyed without a link | greyed without tech_terraforming **[V]** (the capital at 2210) **[I]** the rule |
+| terraform entry / abort | `CStartTerraformationCommand` / `CCancelTerraformationCommand` | **[not done here]** |
+| side bar close | side bar 0 | wired, and Escape closes the side bar before the view **[V]** |
+| build queue rows | cancel `CRemoveBuildableFromQueueCommand`; priority arrows | rows shown (title, days left or position, progress) **[V]**; cancel and priority **[not done here]** |
+| deposits clear blocker | `CAddBuildableToQueueCommand` | **[not done here]** |
+| jobs +/-, slider, restore jobs, favourite job | `CChangeJobWorkforceLimitCommand` and others | **[not done here]** |
+| pop / pop group rows | side bar 11, pop details | **[not done here]** |
+| species view | species view | **[not done here]** |
+| armies: deploy in orbit checkbox | `planet->ToggleDeployArmiesInOrbit()` (no command) | wired `planet:cmd:deploy_in_orbit` (the planet's `deploy_armies_in_orbit`) |
+| armies: army builder checkbox | `CToggleIncludeInArmyBuilderCommand` | wired `planet:cmd:army_builder` (the colony's `include_in_army_builder`) |
+| armies: recruit entry | `CAddBuildableToQueueCommand` (army) | wired `planet:cmd:recruit:TYPE:SPECIES` |
+| armies: disband | confirm, then `CDisbandArmyCommand` | wired `planet:cmd:disband:ID`, without the confirm **[I]** |
+| armies: embark all, land, army rows | `CMoveArmyToOrbitCommand`, `CFleetLandArmiesCommand` | **[not done here]** |
+| governor / general portraits | assign-leader widget; right click unassigns | **[not done here]** |
+| sector buttons, ascension, branch offices | sector commands and views, dialogs | **[not done here]** |
+
+Commands refuse a planet that isn't the player's colony, and a cost the player can't pay
+(`invalid: cannot pay`). **[I]** The game greys Build instead.
+
+Known gaps in the side bar lists:
+- **[I]** The construction list includes buildings whose potential the trigger engine can't
+  decide; at 2210 that adds Aid Agency and Bone Garrison.
+- **[I]** Its days lack the colony's modifiers (360 here against the game's 314).
+- **[I]** The decisions list holds Expel Excess Population and misses the crime decisions, and
+  Distribute Luxury Goods costs 100 against the game's 600.
+- Effects texts, the category tabs and wheel scrolling of the side bar's lists are
+  **[not done here]**.
+
+Checked:
+- **Headless game against the renderer, same clicks** (press and release in separate frames):
+  outliner → capital, district tile, an empty slot, a building, Auto Designated, Decisions,
+  Terraform, the gear, then Escape twice. The side bar's windows, placement, buttons, labels and
+  the Escape order match.
+- **Real window** (Xvfb, Load Game, world-only), the same path: Build queued the district (680 →
+  230 minerals, queue row, days counting down) and a second Build was refused. Escape closed the
+  side bar, then the view.
