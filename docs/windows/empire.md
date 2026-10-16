@@ -8,7 +8,8 @@ measured on its frames; **[I]** marks what is inferred. Checked against the game
 (`open_view NAME`): side by side, the game left, in
 `H:\code_working\tmp_sym\render3d\parity\win_empire\win_empire_*.png`.
 
-Code: `sim/render/src/views.rs`, `sim/render/lua/render/views.lua` and, one per view,
+Code: the shared left-bar views (`sim/render/src/views.rs`, win-research's; its API in
+docs/windows) and, one per view,
 `sim/render/lua/render/windows/{government,leaders,empire,council,edicts,factions,species}.lua`
 with what they share in `empire_common.lua` (layout helpers, number formats, the game's
 definitions, a small country-trigger evaluator) and `leaders_common.lua` (leaders, their cards,
@@ -25,18 +26,15 @@ trait icons).
   `CloseTopBarViews()`, the view shown, its number kept at +0xdc8. `CMainGuiLeftBarButton::OnClick`
   @0x2f3acd0 calls it with the button's view (+0x80); the top bar's flag
   (`CMainGui::ToggleGovernmentView` @0x2f32c40) with 14.
-- Renderer: the left bar's `right_icon`s carry `view:NAME`, the flag `view:government`
-  (app.rs, topbar.lua); `App::toggle_view` / `close_view` do what the game does; a view's
-  buttons set what it remembers (`view_set:KEY=VALUE`: a tab, the leader or species selected, a
-  sector expanded); `view_close` closes it.
-- Commands: `open_view NAME|N|close` in both the renderer (engine.rs) and the game
-  (headless.c: `open_view_cmd` calls ToggleTopBarView / CloseTopBarViews and replies 4 frames
-  later with the view then current).
+- Renderer (render-windows-1's views.rs, app.rs, engine.rs): the left bar's icons carry
+  `view:NAME`, the top bar's flag `view:government` (topbar.lua); `view_close`; a view's buttons
+  set what it remembers (`view_set:KEY=VALUE`: a tab, the leader or species selected, a sector
+  expanded). `open_view NAME` in both the renderer and the game (headless.c's: ToggleTopBarView,
+  the reply 4 frames later with the view then current).
 - The view is drawn over the alerts and under the left bar, as in the game's frames **[V]**.
-- Data: `views.rs` runs the view module's `data(country, state)` in the map's runtime (it holds
-  the save's world) and copies the table to the front end's runtime, where `build(ctx, data,
-  state)` lays the view out with render.gui. A map loaded for a simulation has its world on the
-  clock's thread: the views are laid out without data there **[I: not done]**.
+- Data: each module's `M.extract(game_dir)` runs where the galaxy is read (the save's world, or
+  the simulation's thread), returning `M.data(player, {})`; `M.build(ctx, data, state)` lays the
+  view out on the UI thread.
 
 ## 2. Government view (`government_view.gui`, CGovernmentView)
 

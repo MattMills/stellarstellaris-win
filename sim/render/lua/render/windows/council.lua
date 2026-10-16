@@ -168,4 +168,11 @@ function M.fund_text(ctx, d)
     return C.raw(ctx, "EDICT_UPKEEP_AND_FUND"):gsub("%$UPKEEP%$", tostring(upkeep)):gsub("%$FUND%$", tostring(math.floor(fund)))
 end
 
+
+-- views.rs: the view's data, read where the galaxy is read (the save's world, or the
+-- simulation's), for the player's country
+function M.extract(game_dir)
+    return M.data(require("render.topbar").player(), {})
+end
+
 return M
