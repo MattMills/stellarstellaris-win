@@ -128,6 +128,14 @@ fauna); 30 days run from the started save without errors. Medium, 9 AI empires: 
 likewise; 14 megastructures (the save 15), 22 bypasses (22), 10 natural wormholes (13), 411 ambient
 objects (301).
 
+Against the real game's own new game (ng-headless, `code_working/tmp_newgame/ref/tiny3_g0`: tiny,
+3 AI empires; day0.gamestate before on_game_start, ticks10 after it): the same shape per empire
+(city 3 with its zones, rural districts by origin, building_capital first, a starport, science
+ship, constructor, three corvettes, scientist and commander on them, the ruler from the design, a
+governor; 183 ambient objects there against 178 here on another galaxy). The real empires also
+have their pops in job categories at day 0 (with pop_jobs) and two or three envoys, and build four
+mining stations and a research station in the first days (the AI, not the script).
+
 Not equal yet: pop categories and jobs (NPlanetJobs is not ported: every pop is a civilian),
 envoys (the leader pool), the ship names' prefix (a generated country has no `ship_prefix`), and the
 counts the generator decides: it places some unique initializers more than once (ai_sol_system,

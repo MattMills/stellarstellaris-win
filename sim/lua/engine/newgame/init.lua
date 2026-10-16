@@ -372,7 +372,36 @@ function newgame.start_script(game)
             for _, x in ipairs(e.ethics or {}) do
                 if x == "ethic_gestalt_consciousness" then gestalt = true end
             end
-            local lid = objects.leaders.create({ country = e.index, class = "official" })
+            -- the design's ruler (name, gender, trait, leader_class), else a class drawn from the
+            -- authority's ruler council position (ChooseLeaderClassFromData's random_ruler: one draw)
+            local defs = require("engine.defs")
+            local r = type(e.ruler) == "table" and e.ruler or nil
+            local function rf(k)
+                local v = r and defs.field(r, k)
+                return type(v) == "string" and v:gsub('^"(.*)"$', "%1") or nil
+            end
+            local class = rf("leader_class")
+            if not class then
+                local ad = e.authority and defs.get("common/governments/authorities", e.authority)
+                local pos = ad and defs.field(ad.block, "ruler_council_position")
+                local pd = pos and defs.get("common/governments/councilors", pos)
+                local lc = pd and defs.field(pd.block, "leader_class")
+                local list = {}
+                for _, x in ipairs(type(lc) == "table" and lc or {}) do
+                    if x.text then list[#list + 1] = x.text end
+                end
+                class = #list > 0 and list[RUST.rand() % #list + 1] or "official"
+            end
+            local name
+            if rf("name") then
+                name = {}
+                local fn = {}
+                world.append(fn, "key", rf("name"), true)
+                world.append(name, "full_names", fn)
+                world.append(name, "use_full_regnal_name", "yes")
+            end
+            local lid = objects.leaders.create({ country = e.index, class = class, name = name, gender = rf("gender"),
+                traits = rf("trait") and { { 0, rf("trait") } } or nil })
             if lid then world.set(c, "ruler", lid) end
         end
         objects.leaders.initialize_policies(e.index)
