@@ -159,9 +159,11 @@ function objects.fresh()
     local engine = package.loaded["engine"]
     local source = engine and engine.modifier_source
     if source and source.rebuild then
+        local t0 = RUST.clock()
         local ok, err = pcall(source.rebuild)
         if not ok then objects.err("modifier rebuild: " .. tostring(err)) end
         objects.rebuilds = (objects.rebuilds or 0) + 1
+        objects.rebuild_seconds = (objects.rebuild_seconds or 0) + RUST.clock() - t0
     end
 end
 -- the appliers that change what a carrier's modifiers come from, wrapped to mark them stale
@@ -191,9 +193,11 @@ end
 
 -- what changes a carrier's modifiers: marks them stale
 require("engine.script.creation")
+-- (what the start script reads, the carriers' district caps, comes from the deposits, the planet
+-- class and the timed modifiers: districts, buildings and pops do not mark the graph stale, which
+-- would cost a rebuild of the whole graph for each read in game_start.12) [I]
 for _, n in ipairs({ "add_deposit", "remove_deposit", "clear_deposits", "change_pc", "add_timed_modifier",
-    "remove_timed_modifier", "add_district", "remove_district", "add_zone", "add_building", "remove_building",
-    "create_pop_group", "clear_blockers", "add_blocker", "change_planet_size" }) do
+    "remove_timed_modifier", "clear_blockers", "add_blocker", "change_planet_size", "set_deposit" }) do
     touching(n)
 end
 
@@ -210,7 +214,7 @@ function objects.report()
         parts[#parts + 1] = string.format("%s %d%s", k, s.applied, #sk > 0 and (" (skipped: " .. table.concat(sk, ", ") .. ")") or "")
     end
     local line = "script objects: " .. (#parts > 0 and table.concat(parts, "; ") or "nothing applied")
-        .. string.format("; %d draws", objects.draws)
+        .. string.format("; %d draws; %d modifier rebuilds in %.2f s", objects.draws, objects.rebuilds or 0, objects.rebuild_seconds or 0)
     for _, e in ipairs(objects.errors) do
         line = line .. "\n  error: " .. e
     end

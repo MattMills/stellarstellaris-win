@@ -162,6 +162,7 @@ end
 function colony.max_districts(pid)
     local p = world.object("planet", pid)
     if not p then return 0 end
+    objects.fresh()
     local size = tonumber(world.field(p, "planet_size")) or 0
     local E = rawget(_G, "E")
     local function m(name)

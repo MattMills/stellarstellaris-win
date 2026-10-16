@@ -423,8 +423,14 @@ function newgame.start_script(game)
             end
         end
     end
+    -- the modifier graph brought up to date when read, not after every event (creation.defer)
+    local creation = require("engine.script.creation")
+    creation.defer = objects.touch
     local split = game.init_effects_empires or #game.init_effects
+    local clock = RUST.clock
+    local t = { clock() }
     init_effects(1, split)
+    t[2] = clock()
     for _, e in ipairs(game.empires or {}) do
         guarded("country setup " .. e.index, function() country_setup(e) end)
         for _, oa in ipairs({ "empire_init_add_technologies", "empire_init_capital_colony", "empire_init_create_ships" }) do
@@ -444,7 +450,9 @@ function newgame.start_script(game)
             ran.on_actions = ran.on_actions + 1
         end
     end
+    t[3] = clock()
     init_effects(split + 1, #game.init_effects)
+    t[4] = clock()
     guarded("on_game_start", function()
         events.on_action("on_game_start", eval.NONE, nil)
     end)
@@ -455,9 +463,14 @@ function newgame.start_script(game)
         end)
         ran.on_actions = ran.on_actions + 1
     end
+    creation.defer = nil
+    objects.fresh()
+    t[5] = clock()
     local lines = {
         string.format("start script: %d init_effects and %d on_actions run; %d script effects, %d engine effects queued; %d errors",
             ran.effects, ran.on_actions, stats.script - s0, stats.engine - e0, #errors),
+        string.format("  in %.2f s: empires' systems %.2f, empires %.2f, other systems %.2f, game start %.2f",
+            t[5] - t[1], t[2] - t[1], t[3] - t[2], t[4] - t[3], t[5] - t[4]),
     }
     for i = 1, math.min(8, #errors) do
         lines[#lines + 1] = "  error: " .. errors[i]
