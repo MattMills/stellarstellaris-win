@@ -629,6 +629,9 @@ local function first_contacts(pid, game_dir)
                 event = type(ev) == "table" and world.field(ev, "expired") ~= "yes" and text(world.field(ev, "event_id")) or nil,
                 leader = tonumber(world.field(b, "leader")),
                 view = view,
+                -- its event's picture and index (the stage the first contact view shows: index + 1 [I])
+                picture = type(ev) == "table" and text(world.field(ev, "picture")) or nil,
+                index = type(ev) == "table" and tonumber(world.field(ev, "index")) or 0,
             }
         end
     end

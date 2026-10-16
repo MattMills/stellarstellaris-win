@@ -279,10 +279,111 @@ local function popup(ctx, p, k, items, report)
     gui.merge(items, report, pi, pr)
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- the first contact view (interface/first_contact_view.gui, CFirstContactView: "Show First
+-- Contact" in the Situation Log's Findings) [V for the parts, I where marked]: centred; the
+-- contact's name, its event's picture, a stage icon per stage so far (the first the starter's,
+-- the current one the stage's), the event's title under them and its description in the text
+-- list (no name: the description moved up), its options (`stage_event_option`, 35 apart);
+-- "Stage N" (STAGE_TITLE, N its event's index + 1 [I]); the species panel with the unknown
+-- portrait while there are no communications. The leader, progress, difficulty and modifier
+-- panels are hidden as the game's frame shows them for a contact without an envoy [I].
+
+local FC_FILE = "interface/first_contact_view.gui"
+
+local function first_contact_window(ctx, fc, items, report)
+    local loc, db = ctx.loc, ctx.db
+    local root = "/first_contact_view"
+    local view = fc.view or {}
+    local picture = fc.picture or view.picture
+    local hide = {
+        no_report_icon = true, no_report_text = true, tts_button = true, leader_window = true,
+        chapter_progress = true, chapter_difficulty = true, chapter_modifiers = true, block_window = true,
+        species = true, species_type = true,
+    }
+    local sprites = {}
+    if picture and db.sprites[picture] then
+        sprites[root .. "/site_type_window/event_picture"] = picture
+    else
+        hide.event_picture = true
+    end
+    local stage = loc and loc.raw("STAGE_TITLE") or "Stage $STAGE$"
+    stage = stage:gsub("%$STAGE%$", tostring((fc.index or 0) + 1))
+    local wi, wr = gui.layout(ctx.game_dir, db, FC_FILE, "first_contact_view", ctx.screen, {
+        texture_size = ctx.texture_size, loc = loc, hide = hide, sprites = sprites,
+        text = {
+            [root .. "/site_name"] = names.format(loc, fc.name),
+            [root .. "/chapter_subtitle"] = "§H" .. resolve(loc, view.title or "", view) .. "§!",
+            [root .. "/title_chapter/title_text"] = stage,
+        },
+        actions = {
+            [root] = "fc:front",
+            [root .. "/close"] = "fc:close",
+            [root .. "/goto_site_button"] = "fc:front",
+        },
+    })
+    gui.merge(items, report, wi, wr)
+    -- the stages: the starter, then one a stage, 50 apart [I]
+    local box = wr.rects[root .. "/chapters_window/chapters_box"]
+    if box then
+        for i = 0, (fc.index or 0) do
+            local p = "/fc_stages/" .. i
+            local path = p .. "/stages_box_entry"
+            local si, sr = gui.layout(ctx.game_dir, db, FC_FILE, "stages_box_entry", ctx.screen, {
+                texture_size = ctx.texture_size, loc = loc, prefix = p,
+                parent = { x = box.x + i * 53, y = box.y, w = 0, h = 0 },
+                -- (the current stage without its progress ring in the game's frame [I])
+                hide = i == 0 and { chapter_button = true, chapter_progress = true } or { rune_button = true, chapter_progress = true },
+            })
+            gui.merge(items, report, si, sr)
+        end
+    end
+    -- the description, from the text list's top (no name: moved up to the name's place)
+    local list = wr.rects[root .. "/expedition_window/text_list"]
+    if list then
+        local desc = resolve(loc, view.desc or "", view)
+        local lines, lh = wrap(loc, desc, "cg_16b", 520, db, db.textcolors.W or { 1, 1, 1 })
+        local keep = {}
+        for i = 1, math.min(#lines, math.floor((list.h - 5) / lh)) do
+            keep[i] = lines[i]
+        end
+        for _, it in ipairs(line_items(root .. "/expedition_window/text_list/description", "cg_16b", keep, lh, list.x + 5, list.y + 5, 520)) do
+            items[#items + 1] = it
+            report.texts = report.texts + 1
+        end
+    end
+    -- the options
+    local ob = wr.rects[root .. "/options_box_container/options_box"]
+    if ob then
+        for i, o in ipairs(view.options or {}) do
+            local p = "/fc_options/" .. i
+            local path = p .. "/stage_event_option"
+            local oi, orr = gui.layout(ctx.game_dir, db, FC_FILE, "stage_event_option", ctx.screen, {
+                texture_size = ctx.texture_size, loc = loc, prefix = p,
+                parent = { x = ob.x, y = ob.y + (i - 1) * 35, w = 0, h = 0 },
+                text = { [path .. "/text"] = resolve(loc, o.name or "OK", view) },
+                actions = { [path] = "fc:option:" .. i },
+            })
+            gui.merge(items, report, oi, orr)
+        end
+    end
+end
+
 -- events.build(game_dir, db, screen, texture_size, loc, data, state) -> items, report
 function M.build(game_dir, db, screen, texture_size, loc, data, state)
     local ctx = { game_dir = game_dir, db = db, screen = screen, texture_size = texture_size, loc = loc }
     local items, report = {}, new_report()
+    -- the first contact view (under the event windows)
+    if state and state.first_contact then
+        for _, fc in ipairs(data and data.first_contacts or {}) do
+            if fc.id == state.first_contact then
+                local ok, err = pcall(first_contact_window, ctx, fc, items, report)
+                if not ok then
+                    report.missing_sprites[#report.missing_sprites + 1] = "first contact: " .. tostring(err)
+                end
+            end
+        end
+    end
     local by_id = {}
     for _, ev in ipairs(data and data.events or {}) do
         by_id[ev.id] = ev

@@ -37,13 +37,15 @@ pub struct EventsUi {
     /// the data has been read once since the load
     started: bool,
     pub popups: Vec<Popup>,
+    /// the first contact view open (a first contact's id: "Show First Contact")
+    pub first_contact: Option<i64>,
     /// the data chunk loaded into the runtime last (to load it again only when it changed)
     chunk: String,
 }
 
 /// The actions these windows' buttons carry.
 pub fn handles(action: &str) -> bool {
-    action.starts_with("event:") || action.starts_with("popup:")
+    action.starts_with("event:") || action.starts_with("popup:") || action.starts_with("fc:")
 }
 
 impl EventsUi {
@@ -73,6 +75,10 @@ impl EventsUi {
                     self.open.push(id);
                 }
             }
+            // the first contact view (CFirstContactView): opened, closed; an option chosen closes it
+            // (the simulation has answered the event) [I]
+            ["fc", "open", ..] => self.first_contact = id(2),
+            ["fc", "close"] | ["fc", "option", ..] => self.first_contact = None,
             ["popup", _, k] => {
                 if let Ok(k) = k.parse::<usize>() {
                     if k >= 1 && k <= self.popups.len() {
@@ -181,7 +187,7 @@ pub fn items(ui: &mut EventsUi, runtime: &Runtime, game_dir: &str, fonts: &mut H
     for (name, f) in fonts.iter() {
         export_metrics(lua, name, f).map_err(|e| e.to_string())?;
     }
-    if ui.open.is_empty() && ui.popups.is_empty() {
+    if ui.open.is_empty() && ui.popups.is_empty() && ui.first_contact.is_none() {
         return Ok(Vec::new());
     }
     let read = || -> mlua::Result<Vec<GuiItem>> {
@@ -196,6 +202,9 @@ pub fn items(ui: &mut EventsUi, runtime: &Runtime, game_dir: &str, fonts: &mut H
             popups.push(t)?;
         }
         state.set("popups", popups)?;
+        if let Some(fc) = ui.first_contact {
+            state.set("first_contact", fc)?;
+        }
         lua.globals().set("RENDER_EVENTS_STATE", state)?;
         let t: Table = lua
             .load(format!(
@@ -214,6 +223,14 @@ pub fn command(app: &mut App, arg: &str) -> Result<String, String> {
     load_data(&mut app.events, &app.runtime, &chunk)?;
     let list = event_list(&app.runtime.lua).map_err(|e| e.to_string())?;
     let arg = arg.trim();
+    // `event fc ID`: the first contact view of the first contact ID (the Findings' "Show First
+    // Contact"), `event fc` closes it
+    if let Some(rest) = arg.strip_prefix("fc") {
+        let rest = rest.trim();
+        app.events.act(&if rest.is_empty() { "fc:close".to_string() } else { format!("fc:open:{rest}") });
+        app.relayout();
+        return Ok(format!("event fc {rest}"));
+    }
     if arg.is_empty() {
         let names: Vec<String> = list.iter().map(|(id, name, _)| format!(" {id}:{name}")).collect();
         return Ok(format!("event{}", names.concat()));

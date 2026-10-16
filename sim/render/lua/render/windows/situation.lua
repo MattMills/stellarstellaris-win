@@ -300,6 +300,9 @@ function M.build(ctx, data, state)
             [root .. "/close"] = "view_close",
             [root .. "/tab_log"] = "view_set:tab=",
             [root .. "/tab_anomalies"] = "view_set:tab=anomalies",
+            -- "Show First Contact": the first contact view (events.rs)
+            [root .. "/log_window/currently_selected/first_contact_subview/view_site"] =
+                selected and selected.kind == "first_contact" and ("fc:open:" .. selected.key) or nil,
         },
     })
     gui.merge(items, report, wi, wr)
