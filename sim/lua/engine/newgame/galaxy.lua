@@ -17,6 +17,7 @@
 
 local fixed = require("engine.newgame.fixed")
 local delaunay = require("engine.newgame.delaunay")
+local triangle = require("engine.newgame.triangle")
 
 local galaxy = {}
 
@@ -219,11 +220,11 @@ function galaxy.galactic_map(game)
             ys[#ys + 1] = fixed.trunc(-R * fixed.sin(a) / fixed.ONE)
         end
     end
-    local t = delaunay.triangulate(xs, ys)
     for _, s in ipairs(game.systems) do
         s.neighbors = {}
     end
-    for _, e in ipairs(delaunay.edges(t)) do
+    -- the edges in Triangle's order (triangle.lua): each system's neighbours in that order
+    for _, e in ipairs(triangle.edges(xs, ys)) do
         local a, b = e[1], e[2]
         if a <= n and b <= n then
             local sa, sb = game.systems[a], game.systems[b]

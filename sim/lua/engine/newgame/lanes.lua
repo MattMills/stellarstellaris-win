@@ -17,6 +17,7 @@
 local rng = require("engine.newgame.rng")
 local fixed = require("engine.newgame.fixed")
 local delaunay = require("engine.newgame.delaunay")
+local triangle = require("engine.newgame.triangle")
 
 local lanes = {}
 
@@ -64,9 +65,12 @@ function lanes.partition(inputs, r, game)
     end
 
     local visited
-    -- AddRandomNeighborSystemsToPartition (0xa35270): up to `count` of the system's neighbours
-    -- join the partition, picked at random; when its neighbours run out, the search goes on
-    -- through them. Returns the count not added.
+    -- AddRandomNeighborSystemsToPartition (GOG 0xa35270, Linux 0x1a0c630) [V]: up to `count` of
+    -- the system's neighbours join the partition, picked at random (k = G % m, swapped to the end,
+    -- m - 1, down to m = 1); when the count is not reached, the search goes on through them
+    -- round-robin: each candidate marked visited gives one system of its own; one that gives none
+    -- is replaced by the last and the round goes on at the next index (i = (i + 1) % n, the
+    -- replacement skipped). Returns the count not added.
     local function add_random(P, sys, count)
         local cand = {}
         for _, nid in ipairs(sys.neighbors or {}) do
@@ -88,20 +92,24 @@ function lanes.partition(inputs, r, game)
             cand[k], cand[m] = cand[m], cand[k]
             m = m - 1
         end
-        local i = 1
-        while count > 0 and #cand > 0 do
-            if i > #cand then
-                i = 1
-            end
-            local c = cand[i]
+        if count == 0 or #cand == 0 then
+            return count
+        end
+        local n, i = #cand, 0
+        while count > 0 do
+            local c = cand[i + 1]
             visited[c.id] = true
             if add_random(P, c, 1) == 1 then
-                cand[i] = cand[#cand]
+                cand[i + 1] = cand[#cand]
                 cand[#cand] = nil
+                n = n - 1
             else
                 count = count - 1
-                i = i + 1
             end
+            if n == 0 then
+                break
+            end
+            i = (i + 1) % n
         end
         return count
     end
@@ -121,20 +129,26 @@ function lanes.partition(inputs, r, game)
             end
         end
     end
-    -- breadth first: one system at a time to each, until each is full or stuck
-    while #active > 0 do
-        for idx = #active, 1, -1 do
-            local P = active[idx]
-            if #P.systems >= P.desired then
-                table.remove(active, idx)
-            else
-                visited = { [P.seed.id] = true }
-                if add_random(P, P.seed, 1) == 1 then
-                    table.remove(active, idx)
+    -- breadth first (CGalaxyPartitioner::PartitionBreadthFirst, Linux 0x1a0ac00) [V]: one system at
+    -- a time to each, over the active list from the last to the first, until each is full or
+    -- stuck; a finished one is replaced by the last active one
+    local function breadth_first(list)
+        while #list > 0 do
+            for idx = #list, 1, -1 do
+                local P = list[idx]
+                local done = #P.systems >= P.desired
+                if not done then
+                    visited = { [P.seed.id] = true }
+                    done = add_random(P, P.seed, 1) == 1
+                end
+                if done then
+                    list[idx] = list[#list]
+                    list[#list] = nil
                 end
             end
         end
     end
+    breadth_first(active)
     -- the open partitions: every system not in one yet, in order
     local open = sc.open_space_partitions
     local open_active = {}
@@ -149,49 +163,62 @@ function lanes.partition(inputs, r, game)
             end
         end
     end
-    while #open_active > 0 do
-        for idx = #open_active, 1, -1 do
-            local P = open_active[idx]
-            if #P.systems >= P.desired then
-                table.remove(open_active, idx)
-            else
-                visited = { [P.seed.id] = true }
-                if add_random(P, P.seed, 1) == 1 then
-                    table.remove(open_active, idx)
-                end
+    breadth_first(open_active)
+    -- the partitions' neighbours (CGalaxyPartitioner::BuildNeighbors, Linux 0x1a0af90) [V]: each
+    -- partition in turn, its systems in the order they joined, each one's neighbours in their
+    -- order: a partition not in the list yet is appended
+    local function has(list, x)
+        for _, y in ipairs(list) do
+            if y == x then
+                return true
             end
         end
+        return false
     end
-    -- the partitions' neighbours
-    local seen = {}
-    for _, s in ipairs(systems) do
-        local a = status[s.id]
-        for _, nid in ipairs(s.neighbors or {}) do
-            local b = status[nid]
-            if b ~= a then
-                local key = a * 100000 + b
-                if not seen[key] then
-                    seen[key] = true
-                    table.insert(parts[a + 1].neighbors, b)
-                end
-            end
-        end
-    end
-    -- MergeNeighborPartitions (0xa35c00): a partition filled to 60% or less of what it wanted joins
-    -- the neighbour closest to it, the one with room preferred (and of its arm)
     for _, P in ipairs(parts) do
-        if #P.systems > 0 and P.desired > 0 and #P.systems / P.desired <= 0.6 then
+        for _, sid in ipairs(P.systems) do
+            for _, nid in ipairs(systems[sid + 1].neighbors or {}) do
+                local q = status[nid]
+                if q ~= P.id and not has(P.neighbors, q) then
+                    P.neighbors[#P.neighbors + 1] = q
+                end
+            end
+        end
+    end
+    -- every x out of a list, each replaced by the list's last (the game's remove)
+    local function remove_all(list, x)
+        local i = 1
+        while i <= #list do
+            if list[i] == x then
+                list[i] = list[#list]
+                list[#list] = nil
+            else
+                i = i + 1
+            end
+        end
+    end
+    -- MergeNeighborPartitions (GOG 0xa35c00, Linux 0x1a0b210) [V]: in order, a partition filled
+    -- to 60% or less of what it wanted (count * 100000 // desired <= 60000) joins the neighbour
+    -- minimising SafeSqrt(the smallest squared distance between their systems) + (#Q + #P) //
+    -- Q.desired (an integer), + 1000 for another arm; the first of equal ones; a neighbour that
+    -- wants none is passed over. The merged one takes the larger desired bridges and P's systems;
+    -- P's neighbours become Q's (each one also gets Q), and P leaves every list.
+    local BIG = 0xffffffffffff / fixed.ONE
+    for _, P in ipairs(parts) do
+        local n = #P.systems
+        local small = n > 0 and P.desired ~= 0 and math.floor(n * fixed.ONE / P.desired) <= 60000
+        if small then
             local best, bestv
             for _, qid in ipairs(P.neighbors) do
                 local Q = parts[qid + 1]
-                if Q ~= P and Q.desired ~= 0 and #Q.systems > 0 then
-                    local m = math.huge
-                    for _, a in ipairs(P.systems) do
-                        for _, b in ipairs(Q.systems) do
-                            m = math.min(m, d2(systems[a + 1], systems[b + 1]))
+                if Q.desired ~= 0 then
+                    local m = BIG
+                    for _, a in ipairs(Q.systems) do
+                        for _, b in ipairs(P.systems) do
+                            m = math.min(m, fixed.dist2(systems[a + 1], systems[b + 1]))
                         end
                     end
-                    local v = math.sqrt(m) + (#Q.systems + #P.systems) / Q.desired
+                    local v = fixed.sqrt(m) + math.floor((#Q.systems + n) / Q.desired)
                     if Q.arm ~= P.arm then
                         v = v + 1000
                     end
@@ -201,24 +228,24 @@ function lanes.partition(inputs, r, game)
                 end
             end
             if best then
-                for _, sid in ipairs(P.systems) do
-                    best.systems[#best.systems + 1] = sid
-                    status[sid] = best.id
-                end
-                best.desired_bridges = math.max(best.desired_bridges, P.desired_bridges)
+                local Q = best
                 for _, nid in ipairs(P.neighbors) do
-                    if nid ~= best.id then
-                        local dup = false
-                        for _, x in ipairs(best.neighbors) do
-                            if x == nid then
-                                dup = true
-                                break
-                            end
+                    if nid ~= Q.id then
+                        local N = parts[nid + 1]
+                        if not has(Q.neighbors, nid) then
+                            Q.neighbors[#Q.neighbors + 1] = nid
+                            N.neighbors[#N.neighbors + 1] = Q.id
                         end
-                        if not dup then
-                            best.neighbors[#best.neighbors + 1] = nid
-                        end
+                        remove_all(N.neighbors, P.id)
                     end
+                end
+                remove_all(Q.neighbors, P.id)
+                for _, sid in ipairs(P.systems) do
+                    status[sid] = Q.id
+                end
+                Q.desired_bridges = math.max(Q.desired_bridges, P.desired_bridges)
+                for _, sid in ipairs(P.systems) do
+                    Q.systems[#Q.systems + 1] = sid
                 end
                 P.systems, P.desired = {}, 0
             end
@@ -372,15 +399,16 @@ function lanes.hyperlanes(inputs, game)
         local r2 = s.x * s.x + s.y * s.y
         minr2, maxr2 = math.min(minr2, r2), math.max(maxr2, r2)
     end
-    local t = delaunay.triangulate(xs, ys)
     local islands, bridges = {}, {}
     local parts = game.partitions or {}
-    for _, e in ipairs(delaunay.edges(t)) do
+    -- in Triangle's edge order (triangle.lua)
+    for _, e in ipairs(triangle.edges(xs, ys)) do
         local a, b = systems[e[1]], systems[e[2]]
         local mx, my = (a.x + b.x) / 2, (a.y + b.y) / 2
         local m2 = mx * mx + my * my
         if not (minr2 > 0 and (m2 <= minr2 or m2 >= maxr2)) then
-            local edge = { p0 = b.id, p1 = a.id, d = math.floor(math.sqrt(d2(a, b))) }
+            -- SHyperlaneEdge { p0, p1, length }: Triangle's origin and destination (Linux 0x1c7e45f)
+            local edge = { p0 = a.id, p1 = b.id, d = math.floor(math.sqrt(d2(a, b))) }
             if a.partition == b.partition then
                 islands[#islands + 1] = edge
             else

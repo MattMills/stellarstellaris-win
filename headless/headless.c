@@ -1007,6 +1007,9 @@ static uintptr_t a_CrudeRandomSeed;     // CCrudeRandom::Seed(unsigned int)
 static uintptr_t a_CrudeRandomGetInt;   // CCrudeRandom::GetInteger()
 static uintptr_t a_StaticLexerGetString; // CStaticLexer::GetString(int): a CString
 static uintptr_t a_nSeed;               // CSystem::_nSeed
+static uintptr_t a_GenFromRandom;       // CGalaxyGenerator::GenerateFromRandomScenario
+static uintptr_t a_GenerateHyperlanes;  // GenerateHyperlanes(SGalaxyPartitionsData&, CFixedPoint)
+static uintptr_t a_GalacticObjectDb;    // TPdxRef<CGalacticObject>::_pDatabase
 static uintptr_t a_DesignDb, a_GetDesignByKey, a_DesignIsPlayable; // CEmpireDesignDatabase, its designs
 static uintptr_t a_SettingsInstance, a_SettingsLastName;          // CSettings: the player's last name
 static uintptr_t a_AccessCurrentSession, a_SessionId;             // the session's internal id
@@ -1023,6 +1026,9 @@ static struct symreq g_ng_syms[] = {
 	{"_ZN12CCrudeRandom10GetIntegerEv", &a_CrudeRandomGetInt},
 	{"_ZN12CStaticLexer9GetStringEi", &a_StaticLexerGetString},
 	{"_ZN7CSystem6_nSeedE", &a_nSeed},
+	{"_ZN16CGalaxyGenerator26GenerateFromRandomScenarioERK20CGalaxyConfigurationR12CCrudeRandom", &a_GenFromRandom},
+	{"_ZL18GenerateHyperlanesR21SGalaxyPartitionsData11CFixedPoint", &a_GenerateHyperlanes},
+	{"_ZN7TPdxRefI15CGalacticObjectE10_pDatabaseE", &a_GalacticObjectDb},
 	{"_ZN21CEmpireDesignDatabase10_pInstanceE", &a_DesignDb},
 	{"_ZNK21CEmpireDesignDatabase14GetDesignByKeyEPKc", &a_GetDesignByKey},
 	{"_ZNK13CEmpireDesign10IsPlayableEv", &a_DesignIsPlayable},
@@ -1053,6 +1059,23 @@ static void ng_tokens(const char *list) {
 static void ng_generate(void *gs, int value) {
 	const char *e;
 	if ((e = getenv("HEADLESS_TOKENS")) && *e) ng_tokens(e);
+	{
+		// the configuration's designs (CGalaxyConfiguration +0x18, 0xc78 bytes each: the key at +0x8,
+		// the spawn mode at +0xc60: 0 no, 1 yes, 2 always), which CalcDesignsForEmpires draws from
+		char *cfg = *(char **)((char *)gs + 0x998);
+		int n = I32(cfg + 0x24), spawn[3] = {0, 0, 0};
+		for (int i = 0; i < n; i++) {
+			char *d = *(char **)(cfg + 0x18) + (size_t)i * 0xc78;
+			int m = I32(d + 0xc60);
+			if (m >= 0 && m < 3) spawn[m]++;
+			if (getenv("HEADLESS_NG_LIST_DESIGNS")) {
+				size_t len;
+				const char *k = cstring_ptr(d + 8, &len);
+				hlog("  design %d %.*s spawn %d flag %d", i, (int)len, k, m, U8(d + 0xc65));
+			}
+		}
+		hlog("new game: %d designs in the configuration: spawn no %d, yes %d, always %d", n, spawn[0], spawn[1], spawn[2]);
+	}
 	hlog("new game: GenerateNewGalaxy(%d) after %.3f s; random: seed %d position %u", value, now() - g_t0,
 	     (int)rng_seed(), rng_pos());
 	long long seed, pos;
@@ -1074,9 +1097,38 @@ static void ng_generate(void *gs, int value) {
 	uint32_t pos0 = rng_pos();
 	hlog("value %d -> galaxy seed %d (CGalaxyGenerator::Generate); random position %u", value, galaxy_seed, pos0);
 	double t = now();
+	// HEADLESS_PROFILE with HEADLESS_NG_PROFILE=<file>: the global draws of the generation per call
+	// site (a site table over the generator's functions: README, a new game)
+	const char *prof = getenv("HEADLESS_NG_PROFILE");
+	if (g_nsites && prof && *prof) g_prof_on = 1;
 	((void (*)(void *, int))a_GenerateNewGalaxy)(gs, value);
+	if (g_nsites && prof && *prof) {
+		g_prof_on = 0;
+		profile_write(prof, rng_pos() - pos0, 0);
+		for (int i = 0; i < g_nsites; i++) g_sites[i].calls = g_sites[i].draws = 0;
+		hlog("new game: the generation's draws per site -> %s", prof);
+	}
 	hlog("generated in %.3f s; %u global draws; random: seed %d position %u", now() - t, rng_pos() - pos0,
 	     (int)rng_seed(), rng_pos());
+	if ((e = getenv("HEADLESS_NG_NEIGHBORS")) && *e) {
+		// each system's CGalacticObject::_GalacticNeighbors (+0x10f0 refs, +0x10fc count), in their
+		// order, from the galactic object database (TPdxRef<CGalacticObject>::_pDatabase: +0x18
+		// entries of 16 bytes, the object at +8; +0x20 count): "id: n1 n2 ..."
+		FILE *f = fopen(e, "w");
+		char *db = *(char **)a_GalacticObjectDb;
+		int n = db ? I32(db + 0x20) : 0;
+		for (int i = 0; f && i < n; i++) {
+			char *o = *(char **)(*(char **)(db + 0x18) + (size_t)i * 16 + 8);
+			if (!o) continue;
+			int k = I32(o + 0x10fc);
+			int *nb = *(int **)(o + 0x10f0);
+			fprintf(f, "%d:", I32(o + 8) & 0xffffff);
+			for (int j = 0; j < k; j++) fprintf(f, " %d", nb[j] & 0xffffff);
+			fprintf(f, "\n");
+		}
+		if (f) fclose(f);
+		hlog("new game: %d systems' neighbours -> %s", n, e);
+	}
 	if ((e = getenv("HEADLESS_NG_DAY0")) && *e) {
 		_Alignas(16) uint8_t path[0x30];
 		((void (*)(void *, const char *))a_CStringCtor)(path, e);
@@ -1130,17 +1182,19 @@ static void ng_menu(int frame) {
 	hlog("new game: human added (session %d, %d humans), start flag set", sid, I32((char *)gs + 0x24));
 }
 
-static void newgame_install(void) {
-	if (resolve(g_ng_syms) != 0) die(2, "newgame: missing symbols");
-	// the lambda: ... SetGalaxyConfiguration; mov $-1, %esi; call GenerateNewGalaxy (+0xa8)
-	uintptr_t site = a_NgCallSite + 0xa8;
-	if (*(uint8_t *)site != 0xE8 || site + 5 + *(int32_t *)(site + 1) != a_GenerateNewGalaxy)
-		die(2, "newgame: LaunchNewGame's task does not call GenerateNewGalaxy where expected");
-	uint8_t *stub = alloc_near(4096);
-	if (!stub) die(2, "newgame: no memory near the executable");
-	uint8_t code[12] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0}; // movabs rax, ng_generate; jmp rax
-	void *to = (void *)ng_generate;
-	memcpy(code + 2, &to, 8);
+// The `call rel32` at site (which must call target) goes to fn instead, through a stub near the
+// executable (movabs rax, fn; jmp rax).
+static void ng_redirect(uintptr_t site, uintptr_t target, void *fn, const char *what) {
+	static uint8_t *stubs;
+	static int used;
+	if (*(uint8_t *)site != 0xE8 || site + 5 + *(int32_t *)(site + 1) != target) {
+		hlog("newgame: %s: no call to the expected function at %#lx", what, (unsigned long)(site - g_base));
+		die(2, "newgame: a call site is not what was expected");
+	}
+	if (!stubs && !(stubs = alloc_near(4096))) die(2, "newgame: no memory near the executable");
+	uint8_t *stub = stubs + 16 * used++;
+	uint8_t code[12] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0};
+	memcpy(code + 2, &fn, 8);
 	memcpy(stub, code, sizeof code);
 	int32_t rel = (int32_t)((intptr_t)stub - (intptr_t)(site + 5));
 	uintptr_t page = site & ~(uintptr_t)0xfff;
@@ -1148,6 +1202,53 @@ static void newgame_install(void) {
 	memcpy((void *)(site + 1), &rel, 4);
 	mprotect((void *)page, 0x2000, PROT_READ | PROT_EXEC);
 	__builtin___clear_cache((char *)site, (char *)site + 5);
+}
+
+// HEADLESS_NG_LANES=<file>: every system's hyperlanes right after GenerateHyperlanes (the call in
+// GenerateFromRandomScenario), before the systems are initialized: "id: to/length[b] ..."
+// (CGalacticObject +0x590 CHyperlane[32 bytes: +0x8 the target, +0x10 the length (fixed), +0x18
+// flags, bit 0 a bridge], +0x59c their count), in their order
+static void ng_hyperlanes(void *partitions, long density) {
+	((void (*)(void *, long))a_GenerateHyperlanes)(partitions, density);
+	const char *e = getenv("HEADLESS_NG_LANES");
+	FILE *f = e && *e ? fopen(e, "w") : NULL;
+	char *db = *(char **)a_GalacticObjectDb;
+	int n = db ? I32(db + 0x20) : 0;
+	for (int i = 0; f && i < n; i++) {
+		char *o = *(char **)(*(char **)(db + 0x18) + (size_t)i * 16 + 8);
+		if (!o) continue;
+		int k = I32(o + 0x59c);
+		char *h = *(char **)(o + 0x590);
+		fprintf(f, "%d:", I32(o + 8) & 0xffffff);
+		for (int j = 0; j < k; j++)
+			fprintf(f, " %d/%lld%s", I32(h + 32 * j + 8) & 0xffffff, (long long)(*(int64_t *)(h + 32 * j + 0x10)),
+			        U8(h + 32 * j + 0x18) & 1 ? "b" : "");
+		fprintf(f, "\n");
+	}
+	if (f) fclose(f);
+	hlog("new game: GenerateHyperlanes done (random position %u)%s%s", rng_pos(), f ? "; lanes -> " : "", f ? e : "");
+	// HEADLESS_NG_PARTITIONS=<file>: each system's partition (SGalaxyPartitionsData +0x20, +0x2c their count, by
+	// system id) and each partition's desired systems / bridges (+0x8 partitions of 0xa8 bytes:
+	// +0x14 systems, +0x94 desired, +0x98 desired bridges, +0x9c bridges)
+	if ((e = getenv("HEADLESS_NG_PARTITIONS")) && *e && (f = fopen(e, "w"))) {
+		int *status = *(int **)((char *)partitions + 0x20);
+		char *parts = *(char **)((char *)partitions + 0x8);
+		int np = I32((char *)partitions + 0x14);
+		for (int i = 0; i < I32((char *)partitions + 0x2c); i++) fprintf(f, "%d %d\n", i, status[i]);
+		for (int i = 0; i < np; i++)
+			fprintf(f, "P %d %d %d %d %d\n", i, I32(parts + 0xa8 * i + 0x14), I32(parts + 0xa8 * i + 0x94),
+			        I32(parts + 0xa8 * i + 0x98), I32(parts + 0xa8 * i + 0x9c));
+		fclose(f);
+	}
+}
+
+static void newgame_install(void) {
+	if (resolve(g_ng_syms) != 0) die(2, "newgame: missing symbols");
+	// the lambda: ... SetGalaxyConfiguration; mov $-1, %esi; call GenerateNewGalaxy (+0xa8)
+	ng_redirect(a_NgCallSite + 0xa8, a_GenerateNewGalaxy, (void *)ng_generate, "LaunchNewGame's task");
+	// GenerateFromRandomScenario (+0x14ec): call GenerateHyperlanes
+	ng_redirect(a_GenFromRandom + 0x14ec, a_GenerateHyperlanes, (void *)ng_hyperlanes, "GenerateHyperlanes");
+	uintptr_t site = a_NgCallSite + 0xa8;
 	g_newgame = 1; // no save: the menu hook starts the new game (ng_menu)
 	hlog("new game: GenerateNewGalaxy at %#lx redirected", (unsigned long)(site - g_base));
 }

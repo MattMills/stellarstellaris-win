@@ -54,6 +54,40 @@ local DLCS = {
     "Plantoids Species Pack",
 }
 
+-- the DLCs the game owns, for host_has_dlc: settings.dlcs (a list of names, or a string of them
+-- separated by ';'), else the install's (dlc/*/*.dlc `name`: what the headless game owns), else
+-- every one (nil)
+local function owned_dlcs(fs, game_dir, list)
+    if type(list) == "string" then
+        local t = {}
+        for name in list:gmatch("[^;]+") do
+            t[#t + 1] = name
+        end
+        list = t
+    end
+    if type(list) ~= "table" and game_dir then
+        list = {}
+        for _, f in ipairs(RUST.list_files(game_dir, "dlc", "dlc")) do
+            for _, e in ipairs(source.parse(fs, f) or {}) do
+                if e.op and e.key and e.key.text == "name" and e.value.text then
+                    list[#list + 1] = e.value.text
+                end
+            end
+        end
+        if #list == 0 then
+            list = nil
+        end
+    end
+    if type(list) ~= "table" then
+        return nil
+    end
+    local set = {}
+    for _, name in ipairs(list) do
+        set[name] = true
+    end
+    return set
+end
+
 -- the galaxy = { } block (CGalaxyConfiguration::WriteMembers): { key, value, quoted }
 local function galaxy_settings(inputs, game)
     local cfg, sc = inputs.config, inputs.scenario
@@ -141,6 +175,7 @@ end
 function newgame.generate(fs, settings)
     settings = settings or {}
     local t0 = RUST.clock()
+    local game_dir = type(fs) == "string" and fs or settings.game_dir
     if type(fs) == "string" then
         fs = source.filesystem(fs)
     end
@@ -165,15 +200,39 @@ function newgame.generate(fs, settings)
         dlcs = DLCS,
         steps = {},
     }
+    -- settings.global_at ("step=position,...", or a table): the global stream put at the game's
+    -- position (measured: headless, docs/newgame.md 8.1) when the step starts, standing in for the
+    -- global draws the Lua does not make before it (the design validation's fake countries, the
+    -- scripted init_effects run inside the game's generation); the gaps go to the summary
+    local global_at = settings.global_at
+    if type(global_at) == "string" then
+        local t = {}
+        for k, v in global_at:gmatch("([%w_ ]+)=(%d+)") do
+            t[k] = tonumber(v)
+        end
+        global_at = t
+    end
+    game.global_gaps = {}
     local function step(name, f)
+        local at = global_at and global_at[name]
+        if at and at > global.draws then
+            game.global_gaps[#game.global_gaps + 1] = string.format("%s +%d (%d -> %d)", name, at - global.draws, global.draws, at)
+            RUST.skip(at - global.draws)
+            global.draws = at
+        elseif at then
+            game.global_gaps[#game.global_gaps + 1] = string.format("%s %d (already %d)", name, at, global.draws)
+        end
         local t = RUST.clock()
         local p = r.draws
+        local gp = global.draws
         f()
-        game.steps[#game.steps + 1] = string.format("%s %.2fs %d draws", name, RUST.clock() - t, r.draws - p)
+        game.steps[#game.steps + 1] = string.format("%s %.2fs %d draws (global %d)", name, RUST.clock() - t, r.draws - p, global.draws - gp)
     end
     local ctx
     step("definitions", function()
         ctx = systems.context(fs)
+        ctx.dlcs = owned_dlcs(fs, game_dir, settings.dlcs)
+        ctx.designs_text = settings.designs_text
     end)
     game.ctx = ctx
     game.defines = scenario.defines(fs).NGameplay or {}
@@ -188,6 +247,16 @@ function newgame.generate(fs, settings)
     end)
     step("galactic map", function()
         galaxy.galactic_map(game)
+        -- NEWGAME_NEIGHBORS=FILE: each system's neighbours, in their order ("id: n1 n2 ..."), to
+        -- compare with the game's (headless HEADLESS_NG_NEIGHBORS)
+        local path = os.getenv and os.getenv("NEWGAME_NEIGHBORS")
+        if path and path ~= "" then
+            local f = io.open(path, "w")
+            for _, sys in ipairs(game.systems) do
+                f:write(sys.id, ":", #(sys.neighbors or {}) > 0 and " " .. table.concat(sys.neighbors, " ") or "", "\n")
+            end
+            f:close()
+        end
     end)
     step("start clusters", function()
         galaxy.clusters(inputs, r, game)
@@ -206,6 +275,31 @@ function newgame.generate(fs, settings)
     end)
     step("hyperlanes", function()
         lanes.hyperlanes(inputs, game)
+        -- NEWGAME_LANES=FILE: each system's hyperlanes right after the step ("id: to/length[b]
+        -- ...", the length in fixed point), to compare with the game's (HEADLESS_NG_LANES)
+        local ppath = os.getenv and os.getenv("NEWGAME_PARTITIONS")
+        if ppath and ppath ~= "" then
+            local f = io.open(ppath, "w")
+            for _, sys in ipairs(game.systems) do
+                f:write(sys.id, " ", sys.partition or -1, "\n")
+            end
+            for i, P in ipairs(game.partitions or {}) do
+                f:write("P ", i - 1, " ", #P.systems, " ", P.desired, " ", P.desired_bridges, " ", P.bridges, "\n")
+            end
+            f:close()
+        end
+        local path = os.getenv and os.getenv("NEWGAME_LANES")
+        if path and path ~= "" then
+            local f = io.open(path, "w")
+            for _, sys in ipairs(game.systems) do
+                f:write(sys.id, ":")
+                for _, l in ipairs(sys.lanes) do
+                    f:write(" ", l.to, "/", math.floor(l.length * 100000 + 0.5), l.bridge and "b" or "")
+                end
+                f:write("\n")
+            end
+            f:close()
+        end
     end)
     step("empire systems", function()
         empires.init_systems(ctx, inputs, r, game)
@@ -262,6 +356,7 @@ function newgame.generate(fs, settings)
         "  star classes: " .. top(classes, 12),
         string.format("  initializers (%d): %s", count_keys(inits), top(inits, 12)),
         "  steps: " .. table.concat(game.steps, "; "),
+        #game.global_gaps > 0 and ("  global stream put at the game positions: " .. table.concat(game.global_gaps, "; ")) or "  (no global positions given)",
         "  hyperlanes: " .. tostring(game.lane_stats),
         string.format("  generator draws %d, global draws %d; %.2f s", r.draws, global.draws, RUST.clock() - t0),
     }

@@ -34,6 +34,7 @@ end
 function systems.context(fs)
     local ctx = { fs = fs, unknown_triggers = {}, unknown_classes = {}, used = {}, missing = {} }
     ctx.initializers = source.definitions(fs, "common/solar_system_initializers")
+    ctx.scripted_triggers = source.definitions(fs, "common/scripted_triggers")
     ctx.star_classes = source.definitions(fs, "common/star_classes")
     ctx.star_lists = source.definitions(fs, "common/star_classes/randomizers")
     -- the star classes in database order (the files', then each file's)
@@ -149,15 +150,6 @@ end
 -- triggers of usage_odds modifiers and neighbor_system triggers, on a system: the few the
 -- initializers use; any other is counted (ctx.unknown_triggers) and the modifier is left out
 
-local DLC_TRIGGERS = {
-    has_distar = true, has_leviathans = true, has_overlord_dlc = true, has_ancrel = true,
-    has_federations_dlc = true, has_megacorp = true, has_apocalypse = true, has_utopia = true,
-    has_first_contact_dlc = true, has_nemesis = true, has_paragon_dlc = true, has_astral_planes = true,
-    has_machine_age_dlc = true, has_grand_archive = true, has_cosmic_storms = true, has_plantoids = true,
-    has_lithoids = true, has_necroids = true, has_aquatics = true, has_toxoids = true,
-    has_horizon_signal = true, has_synthetic_dawn = true, has_humanoids = true,
-}
-
 local function eval(ctx, sys, block, game)
     -- AND of the statements
     for _, e in ipairs(block or {}) do
@@ -213,12 +205,9 @@ function systems.trigger(ctx, sys, key, v, game)
     elseif key == "is_fe_cluster" then
         local yes = sys.clusters ~= nil and sys.clusters.fe == true
         return yes == (text == "yes")
-    elseif key == "host_has_dlc" or DLC_TRIGGERS[key] then
-        local yes = true -- every DLC: the save's required_dlcs list them
-        if key ~= "host_has_dlc" then
-            return yes == (text == "yes")
-        end
-        return yes
+    elseif key == "host_has_dlc" or key == "has_dlc" then
+        -- the DLCs the game owns (ctx.dlcs, newgame.generate: the install's); none given: every one
+        return ctx.dlcs == nil or ctx.dlcs[text] == true
     elseif key == "is_bottleneck_system" then
         -- a system with one hyperlane [I]
         local yes = #sys.lanes == 1
@@ -265,8 +254,15 @@ function systems.trigger(ctx, sys, key, v, game)
     elseif key == "is_marauder_cluster" then
         local yes = sys.clusters ~= nil and sys.clusters.marauder == true
         return yes == (text == "yes")
-    elseif key == "has_infernals" or key == "has_cosmic_storms_dlc" then
-        return text == "yes"
+    end
+    -- a scripted trigger (has_aquatics = yes: host_has_dlc = "Aquatics Species Pack"), when its
+    -- block is one this evaluator knows
+    local st = ctx.scripted_triggers and ctx.scripted_triggers[key]
+    if st and (text == "yes" or text == "no") then
+        local r = eval(ctx, sys, st.block, game)
+        if r ~= nil then
+            return r == (text == "yes")
+        end
     end
     ctx.unknown_triggers[key] = (ctx.unknown_triggers[key] or 0) + 1
     return nil

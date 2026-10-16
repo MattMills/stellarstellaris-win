@@ -58,7 +58,9 @@ export HEADLESS_NEWGAME=1 HEADLESS_NG_EMPIRE=$DESIGN HEADLESS_NG_RANDOM=${HEADLE
 export HOME="$WORK/home" LIBGL_ALWAYS_SOFTWARE=1 LP_NUM_THREADS=${LP_NUM_THREADS:-4} \
 	MESA_SHADER_CACHE_DIR="$ROOT/cache/mesa"
 GAME_ARGS="${HEADLESS_ARGS--threads=1}"
-LAUNCH=""
+# HEADLESS_LAUNCH: a command the game runs under (e.g. "gdb -batch -x FILE --args"; its output
+# goes to game.log, kept with HEADLESS_KEEP=1)
+LAUNCH=${HEADLESS_LAUNCH:-}
 [ "${HEADLESS_NO_ASLR:-0}" = 1 ] && LAUNCH="setarch $(uname -m) -R"
 
 start=$(date +%s.%N)

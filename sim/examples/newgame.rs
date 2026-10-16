@@ -11,6 +11,11 @@
 //!   --hyperlanes X         hyperlane density 0.5..3 [the scenario's default]
 //!   --seed N               the galaxy seed [from the global stream, as the game does]
 //!   --global-seed N        the seed of the game's global generator [0]
+//!   --player DESIGN        the human's empire design (a key of the designs) [none]
+//!   --designs FILE         the user's empire designs (a user_empire_designs_v3.4.txt) [none]
+//!   --dlcs "A;B"           the DLCs the game owns [the install's dlc/*.dlc]
+//!   --global-at "S=N,..."  put the global stream at position N when step S starts (the game's,
+//!                          measured headless: the draws the Lua does not make) [none]
 //!   --out FILE.sav         where to write the save [newgame.sav]
 //!   --days N               days to run the saves for, 0 to skip [30]
 //!   --start-script yes|no  run the script's part of game creation (init_effects, the empire
@@ -84,6 +89,9 @@ fn main() {
         ("hyperlanes", "num_hyperlanes", true),
         ("seed", "seed", true),
         ("name", "name", false),
+        ("player", "player_design", false),
+        ("dlcs", "dlcs", false),
+        ("global-at", "global_at", false),
     ];
     for (opt, key, numeric) in names {
         if let Some(v) = opts.get(opt) {
@@ -96,6 +104,10 @@ fn main() {
         }
     }
     settings.set("global_seed", global_seed).unwrap();
+    if let Some(path) = opts.get("designs") {
+        let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("--designs {path}: {e}"));
+        settings.set("designs_text", text).unwrap();
+    }
     let newgame: Table = lua.load("return require('engine.newgame')").eval().expect("engine.newgame");
     let generate: stellar_sim::mlua::Function = newgame.get("generate_text").unwrap();
     let (gamestate, meta, summary): (String, String, String) =
