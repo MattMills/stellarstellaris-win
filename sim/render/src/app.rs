@@ -1043,10 +1043,12 @@ impl App {
             // (27 left of the gridbox's 34: the game's frames have the icons' left edge at x = 5,
             // inside the bar, with and without a view open [I: measured; the rule not read])
             e.parent = Some([-225.0 + 34.0 - 27.0, 35.0 + 50.0 + 40.0 * i as f32, 0.0, 0.0]);
-            e.only = Some(vec!["right_icon".into()]);
+            // (the entry's `button` takes the clicks: right_icon is an iconType, never a button;
+            // the button's normal frame draws nothing)
+            e.only = Some(vec!["right_icon".into(), "button".into()]);
             e.sprites.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("GFX_topbar_{v}_button")));
             // a click toggles its view (CInGameIdler::ToggleTopBarView)
-            e.actions.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("view:{v}")));
+            e.actions.push((format!("{prefix}/maingui_left_bar_button/button"), format!("view:{v}")));
             e.prefix = Some(prefix);
             specs.push(e);
         }

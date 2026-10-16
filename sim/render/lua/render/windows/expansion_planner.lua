@@ -1,15 +1,14 @@
--- render/windows/expansion.lua : the left bar's Expansion Planner (interface/
+-- render/windows/expansion_planner.lua : the left bar's Expansion Planner (interface/
 -- expansion_planner_view.gui, CExpansionPlannerView; docs/windows/economy.md), bound to the
 -- save's world.
 --
---   local ex = require("render.windows.expansion")
---   local d = ex.data(country_id, state, game_dir)      -- in the world's runtime: plain values
---   local items, report = ex.build(game_dir, db, screen, texture_size, loc, d, state)
+--   ex.extract(game_dir) -> data     the player's candidates, read where the galaxy is (views.rs)
+--   ex.build(ctx, data, state) -> items, report
 --
--- state (the view's own, App::view_state): surveyed, colonizable, terraforming ("1"/"0": the
--- filters' checkboxes; on, off, off when the view opens), habitability (the minimum, 0..100),
--- species (a species id; none: All), sort (a column: class, habitability, name, features, size,
--- distance) and reverse ("1": the other way).
+-- state (the view's own, App::view_state, `view_set:`): surveyed, colonizable, terraforming
+-- ("1"/"0": the filters' checkboxes; on, off, off when the view opens), habitability (the
+-- minimum, 0..100), species (a species id; none: All), dropdown (the one open), sort (a column:
+-- class, habitability, name, features, size, distance) and reverse ("1": the other way).
 --
 -- The rows (CExpansionPlannerView::RefreshModel, ValidatePlanetFilters, RefreshPlanetData,
 -- CExpansionTargetEntry::UpdateEntry): every planet of the systems the player knows at medium
@@ -19,7 +18,7 @@
 -- planet id order).
 
 local gui = require("render.gui")
-local text = require("render.windows.text")
+local text = require("render.loctext")
 
 local ex = {}
 
@@ -194,10 +193,9 @@ local function distances(world, from)
     return dist
 end
 
-function ex.data(cid, state, game_dir)
+function ex.data(cid, game_dir)
     local world = require("engine.world")
     local galaxy = require("render.galaxy")
-    state = state or {}
     local d = definitions(game_dir)
     local c = world.object("country", cid)
     local out = { country = cid, rows = {}, species = {} }
@@ -241,11 +239,6 @@ function ex.data(cid, state, game_dir)
             end
         end
     end
-    local list = colonizers
-    local chosen = tonumber(state.species)
-    if chosen then
-        list = { chosen }
-    end
     -- the systems known at medium intel or better (intel_level: one value per system id)
     local intel = numbers(world.field(c, "intel_level"))
     local surveyed = {}
@@ -268,6 +261,8 @@ function ex.data(cid, state, game_dir)
             techs[tostring(v):gsub('"', "")] = true
         end
     end
+    -- the colonisation technology (the Colonizable filter needs it)
+    out.colonization_tech = techs.tech_colonization_1 == true
     -- the capital's system, the distances from it
     local capital_system
     local cap = world.object("colony", tonumber(world.field(c, "capital")))
@@ -277,9 +272,7 @@ function ex.data(cid, state, game_dir)
         capital_system = tonumber(world.path(cap_planet, "coordinate", "origin"))
     end
     local dist = capital_system and distances(world, capital_system) or {}
-    local filters = { surveyed = flag(state, "surveyed"), colonizable = flag(state, "colonizable"), terraforming = flag(state, "terraforming") }
-    local any = filters.surveyed or filters.colonizable or filters.terraforming
-    local min_hab = tonumber(state.habitability) or 0
+    -- the candidates (the filters that need no view state; the others: build)
     for _, sid in ipairs(world.ids.galactic_object or {}) do
         if (intel[sid + 1] or 0) >= 2 then
             local sys = world.object("system", sid)
@@ -299,15 +292,6 @@ function ex.data(cid, state, game_dir)
                 end
                 local unowned = p and world.field(p, "owner") == nil
                 local ok = p and ((unowned and cdef and cdef.colonizable) or important)
-                local is_surveyed = surveyed[pid] == true
-                if ok and not is_surveyed and any then
-                    ok = false
-                end
-                -- the colonizable filter: the colonisation technology [I: CanColonize not
-                -- evaluated: a surveyed planet with a habitability above 0]
-                if ok and filters.colonizable and not techs.tech_colonization_1 then
-                    ok = false
-                end
                 if ok and owner and owner >= 0 and owner ~= cid and met[owner] then
                     ok = false
                 end
@@ -316,26 +300,16 @@ function ex.data(cid, state, game_dir)
                 if ok and important and not techs.tech_terrestrial_sculpting then
                     ok = false
                 end
-                local hab = 0
-                if ok and is_surveyed then
-                    for _, sp in ipairs(list) do
-                        local s = world.object("species", sp)
-                        if s then
-                            hab = math.max(hab, math.floor(habitability(world, d, s, pid, class) * 100 + 1e-9))
+                if ok then
+                    local is_surveyed = surveyed[pid] == true
+                    -- the habitability for each coloniser (surveyed only)
+                    local habs = {}
+                    if is_surveyed then
+                        for _, sp in ipairs(colonizers) do
+                            local s = world.object("species", sp)
+                            habs[#habs + 1] = { species = sp, value = s and math.floor(habitability(world, d, s, pid, class) * 100 + 1e-9) or 0 }
                         end
                     end
-                    if hab < min_hab then
-                        ok = false
-                    end
-                    if ok and filters.colonizable and hab <= 0 then
-                        ok = false
-                    end
-                    if ok and filters.terraforming and not important then
-                        ok = false
-                    end
-                end
-                if ok then
-                    local dd = dist[sid]
                     local rare = 0
                     for _, dep in ipairs(numbers(world.field(p, "deposits"))) do
                         local o = world.object("deposit", dep)
@@ -346,11 +320,12 @@ function ex.data(cid, state, game_dir)
                             rare = rare + 1
                         end
                     end
+                    local dd = dist[sid]
                     out.rows[#out.rows + 1] = {
                         id = pid, system = sid, class = class, icon = cdef and cdef.icon or "GFX_planet_type_unknown",
                         size = tonumber(world.field(p, "planet_size")) or 0,
                         distance = dd and math.floor(dd) or -1,
-                        surveyed = is_surveyed, habitability = hab, rare = rare,
+                        surveyed = is_surveyed, habs = habs, rare = rare,
                         name = galaxy.name_block(world.field(p, "name")),
                         terraform = important,
                     }
@@ -360,6 +335,52 @@ function ex.data(cid, state, game_dir)
     end
     -- the order (SortModel: a stable sort of the rows in planet id order)
     table.sort(out.rows, function(a, b) return a.id < b.id end)
+    return out
+end
+
+-- ex.extract(game_dir): the player's planner (views.rs: where the galaxy is read)
+function ex.extract(game_dir)
+    return ex.data(require("render.topbar").player(), game_dir)
+end
+
+-- ValidatePlanetFilters' checks that depend on the view's state: the rows shown, each with its
+-- habitability (the most over the species chosen: All, every coloniser)
+function ex.filter(data, state)
+    local filters = { surveyed = flag(state, "surveyed"), colonizable = flag(state, "colonizable"), terraforming = flag(state, "terraforming") }
+    local any = filters.surveyed or filters.colonizable or filters.terraforming
+    local min_hab = tonumber(state.habitability) or 0
+    local chosen = tonumber(state.species)
+    local out = {}
+    for _, r in ipairs(data.rows or {}) do
+        local ok = true
+        if not r.surveyed and any then
+            ok = false
+        end
+        -- the Colonizable filter: the colonisation technology [I: CanColonize not evaluated: a
+        -- surveyed planet with a habitability above 0]
+        if ok and filters.colonizable and not data.colonization_tech then
+            ok = false
+        end
+        local hab = 0
+        if ok and r.surveyed then
+            for _, h in ipairs(r.habs or {}) do
+                if not chosen or h.species == chosen then
+                    hab = math.max(hab, h.value)
+                end
+            end
+            if hab < min_hab or (filters.colonizable and hab <= 0) or (filters.terraforming and not r.terraform) then
+                ok = false
+            end
+        end
+        if ok then
+            local row = {}
+            for k, v in pairs(r) do
+                row[k] = v
+            end
+            row.habitability = hab
+            out[#out + 1] = row
+        end
+    end
     return out
 end
 
@@ -393,17 +414,19 @@ local function stable_sort(rows, fn, reverse)
     end)
 end
 
-function ex.build(game_dir, db, screen, texture_size, loc, data, state)
+-- ex.build(ctx, data, state): the window (ctx: game_dir, db, screen, texture_size, loc)
+function ex.build(ctx, data, state)
+    local game_dir, db, screen, texture_size, loc = ctx.game_dir, ctx.db, ctx.screen, ctx.texture_size, ctx.loc
     data = data or { rows = {} }
     state = state or {}
     local names = require("render.names")
     local frames, actions, texts = {}, {}, {}
-    actions[V .. "/close"] = "close_view"
+    actions[V .. "/close"] = "view_close"
     -- the filters' checkboxes: frame 1 unchecked, 2 checked [I: by the game's frame]
     for key, box in pairs({ surveyed = "filter_is_surveyed", colonizable = "filter_is_colonizable", terraforming = "filter_is_terraforming_candidate" }) do
         local on = flag(state, key)
         frames[F .. "/" .. box .. "/checked"] = on and 2 or 1
-        actions[F .. "/" .. box .. "/checked"] = "state:" .. key .. "=" .. (on and "0" or "1")
+        actions[F .. "/" .. box .. "/checked"] = "view_set:" .. key .. "=" .. (on and "0" or "1")
     end
     texts[F .. "/filter_habitability/selected"] = ex.habitability_text(tonumber(state.habitability) or 0)
     -- the species: All, or the one chosen
@@ -420,13 +443,13 @@ function ex.build(game_dir, db, screen, texture_size, loc, data, state)
     -- (OnClickSort: the same column again turns the order, another starts in its own order)
     for key, button in pairs(SORT_BUTTONS) do
         local flip = key == sort and not reverse
-        actions[T .. "/" .. button] = "state:sort=" .. key .. ";reverse=" .. (flip and "1" or "0")
+        actions[T .. "/" .. button] = "view_set:sort=" .. key .. ";reverse=" .. (flip and "1" or "0")
     end
     -- the drop-downs: opened by their arrow (state dropdown = habitability | species), closed by
     -- a choice or the arrow again
     local open = state.dropdown
     for _, dd in ipairs({ "habitability", "species" }) do
-        actions[F .. "/filter_" .. dd .. "/expand_button"] = "state:dropdown=" .. (open == dd and "" or dd)
+        actions[F .. "/filter_" .. dd .. "/expand_button"] = "view_set:dropdown=" .. (open == dd and "" or dd)
     end
     -- the window under its filters (laid out after the rows, so the filters and an open list are
     -- over them, as the .gui orders them)
@@ -436,7 +459,7 @@ function ex.build(game_dir, db, screen, texture_size, loc, data, state)
     })
     -- the rows: an expansion_target_entry each down the list, 55 apart [I: measured on the
     -- game's frame: the entry's 54 and a spacing of 1], as many as the list shows
-    local rows = data.rows or {}
+    local rows = ex.filter(data, state)
     for _, r in ipairs(rows) do
         r.name_text = r.name and names.format(loc, r.name) or ""
         r.class_name = loc and loc.has(r.class) and loc.get(r.class) or r.class
@@ -505,12 +528,12 @@ function ex.build(game_dir, db, screen, texture_size, loc, data, state)
         local choices = {}
         if open == "habitability" then
             for _, n in ipairs({ 100, 80, 60, 40, 20, 0 }) do
-                choices[#choices + 1] = { text = ex.habitability_text(n), action = "state:habitability=" .. n .. ";dropdown=" }
+                choices[#choices + 1] = { text = ex.habitability_text(n), action = "view_set:habitability=" .. n .. ";dropdown=" }
             end
         else
-            choices[1] = { text = "ALL", action = "state:species=;dropdown=" }
+            choices[1] = { text = "ALL", action = "view_set:species=;dropdown=" }
             for _, s in ipairs(data.species or {}) do
-                choices[#choices + 1] = { text = s.name and names.format(loc, s.name) or "", action = "state:species=" .. s.id .. ";dropdown=" }
+                choices[#choices + 1] = { text = s.name and names.format(loc, s.name) or "", action = "view_set:species=" .. s.id .. ";dropdown=" }
             end
         end
         local window = open == "habitability" and "expansion_planner_habitability_dropdown_entry" or "expansion_planner_dropdown_entry"

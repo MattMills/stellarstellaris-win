@@ -1,19 +1,19 @@
 -- render/windows/market.lua : the galactic market (interface/market_view.gui, CMarketView;
 -- docs/windows/economy.md), bound to the save's world.
 --
---   local market = require("render.windows.market")
---   local d = market.data(country_id, state, game_dir)  -- in the world's runtime: plain values
---   local items, report = market.build(game_dir, db, screen, texture_size, loc, d, state)
+--   market.extract(game_dir) -> data    the player's market, read where the galaxy is (views.rs)
+--   market.build(ctx, data, state) -> items, report
 --
--- state (the view's own, App::view_state): tab ("market" | "slave_market"), resource (the one
--- selected; else the first the country can trade, as CMarketView::UpdateMarketTab picks it).
+-- state (the view's own, App::view_state, `view_set:`): tab ("market" | "slave_market"),
+-- resource (the one selected; else the first the country can trade, as
+-- CMarketView::UpdateMarketTab picks it).
 --
 -- The prices are CMarket's (CalcResourcePriceForAmount, NMarketUtil::CalcFluctuation and
 -- CalcPriceWithSimulatedFluctuation, AddTradeFeeToPrice), computed in the game's fixed point
 -- (1.0 = 100000, products and quotients truncated).
 
 local gui = require("render.gui")
-local text = require("render.windows.text")
+local text = require("render.loctext")
 
 local market = {}
 
@@ -207,10 +207,9 @@ local function by_resource(world, block)
     return out
 end
 
--- market.data(country_id, state, game_dir) -> the window's values (plain: they cross runtimes)
-function market.data(cid, state, game_dir)
+-- market.data(country_id, game_dir) -> the window's values (plain: they cross runtimes)
+function market.data(cid, game_dir)
     local world = require("engine.world")
-    state = state or {}
     local d = definitions(game_dir)
     local D = d.defines
     local c = world.object("country", cid)
@@ -281,42 +280,29 @@ function market.data(cid, state, game_dir)
     -- the resources the grid lists (CMarket::GetValidAndVisibleResources): tradable with a
     -- market amount and price; on the internal market only those with an income [I: which
     -- resources count their expenses instead: not read]
-    local valid = {}
+    -- each with its prices (the one selected is the view's state: build)
     for i, r in ipairs(d.resources) do
         local tradable = r.tradable and r.market_amount > 0 and r.market_price > 0
         if tradable and r.key ~= currency and (access or (income[r.key] or 0) > 0) then
-            valid[#valid + 1] = r
-            out.resources[#out.resources + 1] = { key = r.key, stock = stock[r.key] or 0, index = i }
-        end
-    end
-    -- the selected resource: the state's, if valid, else the first valid one
-    local sel
-    for _, r in ipairs(valid) do
-        if r.key == state.resource then
-            sel = r
-        end
-    end
-    sel = sel or valid[1]
-    if sel then
-        out.selected = sel.key
-        local f0 = fx(fluct[sel.key] or 0)
-        out.unit_buy = price_for(D, sel, ONE, true, f0, internal, fee)
-        out.unit_sell = price_for(D, sel, ONE, false, f0, internal, fee)
-        for _, ri in ipairs(out.resources) do
-            if ri.key == sel.key then
-                out.bought = bought[ri.index] or 0
-                out.sold = sold[ri.index] or 0
+            local f0 = fx(fluct[r.key] or 0)
+            local e = {
+                key = r.key, stock = stock[r.key] or 0,
+                unit_buy = price_for(D, r, ONE, true, f0, internal, fee),
+                unit_sell = price_for(D, r, ONE, false, f0, internal, fee),
+                bought = bought[i] or 0, sold = sold[i] or 0,
+                buy = {}, sell = {},
+            }
+            for _, mult in ipairs(D.TRADE_AMOUNT_MULTIPLIER) do
+                local amount = mult * r.market_amount
+                local bp = price_for(D, r, fx(amount), true, f0, internal, fee)
+                local sp = price_for(D, r, fx(amount), false, f0, internal, fee)
+                -- buy: the price rounded up, too dear beyond the currency's stockpile; sell:
+                -- rounded down, not possible beyond the resource's stockpile (CanBuyResource,
+                -- CanSellResource)
+                e.buy[#e.buy + 1] = { amount = amount, price = math.ceil(bp / ONE), ok = fx(out.currency_stock) - bp >= 0 }
+                e.sell[#e.sell + 1] = { amount = amount, price = math.floor(sp / ONE), ok = (stock[r.key] or 0) >= amount }
             end
-        end
-        out.buy, out.sell = {}, {}
-        for _, mult in ipairs(D.TRADE_AMOUNT_MULTIPLIER) do
-            local amount = mult * sel.market_amount
-            local bp = price_for(D, sel, fx(amount), true, f0, internal, fee)
-            local sp = price_for(D, sel, fx(amount), false, f0, internal, fee)
-            -- buy: the price rounded up, too dear beyond the currency's stockpile; sell: rounded
-            -- down, not possible beyond the resource's stockpile (CanBuyResource, CanSellResource)
-            out.buy[#out.buy + 1] = { amount = amount, price = math.ceil(bp / ONE), ok = fx(out.currency_stock) - bp >= 0 }
-            out.sell[#out.sell + 1] = { amount = amount, price = math.floor(sp / ONE), ok = (stock[sel.key] or 0) >= amount }
+            out.resources[#out.resources + 1] = e
         end
     end
     -- the monthly trades: this country's [I: their save fields, none in the saves read]
@@ -400,13 +386,19 @@ local function grid_entries(ctx, items, report, file, window, path, list, each)
 end
 market.grid_entries = grid_entries
 
-function market.build(game_dir, db, screen, texture_size, loc, data, state)
+-- market.extract(game_dir): the player's market (views.rs: where the galaxy is read)
+function market.extract(game_dir)
+    return market.data(require("render.topbar").player(), game_dir)
+end
+
+-- market.build(ctx, data, state): the window (ctx: game_dir, db, screen, texture_size, loc)
+function market.build(ctx, data, state)
+    local game_dir, db, screen, texture_size, loc = ctx.game_dir, ctx.db, ctx.screen, ctx.texture_size, ctx.loc
     data = data or {}
     state = state or {}
-    local ctx = { game_dir = game_dir, db = db, screen = screen, texture_size = texture_size, loc = loc }
     local slave = state.tab == "slave_market"
     local hide, texts, actions, sizes, disabled = {}, {}, {}, {}, {}
-    actions[V .. "/close"] = "close_view"
+    actions[V .. "/close"] = "view_close"
     -- the tabs (CGameGraphics::UpdateTabVisibility: the active tab's _active button, the other's
     -- plain one; the slave market's only with Megacorp)
     hide[V .. (slave and "/tab_slave_market" or "/tab_market")] = true
@@ -415,11 +407,11 @@ function market.build(game_dir, db, screen, texture_size, loc, data, state)
         hide[V .. "/tab_slave_market"] = true
         hide[V .. "/tab_slave_market_active"] = true
     end
-    actions[V .. "/tab_market"] = "state:tab=market"
+    actions[V .. "/tab_market"] = "view_set:tab=market"
     -- (the slave market's tab takes clicks only with the galactic market's access:
     -- CMarketView::Update)
     if data.access then
-        actions[V .. "/tab_slave_market"] = "state:tab=slave_market"
+        actions[V .. "/tab_slave_market"] = "view_set:tab=slave_market"
     else
         disabled[V .. "/tab_slave_market"] = true
     end
@@ -431,13 +423,21 @@ function market.build(game_dir, db, screen, texture_size, loc, data, state)
     sizes[M .. "/sell_box/empire_list"] = { 240, 225 }
 
     local cur = data.currency or "trade"
-    local sel = data.selected
+    -- the selected resource: the state's if the grid lists it, else the first (UpdateMarketTab)
+    local selr
+    for _, r in ipairs(data.resources or {}) do
+        if r.key == state.resource then
+            selr = r
+        end
+    end
+    selr = selr or (data.resources or {})[1]
+    local sel = selr and selr.key
     if sel then
-        texts[M .. "/buy_box/unit_price_buy"] = text.format(loc, "RESOURCE_UNIT_PRICE", { KEY = sel, CURRENCY_KEY = cur, PRICE = "§Y" .. market.two(data.unit_buy) .. "§!" })
-        texts[M .. "/sell_box/unit_price_sell"] = text.format(loc, "RESOURCE_UNIT_PRICE", { KEY = sel, CURRENCY_KEY = cur, PRICE = "§Y" .. market.two(data.unit_sell) .. "§!" })
+        texts[M .. "/buy_box/unit_price_buy"] = text.format(loc, "RESOURCE_UNIT_PRICE", { KEY = sel, CURRENCY_KEY = cur, PRICE = "§Y" .. market.two(selr.unit_buy) .. "§!" })
+        texts[M .. "/sell_box/unit_price_sell"] = text.format(loc, "RESOURCE_UNIT_PRICE", { KEY = sel, CURRENCY_KEY = cur, PRICE = "§Y" .. market.two(selr.unit_sell) .. "§!" })
         local name = text.format(loc, sel, {})
-        texts[M .. "/total_bought_text"] = text.format(loc, "MARKET_TOTAL_BOUGHT", { RESOURCE = name, KEY = sel, VALUE = "§Y" .. math.floor(data.bought or 0) .. "§!" })
-        texts[M .. "/total_sold_text"] = text.format(loc, "MARKET_TOTAL_SOLD", { RESOURCE = name, KEY = sel, VALUE = "§Y" .. math.floor(data.sold or 0) .. "§!" })
+        texts[M .. "/total_bought_text"] = text.format(loc, "MARKET_TOTAL_BOUGHT", { RESOURCE = name, KEY = sel, VALUE = "§Y" .. math.floor(selr.bought or 0) .. "§!" })
+        texts[M .. "/total_sold_text"] = text.format(loc, "MARKET_TOTAL_SOLD", { RESOURCE = name, KEY = sel, VALUE = "§Y" .. math.floor(selr.sold or 0) .. "§!" })
     else
         hide[M .. "/buy_box/unit_price_buy"] = true
         hide[M .. "/sell_box/unit_price_sell"] = true
@@ -477,14 +477,14 @@ function market.build(game_dir, db, screen, texture_size, loc, data, state)
             return {
                 text = { [p .. "/resource_amount"] = "£" .. r.key .. "£" .. market.stockpile(r.stock) },
                 hide = { [p .. "/selected_overlay"] = (r.key ~= sel) or nil, [p .. "/disabled_bg"] = true },
-                actions = { [p] = "state:resource=" .. r.key },
+                actions = { [p] = "view_set:resource=" .. r.key },
             }
         end)
     end
     -- the buy and sell grids: a market_trade_resource_grid_entry per TRADE_AMOUNT_MULTIPLIER,
     -- 75 x 88 apart, 3 a row: the resource's large icon, the amount, the price in the currency
     if sel then
-        for _, side in ipairs({ { "buy_box/buy_resources_grid", data.buy or {}, true }, { "sell_box/sell_resources_grid", data.sell or {}, false } }) do
+        for _, side in ipairs({ { "buy_box/buy_resources_grid", selr.buy or {}, true }, { "sell_box/sell_resources_grid", selr.sell or {}, false } }) do
             local gr = rect_of(M .. "/" .. side[1])
             if gr then
                 grid_entries(ctx, items, report, FILE, "market_trade_resource_grid_entry", M .. "/" .. side[1], side[2], function(e, p)

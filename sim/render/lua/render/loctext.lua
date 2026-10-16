@@ -1,9 +1,9 @@
--- render/windows/text.lua : a localisation text with the values the game fills in at run time
+-- render/loctext.lua : a localisation text with the values the game fills in at run time
 -- ($NAME$, $NAME|format$), for windows whose texts the game formats (CLocalizationString's
 -- variables). The result keeps the colour codes (§X ... §!) and icons (£name£) that render.gui
 -- splits into spans.
 --
---   local text = require("render.windows.text")
+--   local text = require("render.loctext")
 --   text.format(loc, "MARKET_TRADE_FEE_VALUE", { VALUE = 0.3 })   -- "Market Fee: §Y30%§!"
 --   text.number(1234.5, "Y1")                                     -- "§Y1234.5§!"
 --
