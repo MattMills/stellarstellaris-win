@@ -40,6 +40,7 @@ pub const KEYS: &[&str] = &[
     "scenario", "shape", "empires", "fallen_empires", "marauders", "nomads", "advanced_empires",
     "num_hyperlanes", "num_gateways", "num_wormhole_pairs", "habitability", "primitive", "crises",
     "difficulty", "player_locations", "clustered", "seed", "global_seed", "name", "start_year",
+    "num_guaranteed_colonies",
 ];
 
 impl NewGameSettings {
