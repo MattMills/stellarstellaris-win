@@ -1180,6 +1180,8 @@ freed when the device is polled).
   the face is Orbitron's TrueType (32 px); the bitmap gfx/fonts/orbitron stands in, stretched
   1.7 x upright and coloured to the game's frame by eye; centred on its place.
 
+- The fleet windows (fleet_view, ship_view, the Fleet Manager): [docs/windows/fleet.md](windows/fleet.md).
+
 ### Not done yet
 
 - The galaxy star labels' own rules (CGalacticObjectMapIcon not read: owner flags, the capital
