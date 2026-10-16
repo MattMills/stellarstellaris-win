@@ -513,6 +513,14 @@ function countries.create(t)
         if lid then world.set(world.object("country", id), "ruler", lid) end
     end
     if objects.leaders then objects.leaders.initialize_policies(id) end
+    -- default_ships (yes unless the effect says no): CCountry::SetDefaultShipDesigns, engine.ai.designer
+    -- of branch ai-fleets when it is there (no stations)
+    if t.default_ships ~= false then
+        local okd, designer = pcall(require, "engine.ai.designer")
+        if okd and type(designer) == "table" and designer.set_default_designs then
+            pcall(designer.set_default_designs, id, false)
+        end
+    end
     return id
 end
 

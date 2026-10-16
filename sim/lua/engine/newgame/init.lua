@@ -426,6 +426,13 @@ function newgame.start_script(game)
                 if ok then require("engine.research").add_technology(e.index, name) end
             end
         end
+        -- the country's default designs (CCountry::SetDefaultShipDesigns, engine.ai.designer of branch
+        -- ai-fleets, stations included) when that module is there; else designs are made on demand
+        local okd, designer = pcall(require, "engine.ai.designer")
+        if okd and type(designer) == "table" and designer.set_default_designs then
+            local made = designer.set_default_designs(e.index, true)
+            e.default_designs = made
+        end
         objects.leaders.initialize_policies(e.index)
         -- the starbase's station: a design of its level's size (the country's default starport
         -- design, objects_fleets' designs.default; the 2200.01.11 save's stations have their
@@ -435,7 +442,7 @@ function newgame.start_script(game)
         local ship = station and world.object("ships", station)
         if ship and world.field(ship, "ship_design_implementation") == nil then
             local level = tostring(world.field(sb, "level") or ""):gsub('"', ""):gsub("^starbase_level_", "starbase_")
-            local did = objects.fleets.designs.default(e.index, level)
+            local did = e.default_designs and e.default_designs[level] or objects.fleets.designs.default(e.index, level)
             if did then
                 local sdi = {}
                 world.append(sdi, "design", did)

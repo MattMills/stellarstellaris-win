@@ -272,6 +272,7 @@ return function(eval, O)
             else t.civics = list_of_names(p.civics, "civic") end
         end
         t.origin = text_of(p.origin)
+        if p.default_ships then t.default_ships = O.yes_of(p.default_ships, true) end
         t.graphical_culture = text_of(p.graphical_culture)
         t.name_list = text_of(p.name_list)
         if t.name_list == "random" then t.name_list = nil end
