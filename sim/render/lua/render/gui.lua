@@ -229,12 +229,27 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
         p = math.max(0, math.min(1, p))
         local fw, fh = frame_size(name)
         w, h = w or fw, h or fh
-        local first = sprite_item(path, name, frame, x, y, w, h, button, { 0, p }, true)
+        local first
+        if s.startend then
+            -- progress_startend.shader's PixelTexture: up to the state, textureFile1's middle row
+            -- (v 1/3..2/3) with its start cap (v 0..1/3) laid over it at the bar's left and its end
+            -- cap (v 2/3..1) shifted by 1 - state, so its right end is at the state; after the
+            -- state, textureFile2 [V] (gfx/FX/progress_startend.shader). Each cap is laid over by
+            -- its alpha, as the shader's lerps do (the middle's alpha kept there [I])
+            if p > 0 then
+                first = sprite_item(path, name, frame, x, y, w, h, button, { 0, p, 1 / 3, 2 / 3, 0 }, true)
+                sprite_item(path .. "/start", name, frame, x, y, w, h, nil, { 0, p, 0, 1 / 3, 0 }, true)
+                sprite_item(path .. "/stop", name, frame, x, y, w, h, nil, { 0, p, 2 / 3, 1, 1 - p }, true)
+            end
+        else
+            first = sprite_item(path, name, frame, x, y, w, h, button, { 0, p }, true)
+        end
         if s.texture2 and p < 1 then
             local item = sprite_item(path .. "/empty", name, frame, x, y, w, h, nil, { p, 1 }, true)
             if item then
                 item.texture = s.texture2
             end
+            first = first or item
         end
         return first
     end

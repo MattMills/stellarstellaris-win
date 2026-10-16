@@ -37,8 +37,9 @@ pub enum GuiItem {
         /// texel greyed, GreyOutLuminosity 0.85, brightness 0.75)
         disabled: bool,
         /// the part of its frame drawn, u0..u1 (a progress bar's two textures; the rectangle cut
-        /// the same)
-        clip: [f32; 2],
+        /// the same), the texture's v0..v1 and a shift of its u (progress_startend's rows and
+        /// end cap): { u0, u1, v0, v1, shift }
+        clip: [f32; 5],
     },
     Text {
         path: String,
@@ -193,8 +194,14 @@ pub(crate) fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
                 },
                 disabled: it.get::<Option<bool>>("disabled")?.unwrap_or(false),
                 clip: match it.get::<Option<Table>>("clip")? {
-                    Some(c) => [c.get(1)?, c.get(2)?],
-                    None => [0.0, 1.0],
+                    Some(c) => [
+                        c.get(1)?,
+                        c.get(2)?,
+                        c.get::<Option<f32>>(3)?.unwrap_or(0.0),
+                        c.get::<Option<f32>>(4)?.unwrap_or(1.0),
+                        c.get::<Option<f32>>(5)?.unwrap_or(0.0),
+                    ],
+                    None => [0.0, 1.0, 0.0, 1.0, 0.0],
                 },
             });
         } else {

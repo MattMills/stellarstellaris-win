@@ -148,7 +148,26 @@ chunk run on the started world, its result logged). Checked on .24 (/root/ngf): 
 its design replayed by command, the tiny parity run (the game's known systems, 10 days) and medium
 seed 7 (30 days), 0 errors; cargo test 24 passed.
 
-## 6. Not done
+## 6. The bar's look (progress_startend.shader)
+
+GFX_progressbar_933 is drawn with `gfx/FX/progress_startend.shader` **[V]** (the file): its
+textureFile1 (609 x 102) is three rows of 34, a start cap, the framed middle and an end cap. Up to
+the state each pixel is the middle row with the start cap laid over it by its alpha and the end
+cap, shifted by `1 - state` in u (its right end at the state), laid over by its alpha; after the
+state, textureFile2. The renderer drew textureFile1 whole, its three rows squeezed into the 34
+pixel bar: a thin fill with a faded left end and no frame, which looked shifted left of the empty
+part. Now gui.lua draws the three rows as the shader composes them (an item's `clip` carries the
+texture's v range and a u shift: `{ u0, u1, v0, v1, shift }`, scene.rs; a row is sampled half a
+texel in), for every progressbarType whose effectFile is progress_startend (the planet view's,
+the fleets' health and the queues' bars too).
+
+Checked against the real game's load screens (loading a save in view mode, its Xvfb display
+captured every 0.2 s: /root/nlb/gcap.sh on .24) at 1600x900 and 1920x1080: the bar's frame at the
+same place (x 485..1094, top 785 at 1600x900; x 655..1264, top 965 at 1920x1080), the fill inside
+it from its left edge, the middle's frame and the end cap's light at the state. The other
+progress_startend bars follow the same shader and were not compared with game frames.
+
+## 7. Not done
 
 - The game's own frames of its load screen (the headless path writes gamestates, not frames): the
   load screen's picture scaling and the status window's place are unverified against a game
