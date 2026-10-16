@@ -1694,7 +1694,7 @@ impl App {
                 .load("return require('render.newgame_setup').settings(RENDER_NEWGAME)")
                 .eval()
                 .map_err(|e| format!("render.newgame_setup.settings: {e}"))?;
-            crate::newgame::NewGameSettings::from_lua(&t).map_err(|e| format!("the new game's settings: {e}"))?
+            crate::newgame::NewGameSettings::from_lua(&self.runtime.lua, &t).map_err(|e| format!("the new game's settings: {e}"))?
         };
         let summary = gui::newgame_summary(&self.runtime)?;
         self.log.push(format!("new game: play {summary}"));
