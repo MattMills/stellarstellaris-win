@@ -1334,6 +1334,7 @@ freed when the device is polled).
 - The planet, fleet and starbase windows' contents (their lists and tabs): no game frame to
   check them against (the headless game cannot open a window: no `select`), and the full
   layouts overlap until each window's Update rules (which children show) are read.
+- The starbase, megastructure and waystation windows: [windows/starbase.md](windows/starbase.md).
 - Box selection, right-click orders; the camera's slide between systems, the system camera's
   near and far planes, the zoom on a focused object (CalcMinZoom).
 - The headless game has no `speed` or `select` commands (input does those there: the keys, a
