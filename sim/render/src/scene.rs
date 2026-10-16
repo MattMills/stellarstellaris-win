@@ -1181,7 +1181,9 @@ pub fn add_gui(
                 let (tw, th) = (img.width as f32, img.height as f32);
                 let n = (*frames).max(1);
                 let mut frame = (*frame).max(1);
-                if *button && (2..=4).contains(&n) {
+                // (a button in another frame keeps it: the game's frames show an active button,
+                // NGuiUtil::SetButtonActive's frame 3, unchanged under the mouse)
+                if *button && (2..=4).contains(&n) && frame == 1 {
                     frame = match states.get(path) {
                         Some(ButtonState::Hover) => 2,
                         Some(ButtonState::Pressed) => 3.min(n),

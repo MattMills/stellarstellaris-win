@@ -360,7 +360,10 @@ function technology.build(ctx, data, state)
             actions[V .. "/researched_window/tab_" .. a] = "view_set:select=;researched=" .. a
         end
     end
-    local r = layout("technology_view_window", { hide = hide, text = text, actions = actions })
+    -- UpdatePopOutButtonStates: Researched active while its window shows
+    -- (NGuiUtil::SetButtonActive: the frame 4 x active - 1, 3)
+    local frames = { [V .. "/researched"] = state.researched and 3 or nil }
+    local r = layout("technology_view_window", { hide = hide, text = text, actions = actions, frames = frames })
     -- the description's lines (SELECT_TECHNOLOGY_DESC has "\n"s), 17 apart [I: measured]
     for i = #items, 1, -1 do
         local it = items[i]
