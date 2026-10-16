@@ -375,7 +375,9 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             end
         elseif ICONS[kind] then
             local button
-            if kind ~= "icontype" and field("alwaysTransparent") ~= "yes" then
+            -- buttons, and an icon the game takes clicks on (opts.actions names it: the left
+            -- bar's view icons)
+            if (kind ~= "icontype" or (opts.actions and opts.actions[path])) and field("alwaysTransparent") ~= "yes" then
                 button = { name = name, id = field("id"), action = opts.actions and opts.actions[path] }
             end
             if sprite then
