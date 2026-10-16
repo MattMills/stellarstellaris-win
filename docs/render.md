@@ -554,9 +554,9 @@ command file takes the same shots of both, and makes the same input in both.
 | `tick N` (`frames N`) | N frames run |
 | `bindings` | the bindings (section 12): `ok bindings N: CONTEXT TRIGGER INPUT ACTION SOURCE; ...` |
 | `gui off\|on` | the GUI (the top bar, the outliner, a system's orbit lines) hidden or shown |
+| `observe` | the game's console `observe` (headless.c calls OnExecute_Observe: the local human gets no country): the whole galaxy known, every country's borders, flags and names, every system's label, no sectors; the renderer's from then on, after each simulated day too (the top bar and outliner stay the player's here; the game's observer has none) |
 | `frame PATH.png` | `ok frame PATH W H MS` (MS: scene, upload, GPU and read-back); in lockstep the input given is taken and frames run until the camera arrives (at least 2: the clock's commands), as the game's `frame` waits for its picture to settle |
 | `frame PATH.png now` | the frame as it is (no frame run): the game's shows its camera as the input left it |
-| `observe` | the game's console `observe` (headless.c calls OnExecute_Observe: the local human gets no country): the whole galaxy known, every country's borders, flags and names, every system's label, no sectors; the renderer's from then on, after each simulated day too (the top bar and outliner stay the player's here; the game's observer has none) |
 | `frame -` | `ok frame - W H MS BYTES`, then the PNG's bytes |
 | `state` | JSON: screen, view, camera, date, the clock (paused, speed, loading, days run, a day's and a snapshot's ms), the selection, the input (pointer, buttons and keys held, the held actions going on, timestep, frames run), systems, fleets by movement state, FTL trails, size |
 | `bench SECONDS [FPS]` | frames at FPS (120) drawn as a window draws them, on the commands' one thread: what they took against the frame's time (section 12; `--bench SECONDS` measures the window's own way, the app on its UI thread) |
@@ -924,9 +924,14 @@ galaxy has no star class; the frames agree):
 ## 12. The window's controls: the clock, the camera, the selection
 
 The game's behaviour, read from the 4.5.2 Linux build's code **[V]** (inferences marked **[I]**),
-and how the renderer does it. Checked against the game's frame after a load (`headless/view.sh`,
+and how the renderer does it. The windows: [the planet view](windows/planet.md). Checked against the game's frame after a load (`headless/view.sh`,
 the same commands: `H:\code_working\tmp_sym\render3d\parity\7_controls.png`, the game left): the
 home system at the same place and scale, the top bar's clock, the outliner.
+
+- The ship designer and the combat view (`open_designer`, the 3D view as an inset in the GUI):
+  [windows/designer.md](windows/designer.md).
+- The diplomacy windows (Contacts, a country's diplomacy, the galactic community, the federation,
+  a war's overview): [windows/diplomacy.md](windows/diplomacy.md).
 
 - The economy windows (the market, the expansion planner; trade, the slave market): [windows/economy.md](windows/economy.md).
 
@@ -1320,8 +1325,12 @@ freed when the device is polled).
   the face is Orbitron's TrueType (32 px); the bitmap gfx/fonts/orbitron stands in, stretched
   1.7 x upright and coloured to the game's frame by eye; centred on its place.
 
+- The left bar's views (one open at a time, `views.rs`, `lua/render/windows/NAME.lua`): the research
+  and traditions views in [windows/research.md](windows/research.md).
+
 ### Not done yet
 
+- The map icons (star labels, system labels): docs/windows/mapicons.md.
 - The galaxy star labels' own rules (CGalacticObjectMapIcon not read: owner flags, the capital
   plate, which names show, the fleets' presence icons, the empire's map name); the fleet type
   icon's frame (the rule is read, the EShipClass order is not: by eye now); the capital label's
@@ -1330,6 +1339,7 @@ freed when the device is polled).
   (SNavigationTextConstants), the arrows' hover and click (to the neighbour).
 - Alerts: the other 60 conditions; the tradition and agenda costs' modifiers.
 - The left bar background's 65 px offset (by the frame), the thin outline under it in the game.
+- The outliner and the alerts: docs/windows/outliner.md (what is drawn, the rules read, what is left).
 - The outliner rows' icons (fleet status, leader level, planet portrait, starbase type, status
   lists), the military row's size line ("15/50 (15)"), the location's colour, the frontier
   sector, the tab buttons over Overview, the other tabs, collapsing groups.

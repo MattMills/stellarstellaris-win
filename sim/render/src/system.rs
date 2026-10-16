@@ -103,7 +103,7 @@ pub struct ShipLighting {
     pub ambient: (f32, f32),
 }
 
-fn read_lighting(t: &Table) -> mlua::Result<ShipLighting> {
+pub(crate) fn read_lighting(t: &Table) -> mlua::Result<ShipLighting> {
     let mut dirs = [[0.0; 3]; 3];
     let d: Table = t.get("dirs")?;
     for (k, v) in dirs.iter_mut().enumerate() {
@@ -599,6 +599,7 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
         sky,
         env,
         maps: None,
+        insets: g.insets,
     })
 }
 
@@ -645,7 +646,7 @@ fn orbit_circle(lines: &mut Vec<Line>, cx: f32, cy: f32, r: f32, rgb: [f32; 3], 
 /// locator (the mesh's; one the mesh lacks, such as an entity's own `locator = { name }`, at the
 /// parent's origin), with the parent's look.
 #[allow(clippy::too_many_arguments)]
-fn attachments(
+pub(crate) fn attachments(
     lib: &mut models::Library,
     rt: &Runtime,
     gd: &str,
@@ -938,5 +939,6 @@ pub fn model_scene(
         sky,
         env,
         maps: None,
+        insets: Vec::new(),
     })
 }
