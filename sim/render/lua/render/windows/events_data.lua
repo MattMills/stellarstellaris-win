@@ -356,7 +356,7 @@ local function mini_trigger(block, sc, pid)
                         ok = has
                     elseif k == "has_modifier" then
                         local want, has = text(v.text), false
-                        for _, m in ipairs(world.fields(c or {}, "timed_modifier")) do
+                        for _, m in ipairs(world.blocks(world.field(world.field(c or {}, "timed_modifier") or {}, "items") or {})) do
                             if type(m) == "table" and text(world.field(m, "modifier")) == want then
                                 has = true
                             end
@@ -521,6 +521,9 @@ local function event_entry(game_dir, e, pid)
     out.diplomatic = get(def, "diplomatic") == "yes"
     out.options = {}
     out.location_system = M.location_system(get(def, "location"), e.roots, pid)
+    -- its message type (CEvent::GetEventMessageType: the event's event_message_type, else the
+    -- event's [I]): the message settings' popup and auto-pause
+    out.message_type = text(get(def, "event_message_type")) or "EVENT_MESSAGE_TYPE"
     for index, o in ipairs(blocks_of(def, "option")) do
         local show = get(o, "default_hide_option") ~= "yes" and get(o, "is_dialog_only") ~= "yes"
         local t = get(o, "trigger")
@@ -694,7 +697,23 @@ function M.command(verb, a, b)
         local c = world.object("country", player())
         return "influence " .. tostring(world.path(c or {}, "modules", "standard_economy_module", "resources", "influence"))
     end
-    return "no command " .. tostring(verb)
+    if verb == "modifiers" then
+        local c = world.object("country", player())
+        local out = {}
+        for _, m in ipairs(world.blocks(world.field(world.field(c or {}, "timed_modifier") or {}, "items") or {})) do
+            if type(m) == "table" then
+                out[#out + 1] = tostring(world.field(m, "modifier")) .. ":" .. tostring(world.field(m, "days"))
+            end
+        end
+        return "modifiers " .. table.concat(out, " ")
+    end
+    if verb == "stock" then
+        local c = world.object("country", player())
+        local r = world.path(c or {}, "modules", "standard_economy_module", "resources")
+        return string.format("stock %s %s", tostring(a), tostring(world.field(r or {}, a)))
+    end
+    -- effect, start_situation, approach, pin, track, relic (render.windows.events_commands)
+    return require("render.windows.events_commands").command(verb, a, b)
 end
 
 -- the open events past their time (EVENT_AUTOSELECT_MONTHS: the simulation's 9 months after they
@@ -798,11 +817,62 @@ local function situations(pid)
     for _, e in ipairs(store_entries("situations", "situations")) do
         local b = e.block
         if tonumber(world.field(b, "country")) == pid then
+            -- the bar's ends: the first stage's start, the last one's end (the situations module's)
+            local lo, hi
+            for _, d in ipairs(world.blocks(world.field(b, "stage_durations") or {})) do
+                lo = lo or tonumber(world.field(d, "start"))
+                hi = tonumber(world.field(d, "end")) or hi
+            end
+            local t = text(world.field(b, "type"))
+            local tg = world.field(b, "target")
+            local ok, approaches = pcall(function()
+                return package.loaded["simscript.eval"] and require("render.windows.events_commands").approaches(e.id, t) or nil
+            end)
             out[#out + 1] = {
-                id = e.id, type = text(world.field(b, "type")), progress = tonumber(world.field(b, "progress")) or 0,
+                id = e.id, type = t, progress = tonumber(world.field(b, "progress")) or 0,
                 monthly = tonumber(world.field(b, "last_month_progress")) or 0, stage = tonumber(world.field(b, "stage")) or 0,
-                approach = text(world.field(b, "approach")),
+                approach = text(world.field(b, "approach")), start = lo or 0, finish = hi or 100,
+                target_kind = type(tg) == "table" and text(world.field(tg, "type")) or nil,
+                target_id = type(tg) == "table" and tonumber(world.field(tg, "id")) or nil,
+                approaches = ok and approaches or nil,
             }
+        end
+    end
+    return out
+end
+
+local function pins()
+    local ok, c = pcall(require, "render.windows.events_commands")
+    local p, t = {}, {}
+    if ok then
+        for k in pairs(c.pinned) do p[#p + 1] = k end
+        for k in pairs(c.tracked) do t[#t + 1] = k end
+    end
+    table.sort(p)
+    table.sort(t)
+    return p, t
+end
+
+-- the systems of the tracked entries (CPingMapManager: a tracker on the map at each; gfx/pingmap
+-- first_contact_tracker, situation_tracker, archaeological_site_tracker ...) -> { { kind, system } }
+local function trackers(pid, game_dir)
+    local _, tracked = pins()
+    local set = {}
+    for _, k in ipairs(tracked) do set[k] = true end
+    local out = {}
+    for _, f in ipairs(first_contacts(pid, nil)) do
+        if set["first_contact:" .. f.id] and f.location then
+            out[#out + 1] = { kind = "first_contact_tracker", system = f.location }
+        end
+    end
+    for _, sit in ipairs(situations(pid)) do
+        if set["situation:" .. sit.type] then
+            local sys = sit.target_kind == "planet" and tonumber(world.path(world.object("planet", sit.target_id) or {}, "coordinate", "origin"))
+                or (sit.target_kind == "galactic_object" and sit.target_id)
+                or nil -- (a country target: no system [I])
+            if sys then
+                out[#out + 1] = { kind = "situation_tracker", system = sys }
+            end
         end
     end
     return out
@@ -932,7 +1002,7 @@ function M.read(game_dir)
     return {
         player = pid, date = date, events = events,
         first_contacts = first_contacts(pid, game_dir), situations = situations(pid), sites = sites(pid),
-        chains = chains, projects = projects,
+        chains = chains, projects = projects, trackers = trackers(pid, game_dir),
         -- (a planet's `anomaly` is one not found yet: the game's Findings list none of them here; the
         -- found ones are not read yet)
         anomalies = {},
@@ -948,7 +1018,7 @@ function M.log(game_dir)
     return {
         player = pid, date = today() or "",
         first_contacts = first_contacts(pid, game_dir), situations = situations(pid), sites = sites(pid),
-        chains = chains, projects = projects,
+        chains = chains, projects = projects, pinned = (pins()), tracked = select(2, pins()),
         -- (a planet's `anomaly` is one not found yet: the game's Findings list none of them here; the
         -- found ones are not read yet)
         anomalies = {},

@@ -202,6 +202,9 @@ local function event_window(ctx, ev, k, items, report)
     local w = 490
     local hide = { tts_button = true, event_chain_subview = true, situations_progress_subview = true, description = true }
     local positions = { [root .. "/description_frame"] = { 0, frame_y } }
+    -- the settings button: the message settings on the event's message type (Setup's lambda:
+    -- ShowMessageSearchFilter)
+    local settings_action = "event:settings:" .. (ev.message_type or "EVENT_MESSAGE_TYPE")
     if not ev.location or not ev.location_system then
         hide.focus_button = true
         positions[root .. "/message_settings_button"] = { 415, 19 }
@@ -221,6 +224,7 @@ local function event_window(ctx, ev, k, items, report)
             [root] = "event:front:" .. ev.id,
             [root .. "/close"] = "event:close:" .. ev.id,
             [root .. "/focus_button"] = "event:focus:" .. ev.id,
+            [root .. "/message_settings_button"] = settings_action,
         },
     })
     gui.merge(items, report, wi, wr)
@@ -413,6 +417,24 @@ function M.build(game_dir, db, screen, texture_size, loc, data, state)
         local ok, err = pcall(popup, ctx, p, k, items, report)
         if not ok then
             report.missing_sprites[#report.missing_sprites + 1] = "popup: " .. tostring(err)
+        end
+    end
+    -- the message settings over all (an event window's settings button: the Settings window on
+    -- its Messages tab, filtered to the event's message type's title)
+    if state and state.message_type then
+        local ok, err = pcall(function()
+            local ms = require("render.windows.message_settings")
+            local filter = state.message_type
+            for _, t in ipairs(ms.types(game_dir)) do
+                if t.key == state.message_type then
+                    filter = ms.title(loc, t)
+                end
+            end
+            local mi, mr = ms.build(ctx, state.message_settings, filter)
+            gui.merge(items, report, mi, mr)
+        end)
+        if not ok then
+            report.missing_sprites[#report.missing_sprites + 1] = "message settings: " .. tostring(err)
         end
     end
     return items, report

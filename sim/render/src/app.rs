@@ -204,7 +204,7 @@ pub struct App {
     pub camera: Option<OrbitCamera>,
     pub view: MapView,
     pub system_camera: Option<OrbitCamera>,
-    camera_goal: Option<OrbitCamera>,
+    pub(crate) camera_goal: Option<OrbitCamera>,
     pub(crate) system_camera_goal: Option<OrbitCamera>,
     /// the cameras move to their goals over time (the window), else at once (commands)
     pub smooth: bool,
@@ -1228,6 +1228,14 @@ impl App {
             Ok(e) => items.extend(e),
             Err(e) => self.log.push(format!("events: {e}")),
         }
+        // an event fired whose message type auto-pauses (the message settings): paused
+        if self.events.take_pause() {
+            self.commands.push(ClockCommand::Paused(true));
+        }
+        // an entry tracked or no longer: the galaxy's scene with its trackers again
+        if self.events.take_trackers_changed() {
+            self.scene = None;
+        }
         // the left bar's view open (views.rs)
         if let Some(name) = self.open_view.clone() {
             let data = self.map.as_ref().and_then(|m| m.galaxy.views.get(&name).cloned());
@@ -1464,6 +1472,10 @@ impl App {
             if let (Screen::Map, Some(map)) = (self.screen, self.map.as_mut()) {
                 let cache = map.cache.clone();
                 crate::designer::fill_insets(&mut scene, &self.designer_models, &mut map.models, &map.runtime, &self.game_dir, &mut map.textures, &mut cache.borrow_mut());
+            }
+            // the Situation Log's trackers on the galaxy (events.rs)
+            if let (Screen::Map, Some(map)) = (self.screen, self.map.as_mut()) {
+                crate::events::draw_trackers(&mut scene, &self.runtime, map, self.view, &self.game_dir);
             }
             self.scene = Some(std::sync::Arc::new(scene));
             // a new scene, whoever asked for it (a hit test builds it too)
