@@ -74,6 +74,11 @@ local function game_data(game_dir)
     for name, def in pairs(source.definitions(game_dir, "common/planet_classes") or {}) do
         d.planet_icons[name] = unquote(field(def.block, "icon"))
     end
+    -- the colony types' icons (the designation icon of the display modes 1 and 2)
+    d.designation_icons = {}
+    for name, def in pairs(source.definitions(game_dir, "common/colony_types") or {}) do
+        d.designation_icons[name] = unquote(field(def.block, "icon"))
+    end
     -- country types the observer lists (`observable = yes`) and the fallen ones
     d.observable, d.fallen = {}, {}
     for name, def in pairs(source.definitions(game_dir, "common/country_types") or {}) do
@@ -341,6 +346,33 @@ function M.extract(game_dir, ctx)
     -- save's fields]
     local unemployed_colonies, low_stability, upgradable_buildings = 0, 0, 0
     local sector_capital = {}
+    -- hyperlane jumps from the capital's system (COutlinerRearrange::SortDistance) [I: breadth
+    -- first over the hyperlanes]
+    local hops
+    local function jumps(sid)
+        if not hops then
+            hops = {}
+            local cap = tonumber(world.field(pc, "capital"))
+            local cp = cap and world.colony_planet and world.colony_planet[cap]
+            local start = cp and tonumber(world.path(world.object("planet", cp), "coordinate", "origin"))
+            if start then
+                hops[start] = 0
+                local queue, head = { start }, 1
+                while head <= #queue do
+                    local s = queue[head]
+                    head = head + 1
+                    for _, h in ipairs(world.blocks(world.field(world.object("system", s), "hyperlane"))) do
+                        local to = tonumber(world.field(h, "to"))
+                        if to and hops[to] == nil then
+                            hops[to] = hops[s] + 1
+                            queue[#queue + 1] = to
+                        end
+                    end
+                end
+            end
+        end
+        return hops[sid] or 999
+    end
     local function planet_row(p, sector)
         local col = world.planet_colony and world.planet_colony[p.id]
         local c = col and world.object("colony", col)
@@ -351,6 +383,10 @@ function M.extract(game_dir, ctx)
             sub = c and unquote(world.field(c, "final_designation")) or "",
             icon = gd.planet_icons[p.class], leader_level = col and colony_leader[col],
             sector_capital = col and sector_capital[col] or nil,
+            -- for the display modes and the rearrange window's sorts: the class, the
+            -- designation's icon, the pops, the jumps from the capital's system
+            class = p.class, designation_icon = c and gd.designation_icons[unquote(world.field(c, "final_designation")) or ""],
+            pops = c and tonumber(world.field(c, "num_sapient_pops")) or 0, distance = jumps(p.system),
         }
         local status = {}
         if c then
@@ -534,6 +570,17 @@ function M.extract(game_dir, ctx)
         children[#children + 1] = { key = "sector:frontier", title = "FRONTIER_SECTOR", header = "outliner_sector_title_entry_window", kind = "planet", rows = frontier }
     end
     groups.sectors = { children = children }
+    -- Colonies (disabled by default): every colony, the sectors' then the frontier's
+    local all = {}
+    for _, s in ipairs(sector_rows) do
+        for _, e in ipairs(s.rows) do
+            all[#all + 1] = e
+        end
+    end
+    for _, e in ipairs(frontier) do
+        all[#all + 1] = e
+    end
+    groups.planets = { rows = all }
 
     -- Politics: the country's factions (COutlinerGroupPopFactions::UpdateInternal), in the save's
     -- order [I]: name, type icon, approval (§G at POP_FACTION_APPROVAL_HIGH and over, §R under
@@ -608,25 +655,75 @@ local TABS = {
     [3] = { key = "outliner_structures", sprite = "GFX_outliner_structures_tab_button" },
 }
 
--- each tab's groups as shown: created in EOutLinerGroup order, every tab but Politics sorts its
--- groups equal and the merge sort reverses them (COutlinerSettings::GetSort, SortedMerge) [V]; the
--- groups this renderer fills (the others are empty for the player here: situations, armies,
--- waystations, terraforming, special planets, overlord holdings, arkships)
-local TAB_GROUPS = {
-    [0] = { "civilian", "military", "starbase", "shipyard", "sectors" },
-    [1] = { "civilian", "military" },
-    [2] = { "observation_posts", "factions", "integration" },
-    [3] = { "megastructures" },
+-- the groups (EOutLinerGroup: GetOutlinerGroupString) [V], by the names the view gives them
+local GROUP_ENUM = {
+    situations = 0, planets = 1, sectors = 2, special_planets = 3, overlord_holdings = 4, shipyard = 5,
+    starbase = 6, military = 7, loaned = 8, civilian = 9, armies = 10, observation_posts = 11, factions = 12,
+    integration = 13, terraforming = 14, megastructures = 15, waystation_networks = 16, waystations = 17,
+    arkships = 18, arkship_colonies = 19, arkship_controls = 20, arkship_fleets = 21,
 }
-
--- the groups' titles (GetOutlinerGroupString) [V]
 local GROUP_TITLE = {
-    civilian = "OUTLINER_CIVILIAN_FLEETS", military = "OUTLINER_FLEETS", starbase = "OUTLINER_STARBASES",
-    shipyard = "OUTLINER_SHIPYARDS", sectors = "OUTLINER_SECTORS", observation_posts = "OUTLINER_OBSERVATION_POSTS",
-    factions = "OUTLINER_POP_FACTIONS", integration = "OUTLINER_INTEGRATION", megastructures = "OUTLINER_MEGASTRUCTURES",
+    situations = "OUTLINER_SITUATIONS", planets = "OUTLINER_PLANETS", sectors = "OUTLINER_SECTORS",
+    special_planets = "OUTLINER_SPECIAL_PLANETS", overlord_holdings = "OUTLINER_OVERLORD_HOLDINGS",
+    shipyard = "OUTLINER_SHIPYARDS", starbase = "OUTLINER_STARBASES", military = "OUTLINER_FLEETS",
+    loaned = "OUTLINER_LOANED_OUT_FLEETS", civilian = "OUTLINER_CIVILIAN_FLEETS", armies = "OUTLINER_ARMY",
+    observation_posts = "OUTLINER_OBSERVATION_POSTS", factions = "OUTLINER_POP_FACTIONS",
+    integration = "OUTLINER_INTEGRATION", terraforming = "OUTLINER_TERRAFORMING",
+    megastructures = "OUTLINER_MEGASTRUCTURES", waystation_networks = "OUTLINER_WAYSTATION_NETWORKS",
+    waystations = "OUTLINER_WAYSTATIONS", arkships = "OUTLINER_ARKSHIPS", arkship_colonies = "OUTLINER_ARKSHIP_COLONIES",
+    arkship_controls = "OUTLINER_ARKSHIP_CONTROLS", arkship_fleets = "OUTLINER_ARKSHIP_FLEETS",
     players = "OUTLINER_PLAYER_COUNTRIES", ai = "OUTLINER_AI_COUNTRIES", fallen = "OUTLINER_FALLEN_EMPIRES",
     minors = "OUTLINER_MINOR_COUNTRIES",
 }
+-- each tab's groups (DefaultTabToGroupsMap) [V]
+local TAB_MEMBERS = {
+    [0] = { "situations", "arkships", "arkship_colonies", "arkship_controls", "arkship_fleets", "planets", "sectors",
+        "special_planets", "overlord_holdings", "military", "civilian", "shipyard", "terraforming",
+        "waystation_networks", "waystations", "starbase", "armies" },
+    [1] = { "arkships", "arkship_colonies", "arkship_controls", "arkship_fleets", "military", "loaned", "civilian", "armies" },
+    [2] = { "observation_posts", "factions", "integration" },
+    [3] = { "megastructures" },
+}
+-- disabled by default: Colonies and the arkship groups (GetDefaultDisabled) [V]
+local DEFAULT_DISABLED = { planets = true, arkship_colonies = true, arkship_controls = true, arkship_fleets = true }
+
+-- a group of a tab hidden (its options checkbox: the default, flipped by the player's clicks)
+local function group_disabled(state, tab, name)
+    local d = DEFAULT_DISABLED[name] or false
+    if (state.toggled or {})[name .. "@" .. tab] then
+        d = not d
+    end
+    return d
+end
+
+-- a tab's groups in the order shown: the options' up and down give an order of their own; else
+-- they are made in enum order, every tab but Politics sorts them equal and the merge sort
+-- reverses them on each show (COutlinerSettings::GetSort, SortedMerge) [V]: reverse enum order
+-- the first time, enum order the second ... (the flip seen in the game's frames: Overview after
+-- Ships shows Sectors first)
+local function tab_order(state, tab)
+    local custom = (state.order or {})[tab]
+    if custom and custom ~= "" then
+        local out = {}
+        for n in custom:gmatch("[^,]+") do
+            out[#out + 1] = n
+        end
+        return out
+    end
+    local names = {}
+    for _, n in ipairs(TAB_MEMBERS[tab] or {}) do
+        names[#names + 1] = n
+    end
+    local shows = (state.shows or {})[tab] or 1
+    local reverse = tab ~= 2 and shows % 2 == 1
+    table.sort(names, function(a, b)
+        if reverse then
+            return GROUP_ENUM[a] > GROUP_ENUM[b]
+        end
+        return GROUP_ENUM[a] < GROUP_ENUM[b]
+    end)
+    return names
+end
 
 -- the observer's groups, reverse enum order (Minors 25, Fallen 24, AI 23, Players 22) [V]
 local OBSERVER_GROUPS = { "minors", "fallen", "ai", "players" }
@@ -692,28 +789,55 @@ local function group_height(g, collapsed)
     return HEADER_H + list_height(hs, INNER_SPACING)
 end
 
--- the groups of a tab from the view (empty ones left out: COutlinerListViewBase::InternalUpdate)
--- `shows`: how often the tab has been shown; all but Politics sort their groups equal, so the
--- merge sort reverses the list each time (SortedMerge, on each show): reverse enum order the
--- first time, enum order the second ... [V for the sort; the flip seen in the game's frames:
--- Overview after Ships shows Sectors first]
-local function tab_groups(view, tab, shows)
+-- the groups of a tab from the view, in the tab's order, the hidden and the empty ones left out
+-- (COutlinerListViewBase::InternalUpdate); the colonies in the rearrange window's order
+local function tab_groups(view, tab, state)
     local out = {}
-    local names = {}
-    for _, name in ipairs(TAB_GROUPS[tab] or {}) do
-        names[#names + 1] = name
+    -- the player's colony order (COutlinerRearrange: CCountry::ReorderColoniesByDisplayOrder):
+    -- the ordered ones first, then the rest in their own order
+    local rank = {}
+    local n = 0
+    for id in (state.colony_order or ""):gmatch("[^,]+") do
+        n = n + 1
+        rank[tonumber(id)] = n
     end
-    if tab ~= 2 and (shows or 1) % 2 == 0 then
-        for i = 1, math.floor(#names / 2) do
-            names[i], names[#names + 1 - i] = names[#names + 1 - i], names[i]
+    local function reorder(rows)
+        if n == 0 or not rows then
+            return rows
         end
+        local copy = {}
+        for i, r in ipairs(rows) do
+            copy[i] = { r = r, i = i }
+        end
+        table.sort(copy, function(a, b)
+            local ra, rb = rank[a.r.id] or (n + a.i), rank[b.r.id] or (n + b.i)
+            return ra < rb
+        end)
+        local outr = {}
+        for i, c in ipairs(copy) do
+            outr[i] = c.r
+        end
+        return outr
     end
-    for _, name in ipairs(names) do
+    for _, name in ipairs(tab_order(state, tab)) do
         local g = (view.groups or {})[name]
-        if g and ((g.rows and #g.rows > 0) or (g.children and #g.children > 0)) then
+        if g and not group_disabled(state, tab, name) and ((g.rows and #g.rows > 0) or (g.children and #g.children > 0)) then
+            local children
+            if g.children then
+                children = {}
+                for i, c in ipairs(g.children) do
+                    local cc = {}
+                    for k, v in pairs(c) do
+                        cc[k] = v
+                    end
+                    cc.rows = reorder(c.rows)
+                    children[i] = cc
+                end
+            end
             out[#out + 1] = {
-                key = name .. "@" .. tab, title = g.title or GROUP_TITLE[name], kind = g.kind or name, rows = g.rows,
-                children = g.children, amount = g.amount, header = g.header,
+                key = name .. "@" .. tab, title = g.title or GROUP_TITLE[name], kind = g.kind or name,
+                rows = (name == "planets") and reorder(g.rows) or g.rows,
+                children = children, amount = g.amount, header = g.header,
             }
         end
     end
@@ -731,6 +855,7 @@ function M.layout(ctx, data, items, report)
     local view = data.view or {}
     local state = data.state or {}
     local collapsed = state.collapsed or {}
+    M.planet_mode = state.planet_mode or 0
     local shown = state.shown or 0          -- 0 the tabs, 1 the observer's list, 2 none
     local selected = data.selected
     local observe = data.observe
@@ -800,7 +925,12 @@ function M.layout(ctx, data, items, report)
             prefix = prefix, parent = { x = x, y = y, w = 0, h = HEADER_H }, hide = hide, text = text,
             sprites = sprites, frames = frames,
             -- a click on the header collapses or expands the group (COutlinerGroup::OnToggle) [V]
-            actions = { [hp .. "/background"] = "outliner:toggle:" .. g.key },
+            actions = {
+                [hp .. "/background"] = "outliner:toggle:" .. g.key,
+                -- a sector's icon opens the Planets view (OpenEmpireView: the empire view, at the
+                -- sector [I: not scrolled here])
+                [hp .. "/sectors"] = header == "outliner_sector_title_entry_window" and "bar:sector" or nil,
+            },
         })
         if collapsed[g.key] then
             return
@@ -896,7 +1026,7 @@ function M.layout(ctx, data, items, report)
         local crit, reg = b.critical or 0, b.regular or 0
         local n = crit > 0 and crit or reg
         local hide = {}
-        if n == 0 then
+        if n == 0 or (state.notifications_off or {})[t] then
             hide.notification_container = true
         elseif crit > 0 then
             hide.notification_background_regular = true
@@ -913,7 +1043,7 @@ function M.layout(ctx, data, items, report)
     end
 
     -- the tab's window and its groups (an observer has no country: its tabs are empty)
-    local groups = observe and {} or tab_groups(view, tab, (state.shows or {})[tab])
+    local groups = observe and {} or tab_groups(view, tab, state)
     local hs = {}
     for _, g in ipairs(groups) do
         hs[#hs + 1] = group_height(g, collapsed)
@@ -926,12 +1056,228 @@ function M.layout(ctx, data, items, report)
         text = { ["/outliner_tab_window/tab_name"] = TABS[tab].key },
         -- the rearrange button only on a tab with colonies or sectors (Overview) [V]
         hide = { rearrange = tab ~= 0 or nil },
+        -- the options and the colonies' order (COutlinerTab::OnToggleOptions, OnToggleRearrange)
+        actions = { ["/outliner_tab_window/options"] = "outliner:options", ["/outliner_tab_window/rearrange"] = "outliner:rearrange" },
     })
     local list = r.rects["/outliner_tab_window/list"] or { x = screen.width - 258, y = top + 40 }
     list_bottom = top + h - 20
     draw_list(groups, list, "/outliner")
+    -- its popup
+    if not observe and state.popup == 1 then
+        M.options(ctx, lay, items, state, tab)
+    elseif not observe and state.popup == 2 and tab == 0 then
+        local rows = tab_groups(view, tab, { colony_order = state.colony_order, shows = state.shows, order = { [0] = "planets" }, toggled = { ["planets@0"] = true } })
+        M.rearrange(ctx, lay, items, state, rows[1] and rows[1].rows or {}, fmt)
+    end
 end
 
+
+-- ---------------------------------------------------------------------------------------------
+-- the tab window's popups: the options (COutlinerOptions) and the colonies' order
+-- (COutlinerRearrange), at (-565, 145) from the screen's upper right [V]
+-- ---------------------------------------------------------------------------------------------
+
+local PLANET_MODES = { [0] = "OL_PLANET_MODE_PLANET_TYPE", "OL_PLANET_MODE_PLANET_DESIGNATION",
+    "OL_PLANET_MODE_PLANET_TYPE_OVER_DESIGNATION", "OL_PLANET_MODE_PLANET_DESIGNATION_OVER_TYPE" }
+
+-- a sprite placed by hand (a spinner's arrows: spinnerType is not laid out by render.gui)
+local function sprite_at(ctx, items, path, name, x, y, action)
+    local s = ctx.db.sprites[name]
+    if not s or not s.texture then
+        return
+    end
+    local tw, th = ctx.texture_size(s.texture)
+    if not tw then
+        return
+    end
+    local frames = math.max(1, s.frames or 1)
+    items[#items + 1] = {
+        kind = "sprite", path = path, sprite = name, texture = s.texture, sprite_kind = s.kind, frame = 1, frames = frames,
+        x = x, y = y, w = tw / frames, h = th, button = { name = path:match("[^/]+$"), action = action },
+    }
+end
+
+-- the options (COutlinerOptions::AddOptions, Update): an entry per group of the tab (its checkbox
+-- ticked when shown, up and down move it), the colonies' display mode (a tab with Colonies or
+-- Sectors), the tab's badge on or off, the custom tab
+function M.options(ctx, lay, items, state, tab)
+    local W = "/outliner_options_window"
+    local r = lay("outliner_options_window", {
+        only = { background = true, title_hex = true, title_line = true, header = true, close = true, list = true },
+        actions = { [W .. "/close"] = "outliner:close" },
+    })
+    local list = r.rects[W .. "/list"] or { x = ctx.screen.width - 560, y = 205, w = 279, h = 390 }
+    local names = tab_order(state, tab)
+    local y = list.y
+    for k, name in ipairs(names) do
+        if y + 38 > list.y + list.h then
+            break
+        end
+        local p = "/outliner_options/" .. k
+        local ep = p .. "/outliner_options_entry_window"
+        local function moved(d)
+            local o = {}
+            for i, n in ipairs(names) do
+                o[i] = n
+            end
+            local j = k + d
+            if j < 1 or j > #o then
+                return nil
+            end
+            o[k], o[j] = o[j], o[k]
+            return "outliner:order:" .. tab .. ":" .. table.concat(o, ",")
+        end
+        lay("outliner_options_entry_window", {
+            prefix = p, parent = { x = list.x, y = y, w = 0, h = 38 },
+            text = { [ep .. "/title"] = GROUP_TITLE[name] or name },
+            frames = { [ep .. "/disable"] = group_disabled(state, tab, name) and 1 or 2 },
+            actions = {
+                [ep .. "/disable"] = "outliner:group:" .. name .. "@" .. tab,
+                [ep .. "/up"] = moved(-1), [ep .. "/down"] = moved(1),
+            },
+        })
+        y = y + 38
+    end
+    -- the colonies' mode: on a tab with Colonies or Sectors; the spinner wraps over the 4 modes
+    local has_planets = false
+    for _, n in ipairs(TAB_MEMBERS[tab] or {}) do
+        if n == "planets" or n == "sectors" then
+            has_planets = true
+        end
+    end
+    local mode = state.planet_mode or 0
+    local pm = r.rects[W .. "/planet_mode_container"]
+    if has_planets then
+        local pr = lay("outliner_options_window", {
+            only = { planet_mode_container = true },
+            hide = { [W .. "/background"] = true },
+            text = { [W .. "/planet_mode_container/planet_display_mode_spinner_value"] = PLANET_MODES[mode] },
+        })
+        pm = pr.rects[W .. "/planet_mode_container"]
+        if pm then
+            -- the spinner (240 x 30 at 25, 40): its left and right arrows at its ends [I]
+            sprite_at(ctx, items, W .. "/planet_mode_container/spinner_upButton", "scrollbar_leftbutton",
+                pm.x + 25, pm.y + 47, "outliner:planet_mode:" .. ((mode + 3) % 4))
+            sprite_at(ctx, items, W .. "/planet_mode_container/spinner_downButton", "scrollbar_rightbutton",
+                pm.x + 25 + 240 - 16, pm.y + 47, "outliner:planet_mode:" .. ((mode + 1) % 4))
+        end
+    end
+    lay("outliner_options_window", {
+        only = { notification_toggle_container = true, custom_tab_toggle_container = true },
+        hide = { [W .. "/background"] = true },
+        frames = {
+            [W .. "/notification_toggle_container/notification_checkbox"] = (state.notifications_off or {})[tab] and 1 or 2,
+            [W .. "/custom_tab_toggle_container/custom_tab_checkbox"] = state.custom_tab and 2 or 1,
+        },
+        actions = {
+            [W .. "/notification_toggle_container/notification_checkbox"] = "outliner:notify:" .. tab,
+            [W .. "/custom_tab_toggle_container/custom_tab_checkbox"] = "outliner:custom",
+        },
+    })
+end
+
+-- the colonies' order (COutlinerRearrange): a row per colony (a click marks it last moved; top,
+-- up, down, bottom, below the last moved), the sort buttons (distance, name, pops, class,
+-- designation: again on a sorted list, reversed) [V for the window; I for the sort keys]
+function M.rearrange(ctx, lay, items, state, rows, fmt)
+    local W = "/outliner_rearrange_window"
+    local ids = {}
+    for i, r in ipairs(rows) do
+        ids[i] = r.id
+    end
+    local function action(list, last)
+        local s = {}
+        for i, id in ipairs(list) do
+            s[i] = tostring(id)
+        end
+        return "outliner:colonies:" .. (last and tostring(last) or "") .. ":" .. table.concat(s, ",")
+    end
+    local function sorted(key, desc)
+        local copy = {}
+        for i, r in ipairs(rows) do
+            copy[i] = r
+        end
+        table.sort(copy, function(a, b)
+            local ka, kb = key(a), key(b)
+            if ka == kb then
+                return a.id < b.id
+            end
+            if desc then
+                return ka > kb
+            end
+            return ka < kb
+        end)
+        local out, same = {}, true
+        for i, r in ipairs(copy) do
+            out[i] = r.id
+            same = same and r.id == ids[i]
+        end
+        -- (pressed again on a sorted list: reversed)
+        if same and #out > 1 then
+            local rev = {}
+            for i = #out, 1, -1 do
+                rev[#rev + 1] = out[i]
+            end
+            out = rev
+        end
+        return action(out)
+    end
+    local r = lay("outliner_rearrange_window", {
+        actions = {
+            [W .. "/close"] = "outliner:close",
+            [W .. "/sort_distance"] = sorted(function(x) return x.distance or 999 end),
+            [W .. "/sort_name"] = sorted(function(x) return fmt(x.name) end),
+            [W .. "/sort_pops"] = sorted(function(x) return x.pops or 0 end, true),
+            [W .. "/sort_class"] = sorted(function(x) return x.class or "" end),
+            [W .. "/sort_designation"] = sorted(function(x) return x.sub or "" end),
+        },
+    })
+    local list = r.rects[W .. "/list"] or { x = ctx.screen.width - 560, y = 281, w = 279, h = 425 }
+    local y = list.y
+    local last = state.last_moved
+    for k, row in ipairs(rows) do
+        if y + 32 > list.y + list.h then
+            break
+        end
+        local function moved(to)
+            local o = {}
+            for i, id in ipairs(ids) do
+                if i ~= k then
+                    o[#o + 1] = id
+                end
+            end
+            to = math.max(1, math.min(#o + 1, to))
+            table.insert(o, to, row.id)
+            return action(o, row.id)
+        end
+        local below
+        if last and last ~= row.id then
+            for i, id in ipairs(ids) do
+                if id == last then
+                    below = moved(i < k and i + 1 or i)
+                end
+            end
+        end
+        local p = "/outliner_rearrange/" .. k
+        local ep = p .. "/outliner_rearrange_entry_window"
+        local name = fmt(row.name)
+        lay("outliner_rearrange_entry_window", {
+            prefix = p, parent = { x = list.x, y = y, w = 0, h = 32 },
+            -- the last moved in yellow
+            text = { [ep .. "/title"] = (row.id == last) and ("\194\167Y" .. name .. "\194\167!") or name },
+            -- (top and bottom: at x -570 and -548 from the row's right, outside the window: not
+            -- shown [I])
+            hide = { below_last_moved = not below or nil, top = true, bottom = true },
+            actions = {
+                [ep .. "/background"] = action(ids, row.id),
+                [ep .. "/top"] = moved(1), [ep .. "/up"] = moved(k - 1),
+                [ep .. "/down"] = moved(k + 1), [ep .. "/bottom"] = moved(#ids),
+                [ep .. "/below_last_moved"] = below,
+            },
+        })
+        y = y + 32
+    end
+end
 
 -- ---------------------------------------------------------------------------------------------
 -- the rows (COutlinerMember*::UpdateEntry): the window, its children shown, texts, frames
@@ -1071,12 +1417,33 @@ M.rows.shipyard = M.rows.starbase
 M.rows.planet = function(row, rp, fmt, selected)
     local window = "outliner_member_planet_entry_window"
     local p = rp .. "/" .. window
-    -- the default display mode (0): the planet's portrait and its designation [V]
-    local only = set({ "background", "planet_type_icon", "name", "star", "colony_type" })
+    -- the display mode (the options' spinner, COutlinerSettings::GetPlanetDisplayMode) [V]: 0 and
+    -- 3 the planet's portrait, 1 and 2 the designation's icon; 2 the portrait over it, 3 the
+    -- designation over the portrait; the second line the designation (0, 3) or the class (1, 2)
+    local mode = M.planet_mode or 0
+    local only = set({ "background", "name", "star", "colony_type" })
     only.selected_overlay = is_selected(selected, "planet", row.id) or nil
     local frames, sprites = {}, {}
-    if row.icon then
-        sprites[p .. "/planet_type_icon"] = row.icon
+    local second = row.sub or ""
+    if mode == 0 or mode == 3 then
+        only.planet_type_icon = true
+        if row.icon then
+            sprites[p .. "/planet_type_icon"] = row.icon
+        end
+        if mode == 3 and row.designation_icon then
+            only.designation_icon_overlay, only.designation_overlay_icon_bg = true, true
+            sprites[p .. "/designation_icon_overlay"] = row.designation_icon
+        end
+    else
+        only.designation_icon = true
+        second = row.class or ""
+        if row.designation_icon then
+            sprites[p .. "/designation_icon"] = row.designation_icon
+        end
+        if mode == 2 and row.icon then
+            only.planet_type_icon_overlay, only.planet_type_overlay_icon_bg = true, true
+            sprites[p .. "/planet_type_icon_overlay"] = row.icon
+        end
     end
     if row.leader_level and row.leader_level > 0 then
         only.leader_level = true
@@ -1091,7 +1458,7 @@ M.rows.planet = function(row, rp, fmt, selected)
     -- 215 in its slot; UPPER_RIGHT: leftwards from there) [I: the slot's place, by the frame]
     return window, {
         only = only, frames = frames, sprites = sprites,
-        text = { [p .. "/name"] = name, [p .. "/star"] = location(row, fmt, false), [p .. "/colony_type"] = row.sub or "" },
+        text = { [p .. "/name"] = name, [p .. "/star"] = location(row, fmt, false), [p .. "/colony_type"] = second },
         actions = { [p .. "/background"] = "select:planet:" .. tostring(row.id) },
         extra = status_entries("planet_or_starbase_status_entry", "status", row.status or {}, 23, 20, 15, 5),
     }
@@ -1107,6 +1474,8 @@ M.rows.faction = function(row, rp, fmt)
         -- (the influence it gives is not computed: its label is not drawn)
         hide = { selected_overlay = true, influence_label = true },
         sprites = { [p .. "/faction_icon"] = "GFX_faction_icon_" .. tostring(row.type) },
+        -- a click toggles the Factions view (COutlinerMemberPopFaction::OnLeftClick) [V]
+        actions = { [p .. "/background"] = "view:factions" },
         text = {
             [p .. "/name"] = fmt(row.name),
             [p .. "/approval_label"] = "\194\163mod_faction_approval\194\163 " .. colour(code, tostring(math.floor(a * 100 + 0.5)) .. "%"),

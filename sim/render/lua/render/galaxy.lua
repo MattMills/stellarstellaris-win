@@ -394,6 +394,7 @@ function galaxy.extract(game_dir)
     local view = require("render.windows.outliner").extract(game_dir, { player = player, country = pc, planets = planets })
     local outliner, sectors = view.members, view.sectors
     local alerts = require("render.windows.alerts").extract(game_dir, { player = player, country = pc })
+    view.alerts = alerts
     local communications = {}
     local rm = pc and world.field(pc, "relations_manager")
     for _, r in ipairs(rm and world.fields(rm, "relation") or {}) do
