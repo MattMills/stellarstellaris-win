@@ -194,6 +194,8 @@ function windows.build(game_dir, db, screen, texture_size, loc, data)
     if data.selected then
         selected_window(ctx, data.selected, items, report)
     end
+    -- the windows render.windows.starbase opens itself (a megastructure's)
+    require("render.windows.starbase").extra(ctx, items, report)
     return items, report
 end
 

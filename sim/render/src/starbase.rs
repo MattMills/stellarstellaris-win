@@ -2,13 +2,17 @@
 //! out, `starbase_data.lua` reads the world; docs/windows/starbase.md): the starbases' values read
 //! where the galaxy is read (the save's runtime or the simulation's thread) into a Lua chunk that
 //! travels with the galaxy (`Galaxy::starbases`), handed to the front end's runtime before the
-//! windows are laid out, with the window's own state (the tab chosen); the window's clicks.
+//! windows are laid out, with the window's own state (the tab chosen); the window's clicks. The
+//! megastructure window (megastructure_view.gui, `lua/render/windows/megastructure.lua`) is opened
+//! by its own state, the renderer having no megastructure selection.
 
 use stellar_sim::Runtime;
 
 use crate::app::App;
 use crate::galaxy::Galaxy;
+use crate::gui::GuiItem;
 use crate::scene::Pickable;
+use crate::Map;
 
 /// What the window keeps between layouts (CStarbaseView +0x408: the tab, kept from one starbase
 /// to the next).
@@ -16,6 +20,8 @@ use crate::scene::Pickable;
 pub struct State {
     /// 0 Command, 1 Defenses, 2 Shipyard, 3 Army Hub (EStarbaseViewTabType)
     pub tab: u32,
+    /// the megastructure whose window is open (its save id)
+    pub megastructure: Option<i64>,
 }
 
 /// The starbases' chunk (render.windows.starbase_data.extract) in the world's runtime; empty when
@@ -31,14 +37,25 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> String {
     }
 }
 
-/// The front end's globals the layout reads: the chunk, the state and the player.
-pub fn prepare(runtime: &Runtime, galaxy: &Galaxy, state: &State) -> Result<(), String> {
+/// The front end's globals the layout reads: the chunk, the state, the player, whether something is
+/// selected (its window replaces a megastructure's).
+pub fn prepare(runtime: &Runtime, galaxy: &Galaxy, state: &State, selected: bool) -> Result<(), String> {
     let set = || -> stellar_sim::mlua::Result<()> {
         let lua = &runtime.lua;
         lua.globals().set("RENDER_STARBASE_DATA", galaxy.starbases.as_str())?;
         let t = lua.create_table()?;
         t.set("tab", state.tab)?;
         t.set("player", galaxy.player)?;
+        t.set("megastructure", state.megastructure)?;
+        t.set("selected", selected)?;
+        // the countries the player knows (communications; none: all), for the flags shown
+        if let Some(c) = &galaxy.communications {
+            let k = lua.create_table()?;
+            for id in c.iter().chain(std::iter::once(&galaxy.player)) {
+                k.set(*id, true)?;
+            }
+            t.set("known", k)?;
+        }
         lua.globals().set("RENDER_STARBASE_STATE", t)?;
         Ok(())
     };
@@ -54,11 +71,24 @@ pub fn command(app: &mut App, args: &[&str]) -> Result<String, String> {
     };
     let id: i64 = rest.first().and_then(|v| v.parse().ok()).ok_or("open_starbase [starbase|waystation|megastructure|network] ID [tab N]")?;
     let tab: Option<u32> = rest.iter().position(|v| *v == "tab").and_then(|i| rest.get(i + 1)).and_then(|v| v.parse().ok());
+    let galaxy = app.map.as_ref().ok_or("no map loaded")?.galaxy.clone();
+    if kind == "megastructure" {
+        // its window (CInGameIdler::ShowMegaStructureView after selecting it): the selection's
+        // window closes
+        prepare(&app.runtime, &galaxy, &app.starbase, false)?;
+        let e: Vec<i64> = app.runtime.lua.load(format!("return require('render.windows.megastructure').owner({id})")).eval().map_err(|e| format!("megastructure: {e}"))?;
+        if e.is_empty() {
+            return Err(format!("open_starbase: no megastructure {id}"));
+        }
+        app.select(None);
+        app.starbase.megastructure = Some(id);
+        app.relayout();
+        return Ok(format!("open_starbase megastructure {id}{} shown", if tab.is_some() { " tab" } else { "" }));
+    }
     if kind != "starbase" {
         return Err(format!("open_starbase {kind}: not done yet"));
     }
-    let galaxy = app.map.as_ref().ok_or("no map loaded")?.galaxy.clone();
-    prepare(&app.runtime, &galaxy, &app.starbase)?;
+    prepare(&app.runtime, &galaxy, &app.starbase, true)?;
     let fleet: Vec<i64> = app
         .runtime
         .lua
@@ -67,6 +97,7 @@ pub fn command(app: &mut App, args: &[&str]) -> Result<String, String> {
         .map_err(|e| format!("starbase: {e}"))?;
     let fleet = *fleet.first().ok_or(format!("open_starbase: no starbase {id}"))?;
     app.select(Some(Pickable::Fleet(fleet as u32)));
+    app.starbase.megastructure = None;
     if let Some(t) = tab {
         app.starbase.tab = t;
     }
@@ -78,8 +109,25 @@ pub fn command(app: &mut App, args: &[&str]) -> Result<String, String> {
 /// A click in the window (`starbase:...`): a tab, the previous or next starbase, the camera to it,
 /// its planet's window.
 pub fn act(app: &mut App, action: &str) -> Result<(), String> {
-    let Some(Pickable::Fleet(fleet)) = app.selected else { return Ok(()) };
     let rest = action.strip_prefix("starbase:").unwrap_or(action);
+    // the megastructure window's: closed; the camera to its system (CMegaStructureView::OnFocus [I]:
+    // the system entered)
+    if rest == "mega_close" {
+        app.starbase.megastructure = None;
+        app.relayout();
+        return Ok(());
+    }
+    if rest == "mega_focus" {
+        if let Some(id) = app.starbase.megastructure {
+            let sys: Vec<i64> = app.runtime.lua.load(format!("local e = require('render.windows.megastructure').entry({id}) return e and {{ e.system }} or {{}}")).eval().map_err(|e| format!("megastructure: {e}"))?;
+            let i = sys.first().and_then(|&s| app.map.as_ref().and_then(|m| m.galaxy.systems.iter().position(|x| x.id as i64 == s)));
+            if let Some(i) = i {
+                app.focus(Pickable::System(i))?;
+            }
+        }
+        return Ok(());
+    }
+    let Some(Pickable::Fleet(fleet)) = app.selected else { return Ok(()) };
     let query = |app: &App, f: &str| -> Result<Vec<i64>, String> {
         app.runtime.lua.load(format!("return require('render.windows.starbase').{f}")).eval::<Vec<i64>>().map_err(|e| format!("starbase: {e}"))
     };
@@ -112,6 +160,23 @@ pub fn act(app: &mut App, action: &str) -> Result<(), String> {
         app.log.push(format!("  {action}: not done yet"));
     }
     Ok(())
+}
+
+/// The megastructure window's flag (its header's `flag`, a flagSpriteType): its owner's
+/// (CGameGraphics::ApplyCountryToButton); without an owner the sprite as it is.
+pub fn flags(runtime: &Runtime, state: &State, map: &mut Map, items: &mut [GuiItem]) {
+    let Some(id) = state.megastructure else { return };
+    let owner: Vec<i64> = runtime.lua.load(format!("return require('render.windows.megastructure').owner({id})")).eval().unwrap_or_default();
+    // an owner the player has no communications with shows the unknown flag (the Lua's emblem)
+    let known = |o: i64| o == map.galaxy.player as i64 || map.galaxy.communications.as_ref().is_none_or(|c| c.iter().any(|&k| k as i64 == o));
+    let country = owner.first().filter(|&&o| known(o)).and_then(|&o| map.galaxy.countries.iter().position(|c| c.id as i64 == o));
+    for it in items.iter_mut() {
+        if let GuiItem::Sprite { path, .. } = it {
+            if path.starts_with("/megastructure_view/header/flag") {
+                map.flags(std::slice::from_mut(it), country);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

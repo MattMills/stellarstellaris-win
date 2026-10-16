@@ -1252,12 +1252,13 @@ impl App {
             }
         }
         let selected = selected.map(|(kind, id)| gui::SelectedWindow { kind, id, name: next(), sub: String::new() });
-        crate::starbase::prepare(&self.runtime, &g, &self.starbase)?;
+        crate::starbase::prepare(&self.runtime, &g, &self.starbase, self.selected.is_some())?;
         let layout = gui::windows(&self.runtime, w, h, &outliner, selected.as_ref())?;
         // the main screen's other windows under the outliner and the selection's window
         let mut items = self.main_screen_items()?;
         items.extend(layout.items);
         let map = self.map.as_mut().unwrap();
+        crate::starbase::flags(&self.runtime, &self.starbase, map, &mut items);
         gui::fonts(&self.runtime, &self.game_dir, &items, map.fonts.get_or_insert_with(HashMap::new))?;
         Ok(items)
     }

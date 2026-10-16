@@ -505,9 +505,46 @@ M.dump = function(v)
     return table.concat(out)
 end
 
--- data.extract(game_dir) -> the chunk (the player's id with it: Galaxy::starbases)
+-- M.megastructures(game_dir) -> { [id] = entry }: what the megastructure window shows
+-- (interface/megastructure_view.gui, CMegaStructureView): its type, name (its own, else the type's:
+-- CMegaStructure::GetLocalizedName), owner, the type's portrait (`portrait`, the default the .gui's
+-- GFX_megastructure_construction_background), description key (CMegaStructureType::GetDescription:
+-- "%s_DESC"), system, the upgrade that can follow it (a type whose upgrade_from lists it [I]),
+-- dismantling
+function M.megastructures(game_dir)
+    local types = defs(game_dir, "common/megastructures").by
+    -- the upgrades: a type's `upgrade_from = { a b }` [I]
+    local upgrades = {}
+    for name, d in pairs(types) do
+        for _, from in ipairs(list_of(field(d.block, "upgrade_from"))) do
+            upgrades[from] = upgrades[from] or name
+        end
+    end
+    local galaxy = require("render.galaxy")
+    local out = {}
+    for _, id in ipairs(world.all("megastructure")) do
+        local m = world.object("megastructure", id)
+        local ty = m and unq(world.field(m, "type")) or ""
+        local d = types[ty]
+        local owner = tonumber(world.field(m, "owner"))
+        out[id] = {
+            id = id, type = ty,
+            name = world.field(m, "name") and galaxy.name_block(world.field(m, "name")) or nil,
+            owner = owner and owner ~= 4294967295 and owner or -1,
+            portrait = d and unq(field(d.block, "portrait")) or "GFX_megastructure_construction_background",
+            system = tonumber(world.path(m, "coordinate", "origin")) or -1,
+            planet = tonumber(world.field(m, "planet")),
+            upgrade = upgrades[ty],
+            dismantling = (tonumber(world.field(m, "dismantle_progress")) or 0) > 0,
+        }
+    end
+    return out
+end
+
+-- data.extract(game_dir) -> the chunk (Galaxy::starbases): the starbases by station fleet, the
+-- megastructures by id
 function M.extract(game_dir)
-    return M.dump({ starbases = M.starbases(game_dir) })
+    return M.dump({ starbases = M.starbases(game_dir), megastructures = M.megastructures(game_dir) })
 end
 
 return M

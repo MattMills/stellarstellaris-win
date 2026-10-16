@@ -349,6 +349,33 @@ function M.fleet_of(id)
     return {}
 end
 
+-- a disabled button's label: its text greyed out as the button (GreyOutLuminosity: the colour's
+-- luminance x 0.85 + the colour x 0.15, x 0.75), in the textcolor nearest that grey [I]
+function M.grey(ctx, text)
+    local plain = ctx.loc and ctx.loc.plain(text) or text
+    local code = text:match("^\194\167(%a)")
+    local c = code and ctx.db.textcolors[code] or { 1, 1, 1 }
+    local lum = 0.212671 * c[1] + 0.715160 * c[2] + 0.072169 * c[3]
+    local g = { (lum * 0.85 + c[1] * 0.15) * 0.75, (lum * 0.85 + c[2] * 0.15) * 0.75, (lum * 0.85 + c[3] * 0.15) * 0.75 }
+    local best, bd = "t", math.huge
+    for k, v in pairs(ctx.db.textcolors) do
+        local d = (v[1] - g[1]) ^ 2 + (v[2] - g[2]) ^ 2 + (v[3] - g[3]) ^ 2
+        if #k == 1 and d < bd then
+            best, bd = k, d
+        end
+    end
+    return "\194\167" .. best .. plain .. "\194\167!"
+end
+
+-- the windows of this family that are not the selection's: a megastructure's (its id in
+-- RENDER_STARBASE_STATE.megastructure; a selection replaces it, as selecting does in the game)
+function M.extra(ctx, items, report)
+    local state = RENDER_STARBASE_STATE or {}
+    if state.megastructure and not state.selected then
+        require("render.windows.megastructure").build(ctx, tonumber(state.megastructure), items, report)
+    end
+end
+
 -- a starbase's values in one line (the command protocol's reply)
 function M.summary(fleet)
     local data = M.data()
