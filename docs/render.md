@@ -933,6 +933,8 @@ home system at the same place and scale, the top bar's clock, the outliner.
 - The diplomacy windows (Contacts, a country's diplomacy, the galactic community, the federation,
   a war's overview): [windows/diplomacy.md](windows/diplomacy.md).
 
+- The economy windows (the market, the expansion planner; trade, the slave market): [windows/economy.md](windows/economy.md).
+
 ### The controls: input, bindings, actions (`sim/render/src/controls.rs`)
 
 **Physical input is kept apart from the game's actions.** The window (winit) and the command
