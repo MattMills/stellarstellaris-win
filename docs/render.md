@@ -876,6 +876,8 @@ and how the renderer does it. Checked against the game's frame after a load (`he
 the same commands: `H:\code_working\tmp_sym\render3d\parity\7_controls.png`, the game left): the
 home system at the same place and scale, the top bar's clock, the outliner.
 
+- The economy windows (the market, the expansion planner; trade, the slave market): [windows/economy.md](windows/economy.md).
+
 ### The clock (`sim/render/src/clock.rs`)
 
 - **The simulation runs on its own thread**, which owns its Lua runtime (the save with the game's
