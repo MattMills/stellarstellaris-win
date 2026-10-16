@@ -1609,19 +1609,19 @@ impl App {
             Some("select") => self.show(Screen::SelectEmpire),
             Some("creator") => self.show(Screen::Creator),
             Some("setup") => self.show(Screen::GameSetup),
-            Some("play") => self.start_new_game()?,
+            Some("play") => self.newgame_play()?,
             _ => {}
         }
         Ok(())
     }
 
     /// Play on the galaxy settings: a new game from the setup state (RENDER_NEWGAME:
-    /// render.newgame_setup.settings gives engine.newgame's settings and the empire design).
-    /// The generation, the load screen and the map are session ng-start's: until then the
-    /// settings are logged and the screen stays.
-    pub fn start_new_game(&mut self) -> Result<(), String> {
+    /// render.newgame_setup.settings). The start is session ng-start's (newgame.rs): once merged,
+    /// this becomes `let t: Table = <settings>; self.start_new_game(NewGameSettings::from_lua(&t)?)`;
+    /// until then the settings are logged and the screen stays.
+    fn newgame_play(&mut self) -> Result<(), String> {
         let summary = gui::newgame_summary(&self.runtime)?;
-        self.log.push(format!("new game: start {summary} (not built yet)"));
+        self.log.push(format!("new game: play {summary} (the start is ng-start's)"));
         Ok(())
     }
 
