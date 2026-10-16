@@ -230,6 +230,12 @@ pub fn new_lua() -> mlua::Result<Lua> {
         "noise",
         lua.create_function(|_, (position, seed): (u32, u32)| Ok(crate::rng::noise(position, seed)))?,
     )?;
+    // its value before the last xorshift (CNoiseRandom::GetNext is h ^ h >> 8, GetInteger
+    // (h & 0x7ffffffe) ^ h >> 8): the ship designer's CCrudeRandom (engine.ai.designer)
+    rust.set(
+        "noise_raw",
+        lua.create_function(|_, (position, seed): (u32, u32)| Ok(crate::rng::noise_raw(position, seed)))?,
+    )?;
     lua.globals().set("RUST", rust)?;
     lua.globals().set("E", lua.create_table()?)?;
     // the simulation's modules compiled now, the first three templates of the path above (a

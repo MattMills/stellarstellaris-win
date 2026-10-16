@@ -987,12 +987,14 @@ local function template_add(country, fid, f, info, did)
             return
         end
     end
+    -- CFleetTemplate::AddDesign (0x2a163b0): a new entry with the count added (1)
     local e = {}
     local sdi = {}
     world.append(sdi, "design", did)
     world.append(sdi, "upgrade", NO_ID)
     world.append(sdi, "growth_stage", 0)
     world.append(e, "ship_design_implementation", sdi)
+    world.append(e, "count", 1)
     world.push(list, e)
     world.set(t, "fleet_size", size + info.size_multiplier)
 end

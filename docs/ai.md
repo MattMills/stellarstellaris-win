@@ -739,9 +739,9 @@ the lowest (owned + queued) x naval cap usage / wanted. The strategy's lists 9 (
 the ship size's index in the database: 23 corvette, 29 constructor, 30 colonizer, 34 science) and
 10 (BUILD_ARMY, id = the army type's index: 10 assault_army) give the counts wanted; an order takes
 one off. Ported in `engine/ai/shipbuilding.lua` (called from `engine/ai/init.lua` after the
-research); the AI's ship designer (`RequestNewShipDesign`) is not, so it orders no military ship.
-Over 180 days from 2210.01.01 the game's AIs order 6 ships (5 with designs made in those days) and
-no army; the port 4 constructors and no army (shipbuilding.md section 9).
+research), with the designer (`RequestNewShipDesign`), list 9's monthly rebuild and the upkeep
+check (docs/ai_fleets.md): over 180 days from 2210.01.01 the game's AIs order 6 ships and no army;
+the port orders 5 of them on the game's days and 2 others (docs/ai_fleets.md section 8).
 
 ## 6. Fleets (decision structure) **[V]** (names, calls)
 
@@ -1223,7 +1223,7 @@ in 180 days (16777224: 0; 16777221: 30).
 | list | builder | what it needs |
 |---|---|---|
 | 0 | `CCountryAI::CreateConquerData` (`0xb6e970`): systems to claim, `CalcStrategicValue` (`0xb6ef20`) | claims (`CGameRules::CanAddClaim`), intel, attitudes |
-| 9 | `CCountryAI::CreateNavyBuildData` (`0xb72c10`): per ship size, the ships wanted (`CalcBuildableShipsAndDesiredFractions`, `SetNumWantedShips`) less the owned and queued | ships, designs, construction queues |
+| 9 | `CCountryAI::CreateNavyBuildData` (`0xb72c10`; Linux `0x26ec970`): **ported**, `engine/ai/navy.lua` (docs/ai_fleets.md section 2) | |
 | 10 | `CCountryAI::CreateArmyBuildData` (`0xb73120`): per army type (`CArmyType::PotentialBuildBy`), from pops, colonies' queued armies, transport fleets | armies, army types, fleets |
 | 3, 19 | `CreateColonizeData`'s station and expansion parts: **ported** (docs/stations.md) | `CDepositHolder::CanBuildStation` (`0xd949f0`: the latest orbital design of the class, `CPlanet::CanBuildStation` `0xe00c90`, the hideable and non-hideable checks, `can_planet_support_orbital_stations`), `NAIUtil::ShouldBuildStarbase` (`0xba4fa0`), `CalcExpansionValue` (`0xba5390`) |
 | 1 | `AddColonyData` | `CPlanet::CanColonize` (`0xdfff10`), `NAIUtil::ShouldColonizePlanet` (`0xba4df0`), habitability, the synced draw |

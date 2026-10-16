@@ -21,6 +21,19 @@ const NOISE2: u32 = 0x68E3_1DA4;
 const NOISE3: u32 = 0x1B56_C4E9;
 const NOISE4: u32 = 0x92D6_8CA2;
 
+/// The hash of draw number `position` for `seed` before the last xorshift (`h`): the game's
+/// `CNoiseRandom::GetNext` is `h ^ h >> 8`, `CNoiseRandom::GetInteger` (Linux 4.5.2 `0x42359d0`)
+/// `(h & 0x7ffffffe) ^ h >> 8`, which differs from [`noise`] in the lowest bit.
+pub fn noise_raw(position: u32, seed: u32) -> u32 {
+    let mut x = seed.wrapping_add(position.wrapping_mul(NOISE1));
+    x ^= x >> 8;
+    x = x.wrapping_add(NOISE2);
+    x ^= x << 8;
+    x = x.wrapping_mul(NOISE3);
+    x ^= x >> 8;
+    x.wrapping_mul(NOISE4)
+}
+
 /// The value of draw number `position` for `seed` (31 bits).
 pub fn noise(position: u32, seed: u32) -> u32 {
     let mut x = seed.wrapping_add(position.wrapping_mul(NOISE1));
@@ -103,6 +116,16 @@ mod tests {
             }
         }
         assert_eq!(noise(1_000_000, 42), 1699477020);
+    }
+
+    /// The value before the last xorshift: `noise` is its `h ^ h >> 8` less the top bit (the
+    /// game's `CNoiseRandom::GetNext`, masked), for every seed and position.
+    #[test]
+    fn noise_raw_is_noise_before_the_last_round() {
+        for (pos, seed) in [(0u32, 0u32), (7, 12345), (0xdeadbeef, 0x5ea6ba9f), (u32::MAX, 1)] {
+            let h = noise_raw(pos, seed);
+            assert_eq!((h ^ (h >> 8)) & 0x7FFF_FFFF, noise(pos, seed), "position {pos} seed {seed}");
+        }
     }
 
     #[test]

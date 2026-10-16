@@ -36,9 +36,8 @@ AI's budget is docs/ai_economy.md.
 - **The AI** decides daily, in the interior minister (`CAIInteriorMinister::DailyUpdate`):
   `BuildArmies` (two AI draws a day) and `BuildShips` -> `BuildShipOfOwnerType`, one ship at most a
   day, the size the strategy's list 9 wants most (`GetOrRequestDesign`: one AI draw a size), within
-  the ships budget, in a shipyard with room **[V]**. The AI's ship designer
-  (`RequestNewShipDesign`) is not ported: of the game's six ships ordered in 180 days, five used
-  designs it made during those days.
+  the ships budget, in a shipyard with room **[V]**. The AI's designer, list 9's monthly rebuild,
+  the upkeep check and the budget's missing entries are docs/ai_fleets.md.
 
 ## 1. The items (the save's form)
 
@@ -272,8 +271,9 @@ until an order takes one off.
 | `engine/ai/shipbuilding.lua` | `daily(country, today, commands)` from `engine/ai/init.lua` after the research: `build_armies`, `build_ships` (`get_or_request_design`, `ship_table` the design's cost, `shipyards`, the strategy lists' value and decrement); the orders through `engine.ai.economy.orders` |
 | `simscript/eval.lua`, `engine/interface.lua` | `used_naval_capacity_percent` (the AI budget's alloys entries read it) |
 
-The AI's designer is not ported: a size with roles gets no design, so the AI orders no military
-ship (`STELLAR_AI_DESIGNS=latest` lets the country's latest design of the size stand in).
+The AI's designer (`engine/ai/designer.lua`), list 9 (`engine/ai/navy.lua`) and the order's
+upkeep check are docs/ai_fleets.md (`STELLAR_AI_DESIGNS=latest` lets the country's latest design
+of the size stand in for the designer's).
 
 ## 9. Checks
 
@@ -317,17 +317,15 @@ The AI: the simulation orders 4 ships (constructors: 16777218 on 01.20 and 03.20
 16777217 on 02.06) and no army, where the game orders the six ships above and no army. With
 `STELLAR_AI_DESIGNS=latest` (the latest design standing in for the designer's) it orders 16
 ships, 16777217's corvette on 02.06 among them, but every AI orders a corvette in its first
-month. Open: what keeps the game's AIs from ordering in the first months while their ships budgets
-(120-440 alloys after a month in the simulation) cover a corvette or a construction ship and
-their shipyards are free (16777218 wants 11 corvettes and 2 constructors from 2210.01.01 and orders
-its first ship on 06.20; its alloys stay unspent: 279 at load, 312 on 03.01).
+month. Answered in docs/ai_fleets.md section 3: the game's ships budgets are far smaller (the
+ship upgrades' and colonies' entries take their share, and energy upkeep is weighed in the
+country's pool); with them the simulation orders the game's ships on the game's days.
 
 ## 10. Not ported
 
-- The AI's ship designer (`RequestNewShipDesign`, `CCreateOrUpdateShipDesignCommand`), the size
-  families, `BuildColonizer`, `DisbandShips`, the federation's and galactic community's ships, the
-  military minister's reinforcements and fleet compositions, the strategy's lists 9 and 10 rebuilt
-  each month (`CreateNavyBuildData`, `CreateArmyBuildData`).
+- The size families, `BuildColonizer`, `DisbandShips`, the federation's and galactic community's
+  ships, the military minister's fleet groups and merges, list 10 rebuilt each month
+  (`CreateArmyBuildData`); the designer and list 9 are ported (docs/ai_fleets.md).
 - Military power (the fleets' and countries' `military_power`, `diplomacy_weight`), the ships'
   experience, rarity modifiers, arkships, colony ships' colonies.
 - The station design's regeneration on a starbase upgrade (`UpgradeStationDesign`) and the

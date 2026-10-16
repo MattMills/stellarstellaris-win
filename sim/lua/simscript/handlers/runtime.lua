@@ -281,13 +281,34 @@ return function(eval)
     -- can_be_upgraded = yes/no (CCanBeUpgradedTrigger 0x19a60d0). A starbase: its level's next_level
     -- exists, it is not occupied, no upgrade is queued, the next level's ship size is potential,
     -- researched and possible for the controller (ship_sizes potential_country, prerequisites,
-    -- possible_country) and the next level's upgrade trigger holds. A ship, fleet or megastructure
-    -- needs the design upgrade chain the simulation does not model: not evaluated (a miss).
+    -- possible_country) and the next level's upgrade trigger holds. A ship (CShip::CanBeUpgraded
+    -- 0x2ac59c0): its design implementation's `upgrade` (the save's CalcLatestUpgradableDesign) is
+    -- another design [I: the ship's upgrade flag +0x478 and its fleet's CanUpgrade flag +0x1270 are
+    -- taken as set]; a fleet (CFleet::HasShipsThatCanBeUpgraded 0x29426d0): one of its ships can.
+    -- A megastructure is not evaluated (a miss).
+    local function ship_upgradable(sid)
+        local w = require("engine.world")
+        local s = w.object("ships", sid)
+        local sdi = s and w.field(s, "ship_design_implementation")
+        if type(sdi) ~= "table" then return false end
+        local up = tonumber(w.field(sdi, "upgrade"))
+        return up ~= nil and up ~= 4294967295 and up ~= tonumber(w.field(sdi, "design")) and w.object("ship_design", up) ~= nil
+    end
     TRIG["can_be_upgraded"] = function(e, ctx)
         local r, sc = rt(), ctx.this
         if not r then return false end
         if sc.kind ~= "starbase" then
-            if sc.kind == "ship" or sc.kind == "fleet" or sc.kind == "megastructure" then
+            if sc.kind == "ship" then
+                sync()
+                return ship_upgradable(sc.id) == yes(e)
+            elseif sc.kind == "fleet" then
+                sync()
+                local any = false
+                for _, sid in ipairs(r.fleet_ships(sc.id) or {}) do
+                    if ship_upgradable(sid) then any = true break end
+                end
+                return any == yes(e)
+            elseif sc.kind == "megastructure" then
                 miss("trigger", "can_be_upgraded (" .. sc.kind .. ")", ctx, e)
                 return false
             end
@@ -2444,6 +2465,10 @@ return function(eval)
     -- (a miss) until the list is ported (strategy.PORTED)
     local function strategy_ported(t)
         local ok, strategy = pcall(require, "engine.ai.strategy")
+        -- list 1 (COLONIZE) is answered as the world holds it (the save's, kept by engine.ai.strategy
+        -- until CreateColonizeData's AddColonyData is ported): the AI budget's colonies entries read
+        -- it (ai_colonize_plans; docs/ai_fleets.md section 3); STELLAR_AI_LIST1=off leaves it a miss
+        if t == 1 and os.getenv("STELLAR_AI_LIST1") ~= "off" then return true end
         return ok and type(strategy) == "table" and strategy.PORTED and strategy.PORTED[t] == true
     end
     -- ai_colonize_plans <op> n (CAIColonizePlans 0x19af8b0): the COLONIZE (1) entries

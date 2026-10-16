@@ -294,6 +294,9 @@ end
 local VALUE_OPS = {
     add = true, subtract = true, factor = true, multiply = true, mult = true, divide = true,
     modulo = true, base = true, value = true, weight = true, min = true, max = true,
+    -- a script value's `modifier = { set = 1 <triggers> }` (desired_constructors_min): set is an
+    -- operation there, not a trigger
+    set = true,
 }
 
 -- `trigger:<name>` in a value: TVAL[name](ctx, e) -> the number the trigger compares, or nil when
@@ -1523,6 +1526,15 @@ end
 -- the day of the year, the days since 2200.01.01
 TRIG["days_passed"] = function(e, ctx)
     return compare(M.today() - 2200 * 360, e.op, M.value(e.value, ctx, e))
+end
+
+-- controlled_systems <op> n (CControlledSystemsTrigger): the systems the country controls (its
+-- starbases' systems; no occupation is modelled, so the systems it owns)
+TRIG["controlled_systems"] = function(e, ctx)
+    local sc = ctx.this
+    if sc == NONE or sc.kind ~= "country" or not E.controlled_systems then return false end
+    sync()
+    return compare(E.controlled_systems(sc.id) or 0, e.op, M.value(e.value, ctx, e))
 end
 
 -- numeric engine reads: key -> scope kind, field
