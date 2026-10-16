@@ -1175,7 +1175,7 @@ pub fn add_gui(
 ) {
     for item in items {
         match item {
-            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action, tint } => {
+            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action, tint, clip } => {
                 let Some(t) = tex.game(cache, game_dir, texture) else { continue };
                 let img = tex.images[t].clone();
                 let (tw, th) = (img.width as f32, img.height as f32);
@@ -1191,6 +1191,10 @@ pub fn add_gui(
                 let (nf, f) = (n as f32, (frame.min(n) - 1) as f32);
                 let (u0, u1) = (f / nf, (f + 1.0) / nf);
                 let fw = tw / nf;
+                // a part of the frame (a progress bar's): its u range and the rectangle cut the same
+                let (a, b) = (clip[0].clamp(0.0, 1.0), clip[1].clamp(0.0, 1.0));
+                let (u0, u1, cx, cw) = (u0 + (u1 - u0) * a, u0 + (u1 - u0) * b, x + w * a, w * (b - a));
+                let (x, w) = (&cx, &cw);
                 let visible = {
                     let (a, bx) = ((u0 * tw) as u32, (u1 * tw) as u32);
                     (0..img.height).any(|yy| (a..bx.min(img.width)).any(|xx| img.pixel(xx, yy)[3] > 0))

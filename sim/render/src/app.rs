@@ -140,6 +140,10 @@ pub struct App {
     pub models: models::Library,
     /// what is selected on the map
     pub selected: Option<Pickable>,
+    /// the left bar's view open (views.rs: one at a time, CInGameIdler::ToggleTopBarView) and
+    /// its own state (`view_set:KEY=VALUE`: a tab, an area chosen)
+    pub open_view: Option<String>,
+    pub view_state: HashMap<String, String>,
     /// the windows over the map for the selection (the outliner, an info window)
     pub overlay_items: Vec<GuiItem>,
     /// the map labels (mapicons.gui) of what the view shows
@@ -228,6 +232,8 @@ impl App {
             model: None,
             models: models::Library::default(),
             selected: None,
+            open_view: None,
+            view_state: HashMap::new(),
             overlay_items: Vec::new(),
             overlay_labels: Vec::new(),
             overlay_key: None,
@@ -1034,9 +1040,13 @@ impl App {
         for (i, v) in views.iter().enumerate() {
             let mut e = gui::WindowSpec::new("interface/main.gui", "maingui_left_bar_button");
             let prefix = format!("/left_bar/{i}");
-            e.parent = Some([-225.0 + 34.0, 35.0 + 50.0 + 40.0 * i as f32, 0.0, 0.0]);
+            // (27 left of the gridbox's 34: the game's frames have the icons' left edge at x = 5,
+            // inside the bar, with and without a view open [I: measured; the rule not read])
+            e.parent = Some([-225.0 + 34.0 - 27.0, 35.0 + 50.0 + 40.0 * i as f32, 0.0, 0.0]);
             e.only = Some(vec!["right_icon".into()]);
             e.sprites.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("GFX_topbar_{v}_button")));
+            // a click toggles its view (CInGameIdler::ToggleTopBarView)
+            e.actions.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("view:{v}")));
             e.prefix = Some(prefix);
             specs.push(e);
         }
@@ -1253,6 +1263,14 @@ impl App {
         // the main screen's other windows under the outliner and the selection's window
         let mut items = self.main_screen_items()?;
         items.extend(layout.items);
+        // the left bar's view open (views.rs)
+        if let Some(name) = self.open_view.clone() {
+            let data = self.map.as_ref().and_then(|m| m.galaxy.views.get(&name).cloned());
+            match crate::views::layout(&self.runtime, w, h, &name, data.as_ref(), &self.view_state) {
+                Ok(l) => items.extend(l.items),
+                Err(e) => self.log.push(format!("view {name}: {e}")),
+            }
+        }
         let map = self.map.as_mut().unwrap();
         gui::fonts(&self.runtime, &self.game_dir, &items, map.fonts.get_or_insert_with(HashMap::new))?;
         Ok(items)
@@ -1527,6 +1545,17 @@ impl App {
                 let s = if action == Some("speed_up") { (s + 1).min(clock::SPEEDS) } else { s.saturating_sub(1).max(1) };
                 self.set_speed(s)?;
             }
+            // the left bar's views (views.rs): a button toggles its view, a view's close button
+            // closes it, `view_set:KEY=VALUE;KEY2=VALUE2` sets keys of the view's state (`KEY=`
+            // removes one)
+            Some(a) if a.starts_with("view:") => {
+                self.toggle_view(&a[5..]);
+            }
+            Some("view_close") => self.close_view(),
+            Some(a) if a.starts_with("view_set:") => {
+                let pairs: Vec<(&str, &str)> = a[9..].split(';').map(|kv| kv.split_once('=').unwrap_or((kv, ""))).collect();
+                self.set_view_state(&pairs);
+            }
             // the selection's window closed; an outliner row selects its planet or fleet
             Some("close") => self.select(None),
             Some(a) if a.starts_with("select:") => {
@@ -1542,6 +1571,43 @@ impl App {
             None => {}
         }
         Ok(())
+    }
+
+    /// A left bar view toggled (CInGameIdler::ToggleTopBarView): shown, it is hidden; else the
+    /// view open is closed and it is shown, its state anew. Whether it is shown.
+    pub fn toggle_view(&mut self, name: &str) -> bool {
+        if self.open_view.as_deref() == Some(name) {
+            self.close_view();
+            return false;
+        }
+        self.log.push(format!("view: {name}"));
+        self.open_view = Some(name.to_string());
+        self.view_state.clear();
+        self.overlay_key = None;
+        self.scene = None;
+        true
+    }
+
+    /// Keys of the open view's state set (an empty value removes the key).
+    pub fn set_view_state(&mut self, pairs: &[(&str, &str)]) {
+        for (k, v) in pairs {
+            if v.is_empty() {
+                self.view_state.remove(*k);
+            } else {
+                self.view_state.insert(k.to_string(), v.to_string());
+            }
+        }
+        self.overlay_key = None;
+        self.scene = None;
+    }
+
+    pub fn close_view(&mut self) {
+        if let Some(v) = self.open_view.take() {
+            self.log.push(format!("view: {v} closed"));
+            self.view_state.clear();
+            self.overlay_key = None;
+            self.scene = None;
+        }
     }
 
     fn show(&mut self, screen: Screen) {
@@ -1650,6 +1716,9 @@ impl App {
                     self.mode3d = !self.mode3d;
                     self.scene = None;
                 }
+                // the view's close button (shortcut ESCAPE) has the key first (the GUI's input
+                // before the idler's)
+                "escape" if self.open_view.is_some() => self.close_view(),
                 "escape" if self.selected.is_some() => self.select(None),
                 "escape" if self.view != MapView::Galaxy && self.map.is_some() => {
                     self.log.push(format!("escape: {:?} -> Galaxy", self.view));
