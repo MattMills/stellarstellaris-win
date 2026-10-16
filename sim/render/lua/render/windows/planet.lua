@@ -310,6 +310,8 @@ end
 -- a disabled button (Disable(): the buttonstate shader greys it **[I]** a darker tint)
 function View:disable(path)
     self.tints[path] = { 0.45, 0.45, 0.45, 1 }
+    -- and its label dimmed (the game's frames: a disabled button's text is grey too)
+    self.dimmed[path .. "/text"] = true
 end
 
 -- an icon's sprite set at run time, with its sheet's frame (the element's own `frame` is the
@@ -507,7 +509,13 @@ function View:summary()
     else
         hide[S .. "/colonizable_planet_window"] = true
         hide[S .. "/colonized_planet_window"] = true
-        text[S .. "/uncolonizable_planet_window/planet_desc_window/planet_desc"] = d and self:L(d.class .. "_desc") or ""
+        -- a star's description begins with its luminosity (its class's `climate`, luminosity_N:
+        -- "Luminosity: Strong", the game's frame of the home star) **[V]** the frame
+        local desc = d and self:L(d.class .. "_desc") or ""
+        if d and d.climate and d.climate:match("^luminosity") then
+            desc = self:L(d.climate) .. "\n" .. desc
+        end
+        text[S .. "/uncolonizable_planet_window/planet_desc_window/planet_desc"] = desc
         local res = {}
         for _, dep in ipairs(d and d.deposits or {}) do
             for _, r in ipairs(dep.resources) do
@@ -540,6 +548,10 @@ function View:summary()
         text[SS .. "/planet_size"] = self:F("PLANET_SIZE_TEXT", { SIZE = (self.completed or d.colonizable) and d.size or self:L("DASH") })
         self:sprite(SS .. "/management_planet_class_icon", d.class_icon_large)
         hide[SS .. "/terraform_label"] = true
+        -- terraforming a star: disabled (IsTerraformable; the game's frame of the home star)
+        if d.star then
+            self:disable(SS .. "/terraform_button")
+        end
         hide[SS .. "/decisions_button"] = not self.mine or nil
     end
     -- the districts (colony or colonizable): the header's free slots, the main district's wide
@@ -744,7 +756,7 @@ function planet.build(ctx, sel, items, report)
             side_bar_window_always_open = true, header_actions = true,
         },
         hide = {}, text = {}, frames = {}, sprites = {}, actions = {},
-        later = {}, retexture = {}, bg_frames = {}, icon_frames = {}, zone_sprites = {}, resprite = {}, tints = {},
+        later = {}, retexture = {}, bg_frames = {}, icon_frames = {}, zone_sprites = {}, resprite = {}, tints = {}, dimmed = {},
     }, View)
     v.name = (d and d.name and names.format(ctx.loc, d.name)) or sel.name or ""
     local colony = d and d.colony
@@ -841,6 +853,15 @@ function planet.build(ctx, sel, items, report)
             local fr = v.bg_frames[base] or v.icon_frames[base]
             if fr then
                 it.frame = fr
+            end
+        end
+    end
+    for i = first, #items do
+        local it = items[i]
+        if it.kind == "text" and v.dimmed[it.path] then
+            for _, sp in ipairs(it.spans or {}) do
+                local c = sp.colour or { 1, 1, 1 }
+                sp.colour = { c[1] * 0.55, c[2] * 0.55, c[3] * 0.55 }
             end
         end
     end
@@ -1527,7 +1548,9 @@ function View:colonize_window()
     text[DH .. "/planet_num_districts/planet_districts_amount"] = d.surveyed and d.district_slots and tostring(d.district_slots.max) or self:L("DASH")
     local r = self:lay("expansion_planner_surface_view", {
         file = CFILE, text = text, hide = hide, actions = actions, tints = { [CW .. "/colonize_button"] = { 0.45, 0.45, 0.45, 1 } },
+        -- (its label dimmed with it, below)
     })
+    self.dimmed[CW .. "/colonize_button/text"] = true
     -- the checkboxes: the founder-species filter and the automation, unchecked
     for _, cb in ipairs({ { CW .. "/expansion_source/expansion_source_container_title_bar/main_species_filter", "checked" },
         { CW .. "/designation_container/designation_container_title_bar/automation_toggle", "automation_checkbox" } }) do
@@ -2235,6 +2258,8 @@ function planet.data(game_dir, id)
     local cdef = block_of(game_dir, "common/planet_classes", class)
     d.class_icon = dfield(cdef, "icon")
     d.class_icon_large = dfield(cdef, "icon_large")
+    d.climate = dfield(cdef, "climate")
+    d.star = dfield(cdef, "star") == "yes"
     d.picture = unquote(world.field(p, "picture")) or dfield(cdef, "picture") or class
     local colonizable_class = dfield(cdef, "colonizable") == "yes"
     d.colonizable = d.owner == nil and colonizable_class
