@@ -149,6 +149,20 @@ function technology.extract(game_dir)
         end
     end
     d.empire_size = tonumber(world.field(c, "empire_size")) or 0
+    -- the Policies popup's rows (with the simulation's definitions: its triggers)
+    local okp, rows = pcall(require("render.windows.technology_policies").extract, cid,
+        (tostring(world.meta.date or ""):gsub('"', "")))
+    d.policies = okp and rows or nil
+    -- the player's technologies completed since the load (engine.research.completed: the
+    -- "Technology researched" messages the dialog opens from)
+    if okr and research.completed then
+        d.done = {}
+        for _, e in ipairs(research.completed) do
+            if e.country == cid then
+                d.done[#d.done + 1] = { tech = e.tech, date = e.date }
+            end
+        end
+    end
     return d
 end
 
@@ -447,12 +461,21 @@ function technology.build(ctx, data, state)
     -- the window (Reload: select_window and researched_window hidden until opened)
     local V = "/technology_view_window"
     local hide = { select_window = not state.select or nil, researched_window = not state.researched or nil }
+    -- (the side windows hide the Policies popup: OnSelect, OnResearched)
     local text, actions = {}, {
         [V .. "/close"] = "view_close",
-        [V .. "/researched"] = "view_set:select=;sel_scroll=;res_scroll=;researched=" .. (state.researched and "" or (state.select or "physics")),
+        [V .. "/researched"] = "view_set:select=;sel_scroll=;res_scroll=;policies=;expand=;policy_confirm=;researched=" .. (state.researched and "" or (state.select or "physics")),
         [V .. "/select_window/close"] = "view_set:select=",
         [V .. "/researched_window/close"] = "view_set:researched=",
     }
+    -- Policies (OpenPolicies: CCategoryPoliciesView for `research`, toggled; the side windows
+    -- hidden): enabled when the country has a policy of the category (CategoryHasApplicablePolicy)
+    local disabled = {}
+    if data.policies and #data.policies > 0 then
+        actions[V .. "/policies"] = "view_set:select=;researched=;expand=;policy_confirm=;policies=" .. (state.policies and "" or "1")
+    else
+        disabled[V .. "/policies"] = true
+    end
     local sel_area = state.select and AREA_INDEX[state.select]
     if sel_area then
         text[V .. "/select_window/header"] = format(ctx.loc, "SELECT_TECHNOLOGY", { AREA = state.select:upper() })
@@ -469,10 +492,49 @@ function technology.build(ctx, data, state)
     end
     -- UpdatePopOutButtonStates: Researched active while its window shows
     -- (NGuiUtil::SetButtonActive: the frame 4 x active - 1, 3)
-    local frames = { [V .. "/researched"] = state.researched and 3 or nil }
-    local r = layout("technology_view_window", { hide = hide, text = text, actions = actions, frames = frames })
+    local frames = { [V .. "/researched"] = state.researched and 3 or nil, [V .. "/policies"] = state.policies and 3 or nil }
+    local r = layout("technology_view_window", { hide = hide, text = text, actions = actions, frames = frames, disabled = disabled })
     -- the description's lines (SELECT_TECHNOLOGY_DESC has "\n"s), 17 apart [I: measured]
     split_lines(items, 1, 17)
+    -- the popups over the view, laid out after it (at the end of build)
+    local function popups()
+        local function plain(file, window, opts)
+            opts.texture_size, opts.loc = ctx.texture_size, ctx.loc
+            local i, rr = gui.layout(ctx.game_dir, ctx.db, file, window, ctx.screen, opts)
+            gui.merge(items, report, i, rr)
+            return rr
+        end
+        if state.policies then
+            -- at the researched window's place (NGuiUtil::OpenAtWindow), on the screen
+            local w = r.rects[V]
+            local at = { x = w and w.x + 489 or 519, y = w and w.y + 14 or 49 }
+            at.y = math.max(0, math.min(at.y, ctx.screen.height - 642))
+            require("render.windows.technology_policies").build(ctx, data.policies, state, plain, at)
+        end
+        if state.done then
+            -- (its lines split: the policy dialog's description wraps as one text, its new line kept)
+            local first = #items + 1
+            -- the technology researched dialog (CTechnologyResearchedDialog,
+            -- technology_researched_dialog_window: centred; the shared card, the technology's
+            -- description; close and Close only close it, New Research opens the area's offers)
+            local tech, level = state.done:match("^([^:]+):?(%d*)$")
+            local t = defs.techs[tech or ""]
+            if t then
+                local D = "/technology_researched_dialog_window"
+                local opts = { hide = {}, text = {}, sprites = {}, actions = {
+                    [D .. "/close"] = "view_set:done=",
+                    [D .. "/close_button"] = "view_set:done=",
+                    [D .. "/new_research"] = "view_set:done=;researched=;policies=;select=" .. (t.area or "physics"),
+                } }
+                card(opts, defs, ctx, D, tech, tonumber(level))
+                opts.text[D .. "/cost"] = t.start and "TECH_STARTING" or whole(cost_of(defs, data, tech))
+                opts.text[D .. "/researched_desc"] = tech .. "_desc"
+                local dr = plain(FILE, "technology_researched_dialog_window", opts)
+                lay_unlocks(dr.rects[D .. "/unlocks"], (unlocks_of(tech)), "/done/unlocks", 60)
+            end
+            split_lines(items, first, 17)
+        end
+    end
 
     -- the head of research (paragon_portrait_container_research in research_container): its
     -- background, the council position's icon, the leader's name and the position's title
@@ -518,7 +580,7 @@ function technology.build(ctx, data, state)
             -- bottom_line is below the window's 150 (clipping = yes)
             hide = { bottom_line = true, special_project = true }, text = {}, sprites = {}, frames = {}, progress = {},
             actions = {
-                [W .. "/choose/select"] = "view_set:researched=;sel_scroll=;res_scroll=;select=" .. (state.select == area and "" or area),
+                [W .. "/choose/select"] = "view_set:researched=;sel_scroll=;res_scroll=;policies=;expand=;policy_confirm=;select=" .. (state.select == area and "" or area),
             },
         }
         opts.sprites[W .. "/topbar"] = "GFX_scientist_top_bar_" .. area
@@ -669,6 +731,7 @@ function technology.build(ctx, data, state)
             end
         end
     end
+    popups()
     return items, report
 end
 
@@ -708,6 +771,13 @@ end
 -- technology.escape(state) -> the view_set action Escape does (its side windows' close buttons
 -- have the ESCAPE shortcut too), or nil: the view closed
 function technology.escape(state)
+    if state.done then
+        return "view_set:done="
+    elseif state.policy_confirm then
+        return "view_set:policy_confirm="
+    elseif state.policies then
+        return "view_set:policies=;expand="
+    end
     if state.select or state.researched then
         return "view_set:select=;researched=;sel_scroll=;res_scroll="
     end
@@ -750,6 +820,10 @@ function technology.command(what, area, tech)
     local research = require("engine.research")
     local cid = require("render.topbar").player()
     local c = world.object("country", cid)
+    -- policy GROUP OPTION: CSetPolicyCommand (technology_policies.lua)
+    if what == "policy" then
+        return require("render.windows.technology_policies").command(cid, area, tech, today())
+    end
     if not c or not AREA_INDEX[area or ""] then
         return "refused: no country or no area " .. tostring(area)
     end
@@ -785,6 +859,11 @@ function technology.command(what, area, tech)
         if not item then
             return "refused: " .. area .. " researches nothing"
         end
+        -- (the area's Cancel first turns auto research off: CTechnologyViewAreaEntry::Cancel posts
+        -- CAutoResearchTechnologyCommand(false) before the cancel)
+        if world.field(status, "auto_researching_" .. area) == "yes" then
+            world.set(status, "auto_researching_" .. area, "no")
+        end
         local progress = tonumber(field(item, "progress")) or 0
         world.remove_entry(q, item)
         if progress > 0 then
@@ -795,10 +874,6 @@ function technology.command(what, area, tech)
             if cost and total >= cost then
                 -- (CancelTechnologyResearch: done; IncreaseTechnologyLevel takes the stored entry)
                 research.add_technology(cid, t)
-                local e = world.token_entry(block, t)
-                if e then
-                    world.remove_entry(block, e)
-                end
                 research.update_alternatives(cid, area, true)
                 return "cancel " .. t .. ": done"
             end

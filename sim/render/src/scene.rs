@@ -1391,8 +1391,10 @@ pub fn add_gui(
                 // a text breaks at its line breaks, and wraps at its words when wider than its box
                 // and the box has room for more lines; as many lines as fit are drawn (the game's
                 // frames: government_view's empty_mods, 40 high, two lines; the leaders view's
-                // class tabs, "\n"; a pool leader's "Age\n0" in a box one line high: "Age")
-                let wraps = *w > 8.0 && (text.contains('\n') || (*h >= 2.0 * f.line_height && !with_icon && f.width(text) > w + 0.5));
+                // class tabs, "\n"; a pool leader's "Age\n0" in a box one line high: "Age"); a text
+                // with icons too (the Ambition tab's crisis_howto, 462 x 50: its words wrap, the
+                // icons measured as icons by wrap_spans)
+                let wraps = *w > 8.0 && (text.contains('\n') || (*h >= 2.0 * f.line_height && f.width(text) > w + 0.5));
                 let (text, spans) = if !wraps && *w > 8.0 && !with_icon && f.width(text) > w + 0.5 {
                     let mut keep: Vec<(String, [f32; 3])> = Vec::new();
                     let mut used = f.width(" ...");
