@@ -7,7 +7,10 @@ without a save.
 Reverse engineered statically from the GOG 4.5.2 build and its PDB on hippo (`/root/fnm_tmp`:
 `annotate.py`, `pdbtype.py`, `names452.tsv`, `full452.asm`). Addresses are GOG RVAs. **[V]** marks
 what was seen in the disassembly (the address is given), **[I]** what is inferred (from names, the
-script files or the saves). Nothing was measured at runtime.
+script files or the saves). Since then the Linux 4.5.2 build has been made to generate new games
+headless (`headless/newgame.sh`) and the Lua compared with it draw for draw (section 8.1): **[M]**
+marks what was measured there, `L 0x...` a Linux address (`/opt/stellaris-headless/re/nm.txt` on
+10.5.0.24).
 
 Sections 1-6 are the game, section 7 the Lua, section 8 the checks against the game's saves, section
 9 what differs and what is left.
@@ -22,6 +25,21 @@ Sections 1-6 are the game, section 7 the Lua, section 8 the checks against the g
 | 3 | `CGalaxyGenerator::GenerateFromRandomScenario` (`0x98bfe0`) | the whole galaxy, in the order of section 3 |
 | 4 | `CGameState::InitPostGalaxyCreation` (`0x264340`) | the game's state after creation (section 6) |
 | 5 | `CGameState::OnNewGameStarted` (`0x272000`) | the first-day script: on_actions (section 6) |
+
+The Linux build **[V][M]**: `CFrontEndIdler::StartNewGame` (`L 0x25c5660`) calls `LaunchNewGame`
+(`L 0x25c57b0`), which for a single-player game (`CFrontEndIdler::_State == 0`) makes the
+configuration from the settings (`CGameState::LoadGalaxyConfigSPSettings` `L 0x1b418a0`:
+`CSettings +0xa40`, `settings.txt`'s `galaxy_config_sp = { template = shape = num_empires = ... }`;
+`ImportEmpireDesigns` `L 0x19f85b0`: the user's designs, then the playable prescripted ones), copies
+the front end's humans (`CGameState +0x18`, 0x68 bytes each) and runs a task (`$_2::_M_invoke`
+`L 0x25cc270`): the date, `AddHuman`, `SetGalaxyConfiguration`, `GenerateNewGalaxy(-1)`
+(`L 0x1b3fd30`, the call at `L 0x25cc318`). The in-game idler's `RestoreDeviceObjects` then runs
+`OnNewGameStarted` (`L 0x1b4c460`, called at `L 0x1c99661`). The command line's `-empire=KEY`
+makes `CFrontEndIdler::UpdateInternal` (`L 0x25c6fb5`) add a human with that design and set the
+start flag (`+0x218`), but only for a design whose `playable` passes: `humans1` is a stub
+(`empire_design_never`), the UNE is `humans1_1`. `GenerateFromRandomScenario` is `L 0x262f490`
+(a member: the stream is its third argument); its calls are listed with Linux addresses in
+`/root/ngh/gfrs.s` on .24.
 
 ## 2. Seeding **[V]**
 
@@ -90,6 +108,14 @@ Value draws (both streams):
 
 In Lua: `engine/newgame/rng.lua` (`rng.stream(seed)`, `rng.seed_from_global(v)`, `rng.global()` over
 `RUST.rand`), checked against the reference values of `sim/src/rng.rs`.
+
+**[M]** On Linux the generator is a `CCrudeRandom` (`L 0x422b070`), the same `{ position, seed }`
+noise stream: `GenerateNewGalaxy(v)` makes `CCrudeRandom(1)`, `Seed(v)` and passes one
+`GetInteger()` to `Generate`; with `v = -1` it draws v from the global stream first. Measured with
+the global generator at seed 0, position 0 (headless `HEADLESS_NG_RANDOM=0:0`): v = 1874735034,
+the galaxy seed 1064022505, the same as the Lua's from `--global-seed 0`. The front end itself
+draws nothing before the generation on that path (the position is 0 at the menu and at
+`GenerateNewGalaxy`).
 
 ## 3. `GenerateFromRandomScenario` (`0x98bfe0`), in order **[V]** (the calls)
 
@@ -273,7 +299,14 @@ No draws. Called after the nebulas and again after the systems are initialized:
    system's distance (edges across the empty core are dropped) is a neighbour pair:
    `CGalacticObject._GalacticNeighbors` (`+0x10f0`), both ways, in Triangle's edge order. Read by
    `PartitionGalaxyForEmpires`, `AddRandomNeighborSystemsToPartition` and the
-   `neighbor_system_euclidean` script lists;
+   `neighbor_system_euclidean` script lists. **[M]** The order matters: the partitioner draws its
+   candidates from these lists. Triangle's order is its divide and conquer's (Dwyer's alternating
+   cuts, `pczAevnQ` asks for no other algorithm): the triangles in the order `maketriangle` made
+   them (`divconqrecurse`'s base cases, two bounding triangles per `mergehulls`), the bounding
+   ones removed (`removeghosts`), each live triangle's three edges in turn, an edge written by the
+   triangle with the lower address or by the only one on the hull (`writeedges`).
+   `engine/newgame/triangle.lua` is that code; for the tiny reference all 196 lists are the game's
+   in order (they were the game's as sets, sorted, with the Bowyer-Watson stand-in);
 4. `galaxy_radius` = the farthest system's distance (`SafeSqrt` of the largest `fixmul |p|^2`): the
    save's `galaxy_radius=437.9122` is its farthest system, at 437.912.
 
@@ -318,15 +351,26 @@ partition) and which "bridges" (between two). Squared distances against
 - `depth_first`: at once `AddRandomNeighborSystemsToPartition(seed, desired)`. `breadth_first`: all
   seeds first, then over the active list from last to first, one system at a time to each, a
   partition leaving the list when full or stuck.
-- `AddRandomNeighborSystemsToPartition` (`0xa35270`): the candidates are the system's neighbours
-  (`_GalacticNeighbors`, 5.4) in no partition or in this one, not visited, of the same arm and
-  within the distance; `k = draw % m`, the candidate joins (if it is not in already), is swapped to
-  the end, m decreases, until enough joined or m = 0; then the search goes on through the
-  candidates round-robin (each marked visited, a recursive call for one system; a candidate that
-  gives none is dropped).
-- `MergeNeighborPartitions` (`0xa35c00`): a partition filled to 60% or less of `desired` joins the
-  neighbour partition minimising `sqrt(min distance^2) + (Q.count + P.count) / Q.desired` (+1000 for
-  another arm); the merged keeps the larger desired bridges.
+- `AddRandomNeighborSystemsToPartition` (`0xa35270`, `L 0x1a0c630`): the candidates are the
+  system's neighbours (`_GalacticNeighbors`, 5.4) in no partition or in this one, not visited, of
+  the same arm and within the distance (`fixmul(dx,dx) + fixmul(dy,dy) <= max^2`); `k = draw % m`,
+  the candidate joins (if it is not in already), is swapped to the end, m decreases, down to m = 1
+  (drawn too); then the search goes on through the candidates round-robin: each is marked visited
+  and gives one system of its own (a recursive call); one that gives none is replaced by the last
+  candidate, and **[M]** in both cases the round goes on at the next index, `i = (i + 1) % n` (the
+  replacement waits a round).
+- breadth first (`CGalaxyPartitioner::PartitionBreadthFirst` `L 0x1a0ac00`) **[M]**: the active
+  list from its last to its first; a finished partition is replaced by the last active one.
+- `CGalaxyPartitioner::BuildNeighbors` (`L 0x1a0af90`) **[M]**: each partition in turn, its systems
+  in the order they joined, each one's neighbours in order: a new neighbour partition is appended.
+- `MergeNeighborPartitions` (`0xa35c00`, `L 0x1a0b210`) **[M]**: in partition order, one with
+  `count * 100000 // desired <= 60000` joins the neighbour minimising `SafeSqrt(the smallest
+  fixmul squared distance between their systems) + (Q.count + P.count) // Q.desired` (an
+  **integer** division) + 1000 for another arm, the first of equal ones, passing over those that
+  want no systems; the merged one takes the larger desired bridges and P's systems, each of P's
+  neighbours not yet Q's becomes Q's and gets Q, and P leaves every list (each occurrence replaced
+  by the list's last). For the tiny reference every system's partition and every partition's
+  desired systems and bridges are the game's.
 
 ### 5.7 Hyperlanes: `GenerateHyperlanes` (`0x97a7e0` -> `0x8854a0`) **[V]**
 
@@ -335,7 +379,9 @@ triangulation of the systems' truncated coordinates, after the core filter; 48.7
 kept; island lanes are listed longest first, then the bridges.
 
 1. The systems (pirate star classes left out), at `(trunc(x), trunc(y))` as floats; Triangle
-   `"pczAevnQ"`. Each edge whose midpoint is not strictly between the nearest and the farthest
+   `"pczAevnQ"` (`L 0x1c7ded0`), its edges in its order (5.4); **[M]** an edge's `p0, p1` are
+   Triangle's origin and destination (`SHyperlaneEdge { p0, p1, length (fixed) }`, `L 0x1c7e45f`),
+   which the sort's ties compare. Each edge whose midpoint is not strictly between the nearest and the farthest
    system's squared distance is dropped (the empty core). `length = trunc(isqrt(dx^2 + dy^2))`
    (the save's `length`, an integer: the distance rounded down). An edge inside one partition is an
    island; between two, a bridge (both partitions count it).
@@ -347,7 +393,9 @@ kept; island lanes are listed longest first, then the bridges.
    density is under the setting's maximum, `RemoveIfExceedsEdgeLimit` (`0x886620`): an edge whose
    two ends both have `limit` lanes goes, `limit = density > 1 ? round(4 * density) : 4`
    (`HYPERLANE_GEN_REMOVE_TOO_MANY_EDGES`).
-3. `ReAddRemovedEdgeIfNeeded` (`0x8867d0`), the removed edges shortest first: a label-correcting
+   (**[M]** `RemoveAmountRandomEdges` `L 0x1c7fe70`, `RemoveIfExceedsEdgeLimit` `L 0x1c7ffd0`:
+   as described; the Lua's were right.)
+3. `ReAddRemovedEdgeIfNeeded` (`0x8867d0`, `L 0x1c80170`), the removed edges shortest first: a label-correcting
    search (FIFO) from one end, weighted by length, stopped when the other end is reached; the edge
    comes back if the ends are no longer connected, or if it is not longer than the maximum and the
    way found takes more than 20 jumps (`HYPERLANE_GEN_REMOVED_MAX_DIST`).
@@ -412,7 +460,8 @@ Every system not initialized yet, in id order:
 
 1. `GetRandomFromList` (`0x50a830`) over `misc_system_init`: the initializers not at their most uses,
    weighted by `usage_odds` (a primitive system's x the primitive setting), weights >= 0 kept; one
-   G draw x, `GetWeightedRandomInternal(x)` (all weights 0: `x % count`);
+   G draw x, `GetWeightedRandomInternal(x)` (all weights 0: `x % count`). **[M]** No `usage_odds`
+   weighs 0: the six `random_empire_init` have none, and the game's picks for them are `x % 6`;
 2. a G draw `% 100` against `GetSpawnChance` (`0x5089b0`): `spawn_chance`, or
    `round(scaled_spawn_chance * systems / 100)`, times the setting `scaled_spawn_settings` names
    (`num_gateways`), rounded. A pick that fails still counts as a use (`RegisterUse`), and the
@@ -504,15 +553,23 @@ already there)); then the district caps and the blockers balanced (`MIN_UNBLOCKE
 
 ### 6.4 Empires **[V]** (the order) / **[I]** (details)
 
-1. `CalcDesignsForEmpires` (`0x988900`): each slot a design of the configuration (forced ones picked
-   uniformly by G, then `spawn_enabled` ones by G), valid, unused and with an unused portrait; else
-   a randomized design. Then `GenerateEmpireSpeciesClasses` (`CSpecies::GetRandomClass`, C),
+1. `CalcDesignsForEmpires` (`0x988900`, `L 0x262cca0`; each slot `GetEmpireDesignForStaticGalaxyEmpire`
+   `L 0x262c620`) **[M]**: a slot a human holds gets the human's design; otherwise the candidates
+   are the configuration's designs (the user's, then the playable prescripted ones; spawn mode
+   `+0xc60`: 0 no, 1 yes, 2 always) not used yet, valid and with an unused portrait: forced ones
+   `G % count`; else, with `yes` ones, `G % 1000 < CUSTOM_EMPIRE_SPAWN_CHANCE` (50: 5%) and then
+   `G % count`; else a randomized design. So a default setup's AI empires are randomized in 95% of
+   the slots (the game's `%ADJECTIVE%` empires). The validation makes fake countries from the
+   candidate designs (`NGameUtil::SScopedFakeCountry::RegenerateCountry`, `IsValidForPlay`), which
+   draws the global stream: 5,379 values for three forced designs. Then `GenerateEmpireSpeciesClasses` (`CSpecies::GetRandomClass`, C),
    `RandomizeEmpireGovernments` (a solver over the government restrictions; an origin with
    `initializers` gives the first valid one), `GenerateEmpireSpecies` (C).
-2. `InitEmpireSystems` (`0x984eb0`): `ReorderPlayerLocations` (G); per empire: the design's
-   initializer, else `GetRandomFromList(empire_init)` (`nomad_init` for nomads); `GetClass` as a
-   check (C); the context: the ideal class (`GetStartingPlanetClass`), a G draw for the ideal design
-   class; a C draw for the scope. One `InitializeQueue` for all: the empires' systems first (planet
+2. `InitEmpireSystems` (`0x984eb0`, `L 0x2637630`): `ReorderPlayerLocations` (G); per empire: the
+   design's initializer, else `GetRandomFromList(empire_init)` (`nomad_init` for nomads); `GetClass`
+   as a check (C); the context: the ideal class (`GetStartingPlanetClass`); a C draw for the scope.
+   **[M]** No G draw for an ideal design class: G is drawn only by the reorder and the lists before
+   the queue. A planet with `starting_planet = yes` is a home planet as `home_planet = yes` is
+   (Sol's Earth). One `InitializeQueue` for all: the empires' systems first (planet
    ids 0 ... in empire order in the 2210 save), then their neighbours layer by layer
    (`neighbor_t1` x 10, `neighbor_t1_first_colony` x 10, ...).
 3. `GenerateSingleEmpire` (`0x97a210`), each: `CreateNewSpecies`, `CreateNewCountry` (default
@@ -548,6 +605,7 @@ starts: `RecalculateCachedData`; the cosmic storm names (C); the global ship des
 | `rng.lua` | the streams: the generator's (section 2), sub-streams, the global one (`RUST.rand`) |
 | `fixed.lua` | `CFixedPoint` arithmetic, the game's sine and cosine, `GetInt64 % 100000`, the distance test (5.0) |
 | `delaunay.lua` | Delaunay triangulation (Bowyer-Watson) and one Lloyd relaxation (Triangle's part) |
+| `triangle.lua` | Triangle's divide and conquer, for its edge order (the neighbour lists, the hyperlanes) |
 | `scenario.lua` | the setup scenario, the shape, the defines, the scripted variables, the settings |
 | `galaxy.lua` | the parameters, stars, nebulas, the galactic map's neighbours, start clusters, empire placement, resource clusters |
 | `lanes.lua` | partitions and hyperlanes (5.6, 5.7) |
@@ -563,15 +621,15 @@ not:
 
 | part | as the game | not (yet) |
 |---|---|---|
-| seeding | the generator's stream from the seed; the global stream through `RUST.rand` | the lobby's draws before generation; the global stream's state is the platform's |
-| stars | everything of 5.2 in fixed point; the relaxation's input and output grids | Triangle's float Delaunay is replaced by Bowyer-Watson in doubles: the same triangulation up to ties and rounding, so positions can differ by 0.01 |
-| nebulas | 5.3 | |
-| neighbours, clusters, placement | 5.4, 5.5 | `ReorderPlayerLocations` only `normal`; random placement's distance in doubles |
-| partitions | 5.6 | the round-robin's index after a removal [I] |
-| hyperlanes | 5.7 with both global sub-streams | the edges' tie order (Triangle's orientation) in the sort; `ConnectDividedEmpirePartitions` and `ConnectEmpireSystems` not done |
+| seeding | the generator's stream from the seed; the global stream through `RUST.rand` (seed 0, position 0: the game's galaxy seed **[M]**) | the global draws the Lua does not make (8.1) can be stood in for with `--global-at` |
+| stars | everything of 5.2 in fixed point; the relaxation (Bowyer-Watson in doubles) gives the game's positions **[M]** | |
+| nebulas | 5.3 (the generator's two of the reference **[M]**) | scripted nebulas (`create_nebula` in init_effects) |
+| neighbours, clusters, placement | 5.4 in Triangle's order, 5.5 **[M]** | `ReorderPlayerLocations` only `normal`; random placement's distance in doubles |
+| partitions | 5.6 **[M]** | |
+| hyperlanes | 5.7 with both global sub-streams **[M]** | `ConnectDividedEmpirePartitions` and `ConnectEmpireSystems` not done (none added a lane in the reference) |
 | resource clusters | the draws | `CFixedPoint::Atan2` (not decoded) by `math.atan2`; `GenerateResourceRegions` not done |
 | initializers | 6.2 and 6.3: picks, rolls, uses, trees, neighbours, mandatory neighbours, classes, intervals, coordinates, radii, rings | `usage_odds` modifiers whose triggers the small evaluator does not know are left out (counted in the summary); planet modifiers (one C draw, none picked); deposits (not made); `potential` of planet classes taken as passed; orbital lines |
-| empires | the order of 6.4, the queue, the home planet pick | designs: the prescripted ones with `spawn_enabled` drawn by G, no randomized designs, species or governments; the C++ objects made directly: species, country (the technologies with `start_tech = yes`, the default stockpile), the capital colony with the default origin's pops (standing in for `game_start.12` until the engine runs it), the starbase with its station and fleet; no leader; no fallen empires, marauders or nomads |
+| empires | the order of 6.4, the queue, the home planet pick, the designs' pool and draws **[M]** | randomized designs (a stand-in: the first unused spawnable design, no draws), species or governments; the C++ objects made directly: species, country (the technologies with `start_tech = yes`, the default stockpile), the capital colony with the default origin's pops (standing in for `game_start.12` until the engine runs it), the starbase with its station and fleet; no leader; no fallen empires, marauders or nomads |
 | script | `newgame.start_script()` runs, on the loaded world, the init_effects in order, the empire on_actions, on_game_start and on_game_start_country | most engine effects of these are not modelled by the engine yet (section 8) |
 | save | `galactic_object`, `planets`, `nebula`, `clusters`, `species_db`, `country`, `colony`, `pop_groups`, `starbase_mgr`, `ships`, `fleet`, `galaxy`, `galaxy_radius`, `flags` | the system `index` (0-63, not traced: a hash of the id); `system_initializer_counter`, `random_name_database`, deposits, leaders, sectors, `rim_galactic_objects` |
 
@@ -628,26 +686,116 @@ Render: `stellar-render --png` draws the tiny galaxy: 194/194 star sprites (the 
 no texture), 286/286 hyperlanes, the 4 empires' borders in their flag colours. Its check of the top
 bar reports two texts it reads differently (the navy and starbase counters), not the map.
 
+### 8.1 Against the real game making a new game **[M]**
+
+`headless/newgame.sh <design> <ticks> <out dir>` (headless/README.md) makes the Linux 4.5.2 build
+generate a new game through its own path and writes the gamestate right after the generation
+(`day0.gamestate`) and after `OnNewGameStarted` and the ticks. Two runs are identical but for the
+galaxy's UUID name. The reference: tiny, elliptical, 3 AI empires and the UNE (`humans1_1`), no
+advanced, fallen, marauder or nomad empires (`code_working/tmp_newgame/ref/tiny3.txt`), the AI
+designs forced by a user designs file (`designs3.txt`: sathyrel, pasharti, khennet with
+`spawn_enabled = always`, so that no design is randomized), the global generator at seed 0
+position 0. The Lua:
+
+```
+newgame --scenario tiny --empires 3 --fallen 0 --marauders 0 --nomads 0 --advanced 0 --global-seed 0 \
+    --player humans1_1 --designs designs3.txt --global-at "hyperlanes=5382,empire systems=5384"
+```
+
+`--global-at` puts the global stream at the game's position when a step starts: the 5,379 draws
+of the design validation (8.1, the fake countries) are not made by the Lua. The comparison
+(`code_working/tmp_newgame/ngcmp.py GAME LUA`, field by field in id order; the dumps of
+`HEADLESS_NG_NEIGHBORS`, `_LANES`, `_PARTITIONS` against `NEWGAME_NEIGHBORS`, `_LANES`,
+`_PARTITIONS`):
+
+| | equal | of |
+|---|---:|---:|
+| star positions | 196 | 196 |
+| the generator's nebulas | 2 | 2 (the game's two others are scripted) |
+| start clusters | 3 | 3 |
+| home systems, each empire's design, capital and home system | 4 | 4 |
+| neighbour lists (in order) | 196 | 196 |
+| partitions (each system's; each partition's desired systems and bridges) | 196, 39 | 196, 39 |
+| hyperlanes after `GenerateHyperlanes` (each system's in order, lengths, bridges) | 196 (273 lanes) | 196 |
+| hyperlanes of the day-0 gamestate | 196 | 196 |
+| the empire initializers (sol_system_initializer, ocean_paradise_start, random_empire_init_03 and _01) | 4 | 4 |
+| Sol: every planet (class, orbit, size, coordinate, moons) | 24 | 24 |
+
+The draws, per step (G the generator's stream, C the global one):
+
+| step | G game | G Lua | C game | C Lua |
+|---|---:|---:|---:|---:|
+| the galaxy seed | | | 1 | 1 |
+| stars, nebulas | 1,151 | 1,151 | 2 | 2 |
+| placement (the shuffle) | 6 | 6 | 0 | 0 |
+| partitions | 412 | 412 | 0 | 0 |
+| designs (the human's, three forced) | 3 | 3 | 5,379 | 0 (put at the game's) |
+| resource clusters | 8 | 8 | 0 | 0 |
+| hyperlanes | 0 | 0 | 2 | 2 |
+| the empires' systems | 171 | 176 | 1,879 | 1,621 |
+| the empires (home planets; species, country, ship designs, colony) | 4 | 4 | 66,747 | 0 |
+| fallen empires | 5 | | 0 | |
+| the other systems | 1,500 | ~1,580 | 1,475,723 | ~12,450 |
+| precursors, resource regions | 43 | | 0 | |
+
+How it was measured: gdb on the headless game (`HEADLESS_LAUNCH="gdb -batch -x FILE --args"`, a
+`catch exec` that sets breakpoints at each call of `GenerateFromRandomScenario` and prints both
+streams' positions; a hardware watchpoint on a stream's position, with return addresses or short
+backtraces, for the draw-by-draw sequence of a step), the profiler over the generator's functions
+(`HEADLESS_PROFILE` with a site table from `dev/callsites.py -f ...` and `HEADLESS_NG_PROFILE`: the
+global draws per call site), and `NEWGAME_TRACE=STEP` on the Lua side (every draw with its line).
+
+Where the global draws go in the game (the profile of the generation): `InitializeUninitializedSystems`
+1,475,723, of which `CPlanet::InitializePlanet` 1,184,525: a few planets' scripted `init_effect`s
+draw a lot (four planets of the reference draw 169k, 230k, 250k and 351k values, fourteen others
+about 9,000 each), the rest are deposits (`CColonyCarrier::RandomizeDeposits`), planet modifiers,
+the orbit and size intervals, names and rings; the empires' C++ creation 66,747
+(`CCountry::SetDefaultShipDesigns` 65,309 for the four, the home colony and `InitEmpireShared`).
+In the empires' systems the draws part at the first planet's deposit roll: the Lua makes no
+deposits (9).
+
 ## 9. What differs and what is left
 
-- **Exact reproduction** of a real galaxy is not possible yet: the global stream's state at
-  generation (the lobby's draws) is unknown, Triangle's float triangulation is approximated, and
-  the deposits, planet modifiers and species and government randomization draw from the streams in
-  ways the Lua does not repeat. The galaxy seed alone gives the star map up to the relaxation.
-- **Tiny galaxies** get a few systems far out (to 334 for radius 200): the relaxation moves a
-  point next to the hull to the centroid of a cell with a far vertex. The game's Triangle has the
-  same rule; whether its tiny galaxies show it was not checked (no tiny save).
-- **Not done**: randomized empire designs (species, names, governments: the
-  `RandomizeEmpireGovernments` solver), fallen empires, marauders, nomads, advanced empires;
-  `ConnectDividedEmpirePartitions`, `ConnectEmpireSystems` (starbases between an empire's
-  systems), `GenerateResourceRegions`, `GeneratePrecursorCivilizations`, `ProcessNeighbourContact`;
-  deposits; planet modifiers; the static galaxy scenarios (`GenerateFromStaticScenario`,
-  `static_galaxy_scenario`); shapes other than elliptical were not compared with a save.
-- **The script's part** runs only as far as the engine models its effects. A playable start needs:
-  `create_pop_group` and the pops, `add_building`, `add_district`, `create_fleet` / `create_ship`,
-  `create_leader`, `add_deposit` / `clear_deposits`, `set_policy`, `create_country` /
-  `create_species` (guardians, primitives), `spawn_natural_wormhole` / `link_wormholes`
-  (`game_start.31`), `spawn_megastructure` (gateways), `create_ambient_object`.
-- **Platform helpers** that would help (outside `newgame/`): a `RUST.noise(position, seed)` (the
-  Lua does the 32-bit noise with 16-bit halves), and a `world.load_tree(tree)` to hand the
-  generated tree to the world without writing and parsing text.
+Measured against the real game (8.1), in the order the generation meets them:
+
+- **Randomized empire designs** (`CEmpireDesign` randomization: species, names, ethics, civics,
+  government, flag, portrait) are not modelled. A default setup randomizes 95% of the AI slots
+  (`CUSTOM_EMPIRE_SPAWN_CHANCE`); the parity scenario forces designs instead. The Lua stands in the
+  first unused spawnable design (no draws) and counts them.
+- **The global draws the Lua does not make**: the design validation's fake countries (5,379 for
+  three designs), the empires' C++ creation (ship designs, home colony: ~66,700 for four), the
+  scripted `init_effect`s the game runs inside the generation (the Lua runs them after, in the
+  start script, and they draw: 1.2M of the reference's 1.48M, mostly a handful of planets).
+  `--global-at` stands in for them between steps; inside a step (the planets' init_effects) there is
+  no stand-in yet.
+- **Deposits** (`CColonyCarrier::RandomizeDeposits` `L 0x28d8e10`) are not made, so the global
+  stream parts from the game's at the first planet roll. What they are, read from the Linux build:
+  no deposits when the `should_spawn_deposits` rule fails or the abundance is the minimum; rolls:
+  colonizable `COLONY_DEPOSITS_FIXED_BASE + trunc(size * FIXED_FROM_SIZE)` (5 + size/5) plus
+  `C % (COLONY_DEPOSITS_RANDOM_BASE + trunc(size * RANDOM_FROM_SIZE) + 1)` (2 + size/5), others
+  `NON_COLONY_DEPOSITS_FIXED_BASE` (1) with no random part; each roll one C draw passed to
+  `CDepositTypesDatabase::_Randomize` (`L 0x249be70`): over the types in database order (the
+  keyword types `no`, `random`, `yes` passed over; `+0xa38` is_null, `+0xa30` is_for_colonizable,
+  `+0xa39` use_for_min_max_adjustments, category `+0xa40` with its blocker flag `+0x49`), null types
+  left out for colonizable planets and at the maximum abundance, `is_for_colonizable` matching the
+  planet, `potential` passing; the weight is the `drop_weight` MTTH (the null deposit's divided by
+  the abundance), divided by `1 + 0.25 x` the deposits of its category already there, and
+  `GetWeightedRandom(r)` picks (`L 0x4274810`: `r % total`, or the scaled form past 2^31); a
+  blocker's creation draws once more (`CDeposit::SetSwapTypeForBlocker`); then each capped district
+  type (`use_for_min_max_adjustments` deposits' `district_*_max_add`) is brought between its min
+  and max by removing or adding deposits (a C coin flip on ties), and blockers are re-rolled until
+  `MIN_UNBLOCKED_DEPOSITS` (3) non-blockers and `MIN_BLOCKED_DEPOSITS` (1) blocker
+  (`RandomizeDepositNonBlockersOnly` / `BlockersOnly`, a coin flip on ties). The triggers they use
+  are mostly planet classes (`is_planet_class` and the scripted groups `is_wet`, `is_cold`,
+  `can_have_*_deposits`), `has_star_flag`, `is_inside_nebula`, `planet_size`, and for blockers
+  `num_free_districts` (a district model).
+- **Names**: the star, planet, moon and asteroid names (`TakeStarName`, `GenerateNameWithGenerator`,
+  `TakeAsteroidName`, C draws) are not the game's keys yet (the Lua writes the format keys).
+- **Not done** (unchanged): fallen empires, marauders, nomads, advanced empires;
+  `ConnectDividedEmpirePartitions`, `ConnectEmpireSystems`, `GeneratePrecursorCivilizations`,
+  `GenerateResourceRegions`, `ProcessNeighbourContact`; the resource clusters are drawn but not
+  written to the save; planet modifiers (one C draw, none picked); the static galaxy scenarios;
+  shapes other than elliptical were not compared.
+- **The script's part** runs only as far as the engine models its effects (section 8).
+- **Tiny galaxies**: the far systems the relaxation makes (to 334 for radius 200) are the game's
+  too: the reference's positions are equal.

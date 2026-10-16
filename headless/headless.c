@@ -1007,6 +1007,7 @@ static uintptr_t a_CrudeRandomSeed;     // CCrudeRandom::Seed(unsigned int)
 static uintptr_t a_CrudeRandomGetInt;   // CCrudeRandom::GetInteger()
 static uintptr_t a_StaticLexerGetString; // CStaticLexer::GetString(int): a CString
 static uintptr_t a_nSeed;               // CSystem::_nSeed
+static uintptr_t a_DepositTypesDb;      // TGameDatabase<CDepositTypesDatabase>::_pInstance
 static uintptr_t a_GenFromRandom;       // CGalaxyGenerator::GenerateFromRandomScenario
 static uintptr_t a_GenerateHyperlanes;  // GenerateHyperlanes(SGalaxyPartitionsData&, CFixedPoint)
 static uintptr_t a_GalacticObjectDb;    // TPdxRef<CGalacticObject>::_pDatabase
@@ -1026,6 +1027,7 @@ static struct symreq g_ng_syms[] = {
 	{"_ZN12CCrudeRandom10GetIntegerEv", &a_CrudeRandomGetInt},
 	{"_ZN12CStaticLexer9GetStringEi", &a_StaticLexerGetString},
 	{"_ZN7CSystem6_nSeedE", &a_nSeed},
+	{"_ZN13TGameDatabaseI21CDepositTypesDatabaseE10_pInstanceE", &a_DepositTypesDb},
 	{"_ZN16CGalaxyGenerator26GenerateFromRandomScenarioERK20CGalaxyConfigurationR12CCrudeRandom", &a_GenFromRandom},
 	{"_ZL18GenerateHyperlanesR21SGalaxyPartitionsData11CFixedPoint", &a_GenerateHyperlanes},
 	{"_ZN7TPdxRefI15CGalacticObjectE10_pDatabaseE", &a_GalacticObjectDb},
@@ -1059,6 +1061,27 @@ static void ng_tokens(const char *list) {
 static void ng_generate(void *gs, int value) {
 	const char *e;
 	if ((e = getenv("HEADLESS_TOKENS")) && *e) ng_tokens(e);
+	if ((e = getenv("HEADLESS_NG_DEPOSIT_TYPES")) && *e) {
+		// the deposit types database (TGameDatabase<CDepositTypesDatabase>: +0x50 the types, +0x5c
+		// their count; +0x80, +0x88, +0x90 three types Randomize passes over), one line each: its
+		// index, name (+0x10), the bytes +0xa30 .. +0xa3f, its category's name and byte +0x49
+		FILE *f = fopen(e, "w");
+		char *db = *(char **)a_DepositTypesDb;
+		int n = I32(db + 0x5c);
+		for (int i = 0; f && i < n; i++) {
+			char *t = *(char **)(*(char **)(db + 0x50) + 8 * (size_t)i);
+			size_t len;
+			const char *name = cstring_ptr(t + 0x10, &len);
+			char *cat = *(char **)(t + 0xa40);
+
+			fprintf(f, "%d %.*s", i, (int)len, name);
+			for (int k = 0; k < 16; k++) fprintf(f, " %02x", U8(t + 0xa30 + k));
+			fprintf(f, " cat %lx %02x%s\n", (unsigned long)(cat ? (uintptr_t)cat - g_base : 0), cat ? U8(cat + 0x49) : 0,
+			        t == *(char **)(db + 0x80) ? " SPECIAL80" : t == *(char **)(db + 0x88) ? " SPECIAL88"
+			        : t == *(char **)(db + 0x90) ? " SPECIAL90" : "");
+		}
+		if (f) fclose(f);
+	}
 	{
 		// the configuration's designs (CGalaxyConfiguration +0x18, 0xc78 bytes each: the key at +0x8,
 		// the spawn mode at +0xc60: 0 no, 1 yes, 2 always), which CalcDesignsForEmpires draws from
