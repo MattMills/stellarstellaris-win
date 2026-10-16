@@ -468,7 +468,7 @@ impl App {
                     for n in [bg, flag] {
                         spec.tints.push((format!("{p}/{n}"), c));
                     }
-                    spec.actions.push((format!("{p}/{bg}"), format!("select:system:{i}")));
+                    spec.actions.push((format!("{p}/{bg}"), format!("map:slide:{i}")));
                 }
             }
             spec.only = Some(only);
@@ -772,6 +772,11 @@ impl App {
             }
             spec.text.push((format!("{p}/name"), name.clone()));
             spec.actions.push((format!("{p}/{bg}"), format!("select:planet:{}", b.id)));
+            // the type frame selects too (CPlanetMapIcon::OnReload: bg, bg_capital and type_bg
+            // take the clicks; the flags none) [V]
+            if b.colony {
+                spec.actions.push((format!("{p}/type_bg"), format!("select:planet:{}", b.id)));
+            }
             spec.only = Some(only);
             spec.prefix = Some(prefix.clone());
             specs.push(spec);
@@ -829,6 +834,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn box_selection_order() {
+        // FilterSelectionList: the player's mobile fleets first, then the player's stations,
+        // then the others' mobile fleets
+        let mut v = vec![(selection_rank(false, true), 1), (selection_rank(true, false), 2), (selection_rank(true, true), 3)];
+        v.sort_by_key(|x| x.0);
+        assert_eq!(v.iter().map(|x| x.1).collect::<Vec<_>>(), vec![3, 2, 1]);
+    }
+
+    #[test]
     fn overlapping_boxes() {
         // three resources centred in the 176 wide box, 8 apart
         assert_eq!(overlapping(3, 10.0, 8.0, -88.0, 176.0, true), vec![-23.0, -5.0, 13.0]);
@@ -860,5 +874,150 @@ mod tests {
         let e = fleet_entries(&player, &data, &sys, true);
         assert_eq!(e.iter().map(|e| (e.frame, e.type_frame)).collect::<Vec<_>>(), vec![(1, 5), (1, 33), (1, 37), (4, 4)]);
         assert_eq!(fleet_entries(&observing, &data, &sys, false).len(), 1);
+    }
+}
+
+/// A fleet's place on the map's selection: the player's mobile fleets first, then the player's,
+/// then the mobile ones (CGameState::FilterSelectionList) [V].
+fn selection_rank(owned: bool, mobile: bool) -> u8 {
+    match (owned, mobile) {
+        (true, true) => 0,
+        (true, false) => 1,
+        (false, true) => 2,
+        (false, false) => 3,
+    }
+}
+
+impl App {
+    /// The map labels' actions (`map:...`; docs/windows/mapicons.md "Clicks"): `map:slide:I`, a
+    /// star label's plate: the galaxy camera slides to system I (CGalacticObjectMapIcon::
+    /// OnBGClicked -> CInGameIdler::SlideCameraToSystem, when the observer has intel there) [V];
+    /// the system is not selected.
+    pub(crate) fn map_act(&mut self, a: &str) -> Result<(), String> {
+        let mut it = a.split(':').skip(1);
+        match (it.next(), it.next()) {
+            (Some("slide"), Some(i)) => {
+                let i: usize = i.parse().map_err(|_| format!("bad action {a}"))?;
+                let Some(at) = self.map.as_ref().and_then(|m| m.galaxy.systems.get(i)).map(|s| V3(s.x, s.height * 0.5, s.y)) else { return Ok(()) };
+                if self.view == MapView::Galaxy {
+                    if let Some(g) = self.goal_mut() {
+                        g.target = at;
+                    }
+                    self.goal_moved();
+                }
+                self.log.push(format!("map: the camera to system {i}"));
+            }
+            _ => self.log.push(format!("{a}: not done yet")),
+        }
+        Ok(())
+    }
+
+    /// A right click on the map (CInGameIdler::HandleInputEvent @0x1c862a2, PerformAction /
+    /// PerformRightClickActionAt): the selected fleet of the player's, mobile, is ordered there:
+    /// to a planet in a system (orbit_planet_order), to a system on the galaxy, to the point of
+    /// the system's plane (move_to_system_point_order); the order replaces the fleet's
+    /// (engine.fleets.orders, run in the simulation: Clock::query) [I: the right-click menus and
+    /// the other targets' actions (attack, survey, colonize) not done]. Whether anything changed.
+    pub(crate) fn order_at(&mut self, x: f32, y: f32) -> Result<bool, String> {
+        let Some(Pickable::Fleet(fid)) = self.selected else { return Ok(false) };
+        let Some(map) = self.map.as_ref() else { return Ok(false) };
+        let g = map.galaxy.clone();
+        let observing = map.observe;
+        let Some(f) = g.fleets.iter().find(|f| f.id == fid) else { return Ok(false) };
+        let own = f.owner.map(|o| g.countries[o].id) == Some(g.player);
+        if f.station || !own || observing {
+            self.log.push(format!("order at {x},{y}: fleet {fid} is not a mobile fleet of the player's"));
+            return Ok(false);
+        }
+        let hit = self.scene()?.pick_at(x, y, 6.0);
+        let order = match (self.view, hit) {
+            (MapView::System(_), Some(Pickable::Body(pid))) => format!("o.orbit({fid}, {pid})"),
+            (MapView::System(si), _) => {
+                let Some(c) = self.current() else { return Ok(false) };
+                let p = c.ground_at(x, y, self.size.0, self.size.1);
+                format!("o.move_to({fid}, {{ x = {:.3}, y = {:.3}, origin = {} }})", p.0, p.2, g.systems[si].id)
+            }
+            (MapView::Galaxy, Some(Pickable::System(i))) => format!("o.move_to({fid}, {{ x = 0, y = 0, origin = {} }})", g.systems[i].id),
+            _ => return Ok(false),
+        };
+        let code = format!("local o = require('engine.fleets.orders') o.clear({fid}) return tostring({order})");
+        let map = self.map.as_ref().unwrap();
+        match map.clock.as_ref() {
+            Some(c) => {
+                let r = c.query(&code)?;
+                c.publish(false);
+                self.log.push(format!("order: fleet {fid}: {order} -> {r}"));
+            }
+            None => self.log.push(format!("order: fleet {fid}: {order}: no simulation running (not sent)")),
+        }
+        Ok(true)
+    }
+
+    /// The left button dragged over the map and released (CInGameIdler::HandleInputEvent
+    /// @0x1c8613f, 16 pixels squared from the press; CGameState::GetSelectablesForDragSelection):
+    /// the fleets in the box, the player's mobile ones first (FilterSelectionList) [V]; the first
+    /// of them selected [I: the game selects them all; the selection here is one thing]; none:
+    /// the selection cleared.
+    pub(crate) fn box_select(&mut self, x: f32, y: f32) -> Result<bool, String> {
+        let Some((x0, y0)) = self.map_press.take() else { return Ok(false) };
+        let (l, r, t, b) = (x0.min(x), x0.max(x), y0.min(y), y0.max(y));
+        let inside: Vec<u32> = self
+            .scene()?
+            .picks
+            .iter()
+            .filter(|p| p.centre.0 >= l && p.centre.0 <= r && p.centre.1 >= t && p.centre.1 <= b)
+            .filter_map(|p| match p.what {
+                Pickable::Fleet(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        let Some(map) = self.map.as_ref() else { return Ok(false) };
+        let g = &map.galaxy;
+        let mut found: Vec<(u8, u32)> = Vec::new();
+        for id in inside {
+            if found.iter().any(|f| f.1 == id) {
+                continue;
+            }
+            let Some(f) = g.fleets.iter().find(|f| f.id == id) else { continue };
+            let owned = f.owner.map(|o| g.countries[o].id) == Some(g.player);
+            found.push((selection_rank(owned, !f.station), id));
+        }
+        found.sort_by_key(|f| f.0);
+        self.log.push(format!("box select {l},{t} {r},{b}: {} fleets", found.len()));
+        self.select(found.first().map(|f| Pickable::Fleet(f.1)));
+        Ok(true)
+    }
+}
+
+impl App {
+    /// A system's camera fitted again to the system's size once its data has come: the window
+    /// loads the save behind the load screen and enters the capital's system before the
+    /// simulation has sent its bodies (Map::system_data's stand-in, outer_radius 100), and the
+    /// camera's zoom steps (ZOOM_STEPS_SYSTEM_PERCENTAGES of the outer radius) were those of the
+    /// stand-in: the view about 3.7 x closer than the game's, every label and pick elsewhere.
+    /// The zoom steps and the distance are scaled to the system's own radius; the angles and the
+    /// target kept. Whether it changed.
+    pub(crate) fn refit_system_camera(&mut self) -> bool {
+        let MapView::System(i) = self.view else { return false };
+        let Some(map) = self.map.as_ref() else { return false };
+        let id = map.galaxy.systems.get(i).map(|s| s.id);
+        let Some(size) = map.snapshot.as_ref().and_then(|s| s.system.as_ref()).filter(|(sid, _)| Some(*sid) == id).map(|(_, d)| d.outer_radius) else { return false };
+        let Some(goal) = self.system_camera_goal else { return false };
+        let Some(steps) = goal.zoom_steps else { return false };
+        // the fitted size: the step at 100 % (ZOOM_STEPS_SYSTEM_PERCENTAGES[4] = 1.0)
+        let fitted = steps[4];
+        if size <= 0.0 || fitted <= 0.0 || (size / fitted - 1.0).abs() < 1e-3 {
+            return false;
+        }
+        let k = size / fitted;
+        for c in [self.system_camera.as_mut(), self.system_camera_goal.as_mut()].into_iter().flatten() {
+            c.zoom_steps = Some(system::SYSTEM_ZOOM_STEPS.map(|p| p * size));
+            c.distance *= k;
+            c.max_distance = 3.0 * size;
+            c.min_distance = 0.025 * size;
+        }
+        self.log.push(format!("system camera: fitted again to the system's radius {size} (was {fitted})"));
+        self.relayout();
+        true
     }
 }

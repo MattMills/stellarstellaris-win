@@ -155,3 +155,40 @@ offset rounded). The type's `format`: `center`/`centre` centre, `left`, `right`.
 - Other station types' frames (Hodranva's station icon in the observe frame), occupation.
 - CanSee (sensor ranges), wars and alliances in the relations, the military power tiers.
 - The planet health bar is drawn as a plain sprite, not the progress bar (full/empty textures).
+
+## Clicks on the map (branch wire-map)
+
+Read in the 4.5.2 Linux build and checked in a real window (Xvfb, the windowed renderer) and
+against the game's clicks (headless view mode):
+
+| input | the game | here |
+|---|---|---|
+| left click on a fleet label's plate (`bg`; on the galaxy its presence icons) | selects the fleet (CFleetMapIcon::OnReload binds bg, fleet_icon, fleet_type) **[V]** | wired |
+| left click on a fleet label's flag | nothing (no observer) **[V]** | nothing |
+| left click on a planet label's plate, capital plate, type frame | selects the planet, opens its view (CPlanetMapIcon::OnReload: bg, bg_capital, type_bg) **[V]** | wired (type_bg added) |
+| left click on a planet label's flags | nothing (flag, flag_capital: no observer) **[V]** | nothing |
+| left click on a star label's plate | the camera slides to the system (CGalacticObjectMapIcon::OnBGClicked -> SlideCameraToSystem); no selection **[V]** | wired (`map:slide:I`; it selected the system before) |
+| left click on the map | DoSelection / GetSelectableAt: the nearest ship or planet along the ray in a system, a system on the galaxy **[V]** | as before (scene.pick_at) |
+| left drag (4 px) and release | GetSelectablesForDragSelection: the fleets in the box, FilterSelectionList (the player's mobile fleets first) **[V]** | the first of them selected **[I: one selection here]**; no box drawn |
+| right click | PerformAction / PerformRightClickActionAt **[V]** | the selected mobile fleet of the player's: to a planet (orbit_planet_order), a system (galaxy), a point of the system's plane (move_to_system_point_order), the fleet's orders replaced, through the simulation (engine.fleets.orders, Clock::query); the right-click menus and other targets not done |
+| double click | GetSelectableAt, FocusOn **[V]** | as before |
+| Escape, nothing open | the game's menu window (button_topbar_menu) **[I]**; the view stays (two Escapes in a system view leave it there in the game's frames) | logged, the view stays (it went to the galaxy, then to the main menu) |
+
+Fixed in the window path:
+- **The system camera after a load**: the window loads the save behind the load screen and
+  enters the capital's system before the simulation has sent its bodies; the camera was fitted
+  to Map::system_data's stand-in (outer_radius 100 instead of 370): the view 3.7 x closer than
+  the game's, every label and pick elsewhere than in the game. It is fitted again once the system
+  comes (App::refit_system_camera).
+- **A resize or a maximise** panicked in wgpu (the last scene's depth buffer, of the old size,
+  with the new swapchain image). A scene of another size is not drawn: the image is cleared and
+  presented until the UI thread's scene of the new size is up (an image taken and not presented
+  is never given back by lavapipe's X11 swapchain: the surface then timed out for good).
+- Cursor coordinates: winit's CursorMoved and Resized are both physical pixels, the app's size
+  follows Resized, the GUI is laid out and picked at that size: under a resize the clicks select
+  what is drawn under them (checked at 1600x900 -> 1280x720 -> 1600x900). DPI scaling is not
+  testable here; nothing converts to logical units, so a scale factor changes the size only.
+
+Not done: the hover marker on the map (the galaxy's hover_indicator, the hovered planet's or
+ship's highlight), the box's rectangle while dragging, several selected fleets, the right-click
+menus.
