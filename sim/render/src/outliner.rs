@@ -76,6 +76,9 @@ impl LuaData {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct State {
     pub tab: u32,
+    /// how often each tab was switched to (its groups' order flips each time: section 2 of the
+    /// doc)
+    pub shows: [u32; 4],
     pub collapsed: BTreeSet<String>,
     pub shown: u8,
 }
@@ -89,6 +92,9 @@ impl State {
             (Some("tab"), Some(n)) => {
                 let n = n.parse().unwrap_or(0);
                 let changed = self.tab != n;
+                if changed && (n as usize) < self.shows.len() {
+                    self.shows[n as usize] += 1;
+                }
                 self.tab = n;
                 changed
             }
@@ -122,6 +128,12 @@ pub fn install(runtime: &Runtime, view: &LuaData, state: &State, selected: Optio
         t.set("view", view.to_lua(lua)?)?;
         let s = lua.create_table()?;
         s.set("tab", state.tab)?;
+        // (Overview shows once at the load)
+        let shows = lua.create_table()?;
+        for (t, n) in state.shows.iter().enumerate() {
+            shows.set(t, n + u32::from(t == 0))?;
+        }
+        s.set("shows", shows)?;
         let c = lua.create_table()?;
         for k in &state.collapsed {
             c.set(k.as_str(), true)?;
@@ -188,6 +200,7 @@ mod tests {
         assert!(s.act("tab:1"));
         assert_eq!(s.tab, 1);
         assert!(!s.act("tab:1"));
+        assert_eq!(s.shows, [0, 1, 0, 0]);
         assert!(s.act("toggle:military"));
         assert!(s.collapsed.contains("military"));
         assert!(s.act("toggle:military"));

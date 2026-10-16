@@ -51,8 +51,11 @@ the tab shown, the groups collapsed, which view shows; the `outliner:` actions; 
 - **The groups' order** (RegenerateGroups 0x2fedc30, COutlinerSettings::GetSort, SortedMerge
   0x2fffb50) **[V]**: groups are made in EOutLinerGroup order; every tab but Politics reads
   another tab's sort settings, all its groups sort equal and the merge sort reverses them;
-  Politics sorts by its own list. Empty groups and disabled ones (Colonies, the arkship groups:
-  GetDefaultDisabled) are left out.
+  Politics sorts by its own list. The sort runs again each time the tab shows, so the order flips
+  with every show: reverse enum order at the first, enum order at the second (the game's frame
+  of Overview after a visit to Ships: Sectors, Shipyards, Military Fleets, Utility Ships)
+  **[V]** (State::shows counts the shows). Empty groups and disabled ones (Colonies, the arkship
+  groups: GetDefaultDisabled) are left out.
 - **The badge** (UpdateNotification 0x2fefb60, UpdateTabNotificationCountForTab 0x1e00410)
   **[V]** for the rules, **[I]** for the counts from the save: Overview counts colonies with
   unemployment (+ buildings that can be upgraded: not counted here **[I]**), critical (on red)
@@ -143,7 +146,8 @@ leader's level badge is GFX_outliner_leader_level in frame = the level, shown wi
   no player countries. By economy power, the highest first (`economy_power`) **[V]**.
 - Rows (`observer_outliner_country_window`, 56 high, 0x302c7d0) **[V]**: the flag (app.rs
   composes it: the row's path carries `@COUNTRY`), the name, the federation's name, `might` the
-  economy power (COUNTRY_ECON_POWER), the fleet power, the pops (`num_sapient_pops` **[I]**); the
+  economy power (COUNTRY_ECON_POWER), the fleet power (SI_NUMBER, one decimal from 1000:
+  "407.0K"), the pops (`num_sapient_pops` **[I]**); the
   war icons not drawn (no wars here).
 
 ## 6. Alerts (CAlertManager)
@@ -192,7 +196,9 @@ leader's level badge is GFX_outliner_leader_level in frame = the level, shown wi
 - Observe (2210.01.01): the tabbed outliner empty at 180 high with the eye toggle, the same.
 - Alerts (the game's settled frames, the third `frame` after the load): 2210.01.01 and 2212.07.01
   the same six in the same places (2212.07.01's messages aside).
-- Clicks (`click X Y`, render-controls): the renderer switches tabs, collapses groups and opens
-  the observer's list. The game in view mode takes the clicks (the tab buttons' frames change)
-  but its outliner's timed Update (CCountryTabbedOutliner::Update, every > 0.1 s of the idler's
-  time) does not run after them, so its windows do not change: not compared yet.
+- Clicks (`click X Y`, the same command files; in the game after a settling `frame`, `tick 5`
+  between a click and a move, `tick 120` after `observe`), 2212.07.01: the Ships tab, Overview
+  again (its order flipped) with Sectors collapsed, and the observer's list: the same, but for
+  the numbers the game computes live (the Typhoon's 172; economy power and pops a few units off
+  the save's) and the game's last row, half drawn under its list's edge with a scroll bar (rows
+  that do not fit are left out here).
