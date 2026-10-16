@@ -543,6 +543,7 @@ takes the same shots of both.
 | `orbit DYAW DPITCH`, `zoom FACTOR`, `pan DX DY` | relative moves (pan in fractions of the distance) |
 | `resize W H`, `key NAME down\|up`, `mouse X Y [left\|right down\|up]`, `scroll DY` | input (`scroll`: the wheel, a zoom step a notch about the point under the mouse) |
 | `gui off\|on` | the GUI (the top bar, the outliner, a system's orbit lines) hidden or shown |
+| `observe` | the game's console `observe` (headless.c calls OnExecute_Observe: the local human gets no country): the whole galaxy known, every country's borders, flags and names, every system's label, no sectors; the renderer's from then on, after each simulated day too (the top bar and outliner stay the player's here; the game's observer has none) |
 | `frame PATH.png` | `ok frame PATH W H MS` (MS: scene, upload, GPU and read-back) |
 | `frame -` | `ok frame - W H MS BYTES`, then the PNG's bytes |
 | `state` | JSON: screen, view, camera, date, the clock (paused, speed, loading, days run, a day's and a snapshot's ms), the selection, systems, fleets by movement state, FTL trails, size |
@@ -637,7 +638,7 @@ to that system **[I]**. The stars' places match the game's frames.
 |---|---|---|
 | camera | field of view, orientation, handedness, distances: the stars and bodies at the same pixels | |
 | system | the bodies' places and sizes; the starbase's place, size and facing; the sky box, the exposure, the bloom and the colour grading (mean colour of the default view within 1/255 of the game's); the star's corona, flares and glow; the molten planets, gas giants, rings, atmospheres, asteroid belts; the ships' empire colours, turrets and engine glows | the star's lava patches (a little purple where the game's are blue); the planets' spin and the ships' idle animations (section 11) |
-| galaxy | the stars' places and icon size; terra incognita; the player's border ring; the dust, the nebulae, the hyperlanes and star pins; the post effects and sky | the core's glow (half as bright in a wide view); the map's names and flags (section 11) |
+| galaxy | the stars' places and icon size; terra incognita; the player's border ring; the dust, the nebulae, the hyperlanes and star pins; the post effects and sky; the core's glow; the empire and sector names and the flags | the hyperlanes and star colours from far, the nebulae's strength (section 11) |
 
 ### Frame times
 
@@ -667,7 +668,7 @@ frame from `headless/view.sh` with the GUI off, the renderer's from the same com
 | 2 | system backdrop: the sky box | done | (the galaxy view uses the `default` world's sky and post effects: item 5) |
 | 3 | stars: surface, glow, corona particles, the star's light on planets | done for the A star of system 401 | the lava patches a little purple (cause not found); the particles' motion (a still snapshot); the other star classes, black holes, neutron stars and pulsars are not checked |
 | 4 | planets: atmospheres, gas giants, rings, asteroid belts, black holes, special stars | done for what the player knows (systems 401, 142, 238, 476) | the planets' spin (their idle animation: the bands and continents sit elsewhere); city lights; the gas giants' atmosphere halo a little brighter on the dark side; black holes, pulsars and neutron stars drawn from their entities but not checked (the player knows none) |
-| 5 | galaxy: terra incognita, borders, hyperlanes, star icons, the core, post effects | done at the default camera and a wide view | the core's glow half as bright as the game's in a wide view (its quad's size **[I]**); the map's country names, flags and system names (CBordersGraphics::UpdateMapNames); the dust's and nebulae's slow turning (GALAXY_DUST_ROTATION_SPEED); the nebulae's colour is `nebulacolor.dds`' mean, not sampled per pixel |
+| 5 | galaxy: terra incognita, borders, hyperlanes, star icons, the core, post effects, the map's names and flags | done at the default camera, a wide view and the whole galaxy (`observe`) | the dust's and nebulae's slow turning (GALAXY_DUST_ROTATION_SPEED); the nebulae's places (InitNebulas); the star labels' icons (section 12); nebula names; from far the territories' coloured edge bands are thinner than the game's (cause not found). The whole galaxy from 2000 of the game's world (`observe`): mean colour (42.5, 36.9, 33.8) against the game's (40.9, 35.2, 32.5); the stars match the game's place, colour and size |
 | 6 | ships and stations: empire colours, engine glows, turrets, idle animations | partial | empire colours, the ship shader and lights, turrets and attached entities, additive engine glows: done; idle animations (skeletal .anim) and engine trails not drawn; ships a little small (SHIP_SCALE fitted) |
 
 **The post effects** (`sim/render/src/post.wgsl`, `render.rs`) **[V]**: the passes of
@@ -769,7 +770,11 @@ galaxy has no star class; the frames agree):
   (terra_incognita.fxh). Outside the known space the stars and the core turn grey (luminance x 0.15),
   the star pins too (x 0.15 x 4), the dust to 0.15 grey (+ 0.3 x a border's alpha); a hyperlane is
   built only when an end is known (HIDE_HYPERLANES_OUTSIDE_TERRA_INCOGNITA) and fades to a grey of
-  alpha 0.05.
+  alpha 0.05. There is no zoom rule for the lanes: their geometry is built from the player's
+  terra incognita, and `observe` does not build it again, so the game's observer sees the lanes of
+  the player's known space only, from any distance (its frames of the whole galaxy show them
+  there and nowhere else) **[V]** frames, the rebuild's trigger **[I]**; Galaxy::lanes_ti keeps
+  that terra incognita for the observer.
 - **Borders** **[V]**: metaballs per owner on a 2048 grid (35 per owned system, 30 unowned, 20 per
   lane between two systems of one owner; the field `max(0, R²/d² - 1/1.88²)`, threshold 0.05), each
   blob's signed distance (`(d + 15) / 30`) downsampled to 512 and blurred, the owner's colours as
@@ -779,22 +784,90 @@ galaxy has no star class; the frames agree):
   same choice colours the star pins). border.shader's BorderSDF (its edge band and fade by the
   camera's distance) x the raw terra incognita is not drawn itself: the dust (x 0.8) and the nebulae
   (x 0.5, colour x 2) read it under their pixel and take its colour, which is the ring the game
-  shows around the home system.
+  shows around the home system. Confirmed in the code: CGraphicalMap::Render calls
+  CBordersGraphics::Render with pass 0 (BorderSDF into the border target, then BorderCentroid,
+  the flags, on the frame's target), then the galaxy, then pass 1, which draws only the StarPin
+  effect (the slots: +0x98 BorderCentroid, +0xf0 BorderSDF, +0xc0 StarPin). From far the game's
+  coloured edge bands look thicker than the renderer's with the same SDF formula: not explained
+  yet (the border target's resolution, or the dust drawn into the galaxy's downsampled target,
+  g_nGfxGalaxyDownsample, and stretched, are the candidates).
 - **Dust** (galaxy_dust.shader) **[V]** shader, **[I]** placement: a cloud of `dust.dds` at every
-  system and int(0.1 R) at random in the core's disc (R the save's `galaxy.core_radius` in the
-  game's world), half size GALAXY_DUST_SIZE + GALAXY_DUST_SIZE_EXTRA x r, up to 10 above or below the
+  system and int(0.1 R) at random in the core's disc, at radius r x R and angle 2 pi r' (uniform
+  in the radius: denser toward the centre) **[V]** (R the core's radius in the game's world, below),
+  half size GALAXY_DUST_SIZE + GALAXY_DUST_SIZE_EXTRA x r, up to 10 above or below the
   plane, turned at random, tilted (y += (x + y) x size x 0.1), coloured by `galaxycolor.dds` over
   the systems' bounding box (DustCloudUV), alpha blended.
 - **Nebulae** (galaxy_nebula.shader): the save's `nebula = { coordinate radius galactic_object }`: a
   cloud of `nebula.dds` of the nebula's radius and one of 10 + 25 r at each of its systems, 4.5
-  below the plane, alpha x 6, in `nebulacolor.dds`' mean colour **[I]**.
-- **The core** (galaxy_center.shader): `center.dds` x 0.5 on a quad of half size 1.5 x
-  core_radius **[I]** at y -0.75, added (ONE, ONE), greyed by terra incognita.
+  below the plane, alpha x 6, coloured by `nebulacolor.dds` at the cloud's own UV (the shader's
+  ColorTexture is sampled at the nebula texture's UV; its alpha multiplies the cloud's) **[V]**: a
+  sixth map texture (map.wgsl `nebula_colour`). The clouds' places and sizes **[I]**
+  (CGalaxyGraphics::InitNebulas not read).
+- **The core** (galaxy_center.shader, CGalaxyGraphics::Init) **[V]**: the core's radius R is the
+  save's `galaxy.core_radius` (x 2e-5 of its fixed point: the game's world) when above 0.01, else
+  the distance from the centre to the nearest system; the quad is +-R (a vertex buffer of four
+  corners) and the shader scales it by 1.5, at y -1.5 of the game's world (-0.75 here); the texel
+  (sampled linear) x 0.5, added (ONE, ONE), greyed by terra incognita. The renderer had applied
+  the x 0.5 before making the texel linear (0.5^2.2 = 0.22): the core was half as bright. Now the
+  brightness in 40 px rings about the core is within 0 to 5 % of the game's out to 160 px, at
+  pitch 57.5 and 85.
 - **Stars** (galaxy_stars.shader), as section 10, added and greyed; **hyperlanes**
   (hyperlane.shader) HYPERLANE_DEFAULT_COLOR about a pixel wide; **star pins** (border.shader
   StarPin, CBordersGraphics::UpdatePins) a hexagon of radius 1 on the plane and a line up to the
   star (the save's `visual_height` / 2), the shown owner's colour at alpha 0.2, else grey 0.5 at
   alpha 0.1.
+
+**The map's names and flags** (`sim/render/src/mapnames.rs`, scene.rs `map_flags_3d`,
+`map_names_3d`; mapname.cpp, CBordersGraphics, CBorderBlobCalculator, CGraphicalMap::Render)
+**[V]** unless marked:
+
+- **Symbols.** The borders' grid (2048 cells over the game's world -1000 .. 1000; galaxymap.rs
+  `owner_grid`) is cut into blobs, 4-connected cells of one shown owner. For each blob the largest
+  square of its own cells is kept (a cell's square is 1 + the least of its left, upper and
+  upper-left squares; the first largest in row order). A blob whose square is at least
+  BORDER_MIN_SIZE_FOR_SYMBOL (16) cells gets a symbol: that square, the cells p + 1 - s .. p + 1,
+  in the world at `t x 2000 / 2048 - 1000` (GetCentroidQuads). SBorderData keeps its centre and
+  half size (CalculateCentroids).
+- **Flags.** The symbol's square x BORDER_FLAG_SCALE (0.6) about its centre, UVs (0, 0) .. (1, 1)
+  sampled at (-u, v) (border.shader PixelShaderCentroid: upright from the default camera), alpha
+  x 0.65 x the fade. CBordersGraphics::Render's pass 0 draws the border target, sets the frame's
+  own target back and draws the flags there, before the galaxy's nebulae, dust and stars, which
+  cover them: the renderer draws them first in the background. The texture is the flag's `map`
+  emblem alone (`flags/<category>/map/<file>`, white on clear, 256²) **[I]**: how the game makes
+  the map flag's texture was not read; its frames show the emblem with no colours.
+- **Empire names** (GenerateBorderNames): one per symbol of a country, its text the country's
+  name (CCountry +0x1408; the galactic custodian or emperor gets a second line with
+  `galactic_custodian` / `galactic_emperor`, and a map filter can show the human player's name:
+  neither done), at the centre's x and the centre's z + MAPNAME_BORDER_OFFSET_MUL (0.75) x the half
+  size + MAPNAME_BORDER_OFFSET_ADD (4) of the game's world. Its size: the owner's cells along the
+  name's row, from the name's column outward, from int(MAPNAME_BORDER_MIN_SIZE / 2 = 50 of the
+  world) = 51 cells: the first distance at which either side is another id or the edge, s = that
+  x 2000 / 2048 (50 when none); size = s x 0.2 x min(letters, 10).
+- **Sector names** (GenerateSectorNames): each sector of the observed country, at its local
+  capital's system (`local_capital` is a colony: its planet's system), size = its letters.
+- **The text** (AddName, CBitmapFont::FillVertexBuffer): a name's width in the world is its
+  scale x its size, the scale MAPNAME_BORDER_SCALE (1) or MAPNAME_SECTOR_SCALE (3) (AddName's
+  scale x 20 x size / the text's pixel width, FillVertexBuffer's x 0.05 per pixel): an empire's
+  name 0.2 x min(letters, 10) x s wide, a sector's 3 x its letters. Flat on the plane, its x along
+  the world's -x and its lines down along +z, centred on its point; vertically centred on the
+  line's height plus the font's padding **[I]** (FitTextInternal not read; the line's height alone
+  is 5 to 6 font pixels low against the game's frames). Fonts `map_name_border`,
+  `map_name_sector` (interface/fonts.gfx: `gfx/fonts/orbitron` in English), the page's colour
+  (TextColorAdd 0), alpha x 0.25 (mapname.shader: its `#ifdef IS_NEBULA` is commented out) x the
+  opacity, alpha blended, after the galaxy.
+- **Which shows** (CGraphicalMap::Render, CBordersGraphics::Render): the empire names and the
+  flags while the camera's eye is at least BORDER_NAMES_FADEOUT_ZOOM / BORDER_FLAG_FADEOUT_ZOOM
+  (600 of the game's world) above the plane (CGameCamera +0x184: the eye's y, set by
+  UpdateInternalCamera), the sector names otherwise (drawn at 1 - the empires' opacity); the
+  opacities move by FADEOUT_SPEED (4) x the frame's real time (CGameIdler +0xe0, at most 0.1 s).
+  A still frame shows the settled state. Nebula names (GenerateNebulaNames, MAPNAME_NEBULA_SCALE,
+  NEBULA_NAMES_FADEOUT_ZOOM 250) are not drawn yet.
+- **Against the game** (2210.01.01, 1600x900): at the default camera "Uthab" has the game's text,
+  width and place within a pixel; from 1300 of the game's world "Sacred Uthabulan Order" has its
+  text and width, 3 px lower (the blob's square comes from the renderer's border grid, not the
+  game's). With `observe` (section 9) all 17 countries' symbols get their flags and names where
+  the game's do. The game's fade in view mode is slow (its frames are slow): take the third
+  `frame` after a camera move.
 
 ## 12. The window's controls: the clock, the camera, the selection
 
@@ -1145,11 +1218,11 @@ freed when the device is polled).
   ship ID`: CShipGraphics' entity) would settle the first.
 - **3D, to match the game** (sections 10, 11): the lens flare; the star's lava tint (the RE says
   the lava, stone and noise textures are sRGB and the lava colours linear, which gives a purple
-  tint the game's frame does not show); the galactic core's glow (its quad's size and the core
-  dust's placement are not read from the code); black holes, pulsars and neutron stars (drawn,
-  not checked: the player of the 2210 save knows none).
+  tint the game's frame does not show); black holes, pulsars and neutron stars (drawn, not
+  checked: the player of the 2210 save knows none; `observe` shows them all now); the territories' edge
+  bands from far (section 11); the map flag's texture.
 - **3D, not drawn yet**: animation (skeletons and `.anim`: the ships' idle animations, the
   planets' spin), engine trails, LOD selection, the `PdxMeshShipFlow` shader, city lights,
-  shadows, the map's names and flags, the system's hyperlane exits, fleets moving between their
+  shadows, nebula names, the names' fades, the system's hyperlane exits, fleets moving between their
   save positions (they are drawn where the world puts them each day), and smooth transitions
   between the galaxy and a system.

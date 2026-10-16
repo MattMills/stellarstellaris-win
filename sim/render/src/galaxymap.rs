@@ -78,10 +78,12 @@ pub fn terra_incognita(g: &Galaxy) -> Image {
     Image { width: SIZE as u32, height: SIZE as u32, rgba, format: "generated".into() }
 }
 
-/// The border textures: the signed distance (every channel) and the owner's edge and fill
-/// colours (sRGB), 512 x 512.
-pub fn borders(g: &Galaxy) -> (Image, Image, Image) {
-    const GRID: usize = 2048;
+/// The borders' grid: GRID x GRID cells over the map (the game's BORDER_TEXTURE_SIZE).
+pub const GRID: usize = 2048;
+
+/// Each cell's owner on the borders' grid (row y = the save's y): -1 none (or unowned), else
+/// the country's index.
+pub fn owner_grid(g: &Galaxy) -> Vec<i32> {
     let scale = GRID as f32 / (2.0 * EXTENT);
     let cell = |x: f32, y: f32| (((x + EXTENT) * scale).clamp(0.0, (GRID - 1) as f32), ((y + EXTENT) * scale).clamp(0.0, (GRID - 1) as f32));
     // the shapes: (tag, kind, a, b, radius); tag = owner index + 1, 0 unowned
@@ -153,6 +155,12 @@ pub fn borders(g: &Galaxy) -> (Image, Image, Image) {
             }
         }
     }
+    owner
+}
+
+/// The border textures from the owner grid (owner_grid): the signed distance (every channel)
+/// and the owner's edge and fill colours (sRGB), 512 x 512.
+pub fn borders_of(g: &Galaxy, owner: &[i32]) -> (Image, Image, Image) {
     // the signed distance to the blobs' edges (cells, clamped to 15): splatted from the edge
     // cells (an owned cell beside a cell of another owner or none)
     const MAXD: i64 = 15;

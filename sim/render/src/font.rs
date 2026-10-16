@@ -21,6 +21,8 @@ pub struct Font {
     pub name: String,
     pub line_height: f32,
     pub base: f32,
+    /// `info padding=up,right,down,left`: the glyph cells' padding (pixels)
+    pub padding: [f32; 4],
     pub glyphs: HashMap<char, Glyph>,
     pub kerning: HashMap<(char, char), f32>,
     /// the page texture's path in the game directory, and its image
@@ -43,6 +45,7 @@ impl Font {
             name: name.to_string(),
             line_height: 16.0,
             base: 13.0,
+            padding: [0.0; 4],
             glyphs: HashMap::new(),
             kerning: HashMap::new(),
             texture: String::new(),
@@ -54,6 +57,13 @@ impl Font {
             let a = attrs(line);
             let num = |k: &str| a.get(k).and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
             match tag {
+                "info" => {
+                    if let Some(p) = a.get("padding") {
+                        for (k, v) in p.split(',').take(4).enumerate() {
+                            font.padding[k] = v.trim().parse().unwrap_or(0.0);
+                        }
+                    }
+                }
                 "common" => {
                     font.line_height = num("lineHeight");
                     font.base = num("base");

@@ -81,9 +81,9 @@ fn bloom_kernel(width: f32, scale: f32) -> (f32, [f32; 4], [f32; 4]) {
     (w[0] * n, weights, offsets)
 }
 
-/// The view's bind group: its uniform, the galaxy view's five map textures (map.wgsl) and a
+/// The view's bind group: its uniform, the galaxy view's six map textures (map.wgsl) and a
 /// clamping linear sampler.
-fn view_bind_with(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, maps: [&wgpu::TextureView; 5], sampler: &wgpu::Sampler) -> wgpu::BindGroup {
+fn view_bind_with(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform: &wgpu::Buffer, maps: [&wgpu::TextureView; 6], sampler: &wgpu::Sampler) -> wgpu::BindGroup {
     fn t(b: u32, v: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
         wgpu::BindGroupEntry { binding: b, resource: wgpu::BindingResource::TextureView(v) }
     }
@@ -97,6 +97,7 @@ fn view_bind_with(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, uniform
             t(3, maps[2]),
             t(4, maps[3]),
             t(5, maps[4]),
+            t(7, maps[5]),
             wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::Sampler(sampler) },
         ],
     })
@@ -320,7 +321,7 @@ pub struct Renderer {
     view_bind: wgpu::BindGroup,
     view_layout: wgpu::BindGroupLayout,
     /// the map textures the view bind group holds (their names), rebuilt when they change
-    view_maps: Option<[String; 5]>,
+    view_maps: Option<[String; 6]>,
     gui_uniform: wgpu::Buffer,
     gui_view_bind: wgpu::BindGroup,
     post_bright: wgpu::RenderPipeline,
@@ -502,7 +503,7 @@ impl Renderer {
         // distance, edge and fill colours, the dust's colour map: map.wgsl) and their sampler
         let view_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("view"),
-            entries: &[uniform_entry(0, false), texture_entry(1), texture_entry(2), texture_entry(3), texture_entry(4), texture_entry(5), sampler_entry(6)],
+            entries: &[uniform_entry(0, false), texture_entry(1), texture_entry(2), texture_entry(3), texture_entry(4), texture_entry(5), sampler_entry(6), texture_entry(7)],
         });
         let texture_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("texture"), entries: &[texture_entry(0), sampler_entry(1)] });
@@ -727,8 +728,8 @@ impl Renderer {
             view_formats: &[],
         });
         let dummy_view = dummy.create_view(&wgpu::TextureViewDescriptor::default());
-        let view_bind = view_bind_with(device, &view_layout, &uniform, [&dummy_view; 5], &sampler);
-        let gui_view_bind = view_bind_with(device, &view_layout, &gui_uniform, [&dummy_view; 5], &sampler);
+        let view_bind = view_bind_with(device, &view_layout, &uniform, [&dummy_view; 6], &sampler);
+        let gui_view_bind = view_bind_with(device, &view_layout, &gui_uniform, [&dummy_view; 6], &sampler);
         let dummy_cube = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("dummy cube"),
             size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 6 },
@@ -1013,9 +1014,9 @@ impl Renderer {
             }
         }
         if maps.is_some() || maps != self.view_maps {
-            let views: [&wgpu::TextureView; 5] = match &maps {
-                Some(names) => [0, 1, 2, 3, 4].map(|k| &self.textures[&names[k]].view),
-                None => [&self.dummy_view; 5],
+            let views: [&wgpu::TextureView; 6] = match &maps {
+                Some(names) => [0, 1, 2, 3, 4, 5].map(|k| &self.textures[&names[k]].view),
+                None => [&self.dummy_view; 6],
             };
             self.view_bind = view_bind_with(device, &self.view_layout, &self.uniform, views, &self.sampler);
             self.view_maps = maps;

@@ -36,6 +36,8 @@ struct View {
 @group(0) @binding(4) var border_fill: texture_2d<f32>;
 @group(0) @binding(5) var dust_colour: texture_2d<f32>;
 @group(0) @binding(6) var map_samp: sampler;
+// the nebulae's colour texture (gfx/map/nebulacolor.dds), sampled at a cloud's own UV
+@group(0) @binding(7) var nebula_colour: texture_2d<f32>;
 
 fn to_clip(p: vec3<f32>) -> vec4<f32> {
     return view.view_proj * vec4<f32>(p, 1.0);
@@ -197,8 +199,9 @@ fn fs_quad(i: QuadOut) -> @location(0) vec4<f32> {
     let mode = i.fx.x;
     if (mode > 0.5 && mode < 1.5) {
         // a star or the core (galaxy_stars.shader, galaxy_center.shader): greyed outside the
-        // known space (ApplyTerraIncognita: the luminance x 0.15 x brightness)
-        let c = lin3(texel.rgb * i.colour.rgb);
+        // known space (ApplyTerraIncognita: the luminance x 0.15 x brightness); the colour (the
+        // core's x 0.5) scales the texel once it is linear, as the game's shader does
+        let c = lin3(texel.rgb) * i.colour.rgb;
         let grey = dot(c, vec3<f32>(0.2127, 0.7152, 0.0722)) * 0.15 * i.fx.y;
         // fx.w: added by ONE, ONE (the core): alpha 1 for the SRC_ALPHA blend
         let a = select(texel.a * i.colour.a, 1.0, i.fx.w > 0.5);
@@ -221,9 +224,9 @@ fn fs_quad(i: QuadOut) -> @location(0) vec4<f32> {
     }
     if (mode > 2.5 && mode < 3.5) {
         // a nebula's cloud (galaxy_nebula.shader): the nebula texture (alpha x 6) x its colour
-        // texture (here its mean colour, in the instance's colour: one texture per batch), tinted
-        // by the borders (x 2), greyed outside the known space
-        let col = lin3(i.colour.rgb);
+        // texture at the same UV, tinted by the borders (x 2), greyed outside the known space
+        let ncol = textureSampleLevel(nebula_colour, map_samp, i.uv, 0.0);
+        let col = lin3(ncol.rgb * i.colour.rgb);
         let b = border_at(i.world);
         let ba = clamp(b.a * 0.5, 0.0, 1.0);
         let c0 = mix(col, b.rgb * 2.0, ba);
@@ -233,7 +236,7 @@ fn fs_quad(i: QuadOut) -> @location(0) vec4<f32> {
         let ti = clamp(ti0 + ba * 0.8 * clamp((1.0 - ti0) * 1000.0, 0.0, 1.0), 0.0, 1.0);
         let a = clamp(texel.a * 6.0, 0.0, 1.0);
         let c = lin3(texel.rgb) * mix(c0, ti_col + vec3<f32>(ba * 0.3), 1.0 - ti);
-        return out_lin(c, a * i.colour.a);
+        return out_lin(c, a * ncol.a * i.colour.a);
     }
     let c = texel * i.colour;
     return output(c.rgb, c.a);

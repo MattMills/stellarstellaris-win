@@ -34,6 +34,7 @@ use crate::border::{self, Borders};
 use crate::dds::Image;
 use crate::galaxy::{self, Galaxy};
 use crate::galaxymap;
+use crate::mapnames;
 use crate::models;
 use crate::system::{self, SystemData};
 
@@ -65,12 +66,16 @@ pub struct MapImages {
     pub fill: Arc<Image>,
     pub borders: Arc<Borders>,
     pub borders_image: Arc<Image>,
+    /// the borders' blobs with a symbol (mapnames.rs)
+    pub blobs: Arc<Vec<mapnames::Blob>>,
 }
 
 impl MapImages {
     pub fn of(g: &Galaxy) -> MapImages {
         let ti = galaxymap::terra_incognita(g);
-        let (sdf, edge, fill) = galaxymap::borders(g);
+        let owner = galaxymap::owner_grid(g);
+        let (sdf, edge, fill) = galaxymap::borders_of(g, &owner);
+        let blobs = mapnames::blobs(&owner);
         let borders = border::compute(g);
         let borders_image = Image { width: borders.width, height: borders.height, rgba: borders.rgba.clone(), format: "generated".into() };
         MapImages {
@@ -80,6 +85,7 @@ impl MapImages {
             fill: Arc::new(fill),
             borders: Arc::new(borders),
             borders_image: Arc::new(borders_image),
+            blobs: Arc::new(blobs),
         }
     }
 
