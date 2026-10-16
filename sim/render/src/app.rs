@@ -144,6 +144,9 @@ pub struct App {
     pub overlay_items: Vec<GuiItem>,
     /// the map labels (mapicons.gui) of what the view shows
     pub overlay_labels: Vec<scene::Label>,
+    /// the ship designer (designer.rs) and the ship models of its 3D views, by inset
+    pub designer: crate::designer::Designer,
+    designer_models: HashMap<String, crate::designer::ShipModel>,
     /// what the windows were laid out for: the size, view, selection, snapshot, GUI shown, paused,
     /// star names' zoom, observing
     overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool)>,
@@ -230,6 +233,8 @@ impl App {
             selected: None,
             overlay_items: Vec::new(),
             overlay_labels: Vec::new(),
+            designer: Default::default(),
+            designer_models: HashMap::new(),
             overlay_key: None,
             holding: false,
             drag_anchor: None,
@@ -1197,6 +1202,14 @@ impl App {
             }
             _ => {}
         }
+        // a fleet in combat shows the combat view instead of its window (designer.rs)
+        let combat = match self.selected {
+            Some(Pickable::Fleet(id)) if crate::designer::in_combat(&map.runtime, id) => Some(id),
+            _ => None,
+        };
+        if combat.is_some() {
+            selected = None;
+        }
         let texts = gui::format_names(&self.runtime, &names)?;
         let (member_texts, rest) = texts.split_at((2 * g.outliner.len()).min(texts.len()));
         let (sector_names, rest) = rest.split_at(g.sectors.len().min(rest.len()));
@@ -1253,6 +1266,18 @@ impl App {
         // the main screen's other windows under the outliner and the selection's window
         let mut items = self.main_screen_items()?;
         items.extend(layout.items);
+        // the ship designer and the combat view over them
+        let map = self.map.as_ref().unwrap();
+        match crate::designer::layout(&self.runtime, &map.runtime, &self.game_dir, w, h, &self.designer, combat) {
+            Ok((more, models)) => {
+                items.extend(more);
+                self.designer_models = models;
+            }
+            Err(e) => {
+                eprintln!("windows: {e}");
+                self.log.push(format!("windows: {e}"));
+            }
+        }
         let map = self.map.as_mut().unwrap();
         gui::fonts(&self.runtime, &self.game_dir, &items, map.fonts.get_or_insert_with(HashMap::new))?;
         Ok(items)
@@ -1385,6 +1410,12 @@ impl App {
                     scene::gui_scene(w, h, &items, &self.fonts, &mut self.textures, &mut self.cache.borrow_mut(), &self.game_dir, &states)
                 }
             };
+            // the designer's 3D views (designer.rs)
+            let mut scene = scene;
+            if let (Screen::Map, Some(map)) = (self.screen, self.map.as_mut()) {
+                let cache = map.cache.clone();
+                crate::designer::fill_insets(&mut scene, &self.designer_models, &mut map.models, &map.runtime, &self.game_dir, &mut map.textures, &mut cache.borrow_mut());
+            }
             self.scene = Some(std::sync::Arc::new(scene));
             // a new scene, whoever asked for it (a hit test builds it too)
             self.generation += 1;
@@ -1538,10 +1569,24 @@ impl App {
                     _ => Pickable::Fleet(id),
                 }));
             }
+            Some(a) if a.starts_with("designer:") => {
+                let mut d = self.designer.clone();
+                crate::designer::act(&mut d, a)?;
+                self.set_designer(d);
+            }
             Some(other) => self.log.push(format!("  {other}: not done yet (its window is not laid out)")),
             None => {}
         }
         Ok(())
+    }
+
+    /// The ship designer opened, closed or given a design (designer.rs): the windows laid out again.
+    pub fn set_designer(&mut self, d: crate::designer::Designer) {
+        if d != self.designer {
+            self.designer = d;
+            self.overlay_key = None;
+            self.scene = None;
+        }
     }
 
     fn show(&mut self, screen: Screen) {
@@ -1650,6 +1695,8 @@ impl App {
                     self.mode3d = !self.mode3d;
                     self.scene = None;
                 }
+                // the designer's close button has the shortcut ESCAPE (ship_designer.gui)
+                "escape" if self.designer.open => self.set_designer(Default::default()),
                 "escape" if self.selected.is_some() => self.select(None),
                 "escape" if self.view != MapView::Galaxy && self.map.is_some() => {
                     self.log.push(format!("escape: {:?} -> Galaxy", self.view));
