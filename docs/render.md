@@ -876,6 +876,9 @@ and how the renderer does it. Checked against the game's frame after a load (`he
 the same commands: `H:\code_working\tmp_sym\render3d\parity\7_controls.png`, the game left): the
 home system at the same place and scale, the top bar's clock, the outliner.
 
+- The diplomacy windows (Contacts, a country's diplomacy, the galactic community, the federation,
+  a war's overview): [windows/diplomacy.md](windows/diplomacy.md).
+
 ### The clock (`sim/render/src/clock.rs`)
 
 - **The simulation runs on its own thread**, which owns its Lua runtime (the save with the game's
