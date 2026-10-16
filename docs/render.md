@@ -668,7 +668,7 @@ frame from `headless/view.sh` with the GUI off, the renderer's from the same com
 | 2 | system backdrop: the sky box | done | (the galaxy view uses the `default` world's sky and post effects: item 5) |
 | 3 | stars: surface, glow, corona particles, the star's light on planets | done for the A star of system 401 | the lava patches a little purple (cause not found); the particles' motion (a still snapshot); the other star classes, black holes, neutron stars and pulsars are not checked |
 | 4 | planets: atmospheres, gas giants, rings, asteroid belts, black holes, special stars | done for what the player knows (systems 401, 142, 238, 476) | the planets' spin (their idle animation: the bands and continents sit elsewhere); city lights; the gas giants' atmosphere halo a little brighter on the dark side; black holes, pulsars and neutron stars drawn from their entities but not checked (the player knows none) |
-| 5 | galaxy: terra incognita, borders, hyperlanes, star icons, the core, post effects, the map's names and flags | done at the default camera, a wide view and the whole galaxy (`observe`) | the dust's and nebulae's slow turning (GALAXY_DUST_ROTATION_SPEED); the nebulae's colour is `nebulacolor.dds`' mean, not sampled per pixel, and weaker than the game's; from far (2000 of the game's world) the game draws no hyperlanes and its stars are coloured points; the star labels' icons (section 12); nebula names; the territory's fill is lighter than the game's from far |
+| 5 | galaxy: terra incognita, borders, hyperlanes, star icons, the core, post effects, the map's names and flags | done at the default camera, a wide view and the whole galaxy (`observe`) | the dust's and nebulae's slow turning (GALAXY_DUST_ROTATION_SPEED); the nebulae's places (InitNebulas); the star labels' icons (section 12); nebula names; from far the territories' coloured edge bands are thinner than the game's (cause not found). The whole galaxy from 2000 of the game's world (`observe`): mean colour (42.5, 36.9, 33.8) against the game's (40.9, 35.2, 32.5); the stars match the game's place, colour and size |
 | 6 | ships and stations: empire colours, engine glows, turrets, idle animations | partial | empire colours, the ship shader and lights, turrets and attached entities, additive engine glows: done; idle animations (skeletal .anim) and engine trails not drawn; ships a little small (SHIP_SCALE fitted) |
 
 **The post effects** (`sim/render/src/post.wgsl`, `render.rs`) **[V]**: the passes of
@@ -770,7 +770,11 @@ galaxy has no star class; the frames agree):
   (terra_incognita.fxh). Outside the known space the stars and the core turn grey (luminance x 0.15),
   the star pins too (x 0.15 x 4), the dust to 0.15 grey (+ 0.3 x a border's alpha); a hyperlane is
   built only when an end is known (HIDE_HYPERLANES_OUTSIDE_TERRA_INCOGNITA) and fades to a grey of
-  alpha 0.05.
+  alpha 0.05. There is no zoom rule for the lanes: their geometry is built from the player's
+  terra incognita, and `observe` does not build it again, so the game's observer sees the lanes of
+  the player's known space only, from any distance (its frames of the whole galaxy show them
+  there and nowhere else) **[V]** frames, the rebuild's trigger **[I]**; Galaxy::lanes_ti keeps
+  that terra incognita for the observer.
 - **Borders** **[V]**: metaballs per owner on a 2048 grid (35 per owned system, 30 unowned, 20 per
   lane between two systems of one owner; the field `max(0, R²/d² - 1/1.88²)`, threshold 0.05), each
   blob's signed distance (`(d + 15) / 30`) downsampled to 512 and blurred, the owner's colours as
@@ -780,7 +784,13 @@ galaxy has no star class; the frames agree):
   same choice colours the star pins). border.shader's BorderSDF (its edge band and fade by the
   camera's distance) x the raw terra incognita is not drawn itself: the dust (x 0.8) and the nebulae
   (x 0.5, colour x 2) read it under their pixel and take its colour, which is the ring the game
-  shows around the home system.
+  shows around the home system. Confirmed in the code: CGraphicalMap::Render calls
+  CBordersGraphics::Render with pass 0 (BorderSDF into the border target, then BorderCentroid,
+  the flags, on the frame's target), then the galaxy, then pass 1, which draws only the StarPin
+  effect (the slots: +0x98 BorderCentroid, +0xf0 BorderSDF, +0xc0 StarPin). From far the game's
+  coloured edge bands look thicker than the renderer's with the same SDF formula: not explained
+  yet (the border target's resolution, or the dust drawn into the galaxy's downsampled target,
+  g_nGfxGalaxyDownsample, and stretched, are the candidates).
 - **Dust** (galaxy_dust.shader) **[V]** shader, **[I]** placement: a cloud of `dust.dds` at every
   system and int(0.1 R) at random in the core's disc, at radius r x R and angle 2 pi r' (uniform
   in the radius: denser toward the centre) **[V]** (R the core's radius in the game's world, below),
@@ -789,7 +799,10 @@ galaxy has no star class; the frames agree):
   the systems' bounding box (DustCloudUV), alpha blended.
 - **Nebulae** (galaxy_nebula.shader): the save's `nebula = { coordinate radius galactic_object }`: a
   cloud of `nebula.dds` of the nebula's radius and one of 10 + 25 r at each of its systems, 4.5
-  below the plane, alpha x 6, in `nebulacolor.dds`' mean colour **[I]**.
+  below the plane, alpha x 6, coloured by `nebulacolor.dds` at the cloud's own UV (the shader's
+  ColorTexture is sampled at the nebula texture's UV; its alpha multiplies the cloud's) **[V]**: a
+  sixth map texture (map.wgsl `nebula_colour`). The clouds' places and sizes **[I]**
+  (CGalaxyGraphics::InitNebulas not read).
 - **The core** (galaxy_center.shader, CGalaxyGraphics::Init) **[V]**: the core's radius R is the
   save's `galaxy.core_radius` (x 2e-5 of its fixed point: the game's world) when above 0.01, else
   the distance from the centre to the nearest system; the quad is +-R (a vertex buffer of four
@@ -1206,8 +1219,8 @@ freed when the device is polled).
 - **3D, to match the game** (sections 10, 11): the lens flare; the star's lava tint (the RE says
   the lava, stone and noise textures are sRGB and the lava colours linear, which gives a purple
   tint the game's frame does not show); black holes, pulsars and neutron stars (drawn, not
-  checked: the player of the 2210 save knows none; `observe` shows them all now); the galaxy from
-  far (CHyperlaneGraphics' zoom rule, the stars' colours: section 11); the map flag's texture.
+  checked: the player of the 2210 save knows none; `observe` shows them all now); the territories' edge
+  bands from far (section 11); the map flag's texture.
 - **3D, not drawn yet**: animation (skeletons and `.anim`: the ships' idle animations, the
   planets' spin), engine trails, LOD selection, the `PdxMeshShipFlow` shader, city lights,
   shadows, nebula names, the names' fades, the system's hyperlane exits, fleets moving between their
