@@ -46,6 +46,8 @@ pub enum GuiItem {
         h: f32,
         format: String,
         valign: String,
+        /// the box's `fixedSize`: its lines are cut at its height (else it grows with them)
+        fixed: bool,
     },
 }
 
@@ -201,6 +203,7 @@ fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
                 h: it.get("h")?,
                 format: it.get("format")?,
                 valign: it.get::<Option<String>>("valign")?.unwrap_or_else(|| "top".into()),
+                fixed: it.get::<Option<bool>>("fixed")?.unwrap_or(true),
             });
         }
     }

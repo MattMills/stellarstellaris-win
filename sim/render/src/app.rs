@@ -1552,12 +1552,14 @@ impl App {
                 }));
             }
             // a left or top bar button opens its view (a second click closes it); a view's own
-            // buttons change its state (`state:KEY=VALUE`)
+            // buttons change its state (`state:KEY=VALUE;KEY=VALUE`)
             Some(a) if a.starts_with("view:") => self.toggle_view(&a[5..]),
             Some("close_view") => self.open_view_named(None),
             Some(a) if a.starts_with("state:") => {
-                let (k, v) = a[6..].split_once('=').ok_or(format!("bad action {a}"))?;
-                self.set_view_state(k, v);
+                for kv in a[6..].split(';') {
+                    let (k, v) = kv.split_once('=').ok_or(format!("bad action {a}"))?;
+                    self.set_view_state(k, v);
+                }
             }
             Some(other) => self.log.push(format!("  {other}: not done yet (its window is not laid out)")),
             None => {}

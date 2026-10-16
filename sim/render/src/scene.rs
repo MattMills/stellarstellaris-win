@@ -1220,9 +1220,46 @@ pub fn add_gui(
                     gui.buttons.push(PlacedButton { path: path.clone(), rect: [*x, *y, x + w, y + h], action: action.clone() });
                 }
             }
-            GuiItem::Text { path, font, text, spans, x, y, w, h, format, valign } => {
+            GuiItem::Text { path, font, text, spans, x, y, w, h, format, valign, fixed } => {
                 let Some(f) = fonts.get(font) else { continue };
                 let Some(t) = tex.game(cache, game_dir, &f.texture) else { continue };
+                // a text wider than its box wraps at its spaces (and at its new lines), as the
+                // game's text boxes do: a box of fixedSize keeps the lines its height holds
+                // (market_view's market_info: three lines in its 228 x 80; one line: cut, below),
+                // another grows with them (expansion_planner_view's "Terraforming Candidate",
+                // two lines centred on its 30)
+                let max_lines = if *fixed { ((h + 0.5) / f.line_height.max(1.0)).floor() as usize } else { usize::MAX };
+                if max_lines >= 2 && *w > 8.0 && !spans.iter().any(|(s, _)| s.starts_with('\u{1}')) && (f.width(text) > w + 0.5 || text.contains('\n')) {
+                    let lines = wrap_spans(f, spans, *w);
+                    let n = lines.len().min(max_lines);
+                    let block = n as f32 * f.line_height;
+                    let top = match valign.as_str() {
+                        "center" | "centre" => y + (h - block) / 2.0,
+                        "bottom" => y + h - block,
+                        _ => *y,
+                    }
+                    .round();
+                    let (aw, ah) = (f.image.width as f32, f.image.height as f32);
+                    for (k, line) in lines.iter().take(n).enumerate() {
+                        let lw: f32 = line.iter().map(|(s, _)| f.width(s)).sum();
+                        let mut pen = match format.as_str() {
+                            "center" | "centre" => x + (w - lw) / 2.0,
+                            "right" => x + w - lw,
+                            _ => *x,
+                        }
+                        .round();
+                        let py = top + k as f32 * f.line_height;
+                        for (s, colour) in line {
+                            for (_, r, uv) in f.place(s, pen, py) {
+                                push(batches, Layer::Text, Blend::Alpha, t, screen_quad(r, [uv[0] / aw, uv[1] / ah, uv[2] / aw, uv[3] / ah], [colour[0], colour[1], colour[2], 1.0]));
+                            }
+                            pen += f.width(s);
+                        }
+                    }
+                    let order = gui.sprites.len() + gui.texts.len();
+                    gui.texts.push(PlacedText { path: path.clone(), text: text.clone(), font: font.clone(), rect: [*x, *y, x + w, y + h], pen: (*x, top), order });
+                    continue;
+                }
                 // a text wider than its box is cut, " ..." at its end (as the game's outliner
                 // shows a long name)
                 let cut;
@@ -1301,6 +1338,39 @@ pub fn add_gui(
             }
         }
     }
+}
+
+/// Coloured spans broken into lines no wider than `w`: at spaces (a word wider than the line
+/// stays whole on its own line) and at new lines.
+fn wrap_spans(f: &Font, spans: &[(String, [f32; 3])], w: f32) -> Vec<Vec<(String, [f32; 3])>> {
+    let mut lines: Vec<Vec<(String, [f32; 3])>> = vec![Vec::new()];
+    let mut used = 0.0;
+    for (s, c) in spans {
+        for (i, para) in s.split('\n').enumerate() {
+            if i > 0 {
+                lines.push(Vec::new());
+                used = 0.0;
+            }
+            for word in para.split_inclusive(' ') {
+                let ww = f.width(word.trim_end());
+                if used > 0.0 && used + ww > w + 0.5 {
+                    if let Some(last) = lines.last_mut().and_then(|l| l.last_mut()) {
+                        let t = last.0.trim_end().to_string();
+                        last.0 = t;
+                    }
+                    lines.push(Vec::new());
+                    used = 0.0;
+                }
+                let line = lines.last_mut().unwrap();
+                match line.last_mut() {
+                    Some(last) if last.1 == *c => last.0.push_str(word),
+                    _ => line.push((word.to_string(), *c)),
+                }
+                used += f.width(word);
+            }
+        }
+    }
+    lines
 }
 
 /// A scene of GUI only (the front end), for a target of `width` x `height`.

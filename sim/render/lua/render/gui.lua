@@ -30,7 +30,9 @@ local ANCHOR = {
 
 -- element kinds drawn (lists, scrollbars, edit boxes are filled at run time: not drawn)
 local CONTAINERS = { containerwindowtype = true, windowtype = true, dropdownboxtype = true }
-local ICONS = { icontype = true, buttontype = true, effectbuttontype = true, guibuttontype = true }
+-- (a checkbox and a drop-down's expand button are buttons with a sprite, their frames the
+-- states: checkboxType, expandButton)
+local ICONS = { icontype = true, buttontype = true, effectbuttontype = true, guibuttontype = true, checkboxtype = true, expandbutton = true }
 local TEXTS = { instanttextboxtype = true, textboxtype = true }
 -- lists: laid out (their rectangle is recorded, for the rows the caller places) but not drawn
 local LISTS = { smoothlistboxtype = true, listboxtype = true, gridboxtype = true, overlappingelementsboxtype = true }
@@ -76,6 +78,27 @@ local function number(v, vars, of)
     end
     return tonumber(v)
 end
+
+-- an element's field: its last `key = value` (a key given twice takes the later value, as the
+-- game reads it: expansion_planner_view's expansion_target_title has two `text`s and the game
+-- shows the second)
+local function last(block, key)
+    key = key:lower()
+    for i = #block, 1, -1 do
+        local e = block[i]
+        if e.op and e.key and e.key.text:lower() == key then
+            return e.value.text or e.value
+        end
+    end
+    return nil
+end
+
+-- a gridBoxType's `format` (CGridBoxType::StringToFormat: these exact names; any other is UP)
+local GRID_FORMATS = {
+    UP = 0, DOWN = 1, LEFT = 2, RIGHT = 3, UPPER_LEFT = 4, LOWER_LEFT = 5, UPPER_RIGHT = 6,
+    LOWER_RIGHT = 7, CENTERED_UP = 8, CENTERED_DOWN = 9, CENTERED_LEFT = 10, CENTERED_RIGHT = 11,
+    CENTERED_UP_BY_LINE = 12,
+}
 
 local function anchor(name)
     return ANCHOR[(type(name) == "string" and name or "upper_left"):lower()] or ANCHOR.upper_left
@@ -133,7 +156,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
         error(file .. ": no window " .. window_name)
     end
     local items = {}
-    local report = { sprites = 0, texts = 0, missing_sprites = {}, skipped = {}, rects = {} }
+    local report = { sprites = 0, texts = 0, missing_sprites = {}, skipped = {}, rects = {}, grids = {} }
     local loc = opts.loc
 
     -- a sprite sheet's frame stands for its sheet (with its default frame)
@@ -185,7 +208,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
     end
 
     -- a text's spans: localised, split at colour codes, coloured
-    local function text_item(path, font, text, x, y, w, h, format, valign, colour_code)
+    local function text_item(path, font, text, x, y, w, h, format, valign, colour_code, grows)
         local spans = {}
         local base = db.textcolors[colour_code or ""] or { 1, 1, 1 }
         if loc then
@@ -199,7 +222,9 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                     spans[#spans + 1] = { text = s.text, colour = db.textcolors[s.colour or ""] or base }
                 elseif s.icon then
                     -- a text icon (£name£: GFX_text_<name>): "\1texture\1frames\1frame" for the renderer
-                    local sp = db.sprites["GFX_text_" .. s.icon]
+                    -- (a resource without a GFX_text_ sprite: its GFX_resource_ one, as the game
+                    -- shows £food£ [I: the two prefixes side by side in the game's strings])
+                    local sp = db.sprites["GFX_text_" .. s.icon] or db.sprites["GFX_resource_" .. s.icon]
                     if sp and sp.sheet and db.sprites[sp.sheet] then
                         sp = { texture = db.sprites[sp.sheet].texture, frames = db.sprites[sp.sheet].frames, frame = sp.default_frame }
                     end
@@ -218,6 +243,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
         items[#items + 1] = {
             kind = "text", path = path, font = font or "cg_16b", text = table.concat(plain), spans = spans,
             x = x, y = y, w = w, h = h, format = (format or "left"):lower(), valign = valign or "top",
+            fixed = not grows,
         }
         report.texts = report.texts + 1
     end
@@ -261,7 +287,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                     return v
                 end
             end
-            return get(b, k)
+            return last(b, k)
         end
 
         -- a window the game slides in and out is laid out where it shows (show_position)
@@ -281,7 +307,9 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
         end
         local scale = number(field("scale"), vars) or 1
         local sprite = opts.sprites and opts.sprites[path] or field("spriteType") or field("quadTextureSprite")
-        local frame = opts.frames and opts.frames[path] or number(field("frame"), vars)
+        -- (a sprite set at run time keeps its own frame: the element's `frame` was the file's
+        -- sprite's)
+        local frame = opts.frames and opts.frames[path] or (not (opts.sprites and opts.sprites[path]) and number(field("frame"), vars) or nil)
 
         if ICONS[kind] and sprite and (w == nil or h == nil) then
             local fw, fh = frame_size(sprite)
@@ -303,6 +331,20 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             x, y = x - w / 2, y - h / 2
         end
         report.rects[path] = { x = x, y = y, w = w, h = h }
+        -- a grid box: what places its items (gui.grid_slot)
+        if kind == "gridboxtype" then
+            local ss = field("slotsize")
+            local mx = field("max_slots")
+            report.grids[path] = {
+                x = x, y = y, w = w, h = h,
+                sx = number(type(ss) == "table" and (get(ss, "width") or get(ss, "x")) or nil, vars) or 0,
+                sy = number(type(ss) == "table" and (get(ss, "height") or get(ss, "y")) or nil, vars) or 0,
+                max_h = number(field("max_slots_horizontal"), vars) or (type(mx) == "table" and number(get(mx, "x"), vars)) or -1,
+                max_v = number(field("max_slots_vertical"), vars) or (type(mx) == "table" and number(get(mx, "y"), vars)) or -1,
+                format = GRID_FORMATS[field("format") or ""] or 0,
+                add_horizontal = field("add_horizontal") ~= "no",
+            }
+        end
 
         if CONTAINERS[kind] then
             -- children are laid out in the window less its margin
@@ -323,7 +365,10 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                         local bs = get(e.value, "spriteType") or get(e.value, "quadTextureSprite")
                         local s = bs and db.sprites[bs]
                         local fill = s and s.kind == "corneredTileSpriteType"
-                        if bs and not hidden(path .. "/background", "") then
+                        -- (hidden by its own name too: a window's second background, the
+                        -- selected_overlay of a list entry, shows at run time)
+                        local bname = get(e.value, "name")
+                        if bs and not hidden(path .. "/background", "") and not (bname and hidden(path .. "/" .. bname, bname)) then
                             local bw, bh
                             if fill then
                                 bw, bh = w, h
@@ -369,14 +414,67 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                 text = field("text") or ""
             end
             local valign = field("vertical_alignment")
+            -- (a text box without fixedSize grows with its lines)
             text_item(path, field("font"), tostring(text), x, y, w, h, field("format"),
-                valign and valign:lower() or "top", field("text_color_code"))
+                valign and valign:lower() or "top", field("text_color_code"), field("fixedSize") ~= "yes")
         end
     end
 
     local parent = opts.parent or { x = 0, y = 0, w = screen.width, h = screen.height }
     element("containerwindowtype", window, parent, opts.prefix or "", 0, file_scope)
     return items, report
+end
+
+-- gui.grid_slot(grid, n, count, row_counts) -> x, y, or nil when the grid has no room for item
+-- n (0-based) of `count`: a gridBoxType's item place (TGridBox::Add: the index to a column and
+-- row, by rows unless add_horizontal = no; CGridBoxBase::GetSlotPosition: the slot by `format`,
+-- the default UP centring one slot across the grid's width). grid: report.grids[path].
+-- row_counts: the items of each row (CENTERED_UP_BY_LINE only).
+function gui.grid_slot(g, n, count, row_counts)
+    local cx, cy
+    if g.add_horizontal then
+        if g.max_h > 0 then
+            cx, cy = n % g.max_h, math.floor(n / g.max_h)
+        else
+            cx, cy = n, 0
+        end
+        if g.max_v > 0 and cy >= g.max_v then
+            return nil
+        end
+    else
+        if g.max_v > 0 then
+            cx, cy = math.floor(n / g.max_v), n % g.max_v
+        else
+            cx, cy = 0, n
+        end
+        if g.max_h > 0 and cx >= g.max_h then
+            return nil
+        end
+    end
+    local function half(v)
+        return v >= 0 and math.floor(v / 2) or -math.floor(-v / 2)
+    end
+    local W, H, sx, sy = g.w, g.h, g.sx, g.sy
+    local mH = math.min(g.max_h > 0 and g.max_h or count, count)
+    local mV = math.min(g.max_v > 0 and g.max_v or count, count)
+    local f = g.format
+    local x, y
+    if f == 1 then x, y = cx * sx + half(W - sx), H - sy - cy * sy
+    elseif f == 2 then x, y = cy * sx, cx * sy + half(H - sy)
+    elseif f == 3 then x, y = W - sx - cy * sx, cx * sy + half(H - sy)
+    elseif f == 4 then x, y = cx * sx, cy * sy
+    elseif f == 5 or f == 7 then
+        x = f == 5 and cx * sx or -cx * sx
+        y = g.add_horizontal and (H - sy - cy * sy) or (H - sy + (cy + 1 - count) * sy)
+    elseif f == 6 then x, y = W - sx - cx * sx, cy * sy
+    elseif f == 8 then x, y = half(W) - half(mH * sx) + cx * sx, cy * sy
+    elseif f == 9 then x, y = half(W) - half(mH * sx) + cx * sx, H - sy - cy * sy
+    elseif f == 10 then x, y = cy * sx, half(H) - half(mV * sy) + cx * sy
+    elseif f == 11 then x, y = W - sx - cy * sx, half(H) - half(mV * sy) + cx * sy
+    elseif f == 12 then x, y = half(W) - half(((row_counts or {})[cy + 1] or mH) * sx) + cx * sx, cy * sy
+    else x, y = cx * sx + half(W - sx), cy * sy
+    end
+    return g.x + x, g.y + y
 end
 
 -- appends b's items to a's, and merges the reports
@@ -394,6 +492,12 @@ function gui.merge(a, ra, b, rb)
     end
     for k, r in pairs(rb.rects) do
         ra.rects[k] = r
+    end
+    if rb.grids then
+        ra.grids = ra.grids or {}
+        for k, g in pairs(rb.grids) do
+            ra.grids[k] = g
+        end
     end
     return a, ra
 end
