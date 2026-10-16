@@ -124,6 +124,46 @@ none; the alert or the Situation Log leads to them). The save's own open event, 
   game: clicked in both, the whole frames differ by 3.9 / 4.2 / 3.9.
 - Measured: 4.3 / 4.3 / 4.1.
 
+## The buttons (render-buttons-1)
+
+What each clickable element does, as the game does it, and how it was checked (S: the renderer's
+command protocol; G: the same clicks on the headless game, its frames or `state`; W: the windowed
+renderer under Xvfb with xdotool, 2210.01.01 from Load Game).
+
+| element | what it does | state |
+|---|---|---|
+| event option | its effects in the simulation, then `after`, and the event no longer open (COpenPlayerEvent::OnOptionSelected: simscript.events `answer`, through views.rs `cmd` frame: `events_data.command("answer")`); a save's own `player_event` is taken out of the world | wired: S (clones.14's second option: influence 596.5 -> 496.5, the event gone; first_contact.1 answered and gone after a day) |
+| an event the simulation fires for the player | kept open (simscript.events `defer`), its window shown at once; unanswered for EVENT_AUTOSELECT_MONTHS (9), its default option (the first valid) | wired: S (`event fire clones.14` opens it; 270 days later it is gone and no influence was paid) |
+| RETURN | the top event window's first option (Setup gives it the shortcut) | wired: S |
+| event focus button (Q) | NGuiUtil::FocusOnScope of the event's location: the system entered | wired: S, G (`state` view system 142 after the click, both) |
+| event close (X) | the window closed, the event stays open (no shortcut: Escape does not close it [V .gui]) | wired: S |
+| event window background | brought to the front (MoveToFront) | wired: S |
+| message settings button | the message settings popup | not done (its window is not laid out) |
+| Situation Log tabs (Z, X) | Log, Findings | wired: S, W (Empire Focus and Victory: not laid out) |
+| a row | selects the entry | wired: S, W |
+| a category header | folds or unfolds a collapsible category (the arrow's frames 1 / 2) | wired: S, G (same frames), W |
+| a row's pin | the entry to "Priorities" and back (GFX_button_pin_pinned) | wired: S, G (1.7 / 2.3 / 2.0 against the game's frame), W; kept only while the view is open [I] |
+| track | the selected entry tracked (its dot in the list) | UI only: the map's tracking marker not drawn |
+| goto | the galaxy over the entry's system, at the distance the game leaves a system with | wired: S, G (galaxy, target 97.44 162.96 in both) |
+| close (Escape) | the view closed (no side windows: `escape_keys = {}`) | wired: S, W |
+| Show First Contact (RETURN in its subview) | the first contact view; the log closes | wired: S, G, W (the RETURN shortcut not wired) |
+| first contact view option | the contact's open event answered (as an event option), the view closed | wired: S, W |
+| first contact view goto | the galaxy over the contact's system [I: as the log's goto] | wired: S |
+| first contact view close (Escape) | closed | wired: S |
+| first contact view, answered | "Nothing to report" (no_report_icon, no_report_text), no text or options [I] | wired: S |
+| Discoveries row (artifact action) | CArtifactActionCommand: when its potential and allow hold and the stockpile pays it, the cost paid (the stockpile, as empire_commands' pay) and its effect run in the simulation (`cmd:discoveries:artifact:KEY`); otherwise the row takes no click (no button shown) | wired, effect untested: no save has minor artifacts (2210.01.01 to 2212.07.01) |
+| Discoveries tabs (Z), close (Escape), left bar | as the views frame | wired: S, W |
+| relic slots | activate a relic | not done (no relics in the saves) |
+| popups (OK RETURN, Decline ESCAPE) | closed | wired, but nothing opens a popup yet |
+| situations' approaches | CSituation's approach change | not done: the player has no situation in the saves, the situation subview is not laid out |
+
+Commands added for these checks: `event fire NAME` (the game's console `event NAME`: the event
+fired for the player in the simulation), `event influence`.
+
+Script gotchas: in lockstep (`timestep`) a click needs a `move` there a few frames before (the
+button is taken from the hover), and a second click at the same place within 500 ms is a double
+click; after `open_view` the view's data arrives with the next snapshot.
+
 ## Not done
 
 - The event picture's mask, the event chain and situation panels of the event window, the

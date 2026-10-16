@@ -1679,15 +1679,7 @@ impl App {
                 self.commands.push(ClockCommand::Speed(if action == Some("speed_up") { 1 } else { -1 }));
             }
             // the event windows' and popups' buttons (events.rs)
-            Some(a) if crate::events::handles(a) => {
-                // the first contact view replaces the top bar view (the game's Situation Log
-                // closes when "Show First Contact" opens it)
-                if a.starts_with("fc:open:") {
-                    self.close_view();
-                }
-                self.events.act(a);
-                self.relayout();
-            }
+            Some(a) if crate::events::handles(a) => crate::events::app_act(self, a)?,
             // the diplomacy windows (diplomacy.rs): Contacts from the left bar, the others from it
             Some(a) if a == "view:contacts" || a.starts_with("diplo:") => {
                 if self.diplomacy.act(a)? {
@@ -2180,6 +2172,11 @@ impl App {
                     self.act("/key", Some(&a))?;
                     return Ok(true);
                 }
+                // the event windows', popups' and their views' shortcuts (events.rs)
+                if let Some(a) = crate::events::key(self, key) {
+                    self.act("/key", Some(&a))?;
+                    return Ok(true);
+                }
             }
         }
         let ctx = self.context();
@@ -2342,6 +2339,8 @@ impl App {
                     }
                     // the in-game menu and its dialogs are over the other windows (mainbars.rs)
                     Action::Back if crate::mainbars::escape(self, true)? => {}
+                    // a popup's and the first contact view's ESCAPE (events.rs)
+                    Action::Back if crate::events::escape(self) => {}
                     // the fleet windows' close buttons first (their ESCAPE shortcut)
                     Action::Back if self.fleet_escape() => {}
                     // the open view's close buttons (shortcut ESCAPE) have the key first (the
