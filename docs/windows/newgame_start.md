@@ -52,7 +52,7 @@ window is at y -99999, off the screen).
 |---|---|---|
 | settings | `newgame.rs` `NewGameSettings { values, empire }`: newgame.generate's keys as text; `empire` a prescripted design's key or a whole design `key = { ... }` (settings `player_design` / `player_design_text`, engine/newgame/empires.lua); `from_lua` takes the setup screens' table (render.newgame_setup, session ng-flow) | **[V]** run |
 | Start | `App::start_new_game(settings)`; the action `start_new_game` starts one from `App::newgame_setup` (the setup screens set it) | the call **[V]**; the Play button is ng-flow's |
-| command | `newgame [async] KEY=VALUE ... [empire=DESIGN]`; `loaded` waits for an `async` one; `state` has `load_screen: {text, percent, world_gen, stage}` | **[V]** |
+| command | `newgame [async] KEY=VALUE ... [empire=DESIGN] [designs=FILE] [global_at=STEP=N,...]` (`_` for a space in a step's name); `loaded` waits for an `async` one; `state` has `load_screen: {text, percent, world_gen, stage}` | **[V]** |
 | generation | on the simulation's thread (`clock::Source::NewGame`): a runtime at 2200.01.01 seeded with `global_seed` (the global stream the generator draws from), `newgame.generate(dir, settings)` with `tree_only` and a `progress` callback | **[V]** |
 | progress | engine/newgame/init.lua calls `settings.progress` with the game's values: 5, 10, 17, `70 + 30 i / n` (systems.initialize_rest); no fallen empires yet, so no 20..70 | **[V]** the values; the moments are the Lua's steps |
 | hand-off | the generated tree handed to `engine.load` as is (`world.load_tree`: the builder's metatables cleared), no text written or parsed. `STELLAR_NEWGAME_TEXT=1` loads its text instead; `STELLAR_NEWGAME_CHECK=1` compares the tree with its text parsed again (tiny, seed 1234: 0 differences besides the parser's line numbers) | **[V]** |
@@ -100,6 +100,15 @@ scenario=tiny shape=elliptical empires=3 fallen_empires=0 global_seed=0 empire=h
 
 The path (settings, seed, generation, start, landing) agrees; what differs is the generator's and
 the start script's content (sessions ng-headless and ng-effects).
+
+With ng-headless (cfa2302) and ng-effects (49b4b60) merged in a test worktree and the reference's
+parity setup (`newgame ... designs=.../tmp_newgame/ref/designs3.txt
+global_at=hyperlanes=5382,empire_systems=5384`, /root/ngs/t9.txt; side by side
+/root/ngs/cmp_p.jpg): the UNE at system 23 as in the game, the same Sol border and neighbours
+(Alpha Centauri, Procyon, Barnard's Star), 1st Fleet 15/50, 273 hyperlanes, 96 fleets (the game
+113), 196 systems (200), a day run with 0 errors. Still different: the game's galaxy view shows only
+what the UNE knows (terra incognita hides most lanes) where ours shows every lane; the top bar's
+incomes; the ships' names (UNS); Sol Station / Sol Starbase.
 
 ## 5. Not done
 

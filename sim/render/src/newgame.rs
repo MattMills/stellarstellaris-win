@@ -43,12 +43,21 @@ pub const KEYS: &[&str] = &[
 ];
 
 impl NewGameSettings {
-    /// `KEY=VALUE` words (the `newgame` command's): the keys of [`KEYS`], `empire=DESIGN`.
+    /// `KEY=VALUE` words (the `newgame` command's): the keys of [`KEYS`], `empire=DESIGN`,
+    /// `designs=FILE` (a user_empire_designs file: the designs the setup offers, settings
+    /// `designs_text`), `global_at=STEP=N,...` (the global stream put at the game's positions when
+    /// the generator's steps start: docs/newgame.md 8.1; `_` for a space in a step's name:
+    /// `global_at=hyperlanes=5382,empire_systems=5384`).
     pub fn parse(words: &[&str]) -> Result<NewGameSettings, String> {
         let mut s = NewGameSettings::default();
         for w in words {
             let (k, v) = w.split_once('=').ok_or(format!("{w}: KEY=VALUE"))?;
-            if k == "empire" {
+            if k == "designs" {
+                let text = std::fs::read_to_string(v).map_err(|e| format!("designs={v}: {e}"))?;
+                s.set("designs_text", &text);
+            } else if k == "global_at" {
+                s.set("global_at", &v.replace('_', " "));
+            } else if k == "empire" {
                 s.empire = Some(v.to_string());
             } else if KEYS.contains(&k) {
                 s.set(k, v);
@@ -119,7 +128,11 @@ impl NewGameSettings {
 
     /// As words, for the log and the command's reply.
     pub fn describe(&self) -> String {
-        let mut w: Vec<String> = self.values.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        let mut w: Vec<String> = self
+            .values
+            .iter()
+            .map(|(k, v)| if k == "designs_text" { format!("designs=<{} bytes>", v.len()) } else { format!("{k}={v}") })
+            .collect();
         if let Some(e) = &self.empire {
             w.push(if e.contains('{') { "empire=<design>".into() } else { format!("empire={e}") });
         }
@@ -137,7 +150,7 @@ impl NewGameSettings {
             match (v.as_str(), v.parse::<f64>()) {
                 ("yes", _) => t.set(k.as_str(), true)?,
                 ("no", _) => t.set(k.as_str(), false)?,
-                (_, Ok(n)) if k != "name" => t.set(k.as_str(), n)?,
+                (_, Ok(n)) if k != "name" && k != "designs_text" && k != "global_at" => t.set(k.as_str(), n)?,
                 _ => t.set(k.as_str(), v.as_str())?,
             }
         }
