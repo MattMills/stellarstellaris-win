@@ -11,7 +11,7 @@
 --
 -- The outliner: render.windows.outliner (its own module; RENDER_OUTLINER, outliner.rs). A
 -- planet opens planet_view (planet_view.gui), a fleet fleet_view (fleet_view.gui, one
--- fleet_view_entry), a starbase starbase_view (starbase_view.gui): each with its name and close
+-- fleet_view_entry), a starbase starbase_view (starbase_view.gui, laid out by render.windows.starbase): each with its name and close
 -- button; their other parts (lists, tabs, the bars the game fills) are not drawn. A row's
 -- background and a window's close button carry the actions `select:KIND:ID` and `close`.
 
@@ -55,15 +55,8 @@ local function selected_window(ctx, sel, items, report)
             merge(items, report, ri, rr)
         end
     elseif sel.kind == "starbase" then
-        local h = ctx.screen.height >= 801 and 765 or 611
-        local wi, wr = gui.layout(ctx.game_dir, ctx.db, "interface/starbase_view.gui", "starbase_view", ctx.screen, {
-            texture_size = ctx.texture_size, loc = ctx.loc,
-            sizes = { ["/starbase_view"] = { 562, h } },
-            only = { planet_bg_top = true, starbase_bg_bottom = true, empire_header_line = true, hex_bg = true, name = true, header_actions = true },
-            text = { ["/starbase_view/name"] = sel.name or "" },
-            actions = { ["/starbase_view/header_actions/close"] = "close" },
-        })
-        merge(items, report, wi, wr)
+        -- its tabs, grids and lists: render.windows.starbase
+        require("render.windows.starbase").build(ctx, sel, items, report)
     elseif sel.kind == "planet" then
         -- the planet view: render.windows.planet (its data from RENDER_PLANET)
         require("render.windows.planet").build(ctx, sel, items, report)
@@ -109,6 +102,8 @@ function windows.build(game_dir, db, screen, texture_size, loc, data)
     if data.selected then
         selected_window(ctx, data.selected, items, report)
     end
+    -- the windows render.windows.starbase opens itself (a megastructure's)
+    require("render.windows.starbase").extra(ctx, items, report)
     return items, report
 end
 

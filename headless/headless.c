@@ -2015,6 +2015,133 @@ static void date_str(void *gs, char *buf, size_t n) {
 	snprintf(buf, n, "%04d.%02d.%02d", d / 360, d % 360 / 30 + 1, d % 30 + 1);
 }
 
+// `open_starbase [starbase|waystation|megastructure|network] ID [tab N]`: a starbase's window (or a
+// waystation's, a megastructure's, a waystation network's) opened as selecting it does, ID the
+// save's id (a full ref with its generation above 0xffffff, else the index alone); `tab N` then
+// shows a tab (CStarbaseView::ShowTab: 0 Command, 1 Defenses, 2 Shipyard, 3 Army Hub;
+// CWaystationView::ShowTab; the megastructure's 0 main, 1 shipyard, 2 overclocking). Read in
+// 4.5.2 Linux: CInGameIdler::ShowStarbaseView(CStarbase const*) and ShowWaystationView(CStarbase
+// const&) close the top bar views and CAbstractStarbaseView::Show the view at idler +0xb70
+// (starbase) / +0xb78 (waystation); ShowWaystationNetworkView, the view at +0xd18;
+// ShowMegaStructureView(CMegaStructure const*), AccessMegaStructureView; what the view shows is
+// selected first (CInGameIdler::Select: a starbase's station fleet, CFleet +0x18; a megastructure,
+// CMegaStructure +0x28; a network, CWaystationNetwork +0x18). A TPdxRef database:
+// +0x18 its entries (16 bytes, the object at +8, whose +8 is its full ref), +0x20 their count.
+static uintptr_t a_ShowStarbaseView, a_ShowWaystationView, a_ShowWaystationNetworkView, a_ShowMegaStructureView;
+static uintptr_t a_AccessMegaStructureView, a_StarbaseViewShowTab, a_WaystationViewShowTab;
+static uintptr_t a_MegaMainTab, a_MegaShipyardTab, a_MegaOverclockingTab;
+static uintptr_t a_StarbaseDb, a_MegaStructureDb, a_WaystationNetworkDb;
+static uintptr_t a_IdlerSelect, a_StarbaseGetStation, a_ShipGetFleet;
+
+static struct symreq g_starbase_syms[] = {
+	{"_ZN12CInGameIdler16ShowStarbaseViewEPK9CStarbase", &a_ShowStarbaseView},
+	{"_ZN12CInGameIdler18ShowWaystationViewERK9CStarbase", &a_ShowWaystationView},
+	{"_ZN12CInGameIdler25ShowWaystationNetworkViewERK18CWaystationNetwork", &a_ShowWaystationNetworkView},
+	{"_ZN12CInGameIdler21ShowMegaStructureViewEPK14CMegaStructure", &a_ShowMegaStructureView},
+	{"_ZN12CInGameIdler23AccessMegaStructureViewEv", &a_AccessMegaStructureView},
+	{"_ZN13CStarbaseView7ShowTabE20EStarbaseViewTabType", &a_StarbaseViewShowTab},
+	{"_ZN15CWaystationView7ShowTabE23EWaystationsViewTabType", &a_WaystationViewShowTab},
+	{"_ZN18CMegaStructureView22SelectMegastructureTabEv", &a_MegaMainTab},
+	{"_ZN18CMegaStructureView17SelectShipyardTabEv", &a_MegaShipyardTab},
+	{"_ZN18CMegaStructureView21SelectOverclockingTabEv", &a_MegaOverclockingTab},
+	{"_ZN7TPdxRefI9CStarbaseE10_pDatabaseE", &a_StarbaseDb},
+	{"_ZN7TPdxRefI14CMegaStructureE10_pDatabaseE", &a_MegaStructureDb},
+	{"_ZN7TPdxRefI18CWaystationNetworkE10_pDatabaseE", &a_WaystationNetworkDb},
+	{"_ZN12CInGameIdler6SelectEPK11CSelectable", &a_IdlerSelect},
+	{"_ZNK9CStarbase10GetStationEv", &a_StarbaseGetStation},
+	{"_ZNK5CShip8GetFleetEv", &a_ShipGetFleet},
+	{NULL, NULL},
+};
+
+static void *ref_object(uintptr_t db_sym, long id) {
+	char *db = *(char **)db_sym;
+	if (!db || id < 0) return NULL;
+	unsigned idx = (unsigned)id & 0xffffff;
+	if (idx >= *(unsigned *)(db + 0x20)) return NULL;
+	char *o = *(char **)(*(char **)(db + 0x18) + 16 * (size_t)idx + 8);
+	if (!o) return NULL;
+	unsigned full = *(unsigned *)(o + 8);
+	if (id > 0xffffff ? full != (unsigned)id : (full & 0xffffff) != idx) return NULL;
+	return o;
+}
+
+static void open_starbase_cmd(const char *arg) {
+	static int resolved = 0;
+	if (!resolved) resolved = resolve(g_starbase_syms) == 0 ? 1 : -1;
+	char *idler = *(char **)a_g_CurrentInGameIdler;
+	if (resolved < 0 || !idler) {
+		reply_fmt("error open_starbase: %s", resolved < 0 ? "missing symbols" : "not in game");
+		return;
+	}
+	char kind[32] = "starbase";
+	long id = -1;
+	int tab = -1;
+	const char *rest = arg;
+	if (sscanf(arg, "%ld", &id) != 1) {
+		int n = 0;
+		if (sscanf(arg, "%31s %ld%n", kind, &id, &n) != 2) {
+			reply_fmt("error open_starbase [starbase|waystation|megastructure|network] ID [tab N]");
+			return;
+		}
+		rest = arg + n;
+	}
+	const char *t = strstr(rest, "tab ");
+	if (t) tab = atoi(t + 4);
+	void *view = NULL;
+	if (!strcmp(kind, "starbase") || !strcmp(kind, "waystation")) {
+		void *sb = ref_object(a_StarbaseDb, id);
+		if (!sb) {
+			reply_fmt("error open_starbase: no starbase %ld", id);
+			return;
+		}
+		// the view hides itself unless its station's fleet is selected (CAbstractStarbaseView::
+		// Update: CSelectionList::HaveSelections, the fleet's selected flag at +0x20): the fleet
+		// is selected first, its CSelectable at +0x18 (CAbstractStarbaseView::Hide's Deselect)
+		void *ship = ((void *(*)(void *))a_StarbaseGetStation)(sb);
+		char *fleet = ship ? ((char *(*)(void *))a_ShipGetFleet)(ship) : NULL;
+		if (fleet) ((void (*)(void *, void *))a_IdlerSelect)(idler, fleet + 0x18);
+		if (!strcmp(kind, "starbase")) {
+			((void (*)(void *, void *))a_ShowStarbaseView)(idler, sb);
+			view = *(void **)(idler + 0xb70);
+			if (view && tab >= 0) ((void (*)(void *, int))a_StarbaseViewShowTab)(view, tab);
+		} else {
+			((void (*)(void *, void *))a_ShowWaystationView)(idler, sb);
+			view = *(void **)(idler + 0xb78);
+			if (view && tab >= 0) ((void (*)(void *, int))a_WaystationViewShowTab)(view, tab);
+		}
+	} else if (!strcmp(kind, "megastructure")) {
+		void *m = ref_object(a_MegaStructureDb, id);
+		if (!m) {
+			reply_fmt("error open_starbase: no megastructure %ld", id);
+			return;
+		}
+		// selected first, as a starbase's fleet (CMegaStructureView::Update hides the view unless
+		// GetSelectedMegaStructure is it): its CSelectable at +0x28 (OnClose's Deselect)
+		((void (*)(void *, void *))a_IdlerSelect)(idler, (char *)m + 0x28);
+		((void (*)(void *, void *))a_ShowMegaStructureView)(idler, m);
+		view = ((void *(*)(void *))a_AccessMegaStructureView)(idler);
+		if (view && tab >= 0) {
+			uintptr_t f = tab == 1 ? a_MegaShipyardTab : tab == 2 ? a_MegaOverclockingTab : a_MegaMainTab;
+			((void (*)(void *))f)(view);
+		}
+	} else if (!strcmp(kind, "network")) {
+		void *n = ref_object(a_WaystationNetworkDb, id);
+		if (!n) {
+			reply_fmt("error open_starbase: no waystation network %ld", id);
+			return;
+		}
+		// selected first: its CSelectable at +0x18 (GetSelectedWaystationNetwork)
+		((void (*)(void *, void *))a_IdlerSelect)(idler, (char *)n + 0x18);
+		((void (*)(void *, void *))a_ShowWaystationNetworkView)(idler, n);
+		view = *(void **)(idler + 0xd18);
+	} else {
+		reply_fmt("error open_starbase: %s is not starbase, waystation, megastructure or network", kind);
+		return;
+	}
+	_Bool shown = view && ((_Bool (*)(void *))(*(void ***)view)[0x78 / 8])(view);
+	reply_fmt("ok open_starbase %s %ld%s %s", kind, id, tab >= 0 ? " tab" : "", shown ? "shown" : "not shown");
+}
+
 static void view_menu(void) {
 	if (!*(void **)a_g_CurrentFrontEndIdler || !next_command()) return;
 	char verb[64] = "", arg[960] = "";
@@ -2892,6 +3019,8 @@ static void view_command(void *gs) {
 		} else {
 			reply_fmt("error camera X Y Z YAW PITCH DISTANCE, or camera off");
 		}
+	} else if (!strcmp(verb, "open_starbase")) {
+		open_starbase_cmd(arg);
 	} else if (!strcmp(verb, "open")) {
 		open_cmd(arg);
 	} else if (!strcmp(verb, "open_designer")) {

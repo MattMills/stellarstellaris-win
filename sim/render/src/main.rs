@@ -52,6 +52,7 @@ mod mapnames;
 mod gui;
 mod render;
 mod scene;
+mod starbase;
 mod ui;
 mod verify;
 mod views;

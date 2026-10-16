@@ -16,6 +16,7 @@
 //! - the clock (clock.rs: the simulation on its own thread): `pause` (stopped, as the game's
 //!   headless), `pause off` (running), `speed 1..5`, `wait SECONDS` (real time passes)
 //! - `select system|fleet|planet|ship ID`, `select none`: the selection (marked; `state` names it)
+//! - `open_starbase [starbase] ID [tab N]`: a starbase's window (its station fleet selected), a tab
 //! - `open fleet ID|ship ID|fleet_manager|none`: the fleet windows (fleetwin.rs; the headless
 //!   game's `open` opens the same ones)
 //! - input, as a keyboard and a mouse make it (controls.rs; headless.c makes the same in the
@@ -441,6 +442,8 @@ impl Engine {
                 self.app.invalidate();
                 Ok(Reply::ok(format!("gui {}", if on { "on" } else { "off" })))
             }
+            // a starbase's window, as headless.c's `open_starbase` (starbase.rs)
+            "open_starbase" => crate::starbase::command(&mut self.app, &a).map(Reply::ok),
             "event" => {
                 // the open player events, or one's window opened (headless.c serves it too): events.rs
                 let r = crate::events::command(&mut self.app, rest)?;

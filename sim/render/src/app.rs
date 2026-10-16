@@ -144,6 +144,8 @@ pub struct App {
     pub models: models::Library,
     /// what is selected on the map
     pub selected: Option<Pickable>,
+    /// the starbase window's tab (starbase.rs)
+    pub starbase: crate::starbase::State,
     /// the event windows and popups open (events.rs)
     pub events: crate::events::EventsUi,
     /// the left bar's view open (views.rs: one at a time, CInGameIdler::ToggleTopBarView) and
@@ -264,6 +266,7 @@ impl App {
             model: None,
             models: models::Library::default(),
             selected: None,
+            starbase: Default::default(),
             events: Default::default(),
             open_view: None,
             view_state: HashMap::new(),
@@ -1037,6 +1040,7 @@ impl App {
             }
             _ => crate::planet::clear(&self.runtime),
         }
+        crate::starbase::prepare(&self.runtime, &g, &self.starbase, self.selected.is_some())?;
         let mut layout = gui::windows(&self.runtime, w, h, &[], selected.as_ref())?;
         if let Some(owner) = planet_owner {
             let map = self.map.as_mut().unwrap();
@@ -1056,6 +1060,7 @@ impl App {
         }
         // the event windows and popups, over the others (events.rs)
         let map = self.map.as_mut().unwrap();
+        crate::starbase::flags(&self.runtime, &self.starbase, map, &mut items);
         let chunk = map.galaxy.events.clone();
         match crate::events::items(&mut self.events, &self.runtime, &self.game_dir, map.fonts.get_or_insert_with(HashMap::new), &chunk, w, h) {
             Ok(e) => items.extend(e),
@@ -1458,6 +1463,7 @@ impl App {
                 }
             }
             Some(a) if a.starts_with("select:") => self.select(Some(pickable_of(a)?)),
+            Some(a) if a.starts_with("starbase:") => crate::starbase::act(self, a)?,
             // the outliner's tabs, groups, observer list (outliner.rs State::act): laid out again
             Some(a) if a.starts_with("outliner:") => {
                 if self.outliner.act(&a["outliner:".len()..]) {
@@ -1747,6 +1753,11 @@ impl App {
                     Action::Back if self.diplomacy.open.is_some() => self.act("/key/escape", Some("diplo:close"))?,
                     // the designer's close button has the shortcut ESCAPE (ship_designer.gui)
                     Action::Back if self.designer.open => self.set_designer(Default::default()),
+                    Action::Back if self.starbase.megastructure.is_some() || self.starbase.network.is_some() => {
+                        self.starbase.megastructure = None;
+                        self.starbase.network = None;
+                        self.relayout();
+                    }
                     Action::Back if self.selected.is_some() => self.select(None),
                     Action::Back if self.view != MapView::Galaxy && self.map.is_some() => {
                         self.log.push(format!("escape: {:?} -> Galaxy", self.view));
