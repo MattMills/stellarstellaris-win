@@ -1113,6 +1113,10 @@ static _Bool my_CheckTick(void *idler, float dt) {
 //                      giving the local human no country): the player becomes an observer, who
 //                      knows the whole galaxy (no terra incognita) and sees every country's
 //                      borders; the reply is the console's text, the command runs with the frame
+//   open_view NAME     a left bar button: CInGameIdler::ToggleTopBarView of the view whose
+//                      ETopBarView token is NAME (technology, traditions, situation, ...: the
+//                      GFX_topbar_NAME_button names); it closes the other views and shows it, or
+//                      hides it when shown: `ok open_view NAME shown|hidden`
 //   frame PATH.png     waits for the picture to settle (from HEADLESS_FRAME_WAIT seconds, 2, and
 //                      HEADLESS_FRAME_MIN frames, 10, on: two captures in a row nearly equal, or
 //                      HEADLESS_FRAME_TIMEOUT seconds, 30), captures the window (X11 XGetImage),
@@ -1149,6 +1153,9 @@ static uintptr_t a_GalacticObjectDb;      // TPdxRef<CGalacticObject>::_pDatabas
 static uintptr_t a_GalaxyScaleMult;       // NDefines::NCamera::GALAXY_SPACE_SCALE_MULT
 static uintptr_t a_SystemScaleMult;       // NDefines::NCamera::SYSTEM_SPACE_SCALE_MULT
 static uintptr_t a_ExecuteObserve;        // OnExecute_Observe(CPdxArray<CString, int> const&)
+static uintptr_t a_ToggleTopBarView;      // CInGameIdler::ToggleTopBarView(ETopBarView)
+static uintptr_t a_TopBarViewToken;       // int EnumToToken<ETopBarView>(ETopBarView const&)
+static uintptr_t a_TokenToString;         // TokenToString(int const&): the static lexer's CString
 
 static struct symreq g_view_syms[] = {
 	{"_ZN11CGameCamera6UpdateEPK9CKeyBoardP6CMousePK18CPdxGameControllerR5CListI11CInputEventEf", &a_GameCameraUpdate},
@@ -1164,6 +1171,9 @@ static struct symreq g_view_syms[] = {
 	{"_ZN8NDefines7NCamera23GALAXY_SPACE_SCALE_MULTE", &a_GalaxyScaleMult},
 	{"_ZN8NDefines7NCamera23SYSTEM_SPACE_SCALE_MULTE", &a_SystemScaleMult},
 	{"_Z17OnExecute_ObserveRK9CPdxArrayI7CStringiE", &a_ExecuteObserve},
+	{"_ZN12CInGameIdler16ToggleTopBarViewE11ETopBarView", &a_ToggleTopBarView},
+	{"_Z11EnumToTokenI11ETopBarViewEiRKT_", &a_TopBarViewToken},
+	{"_Z13TokenToStringRKi", &a_TokenToString},
 	{NULL, NULL},
 };
 
@@ -1743,6 +1753,30 @@ static void frame_cmd(const char *arg) {
 	reply_fmt("ok frame %s %d %d %.0f %d%s", arg, w, h, ms, C.frames, diff > 0.25 ? " unsettled" : "");
 }
 
+// `open_view NAME`: the top bar view whose token is NAME toggled as its left bar button does
+// (CInGameIdler::ToggleTopBarView: the views at idler +0xd38, one per ETopBarView 0..18, the 19 of
+// EnumToToken's table; a shown one is hidden, else the others are closed and it is shown; IsShown
+// is the view's vfunc +0x78). TokenToString gives the static lexer's CString: its data at +0x10.
+static void open_view_cmd(const char *arg) {
+	char *idler = *(char **)a_g_CurrentInGameIdler;
+	if (!idler) {
+		reply_fmt("error open_view: not in game");
+		return;
+	}
+	for (int e = 0; e < 19; e++) {
+		int tok = ((int (*)(const int *))a_TopBarViewToken)(&e);
+		char *str = ((char *(*)(const int *))a_TokenToString)(&tok);
+		const char *name = str ? *(const char **)(str + 0x10) : NULL;
+		if (!name || strcmp(name, arg)) continue;
+		((_Bool (*)(void *, int))a_ToggleTopBarView)(idler, e);
+		void *v = *(void **)(idler + 0xd38 + 8 * (size_t)e);
+		_Bool shown = v && ((_Bool (*)(void *))(*(void ***)v)[0x78 / 8])(v);
+		reply_fmt("ok open_view %s %s", arg, shown ? "shown" : "hidden");
+		return;
+	}
+	reply_fmt("error open_view %s: no such top bar view", arg);
+}
+
 static void view_game(void *gs) {
 	if (g_in_game_frames++ == 0) {
 		hlog("view: in game after %.3f s", now() - g_t0);
@@ -1790,6 +1824,8 @@ static void view_game(void *gs) {
 		const char *text = *(const char **)(res + 0x18);
 		size_t len = *(size_t *)(res + 0x20);
 		reply_fmt("%s observe: %.*s", res[0] ? "ok" : "error", (int)(len < 200 ? len : 200), text ? text : "");
+	} else if (!strcmp(verb, "open_view")) {
+		open_view_cmd(arg);
 	} else if (!strcmp(verb, "resize")) {
 		int w = 0, h = 0, ww = 0, wh = 0;
 		sscanf(arg, "%d %d", &w, &h);

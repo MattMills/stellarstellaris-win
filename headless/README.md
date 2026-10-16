@@ -584,6 +584,7 @@ the renderer:
 | `resize W H` | ok if the window is W x H (it is set at start: `--size`) |
 | `gui off\|on` | `g_bNoGUI`, the hide-GUI key's flag (the GUI and the system's orbit lines) |
 | `observe` | the console's `observe`: `OnExecute_Observe` posts `CAddCountryControllerCommand` giving the local human no country; from the next frame the player is an observer (no terra incognita, every country's borders, flags and names, every system's label). Replies with the console's text, `ok observe: Now observing` |
+| `open_view NAME` | a left bar button: `CInGameIdler::ToggleTopBarView` of the view whose `ETopBarView` token is NAME (`technology`, `traditions`, `situation`, `contacts`, ...: the names of the `GFX_topbar_NAME_button` sprites). It closes the other top bar views and shows that one, or hides it when it is shown (one view at a time, as the game). Replies `ok open_view NAME shown` or `hidden` |
 | `frame PATH.png`, `frame -` | the window captured from the X server once the picture settles: from 2 s and 10 frames on, two captures in a row nearly equal (at most 30 s; `HEADLESS_FRAME_WAIT`, `_MIN`, `_TIMEOUT`); a PNG (zlib) |
 | `state [planet ID]` | JSON: date, view, window, the camera (orientation and its smoothing target, eye, look-at, up, FOV, aspect, near, far, the view and projection matrices), the system's zoom steps; with a planet its `CPlanet::CalcCurrentEntityScale`, `GetDisplaySize` and entity world transform |
 | `quit` | `_exit(0)` (no gamestate written) |
