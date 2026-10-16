@@ -65,14 +65,8 @@ local function selected_window(ctx, sel, items, report)
         })
         merge(items, report, wi, wr)
     elseif sel.kind == "planet" then
-        local wi, wr = gui.layout(ctx.game_dir, ctx.db, "interface/planet_view.gui", "planet_view", ctx.screen, {
-            texture_size = ctx.texture_size, loc = ctx.loc,
-            sizes = { ["/planet_view"] = { 1162, 680 } },
-            only = { planet_view_bg = true, planet_name = true, header_actions = true },
-            text = { ["/planet_view/planet_name"] = sel.name or "" },
-            actions = { ["/planet_view/header_actions/close"] = "close" },
-        })
-        merge(items, report, wi, wr)
+        -- the planet view: render.windows.planet (its data from RENDER_PLANET)
+        require("render.windows.planet").build(ctx, sel, items, report)
     end
 end
 

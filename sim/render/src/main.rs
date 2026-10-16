@@ -39,6 +39,7 @@ mod math;
 mod models;
 mod particles;
 mod pdxmesh;
+mod planet;
 mod system;
 mod font;
 mod galaxy;
