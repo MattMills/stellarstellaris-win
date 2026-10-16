@@ -924,9 +924,16 @@ galaxy has no star class; the frames agree):
 ## 12. The window's controls: the clock, the camera, the selection
 
 The game's behaviour, read from the 4.5.2 Linux build's code **[V]** (inferences marked **[I]**),
-and how the renderer does it. Checked against the game's frame after a load (`headless/view.sh`,
+and how the renderer does it. The windows: [the planet view](windows/planet.md). Checked against the game's frame after a load (`headless/view.sh`,
 the same commands: `H:\code_working\tmp_sym\render3d\parity\7_controls.png`, the game left): the
 home system at the same place and scale, the top bar's clock, the outliner.
+
+- The ship designer and the combat view (`open_designer`, the 3D view as an inset in the GUI):
+  [windows/designer.md](windows/designer.md).
+- The diplomacy windows (Contacts, a country's diplomacy, the galactic community, the federation,
+  a war's overview): [windows/diplomacy.md](windows/diplomacy.md).
+
+- The economy windows (the market, the expansion planner; trade, the slave market): [windows/economy.md](windows/economy.md).
 
 ### The controls: input, bindings, actions (`sim/render/src/controls.rs`)
 
@@ -1318,8 +1325,16 @@ freed when the device is polled).
   the face is Orbitron's TrueType (32 px); the bitmap gfx/fonts/orbitron stands in, stretched
   1.7 x upright and coloured to the game's frame by eye; centred on its place.
 
+- The fleet windows (fleet_view, ship_view, the Fleet Manager): [docs/windows/fleet.md](windows/fleet.md).
+- **Events, the Situation Log, Discoveries, first contacts**: [docs/windows/events.md](windows/events.md).
+- The left bar's views (one open at a time, `views.rs`, `lua/render/windows/NAME.lua`): the research
+  and traditions views in [windows/research.md](windows/research.md).
+- The empire and government views (government, leaders, empire, council, policies and edicts,
+  factions, species): [windows/empire.md](windows/empire.md).
+
 ### Not done yet
 
+- The map icons (star labels, system labels): docs/windows/mapicons.md.
 - The galaxy star labels' own rules (CGalacticObjectMapIcon not read: owner flags, the capital
   plate, which names show, the fleets' presence icons, the empire's map name); the fleet type
   icon's frame (the rule is read, the EShipClass order is not: by eye now); the capital label's
@@ -1328,6 +1343,7 @@ freed when the device is polled).
   (SNavigationTextConstants), the arrows' hover and click (to the neighbour).
 - Alerts: the other 60 conditions; the tradition and agenda costs' modifiers.
 - The left bar background's 65 px offset (by the frame), the thin outline under it in the game.
+- The outliner and the alerts: docs/windows/outliner.md (what is drawn, the rules read, what is left).
 - The outliner rows' icons (fleet status, leader level, planet portrait, starbase type, status
   lists), the military row's size line ("15/50 (15)"), the location's colour, the frontier
   sector, the tab buttons over Overview, the other tabs, collapsing groups.

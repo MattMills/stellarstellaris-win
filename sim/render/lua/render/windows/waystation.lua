@@ -14,14 +14,13 @@ local M = {}
 
 local FILE = "interface/waystation_view.gui"
 local W = "/waystation_view"
-local DISABLED = { 1, 1, 1, -1 }
 
 function M.build(ctx, sel, e, items, report)
     local loc = ctx.loc
     local state = RENDER_STARBASE_STATE or {}
     local own = e.owner == (tonumber(state.player) or -1)
     local h = ctx.screen.height >= 801 and 765 or 611
-    local hide, text, sprites, tints, actions = {}, {}, {}, {}, {}
+    local hide, text, sprites, tints, actions, disabled = {}, {}, {}, {}, {}, {}
 
     -- the header: as the starbase's (CAbstractStarbaseView)
     text[W .. "/name"] = starbase.fmt(loc, "STARBASE_NAME", { NAME = names.format(loc, e.name) })
@@ -67,11 +66,11 @@ function M.build(ctx, sel, e, items, report)
     if not e.next_size then
         hide[tp .. "/class_info/upgrade"] = true
     elseif not (own and e.upgrade_ok) then
-        tints[tp .. "/class_info/upgrade"] = DISABLED
+        disabled[tp .. "/class_info/upgrade"] = true
     end
     if not own then
-        tints[tp .. "/class_info/details"] = DISABLED
-        tints[tp .. "/class_info/dismantle"] = DISABLED
+        disabled[tp .. "/class_info/details"] = true
+        disabled[tp .. "/class_info/dismantle"] = true
     end
     if e.first_contact then
         hide[tp .. "/empty_cloaking_replacement"] = true
@@ -97,7 +96,7 @@ function M.build(ctx, sel, e, items, report)
     local wi, wr = gui.layout(ctx.game_dir, ctx.db, FILE, "waystation_view", ctx.screen, {
         texture_size = ctx.texture_size, loc = loc,
         sizes = { [W] = { 562, h } },
-        hide = hide, text = text, sprites = sprites, tints = tints, actions = actions,
+        hide = hide, text = text, sprites = sprites, tints = tints, disabled = disabled, actions = actions,
     })
     gui.merge(items, report, wi, wr)
     -- an unmet owner's flag: flags/special/unknown.dds in the sprite's symbol place (as the

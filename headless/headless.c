@@ -1114,6 +1114,14 @@ static _Bool my_CheckTick(void *idler, float dt) {
 //                      giving the local human no country): the player becomes an observer, who
 //                      knows the whole galaxy (no terra incognita) and sees every country's
 //                      borders; the reply is the console's text, the command runs with the frame
+//   event [ID]         the open player events (CGameState +0x180): `ok event ID:NAME ...`; with an
+//                      ID, its window opened as the message system opens it (CInGameIdler::
+//                      AddEventWindow): `step` runs the ticks without the message system's
+//                      update, so an event fired while stepping waits unopened
+//   tech_view select|researched AREA   the research view (shown if hidden) with its select_window
+//                      (CTechnologyView::Show(ETechArea): the area's offered technologies) or its
+//                      researched_window (OnResearched(ETechArea)) open; AREA physics, society or
+//                      engineering (ETechArea 0, 1, 2). (`open_view NAME`: below)
 //   frame PATH.png     waits for the picture to settle (from HEADLESS_FRAME_WAIT seconds, 2, and
 //                      HEADLESS_FRAME_MIN frames, 10, on: two captures in a row nearly equal, or
 //                      HEADLESS_FRAME_TIMEOUT seconds, 30), captures the window (X11 XGetImage),
@@ -1158,6 +1166,10 @@ static uintptr_t a_GalacticObjectDb;      // TPdxRef<CGalacticObject>::_pDatabas
 static uintptr_t a_GalaxyScaleMult;       // NDefines::NCamera::GALAXY_SPACE_SCALE_MULT
 static uintptr_t a_SystemScaleMult;       // NDefines::NCamera::SYSTEM_SPACE_SCALE_MULT
 static uintptr_t a_ExecuteObserve;        // OnExecute_Observe(CPdxArray<CString, int> const&)
+static uintptr_t a_AddEventWindow;        // CInGameIdler::AddEventWindow(COpenPlayerEvent const*, bool, CMessage const*)
+static uintptr_t a_TechViewShowArea;      // CTechnologyView::Show(ETechArea)
+static uintptr_t a_TechViewOnResearched;  // CTechnologyView::OnResearched(ETechArea)
+static uintptr_t a_TechViewVtable;        // vtable for CTechnologyView
 static uintptr_t a_g_CurrentIdler;        // CGameIdler* (+0xe0: the frame's time, CGameCamera::UpdateZoom's keys)
 static uintptr_t a_SDL_AddEventWatch;     // SDL_AddEventWatch (SDL2 is linked in)
 
@@ -1175,6 +1187,10 @@ static struct symreq g_view_syms[] = {
 	{"_ZN8NDefines7NCamera23GALAXY_SPACE_SCALE_MULTE", &a_GalaxyScaleMult},
 	{"_ZN8NDefines7NCamera23SYSTEM_SPACE_SCALE_MULTE", &a_SystemScaleMult},
 	{"_Z17OnExecute_ObserveRK9CPdxArrayI7CStringiE", &a_ExecuteObserve},
+	{"_ZN12CInGameIdler14AddEventWindowEPK16COpenPlayerEventbPK8CMessage", &a_AddEventWindow},
+	{"_ZN15CTechnologyView4ShowE9ETechArea", &a_TechViewShowArea},
+	{"_ZN15CTechnologyView12OnResearchedE9ETechArea", &a_TechViewOnResearched},
+	{"_ZTV15CTechnologyView", &a_TechViewVtable},
 	{"g_CurrentIdler", &a_g_CurrentIdler},
 	{"SDL_AddEventWatch", &a_SDL_AddEventWatch},
 	{NULL, NULL},
@@ -2336,6 +2352,485 @@ static void frame_cmd(const char *arg) {
 	reply_fmt("ok frame %s %d %d %.0f %d%s", arg, w, h, ms, C.frames, g_frame_now ? " now" : diff > 0.25 ? " unsettled" : "");
 }
 
+// ---------------------------------------------------------------- the ship designer and the combat
+// view (docs/windows/designer.md), opened with the game's own calls:
+//   open_designer               CShipDesignerBase::Show() on CInGameIdler::AccessShipDesigner()
+//                               (+0xd98), as the fleet manager's designer tab does
+//   open_designer design ID     then CShipDesignEntry::Click's work: CShipDesignerBase::LoadDesign
+//                               (TPdxRef<CShipDesign> ID, owner 0, false) and the five refreshes
+//                               (designer +0x1a58..+0x1a78, vtable +0x100)
+//   open_designer combat [ID]   the fleet selected (CInGameIdler::Select of its CSelectable at
+//                               CFleet +0x18, as a click does): ShowFleetView shows the CCombatView
+//                               (+0xb50) instead of the fleet view for a fleet in combat
+//                               (CFleet::HasCombat), and CCombatView::Update lists the selected
+//                               fleets (CInGameIdler +0xa80) in combat; without ID the first one
+//   open_designer close         CShipDesignerBase::Hide(), CCombatView::Hide()
+
+static uintptr_t a_AccessShipDesigner, a_DesignerShow, a_DesignerHide, a_DesignerLoad;
+static uintptr_t a_DesignerSelect, a_FleetHasCombat, a_CombatHide, a_DesignFleetDb, a_ShipDesignDb;
+static int g_combat_fleet;   // the fleet open_designer combat showed
+
+static struct symreq g_designer_syms[] = {
+	{"_ZN12CInGameIdler18AccessShipDesignerEv", &a_AccessShipDesigner},
+	{"_ZN17CShipDesignerBase4ShowEv", &a_DesignerShow},
+	{"_ZN17CShipDesignerBase4HideEv", &a_DesignerHide},
+	{"_ZN17CShipDesignerBase10LoadDesignERK11CShipDesign12EDesignOwnerb", &a_DesignerLoad},
+	{"_ZN12CInGameIdler6SelectEPK11CSelectable", &a_DesignerSelect},
+	{"_ZNK6CFleet9HasCombatEv", &a_FleetHasCombat},
+	{"_ZN11CCombatView4HideEv", &a_CombatHide},
+	{"_ZN7TPdxRefI6CFleetE10_pDatabaseE", &a_DesignFleetDb},
+	{"_ZN7TPdxRefI11CShipDesignE10_pDatabaseE", &a_ShipDesignDb},
+	{NULL, NULL},
+};
+
+// a TPdxRef database's object at slot i (16-byte slots at +0x18, the object at +8, the count at
+// +0x20), or NULL
+static char *designer_db_at(uintptr_t db_sym, uint32_t i) {
+	char *db = *(char **)db_sym;
+	if (!db || i >= *(uint32_t *)(db + 0x20)) return NULL;
+	return *(char **)(*(char **)(db + 0x18) + 16 * (size_t)i + 8);
+}
+
+static void open_designer_cmd(const char *arg) {
+	static int resolved;
+	if (!resolved) {
+		if (resolve(g_designer_syms) != 0) {
+			reply_fmt("error open_designer: symbols missing");
+			return;
+		}
+		resolved = 1;
+	}
+	char *idler = *(char **)a_g_CurrentInGameIdler;
+	char what[32] = "";
+	int id = -1;
+	sscanf(arg, "%31s %d", what, &id);
+	if (C.stage == 0) {
+		char *designer = ((char *(*)(void *))a_AccessShipDesigner)(idler);
+		if (!what[0] || !strcmp(what, "design")) {
+			char *d = NULL;
+			if (!strcmp(what, "design")) {
+				d = designer_db_at(a_ShipDesignDb, (uint32_t)id & 0xffffff);
+				if (!d || I32(d + 0x10) != id) {
+					reply_fmt("error open_designer: no ship design %d", id);
+					return;
+				}
+			}
+			((void (*)(void *))a_DesignerShow)(designer);
+			if (d) {
+				((void (*)(void *, void *, int, int))a_DesignerLoad)(designer, d, 0, 0);
+				for (int k = 0; k < 5; k++) {
+					void **o = *(void ***)(designer + 0x1a58 + 8 * k);
+					if (o) ((void (*)(void *))(*(void ***)o)[0x100 / 8])(o);
+				}
+			}
+		} else if (!strcmp(what, "combat")) {
+			char *f = NULL;
+			char *db = *(char **)a_DesignFleetDb;
+			uint32_t n = db ? *(uint32_t *)(db + 0x20) : 0;
+			for (uint32_t i = 0; i < n && !f; i++) {
+				char *o = designer_db_at(a_DesignFleetDb, i);
+				if (o && (id < 0 || I32(o + 0x30) == id) && ((int (*)(void *))a_FleetHasCombat)(o) & 0xff) f = o;
+			}
+			if (!f) {
+				reply_fmt("error open_designer: no fleet in combat%s", id >= 0 ? " with that id" : "");
+				return;
+			}
+			g_combat_fleet = I32(f + 0x30);
+			((void (*)(void *, void *))a_DesignerSelect)(idler, f + 0x18);
+		} else if (!strcmp(what, "close")) {
+			((void (*)(void *))a_DesignerHide)(designer);
+			((void (*)(void *))a_CombatHide)(*(void **)(idler + 0xb50));
+		} else {
+			reply_fmt("error open_designer [design ID | combat [FLEET] | close]");
+			return;
+		}
+		C.stage = 1;
+		return;
+	}
+	// a few frames for the window to show (ship_designer slides in: animation_time 200)
+	if (++C.frames < 20) return;
+	if (!strcmp(what, "combat"))
+		reply_fmt("ok open_designer combat %d", g_combat_fleet);
+	else
+		reply_fmt("ok open_designer %s", arg);
+}
+
+// ---------------------------------------------------------------- `open`: the fleet windows
+// (docs/windows/fleet.md) opened with the game's own calls: `open fleet ID` selects the fleet
+// (CInGameIdler::Select of its CSelectable, at CFleet+0x18, as CFleetOrbitalItem::SelectFleet
+// does: fleet_view opens for the selection), `open ship ID` (CInGameIdler::ShowShipView: the
+// ship_view; the fleet manager: `open_view fleet_manager`),
+// `open none` (CInGameIdler::DeselectAll, CShipView::Close: the view at CInGameIdler+0xb60,
+// CFleetManagerView::Hide).
+
+static uintptr_t a_IdlerSelect, a_IdlerDeselectAll, a_IdlerShowShipView;
+static uintptr_t a_ShipViewClose, a_FleetManagerHide;
+static uintptr_t a_FleetDb, a_ShipDb;
+
+static struct symreq g_open_syms[] = {
+	{"_ZN12CInGameIdler6SelectEPK11CSelectable", &a_IdlerSelect},
+	{"_ZN12CInGameIdler11DeselectAllEv", &a_IdlerDeselectAll},
+	{"_ZN12CInGameIdler12ShowShipViewEPK5CShip", &a_IdlerShowShipView},
+	{"_ZN9CShipView5CloseEv", &a_ShipViewClose},
+	{"_ZN17CFleetManagerView4HideEv", &a_FleetManagerHide},
+	{"_ZN7TPdxRefI6CFleetE10_pDatabaseE", &a_FleetDb},
+	{"_ZN7TPdxRefI5CShipE10_pDatabaseE", &a_ShipDb},
+	{NULL, NULL},
+};
+
+// a TPdxRef's object: the database's slots (+0x18, 16 bytes each, the object at +8; count at
+// +0x20), the object's id at `id_at` (CFleet +0x30, CShip +0x18)
+static void *pdx_ref(uintptr_t db_sym, int id, int id_at) {
+	char *db = *(char **)db_sym;
+	if (!db || id < 0) return NULL;
+	uint32_t i = (uint32_t)id & 0xffffff;
+	if (i >= *(uint32_t *)(db + 0x20)) return NULL;
+	char *o = *(char **)(*(char **)(db + 0x18) + 16 * (size_t)i + 8);
+	return o && I32(o + id_at) == id ? o : NULL;
+}
+
+static void open_cmd(const char *arg) {
+	static int resolved;
+	if (!resolved) {
+		if (resolve(g_open_syms) != 0) {
+			reply_fmt("error open: symbols missing");
+			return;
+		}
+		resolved = 1;
+	}
+	void *idler = *(void **)a_g_CurrentInGameIdler;
+	if (C.stage == 0) {
+		char what[32] = "";
+		int id = -1;
+		sscanf(arg, "%31s %d", what, &id);
+		if (!strcmp(what, "fleet")) {
+			char *f = pdx_ref(a_FleetDb, id, 0x30);
+			if (!f) {
+				reply_fmt("error open: no fleet %d", id);
+				return;
+			}
+			((void (*)(void *, void *))a_IdlerSelect)(idler, f + 0x18);
+		} else if (!strcmp(what, "ship")) {
+			void *s = pdx_ref(a_ShipDb, id, 0x18);
+			if (!s) {
+				reply_fmt("error open: no ship %d", id);
+				return;
+			}
+			((void (*)(void *, void *))a_IdlerShowShipView)(idler, s);
+		} else if (!strcmp(what, "none")) {
+			((void (*)(void *))a_IdlerDeselectAll)(idler);
+			((void (*)(void *))a_ShipViewClose)(*(void **)((char *)idler + 0xb60));
+			((void (*)(void *))a_FleetManagerHide)(*(void **)((char *)idler + 0xd78));
+		} else {
+			reply_fmt("error open fleet ID, ship ID or none (the fleet manager: open_view fleet_manager)");
+			return;
+		}
+		C.stage = 1;
+		return;
+	}
+	// a few frames for the window to show (fleet_view slides in: animation_time 200)
+	if (++C.frames < 20) return;
+	reply_fmt("ok open %s", arg);
+}
+
+// ---------------------------------------------------------------- the left bar's views (open_view)
+//
+//   open_view NAME|N   CInGameIdler::ToggleTopBarView(ETopBarView), as the left bar's buttons
+//                      (CMainGuiLeftBarButton::OnClick) and the top bar's flag (government,
+//                      CMainGui::ToggleGovernmentView) open them: shown if hidden (the others
+//                      closed), hidden if shown; the reply a few frames later, with the view
+//                      shown then (idler +0xdc8)
+//   open_view close    CInGameIdler::CloseTopBarViews()
+// ETopBarView is the slot in the idler's views (+0xd38, the Access*View getters).
+
+static uintptr_t a_ToggleTopBarView, a_CloseTopBarViews;
+static const char *g_topbar_view_names[18] = {
+	"situation", "council", "traditions", "technology", "leaders", "species", "empire",
+	"expansion_planner", "fleet_manager", "contacts", "factions", "edicts", "view12", "view13",
+	"government", "discoveries", "claims", "market"};
+static struct symreq g_topbar_view_syms[] = {
+	{"_ZN12CInGameIdler16ToggleTopBarViewE11ETopBarView", &a_ToggleTopBarView},
+	{"_ZN12CInGameIdler16CloseTopBarViewsEv", &a_CloseTopBarViews},
+	{NULL, NULL},
+};
+
+static void open_view_cmd(const char *arg) {
+	static int resolved;
+	if (!resolved) {
+		if (resolve(g_topbar_view_syms) != 0) {
+			reply_fmt("error open_view: missing symbols");
+			return;
+		}
+		resolved = 1;
+	}
+	void *idler = *(void **)a_g_CurrentInGameIdler;
+	int view = -1;
+	if (!idler) {
+		reply_fmt("error open_view: no in-game idler");
+		return;
+	}
+	if (strcmp(arg, "close")) {
+		for (int i = 0; i < 18; i++)
+			if (!strcmp(arg, g_topbar_view_names[i])) view = i;
+		if (view < 0 && sscanf(arg, "%d", &view) == 1 && (view < 0 || view > 17)) view = -1;
+		if (view < 0) {
+			reply_fmt("error open_view: NAME (situation, council, ... government, ...), 0..17 or close");
+			return;
+		}
+	}
+	if (C.stage == 0) {
+		if (view < 0)
+			((void (*)(void *))a_CloseTopBarViews)(idler);
+		else
+			((char (*)(void *, int))a_ToggleTopBarView)(idler, view);
+		C.stage = 1;
+		return;
+	}
+	if (++C.frames < 4) return;
+	reply_fmt("ok open_view %s (current view %d)", arg, I32((char *)idler + 0xdc8));
+}
+
+// ---------------------------------------------------------------- `open_diplomacy`: the diplomacy
+// windows (docs/windows/diplomacy.md) opened with the game's own calls:
+//   open_diplomacy contacts [TAB]   CInGameIdler::ShowGalaxyView (the left bar's contacts button);
+//                                   with TAB (0 contacts, 1 agreements, 2 the shroud) then
+//                                   CGalaxyView::Show(ETabsGalaxyView) on the view (idler +0xd80)
+//   open_diplomacy country ID [TAB] CInGameIdler::ShowDiplomacyView(country, TAB (0), 1, 1), as
+//                                   Contacts' Diplomacy button (CGalaxyView::OnEmpireDiplomacy)
+//   open_diplomacy community [TAB]  CInGameIdler::ShowGalacticCommunityView(TAB (0))
+//   open_diplomacy federation       CFederationView::Show (the player's federation)
+//   open_diplomacy close            CInGameIdler::CloseTopBarViews, CDiplomacyView::Hide
+// The reply comes a few frames later (the views update on the next frames).
+
+static uintptr_t a_ShowGalaxyView, a_GalaxyViewShowTab, a_ShowDiplomacyView, a_ShowCommunityView;
+static uintptr_t a_AccessFederationView, a_FederationViewShow, a_DiploCloseTopBarViews, a_AccessDiplomacyView;
+static uintptr_t a_DiplomacyViewHide, a_CountryDb;
+static struct symreq g_diplo_syms[] = {
+	{"_ZN12CInGameIdler14ShowGalaxyViewEv", &a_ShowGalaxyView},
+	{"_ZN11CGalaxyView4ShowENS_15ETabsGalaxyViewE", &a_GalaxyViewShowTab},
+	{"_ZN12CInGameIdler17ShowDiplomacyViewEPK8CCountry17EDiplomacyTabTypebb", &a_ShowDiplomacyView},
+	{"_ZN12CInGameIdler25ShowGalacticCommunityViewE18ETabsCommunityView", &a_ShowCommunityView},
+	{"_ZN12CInGameIdler20AccessFederationViewEv", &a_AccessFederationView},
+	{"_ZN15CFederationView4ShowEv", &a_FederationViewShow},
+	{"_ZN12CInGameIdler16CloseTopBarViewsEv", &a_DiploCloseTopBarViews},
+	{"_ZN12CInGameIdler19AccessDiplomacyViewEv", &a_AccessDiplomacyView},
+	{"_ZN14CDiplomacyView4HideEv", &a_DiplomacyViewHide},
+	{"_ZN7TPdxRefI8CCountryE10_pDatabaseE", &a_CountryDb},
+	{NULL, NULL},
+};
+
+// a country by id (TPdxRef<CCountry>::_pDatabase: slots at +0x18, 16 bytes each, the object at
+// +8, the count at +0x20; CCountry's id at +0x20, as CGalaxyEmpireItem::Update reads it)
+static void *diplo_country(int id) {
+	char *db = *(char **)a_CountryDb;
+	if (!db || id < 0) return NULL;
+	uint32_t i = (uint32_t)id & 0xffffff;
+	if (i >= *(uint32_t *)(db + 0x20)) return NULL;
+	char *o = *(char **)(*(char **)(db + 0x18) + 16 * (size_t)i + 8);
+	return o && I32(o + 0x20) == id ? o : NULL;
+}
+
+static void open_diplomacy_cmd(const char *arg) {
+	static int resolved;
+	if (!resolved) {
+		if (resolve(g_diplo_syms) != 0) {
+			reply_fmt("error open_diplomacy: missing symbols");
+			return;
+		}
+		resolved = 1;
+	}
+	void *idler = *(void **)a_g_CurrentInGameIdler;
+	if (!idler) {
+		reply_fmt("error open_diplomacy: not in game");
+		return;
+	}
+	if (C.stage == 0) {
+		char what[32] = "";
+		int a = -1, b = -1;
+		sscanf(arg, "%31s %d %d", what, &a, &b);
+		if (!strcmp(what, "contacts")) {
+			((void (*)(void *))a_ShowGalaxyView)(idler);
+			if (a >= 0) ((void (*)(void *, int))a_GalaxyViewShowTab)(*(void **)((char *)idler + 0xd80), a);
+		} else if (!strcmp(what, "country")) {
+			void *c = diplo_country(a);
+			if (!c) {
+				reply_fmt("error open_diplomacy: no country %d", a);
+				return;
+			}
+			((void (*)(void *, void *, int, int, int))a_ShowDiplomacyView)(idler, c, b < 0 ? 0 : b, 1, 1);
+		} else if (!strcmp(what, "community")) {
+			((void (*)(void *, int))a_ShowCommunityView)(idler, a < 0 ? 0 : a);
+		} else if (!strcmp(what, "federation")) {
+			void *v = ((void *(*)(void *))a_AccessFederationView)(idler);
+			if (v) ((void (*)(void *))a_FederationViewShow)(v);
+		} else if (!strcmp(what, "close")) {
+			((void (*)(void *))a_DiploCloseTopBarViews)(idler);
+			void *v = ((void *(*)(void *))a_AccessDiplomacyView)(idler);
+			if (v) ((void (*)(void *))a_DiplomacyViewHide)(v);
+		} else {
+			reply_fmt("error open_diplomacy: contacts [TAB] | country ID [TAB] | community [TAB] | federation | close");
+			return;
+		}
+		C.stage = 1;
+		return;
+	}
+	if (++C.frames >= 4) reply_fmt("ok open_diplomacy %s", arg);
+}
+
+// ---------------------------------------------------------------- the planet view (open_planet)
+//
+//   open_planet ID [TAB]  CInGameIdler::ShowPlanetView(CColonyCarrier::LookupCarrierRef(planet ID),
+//                         tab 0), as the empire view's planet entry opens it
+//                         (CEmpireViewPlanetEntry::OpenPlanetView); then, a frame later, the tab's
+//                         own click handler on the view (CInGameIdler +0xb30, AccessPlanetView):
+//                         summary, management, population, armies, corporate, arkship, decisions,
+//                         designations; or a button's: colonize (OnColonize: the colonize window,
+//                         CSurfaceView), resettle (OnResettle: the manual resettlement window when
+//                         the player has two colonies to resettle between); the reply comes a few
+//                         frames later
+//   open_planet close     CPlanetView::CloseClick (the window's close button)
+// The carrier reference is a std::variant<TPdxRef<CPlanet>, TPdxRef<CShip>> passed in a register:
+// the planet's id in the low 32 bits, the alternative's index 0 in the next byte.
+
+static uintptr_t a_ShowPlanetView, a_LookupCarrierRef, a_PlanetCloseClick;
+static uintptr_t a_PlanetTabs[10];
+static const char *g_planet_tab_names[10] = {"summary", "management", "population", "armies",
+                                             "corporate", "arkship", "decisions", "designations",
+                                             "colonize", "resettle"};
+static struct symreq g_planet_syms[] = {
+	{"_ZN12CInGameIdler14ShowPlanetViewERK14CColonyCarrier14EPlanetViewTab", &a_ShowPlanetView},
+	{"_ZN14CColonyCarrier16LookupCarrierRefESt7variantIJ7TPdxRefI7CPlanetES1_I5CShipEEE", &a_LookupCarrierRef},
+	{"_ZN11CPlanetView10CloseClickEv", &a_PlanetCloseClick},
+	{"_ZN11CPlanetView12OnSummaryTabEv", &a_PlanetTabs[0]},
+	{"_ZN11CPlanetView15OnManagementTabEv", &a_PlanetTabs[1]},
+	{"_ZN11CPlanetView15OnPopulationTabEv", &a_PlanetTabs[2]},
+	{"_ZN11CPlanetView11OnArmiesTabEv", &a_PlanetTabs[3]},
+	{"_ZN11CPlanetView14OnCorporateTabEv", &a_PlanetTabs[4]},
+	{"_ZN11CPlanetView12OnArkshipTabEv", &a_PlanetTabs[5]},
+	{"_ZN11CPlanetView14OnDecisionsTabEv", &a_PlanetTabs[6]},
+	{"_ZN11CPlanetView17OnDesignationsTabEv", &a_PlanetTabs[7]},
+	{"_ZN11CPlanetView10OnColonizeEv", &a_PlanetTabs[8]},
+	{"_ZN11CPlanetView10OnResettleEv", &a_PlanetTabs[9]},
+	{NULL, NULL},
+};
+
+static void open_planet_cmd(void *gs, const char *arg) {
+	static int resolved;
+	if (!resolved) {
+		if (resolve(g_planet_syms) != 0) {
+			reply_fmt("error open_planet: missing symbols");
+			return;
+		}
+		resolved = 1;
+	}
+	void *idler = *(void **)a_g_CurrentInGameIdler;
+	void *view = idler ? *(void **)((char *)idler + 0xb30) : NULL;
+	int id = -1, tab = -1;
+	char name[32] = "";
+	if (!view) {
+		reply_fmt("error open_planet: no planet view");
+		return;
+	}
+	if (!strcmp(arg, "close")) {
+		if (C.stage++ == 0) ((void (*)(void *))a_PlanetCloseClick)(view);
+		else if (++C.frames >= 4) reply_fmt("ok open_planet close");
+		return;
+	}
+	if (sscanf(arg, "%d %31s", &id, name) < 1 || !planet(gs, id)) {
+		reply_fmt("error open_planet: ID [summary|management|population|armies|corporate|...] (no planet %s)", arg);
+		return;
+	}
+	if (name[0]) {
+		for (int i = 0; i < 10; i++)
+			if (!strcmp(name, g_planet_tab_names[i])) tab = i;
+		if (tab < 0) {
+			reply_fmt("error open_planet: no tab %s", name);
+			return;
+		}
+	}
+	if (C.stage == 0) {
+		void *carrier = ((void *(*)(uint64_t))a_LookupCarrierRef)((uint64_t)(uint32_t)id);
+		if (!carrier) {
+			reply_fmt("error open_planet: no colony carrier for planet %d", id);
+			return;
+		}
+		((void (*)(void *, void *, int))a_ShowPlanetView)(idler, carrier, 0);
+		C.stage = 1;
+		return;
+	}
+	if (C.stage == 1) {
+		if (tab >= 0) ((void (*)(void *))a_PlanetTabs[tab])(view);
+		C.stage = 2;
+		return;
+	}
+	if (++C.frames < 4) return;
+	reply_fmt("ok open_planet %d %s (view tab %d)", id, name[0] ? name : "", I32((char *)view + 0xc3a0));
+}
+
+// `tech_view select|researched AREA`: the research view's side windows, as its area's Select and
+// its Researched button open them. The view is the idler's ETopBarView 3 (+0xd38 + 8 x 3), checked
+// to be the CTechnologyView (its vtable) before its functions are called.
+static void tech_view_cmd(const char *line) {
+	static int resolved;
+	if (!resolved) {
+		if (resolve(g_topbar_view_syms) != 0) {
+			reply_fmt("error tech_view: missing symbols");
+			return;
+		}
+		resolved = 1;
+	}
+	char *idler = *(char **)a_g_CurrentInGameIdler;
+	char sub[32] = "", area[32] = "";
+	sscanf(line, "%31s %31s", sub, area);
+	int a = !strcmp(area, "physics") ? 0 : !strcmp(area, "society") ? 1 : !strcmp(area, "engineering") ? 2 : -1;
+	void *v = idler ? *(void **)(idler + 0xd38 + 8 * 3) : NULL;
+	if (!v || *(uintptr_t *)v != a_TechViewVtable + 16 || a < 0 || (strcmp(sub, "select") && strcmp(sub, "researched"))) {
+		reply_fmt("error tech_view: select|researched physics|society|engineering");
+		return;
+	}
+	if (!((_Bool (*)(void *))(*(void ***)v)[0x78 / 8])(v)) ((char (*)(void *, int))a_ToggleTopBarView)(idler, 3);
+	if (!strcmp(sub, "select"))
+		((void (*)(void *, int))a_TechViewShowArea)(v, a);
+	else
+		((void (*)(void *, int))a_TechViewOnResearched)(v, a);
+	reply_fmt("ok tech_view %s %s", sub, area);
+}
+
+// `event [ID]`: the game state's open player events (CGameState +0x180 an array of
+// COpenPlayerEvent*, +0x18c their count; COpenPlayerEvent +0x180 its id, +0x8 its CEventHandle*,
+// whose first member is the CEvent; CEvent +0x10 its id, a CString: the text at +0x10 of it), as
+// CGameState::GetOpenPlayerEvent (0x1b49110) finds them; with an ID, the event's window opened as
+// CMessageSystem::Update does (AddEventWindow(idler, event, true, message): no message here)
+static void event_cmd(void *gs, const char *arg) {
+	char *idler = *(char **)a_g_CurrentInGameIdler;
+	char **evs = *(char ***)((char *)gs + 0x180);
+	int n = I32((char *)gs + 0x18c), want = *arg ? atoi(arg) : -1;
+	char list[900] = "";
+	size_t used = 0;
+	for (int i = 0; i < n; i++) {
+		char *ev = evs[i];
+		int id = I32(ev + 0x180);
+		char **handle = *(char ***)(ev + 0x8);
+		const char *name = handle && *handle ? *(const char **)(*handle + 0x20) : NULL;
+		if (want < 0) {
+			if (used < sizeof list - 1) used += snprintf(list + used, sizeof list - used, " %d:%s", id, name ? name : "?");
+			continue;
+		}
+		if (id != want) continue;
+		if (!idler) {
+			reply_fmt("error event: not in game");
+			return;
+		}
+		((void (*)(void *, void *, _Bool, void *))a_AddEventWindow)(idler, ev, 1, NULL);
+		reply_fmt("ok event %d %s opened", id, name ? name : "?");
+		return;
+	}
+	if (want < 0)
+		reply_fmt("ok event%s", list);
+	else
+		reply_fmt("error event %d: no such open player event", want);
+}
+
 static void view_game(void *gs) {
 	if (g_in_game_frames++ == 0) {
 		hlog("view: in game after %.3f s", now() - g_t0);
@@ -2443,6 +2938,10 @@ static void view_command(void *gs) {
 		const char *text = *(const char **)(res + 0x18);
 		size_t len = *(size_t *)(res + 0x20);
 		reply_fmt("%s observe: %.*s", res[0] ? "ok" : "error", (int)(len < 200 ? len : 200), text ? text : "");
+	} else if (!strcmp(verb, "tech_view")) {
+		tech_view_cmd(arg);
+	} else if (!strcmp(verb, "event")) {
+		event_cmd(gs, arg);
 	} else if (!strcmp(verb, "resize")) {
 		int w = 0, h = 0, ww = 0, wh = 0;
 		sscanf(arg, "%d %d", &w, &h);
@@ -2522,6 +3021,14 @@ static void view_command(void *gs) {
 		}
 	} else if (!strcmp(verb, "open_starbase")) {
 		open_starbase_cmd(arg);
+	} else if (!strcmp(verb, "open")) {
+		open_cmd(arg);
+	} else if (!strcmp(verb, "open_designer")) {
+		open_designer_cmd(arg);
+	} else if (!strcmp(verb, "open_diplomacy")) {
+		open_diplomacy_cmd(arg);
+	} else if (!strcmp(verb, "open_planet")) {
+		open_planet_cmd(gs, arg);
 	} else if (!strcmp(verb, "frame")) {
 		// frame PATH now: the frame the game presented last, no frame run (the input's frames
 		// exactly); frame PATH: once the picture settles
@@ -2535,6 +3042,8 @@ static void view_command(void *gs) {
 		g_frame_now = 0;
 	} else if (!strcmp(verb, "state")) {
 		state_json(gs, arg);
+	} else if (!strcmp(verb, "open_view")) {
+		open_view_cmd(arg);
 	} else {
 		reply_fmt("error unknown command %s", verb);
 	}

@@ -499,6 +499,60 @@ function system.extract(game_dir, id)
     return out
 end
 
+-- system.design_model(game_dir, design_id, owner) -> a ship design's model as a ship's (its first
+-- growth stage: the frame entity, the sections' entities at the size's slots, their turrets; the
+-- owner's colour when the culture takes it; the culture's lighting), for the ship designer's 3D
+-- view (render.windows.designer); nil without one
+function system.design_model(game_dir, design_id, owner)
+    local f = files(game_dir)
+    local design = world.object("ship_design", design_id)
+    local stage = design and world.blocks(world.field(design, "growth_stages"))[1]
+    local size = stage and tostring(world.field(stage, "ship_size") or ""):gsub('"', "")
+    if not size then
+        return nil
+    end
+    local culture = tostring(world.field(design, "graphical_culture") or ""):gsub('"', "")
+    if culture == "" and owner then
+        -- a design without its own culture: its owner's [I]
+        local c = world.object("country", owner)
+        culture = tostring(c and world.field(c, "graphical_culture") or ""):gsub('"', "")
+    end
+    local slots = f.slots[size] or {}
+    local frame = first_entity({ culture .. "_" .. size .. "_entity", f.slots[size .. "#entity"] and culture .. "_" .. f.slots[size .. "#entity"], f.slots[size .. "#entity"] })
+    local sections = {}
+    for _, s in ipairs(world.fields(stage, "section")) do
+        local template = tostring(world.field(s, "template") or ""):gsub('"', "")
+        local slot = tostring(world.field(s, "slot") or ""):gsub('"', "")
+        local ent = f.templates[template]
+        local name = ent and first_entity({ culture .. "_" .. ent, ent })
+        if name then
+            local turrets = {}
+            local cs = f.component_slots[template] or {}
+            for _, c in ipairs(world.fields(s, "component")) do
+                local sl = cs[tostring(world.field(c, "slot") or ""):gsub('"', "")]
+                local wt = f.weapon_types[tostring(world.field(c, "template") or ""):gsub('"', "")]
+                local te = sl and wt and (f.slot_entities[sl.template] or {})[wt]
+                local tname = te and first_entity({ culture .. "_" .. te, te })
+                if tname and sl.locator ~= "" then
+                    turrets[#turrets + 1] = { entity = tname, locator = sl.locator }
+                end
+            end
+            sections[#sections + 1] = { entity = name, locator = slots[slot] or "", turrets = turrets }
+        end
+    end
+    local country = owner and world.object("country", owner)
+    local colour
+    for _, n in ipairs(country and world.list(world.path(country, "flag", "colors")) or {}) do
+        n = tostring(n):gsub('"', "")
+        colour = colour or f.ship_swatches[n]
+    end
+    return {
+        size = size, culture = culture, frame = frame or "", sections = sections,
+        colour = (f.cultures[culture] or {}).ship_color and colour or nil,
+        lighting = culture_lighting(f, culture),
+    }
+end
+
 -- system.look_of(game_dir, entity) -> the look of the planet class drawn with an entity (the
 -- class whose `entity` the name starts with), or the default
 function system.look_of(game_dir, entity)

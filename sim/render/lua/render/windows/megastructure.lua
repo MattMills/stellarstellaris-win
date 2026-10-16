@@ -14,7 +14,6 @@ local M = {}
 
 local FILE = "interface/megastructure_view.gui"
 local W = "/megastructure_view"
-local DISABLED = { 1, 1, 1, -1 }
 
 -- the window's megastructure (its id), its values
 function M.entry(id)
@@ -30,7 +29,7 @@ function M.build(ctx, id, items, report)
     local loc = ctx.loc
     local state = RENDER_STARBASE_STATE or {}
     local own = e.owner == (tonumber(state.player) or -1)
-    local hide, text, sprites, tints, actions = {}, {}, {}, {}, {}
+    local hide, text, sprites, tints, actions, disabled = {}, {}, {}, {}, {}, {}
 
     -- the header (CMegaStructureView::UpdateHeader: the name, CMegaStructure::GetLocalizedName; the
     -- owner's flag, CGameGraphics::ApplyCountryToButton: the renderer puts the country's flag on it)
@@ -63,9 +62,8 @@ function M.build(ctx, id, items, report)
     local can_upgrade = e.upgrade ~= nil and own
     hide[tp .. (can_upgrade and "/complete" or "/upgrade")] = true
     if not own then
-        for n, key in pairs({ complete = "MEGASTRUCTURE_COMPLETE", upgrade = "UPGRADE_H", dismantle = "DISMANTLE" }) do
-            tints[tp .. "/" .. n] = DISABLED
-            text[tp .. "/" .. n] = starbase.grey(ctx, loc and (loc.get(key)) or key)
+        for _, n in ipairs({ "complete", "upgrade", "dismantle" }) do
+            disabled[tp .. "/" .. n] = true
         end
     end
     if e.dismantling then
@@ -76,7 +74,7 @@ function M.build(ctx, id, items, report)
 
     local wi, wr = gui.layout(ctx.game_dir, ctx.db, FILE, "megastructure_view", ctx.screen, {
         texture_size = ctx.texture_size, loc = loc,
-        hide = hide, text = text, sprites = sprites, tints = tints, actions = actions,
+        hide = hide, text = text, sprites = sprites, tints = tints, disabled = disabled, actions = actions,
     })
     gui.merge(items, report, wi, wr)
     -- without an owner the header's flag is the null country's (GetOwner's null object, which

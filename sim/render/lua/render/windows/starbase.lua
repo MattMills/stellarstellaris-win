@@ -20,13 +20,8 @@ local M = {}
 local FILE = "interface/starbase_view.gui"
 local W = "/starbase_view"
 
--- a disabled button: greyed out as buttonstate_onlydisable.shader's Disable effect does (a
--- negative alpha: the renderer's greyed quad, GreyOutLuminosity); its label greyed the same way,
--- white to 0.75: textcolor t (198) the nearest [I]
-local DISABLED = { 1, 1, 1, -1 }
-local function grey_label(text)
-    return "\194\167t" .. text .. "\194\167!"
-end
+-- a disabled button goes in the layout's `disabled`: render.gui greys it and its label as the
+-- game's Disable does (buttonstate_onlydisable.shader, GreyOutLuminosity; TextDisable)
 
 -- CStarbaseView's tabs (SetupSpecialized: AddTab 0..3) and their containers
 M.TABS = {
@@ -224,18 +219,18 @@ local function queue_list(ctx, items, report, rect, queue, prefix, e, own)
         local rp = prefix .. "/" .. i
         local path = rp .. "/starbase_view_build_queue_list_entry"
         local frame, title, sub = queue_texts(ctx.loc, e, q)
-        local tints = {}
+        local disabled = {}
         if not own or i == 1 then
-            tints[path .. "/priority_upwards"] = DISABLED
+            disabled[path .. "/priority_upwards"] = true
         end
         if not own or i == #queue then
-            tints[path .. "/priority_downwards"] = DISABLED
+            disabled[path .. "/priority_downwards"] = true
         end
         local ri, rr = gui.layout(ctx.game_dir, ctx.db, FILE, "starbase_view_build_queue_list_entry", ctx.screen, {
             texture_size = ctx.texture_size, loc = ctx.loc, prefix = rp, parent = r,
             hide = { progressbar = true },
             frames = { [path .. "/icon"] = frame },
-            tints = tints,
+            disabled = disabled,
             text = {
                 [path .. "/title"] = title,
                 [path .. "/time"] = i == 1 and fmt(ctx.loc, "BUILD_TIME_REMAINING", { DAYS = days_left(q) }) or fmt(ctx.loc, "QUEUED_NUMBER", { NUMBER = i - 1 }),
@@ -349,24 +344,6 @@ function M.fleet_of(id)
     return {}
 end
 
--- a disabled button's label: its text greyed out as the button (GreyOutLuminosity: the colour's
--- luminance x 0.85 + the colour x 0.15, x 0.75), in the textcolor nearest that grey [I]
-function M.grey(ctx, text)
-    local plain = ctx.loc and ctx.loc.plain(text) or text
-    local code = text:match("^\194\167(%a)")
-    local c = code and ctx.db.textcolors[code] or { 1, 1, 1 }
-    local lum = 0.212671 * c[1] + 0.715160 * c[2] + 0.072169 * c[3]
-    local g = { (lum * 0.85 + c[1] * 0.15) * 0.75, (lum * 0.85 + c[2] * 0.15) * 0.75, (lum * 0.85 + c[3] * 0.15) * 0.75 }
-    local best, bd = "t", math.huge
-    for k, v in pairs(ctx.db.textcolors) do
-        local d = (v[1] - g[1]) ^ 2 + (v[2] - g[2]) ^ 2 + (v[3] - g[3]) ^ 2
-        if #k == 1 and d < bd then
-            best, bd = k, d
-        end
-    end
-    return "\194\167" .. best .. plain .. "\194\167!"
-end
-
 -- the windows of this family that are not the selection's: a megastructure's (its id in
 -- RENDER_STARBASE_STATE.megastructure; a selection replaces it, as selecting does in the game)
 function M.extra(ctx, items, report)
@@ -448,7 +425,7 @@ function M.build(ctx, sel, items, report)
         "empire_header_line", "hex_bg", "name", "starbase_rename_button", "header_actions", "tabs",
     })
     only[M.TABS[tab].window] = true
-    local hide, text, sprites, tints, actions = {}, {}, {}, {}, {}
+    local hide, text, sprites, tints, actions, disabled = {}, {}, {}, {}, {}, {}
 
     -- the header (CAbstractStarbaseView::Update: the name CShip::GetNameWithType, STARBASE_NAME with
     -- the station's name; Show: the level's picture on spaceport_portrait_portrait)
@@ -479,10 +456,10 @@ function M.build(ctx, sel, items, report)
             label = e.hatchery and "STARBASE_HATCHERY_TAB" or e.beastport and "STARBASE_BEASTPORT_TAB" or nil
         end
         if not M.tab_enabled(e, k) then
-            tints[b] = DISABLED
+            disabled[b] = true
             actions[b] = nil
             local key = label or ({ [0] = "STARBASE_STARBASE_TAB", "STARBASE_DEFENSES_TAB", "STARBASE_SHIPYARD_TAB", "MACRO_BUILDER_TAB" })[k]
-            label = grey_label(loc and (loc.get(key)) or key)
+            label = loc and (loc.get(key)) or key
         end
         if label then
             text[b] = label
@@ -504,18 +481,18 @@ function M.build(ctx, sel, items, report)
         if not e.next_size then
             hide[tp .. "/upgrade_info/upgrade"] = true
         elseif not (own and e.upgrade_ok and not queued) then
-            tints[tp .. "/upgrade_info/upgrade"] = DISABLED
+            disabled[tp .. "/upgrade_info/upgrade"] = true
         end
         -- the dismantle button: Return (occupied), Dismantle (the lowest level), Downgrade (a level
         -- below it) [I]: the conditions' order read, the level's test not
         if e.mobile then
             hide[tp .. "/class_info/dismantle"] = true
         elseif not own then
-            tints[tp .. "/class_info/dismantle"] = DISABLED
+            disabled[tp .. "/class_info/dismantle"] = true
         end
         -- details: CShip::CanInspectShip for the player (its own; others' not [I])
         if not own then
-            tints[tp .. "/class_info/details"] = DISABLED
+            disabled[tp .. "/class_info/details"] = true
         end
         -- a design's starbase (its growth stage flagged) shows its design, the others their modules
         if e.uses_design then
@@ -523,7 +500,7 @@ function M.build(ctx, sel, items, report)
             text[tp .. "/design_info/design_name"] = e.design and names.format(loc, e.design) or ""
             -- retrofit: CanRetrofit for the player (its own [I])
             if not own then
-                tints[tp .. "/design_info/retrofit"] = DISABLED
+                disabled[tp .. "/design_info/retrofit"] = true
             end
         else
             hide[tp .. "/design_info"] = true
@@ -548,9 +525,9 @@ function M.build(ctx, sel, items, report)
         -- the "Docked" label (orbitals_label, 30 above the platforms' box) is not in the game's
         -- frame [I]: what hides it is not read (the controller does not look it up)
         hide[tp .. "/defense_platforms_info/orbitals_label"] = true
-        tints[tp .. "/capacity_info/upgrade"] = DISABLED
+        disabled[tp .. "/capacity_info/upgrade"] = true
         if not own or (e.platforms or 0) == 0 then
-            tints[tp .. "/capacity_info/disband_all"] = DISABLED
+            disabled[tp .. "/capacity_info/disband_all"] = true
         end
     elseif tab == 2 then
         -- CStarbaseShipsTabController::Update (CShipsTabControllerBase): the shipyards' count, the
@@ -569,7 +546,7 @@ function M.build(ctx, sel, items, report)
     local wi, wr = gui.layout(ctx.game_dir, ctx.db, FILE, "starbase_view", ctx.screen, {
         texture_size = ctx.texture_size, loc = loc,
         sizes = { [W] = { 562, h } },
-        only = only, hide = hide, text = text, sprites = sprites, tints = tints, actions = actions,
+        only = only, hide = hide, text = text, sprites = sprites, tints = tints, disabled = disabled, actions = actions,
     })
     gui.merge(items, report, wi, wr)
     local rects = wr.rects

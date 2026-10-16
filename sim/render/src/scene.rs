@@ -615,6 +615,8 @@ pub struct Scene {
     /// the galaxy view's map textures (galaxymap.rs; indices into the textures): terra incognita,
     /// the borders' distance, edge and fill colours, the dust's colour map, the nebulae's colours
     pub maps: Option<[usize; 6]>,
+    /// 3D views inside the GUI's windows
+    pub insets: Vec<Inset>,
 }
 
 impl Scene {
@@ -1107,6 +1109,7 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
         sky: None,
         env: None,
         maps: scene_maps,
+        insets: gui.insets,
     }
 }
 
@@ -1145,6 +1148,26 @@ pub struct Gui {
     pub sprites: Vec<PlacedSprite>,
     pub texts: Vec<PlacedText>,
     pub buttons: Vec<PlacedButton>,
+    pub insets: Vec<Inset>,
+}
+
+/// A 3D view inside a GUI window (the ship designer's model, a CShip3DViewer): drawn in its
+/// rectangle (pixels, x0 y0 x1 y1) over the GUI batches before `batch` and under those after it,
+/// with its own view, light and meshes (render.rs). `add_gui` makes one where a sprite item of
+/// kind "inset" is (its path and rectangle); whoever built the window fills the rest.
+pub struct Inset {
+    pub path: String,
+    pub rect: [f32; 4],
+    pub batch: usize,
+    pub view: Option<ViewParams>,
+    pub meshes: Vec<MeshDraw>,
+    pub light: [f32; 4],
+    pub light_colour: [f32; 4],
+    pub cam_lights: [[f32; 4]; 5],
+    /// the environment map (an index into the scene's textures) and its intensity
+    pub env: Option<(usize, f32)>,
+    /// the sky behind it
+    pub sky: Option<SkyDraw>,
 }
 
 /// A button drawn: its element, its rectangle on screen, and what a click does.
@@ -1159,15 +1182,45 @@ fn screen_quad(rect: [f32; 4], uv: [f32; 4], colour: [f32; 4]) -> Quad {
     Quad { rect, uv, colour, rot: 0.0, kind: QuadKind::Screen, height: 0.0, least_px: 0.0, fx: [0.0; 4], fx2: [0.0; 4] }
 }
 
-/// A GUI sprite's quad: a tint with a negative alpha is a disabled button, greyed out as the
-/// game's buttonstate shaders do (map.wgsl's quad mode 4), its alpha the tint's less the sign.
-fn gui_quad(rect: [f32; 4], uv: [f32; 4], tint: [f32; 4]) -> Quad {
-    let mut q = screen_quad(rect, uv, tint);
-    if tint[3] < 0.0 {
-        q.colour[3] = -tint[3];
-        q.fx[0] = 4.0;
+/// A text's coloured spans broken into lines no wider than `w`: at its line breaks, and at
+/// spaces where a line is full (a word wider than a line has a line of its own; a text icon
+/// span, "\u{1}texture...", is a word). `width` measures a span.
+fn wrap_spans(spans: &[(String, [f32; 3])], w: f32, width: &dyn Fn(&str) -> f32) -> Vec<Vec<(String, [f32; 3])>> {
+    let mut lines: Vec<Vec<(String, [f32; 3])>> = vec![Vec::new()];
+    let mut used = 0.0;
+    for (s, c) in spans {
+        if s.starts_with('\u{1}') {
+            let iw = width(s);
+            if used > 0.0 && used + iw > w {
+                lines.push(Vec::new());
+                used = 0.0;
+            }
+            used += iw;
+            lines.last_mut().unwrap().push((s.clone(), *c));
+            continue;
+        }
+        for (li, part) in s.split('\n').enumerate() {
+            if li > 0 {
+                lines.push(Vec::new());
+                used = 0.0;
+            }
+            for (i, word) in part.split(' ').enumerate() {
+                let sep = if i > 0 { " " } else { "" };
+                if used > 0.0 && used + width(sep) + width(word) > w {
+                    lines.push(Vec::new());
+                    used = 0.0;
+                }
+                let piece = if used > 0.0 || i == 0 { format!("{sep}{word}") } else { word.to_string() };
+                used += width(&piece);
+                let line = lines.last_mut().unwrap();
+                match line.last_mut() {
+                    Some(last) if last.1 == *c && !last.0.starts_with('\u{1}') => last.0.push_str(&piece),
+                    _ => line.push((piece, *c)),
+                }
+            }
+        }
     }
-    q
+    lines
 }
 
 /// Adds GUI items to the batches: sprites (button frames by state, cornered tiles as nine
@@ -1186,13 +1239,40 @@ pub fn add_gui(
 ) {
     for item in items {
         match item {
-            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action, tint } => {
+            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action, tint, disabled, clip } => {
+                // a disabled button's quads greyed (map.wgsl fs_quad mode 4)
+                let quad = |r: [f32; 4], uv: [f32; 4]| {
+                    let mut q = screen_quad(r, uv, *tint);
+                    if *disabled {
+                        q.fx[0] = 4.0;
+                    }
+                    q
+                };
+                if kind == "inset" {
+                    // an empty batch marks the inset's place (nothing merges into it)
+                    batches.push(Batch { layer: Layer::Gui, blend: Blend::Alpha, texture: usize::MAX, quads: Vec::new() });
+                    gui.insets.push(Inset {
+                        path: path.clone(),
+                        rect: [*x, *y, x + w, y + h],
+                        batch: batches.len() - 1,
+                        view: None,
+                        meshes: Vec::new(),
+                        light: [0.4, 0.8, 0.3, 0.0],
+                        light_colour: [1.3, 1.3, 1.3, 1.0],
+                        cam_lights: [[0.0; 4]; 5],
+                        env: None,
+                        sky: None,
+                    });
+                    continue;
+                }
                 let Some(t) = tex.game(cache, game_dir, texture) else { continue };
                 let img = tex.images[t].clone();
                 let (tw, th) = (img.width as f32, img.height as f32);
                 let n = (*frames).max(1);
                 let mut frame = (*frame).max(1);
-                if *button && (2..=4).contains(&n) {
+                // (a button in another frame keeps it: the game's frames show an active button,
+                // NGuiUtil::SetButtonActive's frame 3, unchanged under the mouse)
+                if *button && (2..=4).contains(&n) && frame == 1 && kind != "checkbox" {
                     frame = match states.get(path) {
                         Some(ButtonState::Hover) => 2,
                         Some(ButtonState::Pressed) => 3.min(n),
@@ -1202,6 +1282,10 @@ pub fn add_gui(
                 let (nf, f) = (n as f32, (frame.min(n) - 1) as f32);
                 let (u0, u1) = (f / nf, (f + 1.0) / nf);
                 let fw = tw / nf;
+                // a part of the frame (a progress bar's): its u range and the rectangle cut the same
+                let (a, b) = (clip[0].clamp(0.0, 1.0), clip[1].clamp(0.0, 1.0));
+                let (u0, u1, cx, cw) = (u0 + (u1 - u0) * a, u0 + (u1 - u0) * b, x + w * a, w * (b - a));
+                let (x, w) = (&cx, &cw);
                 let visible = {
                     let (a, bx) = ((u0 * tw) as u32, (u1 * tw) as u32);
                     (0..img.height).any(|yy| (a..bx.min(img.width)).any(|xx| img.pixel(xx, yy)[3] > 0))
@@ -1217,11 +1301,11 @@ pub fn add_gui(
                         let vs = [0.0, by / th, 1.0 - by / th, 1.0];
                         for r in 0..3 {
                             for c in 0..3 {
-                                push(batches, layer, Blend::Alpha, t, gui_quad([xs[c], ys[r], xs[c + 1], ys[r + 1]], [us[c], vs[r], us[c + 1], vs[r + 1]], *tint));
+                                push(batches, layer, Blend::Alpha, t, quad([xs[c], ys[r], xs[c + 1], ys[r + 1]], [us[c], vs[r], us[c + 1], vs[r + 1]]));
                             }
                         }
                     }
-                    _ => push(batches, layer, Blend::Alpha, t, gui_quad([*x, *y, x + w, y + h], [u0, 0.0, u1, 1.0], *tint)),
+                    _ => push(batches, layer, Blend::Alpha, t, quad([*x, *y, x + w, y + h], [u0, 0.0, u1, 1.0])),
                 }
                 if layer == Layer::Gui {
                     let order = gui.sprites.len() + gui.texts.len();
@@ -1231,69 +1315,56 @@ pub fn add_gui(
                     gui.buttons.push(PlacedButton { path: path.clone(), rect: [*x, *y, x + w, y + h], action: action.clone() });
                 }
             }
-            GuiItem::Text { path, font, text, spans, x, y, w, h, format, valign, wrap } => {
+            GuiItem::Text { path, font, text, spans, x, y, w, h, format, valign, fixed } => {
                 let Some(f) = fonts.get(font) else { continue };
                 let Some(t) = tex.game(cache, game_dir, &f.texture) else { continue };
-                // a text that wraps (its box holds two lines or more): its words line under line,
-                // as many lines as the box holds, the last one cut; drawn as one text a line
-                let fits = (*h / f.line_height.max(1.0)).floor() as usize;
-                if *wrap && fits >= 2 && *w > 8.0 && f.width(text) > w + 0.5 && !spans.iter().any(|(s, _)| s.starts_with('\u{1}')) {
-                    let mut lines: Vec<Vec<(String, [f32; 3])>> = vec![Vec::new()];
-                    let mut used = 0.0;
-                    for (s, c) in spans {
-                        for word in s.split_inclusive(' ') {
-                            let ww = f.width(word.trim_end());
-                            let full = f.width(word);
-                            if used > 0.0 && used + ww > *w && lines.len() < fits {
-                                lines.push(Vec::new());
-                                used = 0.0;
+                // a text wider than its box wraps at its spaces (and at its new lines), as the
+                // game's text boxes do: a box of fixedSize keeps the lines its height holds
+                // (market_view's market_info: three lines in its 228 x 80; one line: cut, below),
+                // another grows with them (expansion_planner_view's "Terraforming Candidate",
+                // two lines centred on its 30)
+                let max_lines = if *fixed { ((h + 0.5) / f.line_height.max(1.0)).floor() as usize } else { usize::MAX };
+                if max_lines >= 2 && *w > 8.0 && !spans.iter().any(|(s, _)| s.starts_with('\u{1}')) && (f.width(text) > w + 0.5 || text.contains('\n')) {
+                    let lines = wrap_spans_font(f, spans, *w);
+                    let n = lines.len().min(max_lines);
+                    let block = n as f32 * f.line_height;
+                    let top = match valign.as_str() {
+                        "center" | "centre" => y + (h - block) / 2.0,
+                        "bottom" => y + h - block,
+                        _ => *y,
+                    }
+                    .round();
+                    let (aw, ah) = (f.image.width as f32, f.image.height as f32);
+                    for (k, line) in lines.iter().take(n).enumerate() {
+                        let lw: f32 = line.iter().map(|(s, _)| f.width(s)).sum();
+                        let mut pen = match format.as_str() {
+                            "center" | "centre" => x + (w - lw) / 2.0,
+                            "right" => x + w - lw,
+                            _ => *x,
+                        }
+                        .round();
+                        let py = top + k as f32 * f.line_height;
+                        for (s, colour) in line {
+                            for (_, r, uv) in f.place(s, pen, py) {
+                                push(batches, Layer::Text, Blend::Alpha, t, screen_quad(r, [uv[0] / aw, uv[1] / ah, uv[2] / aw, uv[3] / ah], [colour[0], colour[1], colour[2], 1.0]));
                             }
-                            let line = lines.last_mut().unwrap();
-                            match line.last_mut() {
-                                Some(last) if last.1 == *c => last.0.push_str(word),
-                                _ => line.push((word.to_string(), *c)),
-                            }
-                            used += full;
+                            pen += f.width(s);
                         }
                     }
-                    let lh = f.line_height;
-                    let n = lines.len() as f32;
-                    let top = match valign.as_str() {
-                        "center" | "centre" => y + (h - n * lh) / 2.0,
-                        "bottom" => y + h - n * lh,
-                        _ => *y,
-                    };
-                    let items: Vec<GuiItem> = lines
-                        .into_iter()
-                        .enumerate()
-                        .map(|(k, mut line)| {
-                            if let Some(last) = line.last_mut() {
-                                let trimmed = last.0.trim_end().to_string();
-                                last.0 = trimmed;
-                            }
-                            GuiItem::Text {
-                                path: format!("{path}#{k}"),
-                                font: font.clone(),
-                                text: line.iter().map(|l| l.0.as_str()).collect(),
-                                spans: line,
-                                x: *x,
-                                y: top + k as f32 * lh,
-                                w: *w,
-                                h: lh,
-                                format: format.clone(),
-                                valign: "top".into(),
-                                wrap: false,
-                            }
-                        })
-                        .collect();
-                    add_gui(batches, gui, &items, fonts, tex, cache, game_dir, states);
+                    let order = gui.sprites.len() + gui.texts.len();
+                    gui.texts.push(PlacedText { path: path.clone(), text: text.clone(), font: font.clone(), rect: [*x, *y, x + w, y + h], pen: (*x, top), order });
                     continue;
                 }
                 // a text wider than its box is cut, " ..." at its end (as the game's outliner
                 // shows a long name)
                 let cut;
                 let with_icon = spans.iter().any(|(s, _)| s.starts_with('\u{1}'));
-                let (text, spans) = if *w > 8.0 && !with_icon && f.width(text) > w + 0.5 {
+                // a text breaks at its line breaks, and wraps at its words when wider than its box
+                // and the box has room for more lines; as many lines as fit are drawn (the game's
+                // frames: government_view's empty_mods, 40 high, two lines; the leaders view's
+                // class tabs, "\n"; a pool leader's "Age\n0" in a box one line high: "Age")
+                let wraps = *w > 8.0 && (text.contains('\n') || (*h >= 2.0 * f.line_height && !with_icon && f.width(text) > w + 0.5));
+                let (text, spans) = if !wraps && *w > 8.0 && !with_icon && f.width(text) > w + 0.5 {
                     let mut keep: Vec<(String, [f32; 3])> = Vec::new();
                     let mut used = f.width(" ...");
                     'outer: for (s, c) in spans {
@@ -1335,6 +1406,43 @@ pub fn add_gui(
                     let img = &tex.images[i];
                     Some((i, img.width as f32 / frames, img.height as f32, (frame - 1.0) / frames, frame / frames))
                 };
+                if wraps {
+                    let width = |s: &str| icon(s).map_or_else(|| f.width(s), |ic| ic.1);
+                    let lines = wrap_spans(spans, *w, &width);
+                    let n = lines.len().min((h / f.line_height).floor() as usize).max(1);
+                    let total = n as f32 * f.line_height;
+                    let y0 = match valign.as_str() {
+                        "center" | "centre" => y + (h - total) / 2.0,
+                        "bottom" => y + h - total,
+                        _ => *y,
+                    };
+                    let (aw, ah) = (f.image.width as f32, f.image.height as f32);
+                    for (k, line) in lines.iter().take(n).enumerate() {
+                        let lw: f32 = line.iter().map(|(s, _)| width(s)).sum();
+                        let mut pen = match format.as_str() {
+                            "center" | "centre" => x + (w - lw) / 2.0,
+                            "right" => x + w - lw,
+                            _ => *x,
+                        }
+                        .round();
+                        let py = (y0 + k as f32 * f.line_height).round();
+                        for (s, colour) in line {
+                            if let Some((ti, iw, ih, u0, u1)) = icon(s) {
+                                let iy = (py + (f.line_height - ih) / 2.0).round();
+                                push(batches, Layer::Text, Blend::Alpha, ti, screen_quad([pen, iy, pen + iw, iy + ih], [u0, 0.0, u1, 1.0], [1.0; 4]));
+                                pen += iw;
+                                continue;
+                            }
+                            for (_, r, uv) in f.place(s, pen, py) {
+                                push(batches, Layer::Text, Blend::Alpha, t, screen_quad(r, [uv[0] / aw, uv[1] / ah, uv[2] / aw, uv[3] / ah], [colour[0], colour[1], colour[2], 1.0]));
+                            }
+                            pen += f.width(s);
+                        }
+                    }
+                    let order = gui.sprites.len() + gui.texts.len();
+                    gui.texts.push(PlacedText { path: path.clone(), text: text.clone(), font: font.clone(), rect: [*x, *y, x + w, y + h], pen: (*x, y0), order });
+                    continue;
+                }
                 let tw: f32 = spans.iter().map(|(s, _)| icon(s).map_or_else(|| f.width(s), |ic| ic.1)).sum();
                 let pen_x = match format.as_str() {
                     "center" | "centre" => x + (w - tw) / 2.0,
@@ -1367,6 +1475,39 @@ pub fn add_gui(
             }
         }
     }
+}
+
+/// Coloured spans broken into lines no wider than `w`: at spaces (a word wider than the line
+/// stays whole on its own line) and at new lines.
+fn wrap_spans_font(f: &Font, spans: &[(String, [f32; 3])], w: f32) -> Vec<Vec<(String, [f32; 3])>> {
+    let mut lines: Vec<Vec<(String, [f32; 3])>> = vec![Vec::new()];
+    let mut used = 0.0;
+    for (s, c) in spans {
+        for (i, para) in s.split('\n').enumerate() {
+            if i > 0 {
+                lines.push(Vec::new());
+                used = 0.0;
+            }
+            for word in para.split_inclusive(' ') {
+                let ww = f.width(word.trim_end());
+                if used > 0.0 && used + ww > w + 0.5 {
+                    if let Some(last) = lines.last_mut().and_then(|l| l.last_mut()) {
+                        let t = last.0.trim_end().to_string();
+                        last.0 = t;
+                    }
+                    lines.push(Vec::new());
+                    used = 0.0;
+                }
+                let line = lines.last_mut().unwrap();
+                match line.last_mut() {
+                    Some(last) if last.1 == *c => last.0.push_str(word),
+                    _ => line.push((word.to_string(), *c)),
+                }
+                used += f.width(word);
+            }
+        }
+    }
+    lines
 }
 
 /// A scene of GUI only (the front end), for a target of `width` x `height`.
@@ -1405,5 +1546,6 @@ pub fn gui_scene(
         sky: None,
         env: None,
         maps: None,
+        insets: gui.insets,
     }
 }
