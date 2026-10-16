@@ -352,6 +352,16 @@ function newgame.generate(fs, settings)
     end
     -- the rim: the systems farthest out (rim_galactic_objects) [I]
     game.rim = {}
+    -- NEWGAME_DEPOSIT_LOG=FILE: every deposit made, in order ("type planet"), to set beside the
+    -- game's deposit ids
+    local dpath = os.getenv and os.getenv("NEWGAME_DEPOSIT_LOG")
+    if dpath and dpath ~= "" then
+        local f = io.open(dpath, "w")
+        for i, d in ipairs(game.deposit_log or {}) do
+            f:write(i - 1, " ", d[1], " ", d[2], "\n")
+        end
+        f:close()
+    end
     game.galaxy = galaxy_settings(inputs, game)
     game.random_seed = settings.global_seed or 0
     game.random_count = global.draws
@@ -389,6 +399,7 @@ function newgame.generate(fs, settings)
         "  steps: " .. table.concat(game.steps, "; "),
         #game.global_gaps > 0 and ("  global stream put at the game positions: " .. table.concat(game.global_gaps, "; ")) or "  (no global positions given)",
         "  hyperlanes: " .. tostring(game.lane_stats),
+        "  planet triggers not evaluated (deposits, planet modifiers): " .. top(ctx.unknown_planet_triggers or {}, 12),
         string.format("  generator draws %d, global draws %d; %.2f s", r.draws, global.draws, RUST.clock() - t0),
     }
     if next(ctx.unknown_triggers) then

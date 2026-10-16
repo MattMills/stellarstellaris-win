@@ -10,6 +10,7 @@
 --   systems.initialize_rest(ctx, r, game)          -- every system still without an initializer
 
 local source = require("stellar.script.source")
+local planetgen = require("engine.newgame.planetgen")
 local scenario = require("engine.newgame.scenario")
 local rng = require("engine.newgame.rng")
 local fixed = require("engine.newgame.fixed")
@@ -128,6 +129,8 @@ function systems.planet_class(fs, key, b, file)
         star = field(b, "star") == "yes",
         asteroid = field(b, "asteroid") == "yes",
         colonizable = field(b, "colonizable") == "yes",
+        climate = field(b, "climate"),
+        district_set = field(b, "district_set"),
         can_be_moon = field(b, "can_be_moon") ~= "no",
         spawn_odds = n("spawn_odds", 0),
         min_distance = n("min_distance_from_sun", 0),
@@ -603,12 +606,41 @@ local function moon_name(parent, i)
         { "NUMERAL", { key = string.char(96 + i), literal = true } } } }
 end
 
-local function asteroid_name(ctx)
-    local pre, post = ctx.names.asteroid_prefix or { "A" }, ctx.names.asteroid_postfix or { "1" }
-    ctx.asteroid_n = (ctx.asteroid_n or 0) + 1
-    local n = ctx.asteroid_n
-    return { key = "ASTEROID_NAME_FORMAT", variables = {
-        { "prefix", pre[n % #pre + 1] }, { "suffix", post[(n * 7) % #post + 1] } } }
+-- CRandomNameDatabase::TakeAsteroidName (Linux 0x1ee2380) [M]: a prefix C % the prefixes left,
+-- then a postfix C % that prefix's postfixes left (each prefix starts with the whole postfix
+-- list), the postfix replaced by the list's last; a prefix whose postfixes run out is replaced by
+-- the last prefix (its string only: the lists stay where they are, as the game does)
+local function asteroid_name(ctx, C)
+    local db = ctx.asteroid_db
+    if not db then
+        db = { pre = {}, post = {} }
+        for i, n in ipairs(ctx.names.asteroid_prefix or {}) do
+            db.pre[i] = n
+            local list = {}
+            for k, m in ipairs(ctx.names.asteroid_postfix or {}) do
+                list[k] = m
+            end
+            db.post[i] = list
+        end
+        ctx.asteroid_db = db
+    end
+    if #db.pre == 0 then
+        return { key = "ASTEROID_NAME_FORMAT" }
+    end
+    local i = C:int() % #db.pre + 1
+    local list = db.post[i]
+    if #list == 0 then
+        return { key = "ASTEROID_NAME_FORMAT", variables = { { "prefix", db.pre[i] } } }
+    end
+    local j = C:int() % #list + 1
+    local pre, post = db.pre[i], list[j]
+    list[j] = list[#list]
+    list[#list] = nil
+    if #list == 0 then
+        db.pre[i] = db.pre[#db.pre]
+        db.pre[#db.pre] = nil
+    end
+    return { key = "ASTEROID_NAME_FORMAT", variables = { { "prefix", pre }, { "suffix", post } } }
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -690,16 +722,22 @@ local function make_entry(ctx, G, C, game, sys, e, st, parent)
                 st.stars[#st.stars + 1] = { orbit = st.cum, class = systems.star_of_planet(ctx, class) or sys.star_class }
                 st.d = 0
             end
+            -- an asteroid's name comes before its size (CPrescriptedPlanet::GenerateNameWithGenerator)
+            local named = e.block and field(e.block, "name")
+            local aname = c.asteroid and not named and asteroid_name(ctx, C) or nil
             local lo, hi = c.size_min, c.size_max
             if parent then
                 lo, hi = c.moon_min, c.moon_max
             end
             local size = rnd_int(ctx, C, e.size, e.file, lo, hi)
-            -- RandomizePlanetModifiers (0xe09f20): draws until the pick is no modifier; taken as
-            -- one draw that picks none
-            C:int()
+            -- CPlanet::Create: RandomizePlanetModifiers (planetgen.lua: a draw each, until the
+            -- pick is the null modifier)
+            local made = { class = class, size = size, system = sys.id, moon_of = parent and parent.id or nil,
+                modifiers = {}, moons = {}, primary = c.star and not parent and #st.stars == 1 or nil }
+            planetgen.randomize_modifiers(ctx, game, made, C)
             st.angle = st.angle + rnd_fx(ctx, C, e.orbit_angle, e.file, 90, 180)
             local p = new_planet(game, sys, class, size, st.cum, st.angle, parent)
+            p.modifiers, p.primary = made.modifiers, made.primary
             if e.block then
                 for _, f in ipairs(field(e.block, "flags") or {}) do
                     if f.text then
@@ -712,7 +750,7 @@ local function make_entry(ctx, G, C, game, sys, e, st, parent)
             if c.star then
                 st.star_planets[#st.star_planets + 1] = p
             elseif c.asteroid then
-                p.name = asteroid_name(ctx)
+                p.name = aname
             elseif parent then
                 parent.moon_n = (parent.moon_n or 0) + 1
                 p.name = moon_name(parent, parent.moon_n)
@@ -722,6 +760,25 @@ local function make_entry(ctx, G, C, game, sys, e, st, parent)
             end
             if e.home then
                 st.home_planets[#st.home_planets + 1] = p
+            end
+            -- CPlanet::InitializePlanet: the deposits first (planetgen.lua), then the ring
+            planetgen.randomize_deposits(ctx, game, p, C)
+            -- a prescripted planet's deposit_blockers = none (ClearBlockers) and modifiers = none
+            -- (ClearPlanetModifiers, no draws)
+            if e.block and field(e.block, "deposit_blockers") == "none" then
+                planetgen.clear_blockers(ctx, game, p, C)
+            end
+            if e.block and field(e.block, "modifiers") == "none" then
+                p.modifiers = {}
+            end
+            game.deposits = game.deposits or {}
+            p.deposits = {}
+            for _, t in ipairs(p.deposit_types) do
+                game.deposits[#game.deposits + 1] = { type = t.name, planet = p.id }
+                p.deposits[#p.deposits + 1] = #game.deposits - 1
+            end
+            if not p.modifier and p.modifiers[1] then
+                p.modifier = p.modifiers[1]
             end
             -- the ring: has_ring if set; else (not a moon) a draw against chance_of_ring
             if e.has_ring == "yes" then

@@ -410,9 +410,8 @@ function empires.init_systems(ctx, inputs, G, game)
             -- no draw of the generator here (measured: InitEmpireSystems draws G only in
             -- ReorderPlayerLocations and GetRandomFromList before the queue)
             game.global:int()
-            if e.system_name then
-                sys.name = e.system_name
-            end
+            -- the design's system name comes with the home planet (InitHomePlanet): the system
+            -- still takes a star name first (measured: a TakeStarName draw)
             queue[#queue + 1] = { sys = sys, name = e.initializer, empire = e }
         end
     end
@@ -438,6 +437,9 @@ function empires.home_planet(ctx, G, game, e)
         end
     end
     e.home = home
+    if e.system_name then
+        sys.name = e.system_name
+    end
     if home then
         home.class = e.planet_class
         if e.planet_name then
