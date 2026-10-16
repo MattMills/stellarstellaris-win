@@ -1,7 +1,7 @@
 //! The outliner and the alerts (docs/windows/outliner.md): what the simulation's thread reads of
 //! the world for them (`lua/render/windows/outliner.lua` `extract`, `alerts.lua`), carried to the
 //! render thread as plain data, and laid out there (`outliner.lua` `layout`) with the window's own
-//! state: the tab shown, the groups collapsed, the observer's list.
+//! state: the tab shown, the groups collapsed, which view shows.
 
 use std::collections::BTreeSet;
 
@@ -71,13 +71,13 @@ impl LuaData {
     }
 }
 
-/// The outliner's own state (the player's clicks): the tab shown, the groups collapsed (by
-/// key), whether the observer's list shows instead of the tabs (observe mode).
+/// The outliner's own state (the player's clicks): the tab shown, the groups collapsed (by key),
+/// what shows (COutlinerControllerView's mode): 0 the tabs, 1 the observer's list, 2 neither.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct State {
     pub tab: u32,
     pub collapsed: BTreeSet<String>,
-    pub observer_list: bool,
+    pub shown: u8,
 }
 
 impl State {
@@ -98,11 +98,15 @@ impl State {
                 }
                 true
             }
-            (Some("observer"), Some(on)) => {
-                let on = on == "on";
-                let changed = self.observer_list != on;
-                self.observer_list = on;
-                changed
+            // the toggles (COutlinerControllerView::OnToggleTabbedOutliner, OnToggleObserverOutliner):
+            // a view's button hides it when it shows, else shows it instead of the other
+            (Some("tabbed"), None) => {
+                self.shown = if self.shown == 0 { 2 } else { 0 };
+                true
+            }
+            (Some("observer"), None) => {
+                self.shown = if self.shown == 1 { 2 } else { 1 };
+                true
             }
             _ => false,
         }
@@ -123,7 +127,7 @@ pub fn install(runtime: &Runtime, view: &LuaData, state: &State, selected: Optio
             c.set(k.as_str(), true)?;
         }
         s.set("collapsed", c)?;
-        s.set("observer_list", state.observer_list)?;
+        s.set("shown", state.shown)?;
         t.set("state", s)?;
         if let Some((kind, id)) = selected {
             let sel = lua.create_table()?;
@@ -135,6 +139,15 @@ pub fn install(runtime: &Runtime, view: &LuaData, state: &State, selected: Optio
         lua.globals().set("RENDER_OUTLINER", t)
     };
     set().map_err(|e| format!("outliner: {e}"))
+}
+
+/// The country a sprite of the outliner shows the flag of: `@ID/` in its path (a row of the
+/// observer's list).
+pub fn flag_country(path: &str) -> Option<u32> {
+    let at = path.find('@')?;
+    let rest = &path[at + 1..];
+    let end = rest.find('/').unwrap_or(rest.len());
+    rest[..end].parse().ok()
 }
 
 /// The view of a galaxy's extract (`outliner_view`), copied.
@@ -164,6 +177,12 @@ mod tests {
     }
 
     #[test]
+    fn flag_country_from_path() {
+        assert_eq!(flag_country("/observer_outliner/2/3@16777225/observer_outliner_country_window/country"), Some(16777225));
+        assert_eq!(flag_country("/outliner/1/2/outliner_member_planet_entry_window/name"), None);
+    }
+
+    #[test]
     fn state_actions() {
         let mut s = State::default();
         assert!(s.act("tab:1"));
@@ -173,8 +192,14 @@ mod tests {
         assert!(s.collapsed.contains("military"));
         assert!(s.act("toggle:military"));
         assert!(s.collapsed.is_empty());
-        assert!(s.act("observer:on"));
-        assert!(s.observer_list);
+        assert!(s.act("observer"));
+        assert_eq!(s.shown, 1);
+        assert!(s.act("observer"));
+        assert_eq!(s.shown, 2);
+        assert!(s.act("tabbed"));
+        assert_eq!(s.shown, 0);
+        assert!(s.act("tabbed"));
+        assert_eq!(s.shown, 2);
         assert!(!s.act("bogus"));
     }
 }

@@ -1208,6 +1208,17 @@ impl App {
         let mut items = self.main_screen_items()?;
         items.extend(layout.items);
         let map = self.map.as_mut().unwrap();
+        // the outliner's flags (the observer's countries: `@ID` in their path)
+        for it in items.iter_mut() {
+            let id = match it {
+                GuiItem::Sprite { path, .. } => crate::outliner::flag_country(path),
+                _ => None,
+            };
+            if let Some(id) = id {
+                let c = map.galaxy.countries.iter().position(|c| c.id == id);
+                map.flags(std::slice::from_mut(it), c);
+            }
+        }
         gui::fonts(&self.runtime, &self.game_dir, &items, map.fonts.get_or_insert_with(HashMap::new))?;
         Ok(items)
     }
