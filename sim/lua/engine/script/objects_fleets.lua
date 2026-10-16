@@ -137,7 +137,8 @@ end
 -- triggers ship_uses_<family>_reactors etc., not evaluated): STARBASE_ for starbases, PLATFORM_ for
 -- military stations, else the corvette's [I]
 local FAMILIES = { "CORVETTE", "DESTROYER", "CRUISER", "BATTLESHIP", "TITAN", "COLOSSUS", "JUGGERNAUT",
-    "STARBASE", "PLATFORM", "ION_CANNON", "FRIGATE", "FE_", "BIO", "MAULER", "WEAVER", "HARBINGER" }
+    "STARBASE", "PLATFORM", "ION_CANNON", "FRIGATE", "FE_", "BIO", "MAULER", "WEAVER", "HARBINGER",
+    "ARKSHIP", "GRAVITY_SNARE", "NOMAD" }
 local function family_of(size)
     if size:match("^starbase") then return "STARBASE" end
     if size:match("^military_station") then return "PLATFORM" end
@@ -150,16 +151,88 @@ local function key_family(key)
     return nil
 end
 
--- the best researched component of a set for a size: the last researched one (the highest tier)
--- of the size's family, else of no family [I]
-local function required_for(set, size, have)
+-- a component's `potential` for a design of a size and class (the designer evaluates it with the
+-- ship as this and the country as from): is_ship_size / is_ship_class against the design,
+-- `from` / `owner` blocks in the country's scope (the script layer), scripted triggers expanded,
+-- AND / OR / NOT / NOR / NAND; a trigger it does not know about a ship fails [I]
+local probe
+local function probe_stmt(x, P)
+    local k = x.key.text:lower()
+    local v = x.value.text and unq(x.value.text)
+    if k == "is_ship_size" then return v == P.size end
+    if k == "is_ship_class" then return v == P.class end
+    if k == "always" then return v == "yes" end
+    if x.value.text == nil then
+        if k == "or" then
+            for _, y in ipairs(x.value) do
+                if y.op and y.key and probe_stmt(y, P) then return true end
+            end
+            return false
+        elseif k == "and" then return probe(x.value, P)
+        elseif k == "not" then return not probe(x.value, P)
+        elseif k == "nor" then
+            for _, y in ipairs(x.value) do
+                if y.op and y.key and probe_stmt(y, P) then return false end
+            end
+            return true
+        elseif k == "nand" then return not probe(x.value, P)
+        elseif k == "hidden_trigger" then return probe(x.value, P)
+        elseif k == "from" or k == "owner" then
+            local eval = package.loaded["simscript.eval"]
+            if not eval or not P.country then return false end
+            local ok, r = pcall(eval.trigger, x.value, eval.new_ctx(eval.S("country", P.country)))
+            return ok and r and true or false
+        end
+    end
+    local eval = package.loaded["simscript.eval"]
+    local db = eval and eval._internal.db
+    local def = db and db.scripted_triggers[x.key.text]
+    if def and (v == "yes" or v == "no") then
+        local ok, body = pcall(db.instance, "trigger", def, x.key.text, {})
+        if ok and type(body) == "table" then
+            return probe(body, P) == (v == "yes")
+        end
+    end
+    return false
+end
+probe = function(block, P)
+    for _, x in ipairs(block or {}) do
+        if x.op and x.key and not probe_stmt(x, P) then return false end
+    end
+    return true
+end
+local function potential_ok(b, P)
+    if defs.field(b, "hidden") == "yes" then return false end
+    local pot = defs.field(b, "potential")
+    if type(pot) ~= "table" then return true end
+    return probe(pot, P)
+end
+
+-- the component's ai_weight (`weight`, else `base`, 1 without one); the designer leaves out the
+-- components of weight 0 (EMPTY_DRIVE: base = 0) [I]
+local function ai_weight(b)
+    local aw = defs.field(b, "ai_weight")
+    if type(aw) ~= "table" then return 1 end
+    return tonumber(defs.field(aw, "weight")) or tonumber(defs.field(aw, "base")) or 1
+end
+
+-- the best researched component of a set for a size: of the size's family, else of no family (the
+-- components' potential triggers, not evaluated, keep the others to their sizes), the highest
+-- ai_weight, the later (higher tier) of equals [I]
+local function required_for(set, size, have, P)
     local fam = family_of(size)
-    local pick, generic
+    local pick, pw, generic, gw
     for _, c in ipairs(ordered("common/component_templates")) do
-        if unq(defs.field(c.block, "component_set")) == set and researched(c.block, have) then
+        if unq(defs.field(c.block, "component_set")) == set and researched(c.block, have) and potential_ok(c.block, P) then
             local kf = key_family(c.key)
-            if kf == fam then pick = c.key
-            elseif kf == nil then generic = c.key end
+            local w = ai_weight(c.block)
+            if w > 0 then
+                if kf == fam then
+                    if not pick or w >= pw then pick, pw = c.key, w end
+                elseif kf == nil then
+                    if not generic or w >= gw then generic, gw = c.key, w end
+                end
+            end
         end
     end
     return pick or generic
@@ -167,21 +240,21 @@ end
 
 -- the components of a weapon slot (its template's size: small_turret -> small): the first
 -- researched weapon of that size with prerequisites (the start's mass drivers) [I]
-local function weapon_for(slot_template, have)
+local function weapon_for(slot_template, have, P)
     local sz = slot_template:match("^(%a+)_")
     for _, c in ipairs(ordered("common/component_templates")) do
         if c.kind == "weapon_component_template" and unq(defs.field(c.block, "size")) == sz
-            and #names(c.block, "prerequisites") > 0 and researched(c.block, have) then
+            and #names(c.block, "prerequisites") > 0 and researched(c.block, have) and potential_ok(c.block, P) then
             return c.key
         end
     end
     return nil
 end
 
-local function utility(kind, size, have)
+local function utility(kind, size, have, P)
     local key = string.upper(size) .. "_" .. kind .. "_1"
     for _, c in ipairs(ordered("common/component_templates")) do
-        if c.key == key then return researched(c.block, have) and key or nil end
+        if c.key == key then return (researched(c.block, have) and potential_ok(c.block, P)) and key or nil end
     end
     return nil
 end
@@ -193,6 +266,7 @@ function designs.default(country, size)
     if not sd then return nil end
     local have = techs(country)
     local c = world.object("country", country)
+    local P = { size = size, class = unq(defs.field(sd.block, "class")) or "shipclass_military", country = country }
     local gs = {}
     world.append(gs, "ship_size", size, true)
     local slots = defs.field(sd.block, "section_slots")
@@ -206,7 +280,7 @@ function designs.default(country, size)
             for _, cs in ipairs(world.fields(t.block, "component_slot")) do
                 if type(cs) == "table" then
                     local sname, stemp = unq(world.field(cs, "name")), unq(world.field(cs, "template"))
-                    local w = stemp and weapon_for(stemp, have)
+                    local w = stemp and weapon_for(stemp, have, P)
                     if sname and w then
                         local comp = {}
                         world.append(comp, "slot", sname, true)
@@ -218,8 +292,8 @@ function designs.default(country, size)
             for _, sz in ipairs({ "small", "medium", "large" }) do
                 local n = tonumber(defs.field(t.block, sz .. "_utility_slots")) or 0
                 for i = 1, n do
-                    local which = (i == 2) and utility("SHIELD", sz, have) or nil
-                    which = which or utility("ARMOR", sz, have)
+                    local which = (i == 2) and utility("SHIELD", sz, have, P) or nil
+                    which = which or utility("ARMOR", sz, have, P)
                     if which then
                         local comp = {}
                         world.append(comp, "slot", string.upper(sz) .. "_UTILITY_" .. i, true)
@@ -246,7 +320,7 @@ function designs.default(country, size)
         end
     end
     for _, set in ipairs(world.fields(sd.block, "required_component_set")) do
-        local key = type(set) == "string" and required_for(unq(set), size, have)
+        local key = type(set) == "string" and required_for(unq(set), size, have, P)
         if key then world.append(gs, "required_component", key, true) end
     end
     local d = {}

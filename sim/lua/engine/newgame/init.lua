@@ -404,6 +404,28 @@ function newgame.start_script(game)
                 traits = rf("trait") and { { 0, rf("trait") } } or nil })
             if lid then world.set(c, "ruler", lid) end
         end
+        -- the start technologies (start_tech = yes) whose potential and starting_potential hold
+        -- for the country, evaluated by the script layer: the generator's own filter only knows a
+        -- few triggers (empires.lua start_techs) [I: the game's CCountry tech init order]
+        local defs = require("engine.defs")
+        local have = {}
+        for _, t in ipairs(world.fields(world.field(c, "tech_status"), "technology")) do
+            if type(t) == "string" then have[(t:gsub('"', ""))] = true end
+        end
+        for _, d in ipairs(objects.ordered("common/technology")) do
+            local name, b = d[1], d[2].block
+            if not have[name] and defs.field(b, "start_tech") == "yes" then
+                local ok = true
+                for _, key in ipairs({ "potential", "starting_potential" }) do
+                    local pot = defs.field(b, key)
+                    if ok and type(pot) == "table" then
+                        local good, r = pcall(eval.trigger, pot, eval.new_ctx(eval.S("country", e.index)))
+                        ok = good and r and true or false
+                    end
+                end
+                if ok then require("engine.research").add_technology(e.index, name) end
+            end
+        end
         objects.leaders.initialize_policies(e.index)
         -- the starbase's station: a design of its level's size (the country's default starport
         -- design, objects_fleets' designs.default; the 2200.01.11 save's stations have their
@@ -420,6 +442,27 @@ function newgame.start_script(game)
                 world.append(sdi, "upgrade", 4294967295)
                 world.append(sdi, "growth_stage", 0)
                 world.insert(ship, 3, "ship_design_implementation", sdi)
+            end
+        end
+        -- the station's fleet at the station (its movement_manager's coordinate, which the sensors
+        -- and the systems' presence read; empires.lua writes the ship's only)
+        local fid = ship and tonumber(world.field(ship, "fleet"))
+        local fl = fid and world.object("fleet", fid)
+        local sc = ship and world.field(ship, "coordinate")
+        if fl and type(sc) == "table" and world.field(fl, "movement_manager") == nil then
+            local mm, c = {}, {}
+            for _, k in ipairs({ "x", "y", "origin" }) do
+                local v = world.field(sc, k)
+                if v ~= nil then world.append(c, k, v) end
+            end
+            world.append(mm, "coordinate", c)
+            world.append(mm, "state", "move_idle")
+            world.append(fl, "movement_manager", mm)
+            local g = world.object("galactic_object", tonumber(world.field(sc, "origin")))
+            if g then
+                local fp = world.field(g, "fleet_presence")
+                if type(fp) ~= "table" then fp = world.child(g, "fleet_presence") end
+                world.append_value(fp, fid)
             end
         end
     end
