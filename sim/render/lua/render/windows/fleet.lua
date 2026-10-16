@@ -417,7 +417,7 @@ local function paragon(ctx, leader, rect, prefix)
             "on_hover_assign_container_disabled", "on_hover_replace_container", "on_hover_replace_container_disabled",
             "assign_character_button", "rename_leader",
             leader.council and "leader_class_text" or "councilor_title",
-            council and "" or "council_container",
+            council and "rename_leader" or "council_container",
         }),
         text = text,
         frames = {
@@ -747,63 +747,651 @@ end
 
 ---------------------------------------------------------------- ship_view
 
--- common/component_templates: key -> { icon, icon_frame, size, component_set, class }
+-- the `@name = value` statements at a file's top (a definition file's own variables)
+local function file_variables(tree)
+    local vars = {}
+    for _, e in ipairs(tree or {}) do
+        if e.op and e.key and e.key.text:sub(1, 1) == "@" and e.value and e.value.text then
+            vars[e.key.text] = e.value.text
+        end
+    end
+    return vars
+end
+
+-- the numbers of a modifier block: name -> value
+local function modifier_values(game_dir, b, vars)
+    local out = {}
+    for _, e in ipairs(type(b) == "table" and b or {}) do
+        if e.op and e.key and e.value and e.value.text then
+            local v = e.value.text
+            out[e.key.text] = tonumber(vars[v] or v) or value(game_dir, v)
+        end
+    end
+    return out
+end
+
+-- common/component_templates: key -> { kind (weapon_component_template, utility_...), icon,
+-- icon_frame, size, power, modifier = { name -> value }, order (the load order) } with the weapons'
+-- stats of weapon_components.csv (power, damage, windup, cooldown, accuracy)
 function fleet.components(game_dir)
     if cache.components then
         return cache.components
     end
-    local out = {}
+    local out, order = {}, 0
     for _, file in ipairs(source.files(game_dir, "common/component_templates", "txt")) do
+        local tree = source.parse(game_dir, file)
+        local vars = file_variables(tree)
+        for _, e in ipairs(tree or {}) do
+            if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
+                local b = e.value
+                local key = get(b, "key")
+                if key then
+                    order = order + 1
+                    local p = get(b, "power")
+                    out[key:gsub('"', "")] = {
+                        kind = e.key.text, icon = get(b, "icon"), icon_frame = tonumber(get(b, "icon_frame")),
+                        size = get(b, "size"), component_set = get(b, "component_set"),
+                        power = p and (tonumber(vars[p] or p) or value(game_dir, p)) or nil,
+                        modifier = modifier_values(game_dir, get(b, "modifier"), vars), order = order,
+                    }
+                end
+            end
+        end
+    end
+    -- weapon_components.csv: key;cost;power;min_damage;max_damage;...;min_windup;max_windup;cooldown;
+    -- range;accuracy;tracking;...
+    local fs = source.filesystem(game_dir)
+    local path = fs:path("common/component_templates/weapon_components.csv")
+    local f = path and io.open(path, "r")
+    if f then
+        local cols
+        for line in f:lines() do
+            if line:sub(1, 1) ~= "#" then
+                local cells = {}
+                for c in (line .. ";"):gmatch("([^;]*);") do
+                    cells[#cells + 1] = c
+                end
+                if cells[1] == "key" then
+                    cols = {}
+                    for i, c in ipairs(cells) do
+                        cols[c] = i
+                    end
+                elseif cols and out[cells[1]] then
+                    local w = {}
+                    for _, k in ipairs({ "power", "min_damage", "max_damage", "min_windup", "max_windup", "cooldown", "accuracy" }) do
+                        w[k] = tonumber(cells[cols[k]])
+                    end
+                    out[cells[1]].weapon = w
+                    out[cells[1]].power = out[cells[1]].power or w.power
+                end
+            end
+        end
+        f:close()
+    end
+    cache.components = out
+    return out
+end
+
+-- EComponentSlotSize [I: GFX_ship_designer_slot's frames], EComponentType (0 weapon, 1 utility,
+-- 2 strike craft, 4 any)
+local SLOT_SIZE = { point_defence = 0, small = 1, medium = 2, large = 3, torpedo = 4, extra_large = 5, titanic = 6, planet_killer = 7, aux = 9 }
+local SLOT_TYPE = { weapon = 0, utility = 1, strike_craft = 2 }
+
+-- common/section_templates: key -> its slots in order { name, size, type }: the component_slot
+-- entries (their component_slot_templates' size and component), then <size>_utility_slots
+-- (SMALL_UTILITY_1 ...) and aux_utility_slots (AUX_UTILITY_1 ...)
+local function sections(game_dir)
+    if cache.sections then
+        return cache.sections
+    end
+    local slot_t = {}
+    for name, d in pairs(source.definitions(game_dir, "common/component_slot_templates")) do
+        slot_t[name] = { size = get(d.block, "size"), component = get(d.block, "component") }
+    end
+    local out = {}
+    for _, file in ipairs(source.files(game_dir, "common/section_templates", "txt")) do
         local tree = source.parse(game_dir, file)
         for _, e in ipairs(tree or {}) do
             if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
                 local b = e.value
                 local key = get(b, "key")
                 if key then
-                    out[key:gsub('"', "")] = {
-                        kind = e.key.text, icon = get(b, "icon"), icon_frame = tonumber(get(b, "icon_frame")),
-                        size = get(b, "size"), component_set = get(b, "component_set"), tier = get(b, "tier"),
-                    }
+                    local slots = {}
+                    for _, s in ipairs(b) do
+                        if s.op and s.key and s.key.text == "component_slot" and type(s.value) == "table" then
+                            local t = slot_t[(get(s.value, "template") or ""):gsub('"', "")] or {}
+                            slots[#slots + 1] = { name = (get(s.value, "name") or ""):gsub('"', ""), size = t.size, type = t.component }
+                        end
+                    end
+                    for _, size in ipairs({ "small", "medium", "large", "aux" }) do
+                        for i = 1, tonumber(get(b, size .. "_utility_slots")) or 0 do
+                            slots[#slots + 1] = { name = size:upper() .. "_UTILITY_" .. i, size = size, type = "utility" }
+                        end
+                    end
+                    out[key:gsub('"', "")] = slots
                 end
             end
         end
     end
-    cache.components = out
+    cache.sections = out
     return out
+end
+
+-- static modifiers used here: name -> { modifier -> value }
+local function static_modifiers(game_dir)
+    if cache.static then
+        return cache.static
+    end
+    local out = {}
+    for name, d in pairs(source.definitions(game_dir, "common/static_modifiers")) do
+        out[name] = modifier_values(game_dir, d.block, {})
+    end
+    cache.static = out
+    return out
+end
+
+-- a number cut (not rounded) to `n` decimals, as the game's frames show the ship's stats
+-- ("7.69" for 7.696, "62.3" for 62.33) [I]
+local function cut(v, n)
+    local m = 10 ^ n
+    return math.floor(v * m + 1e-9) / m
+end
+
+-- the ship's stats as CShip::CalcMaxDisplaySpeed, CalcEvasion and CalcAverageDamagePerDay give
+-- them, from its design [I: the formulas fitted to the game's numbers of the 2210 corvette, the
+-- terms read in the game's files]:
+--   power: the reactor's (the core components' positive power) x (1 + ship_reactor_power_mult)
+--   against the other components' use; excess e = (made - used) / made, and the static modifier
+--   ship_excess_power (+10% speed, evasion, weapon damage) x e when e >= EXCESS_POWER_BONUS_
+--   THRESHOLD_MIN (0.05), at most 1;
+--   speed: the ship size's max_speed x (1 + ship_speed_mult);
+--   evasion: (the size's ship_evasion_add + the components') x (1 + ship_evasion_mult), in %;
+--   damage a day: over the weapons, (min + max) / 2 x (1 + ship_weapon_damage) x accuracy x (1 +
+--   ship_fire_rate_mult) / ((cooldown + (min_windup + max_windup) / 2) / 10);
+--   the fire rate: the admiral's skill (skill_commander_navy x level). Modifiers of the country
+--   (technologies, traditions) are not counted: the game's capture of the 2210 save has none on
+--   the player's ships.
+function fleet.ship_stats(game_dir, d)
+    local comps = fleet.components(game_dir)
+    local sizes = fleet.ship_sizes(game_dir)
+    local statics = static_modifiers(game_dir)
+    local all = {}
+    for _, c in ipairs(d.components or {}) do
+        all[#all + 1] = comps[c.template]
+    end
+    for _, r in ipairs(d.required or {}) do
+        all[#all + 1] = comps[r]
+    end
+    local made, used = 0, 0
+    local mods = {}
+    local function add(m, k)
+        for n, v in pairs(m or {}) do
+            mods[n] = (mods[n] or 0) + v * (k or 1)
+        end
+    end
+    for _, c in pairs(all) do
+        local p = c.power or 0
+        if p > 0 then
+            made = made + p
+        else
+            used = used - p
+        end
+        add(c.modifier)
+    end
+    made = made * (1 + (mods.ship_reactor_power_mult or 0))
+    local e = made > 0 and (made - used) / made or 0
+    if e >= 0.05 then
+        add(statics.ship_excess_power, math.min(e, 1))
+    end
+    local leader = d.fleet_leader
+    if leader and leader.class == "commander" then
+        add(statics.skill_commander_navy, leader.level or 0)
+    end
+    local z = sizes[d.size] or {}
+    local size_mods = {}
+    for _, def in pairs({ source.definitions(game_dir, "common/ship_sizes")[d.size] }) do
+        size_mods = modifier_values(game_dir, get(def.block, "modifier"), {})
+    end
+    local speed = (z.max_speed or 0) * (1 + (mods.ship_speed_mult or 0))
+    local evasion = ((size_mods.ship_evasion_add or 0) + (mods.ship_evasion_add or 0)) * (1 + (mods.ship_evasion_mult or 0))
+    local damage = 0
+    for _, c in pairs(all) do
+        local w = c.weapon
+        if w and w.min_damage and w.cooldown then
+            local period = (w.cooldown + ((w.min_windup or 0) + (w.max_windup or 0)) / 2) / 10
+            if period > 0 then
+                damage = damage + (w.min_damage + w.max_damage) / 2 * (1 + (mods.ship_weapon_damage or 0))
+                    * (w.accuracy or 1) * (1 + (mods.ship_fire_rate_mult or 0)) / period
+            end
+        end
+    end
+    return { speed = cut(speed, 0), evasion = cut(evasion, 1), damage = cut(damage, 2) }
+end
+
+-- the ship's ranks by experience (static modifiers ship_rank_*) [I: the thresholds not read; a
+-- ship of the save without experience is Regular]
+local function ship_rank(d)
+    return "ship_rank_regular"
+end
+
+-- a ship view component entry: a sprite and frame of the component, the slot's frame
+local function slot_frame(slot, comp)
+    local t = slot and SLOT_TYPE[slot.type] or 4
+    local sz = slot and SLOT_SIZE[slot.size] or 11
+    if t == 4 and comp then
+        t = comp.kind == "weapon_component_template" and 0 or comp.kind == "strike_craft_component_template" and 2 or 1
+    end
+    if t == 1 then
+        return sz == 9 and 13 or sz
+    elseif t == 2 then
+        return 13 + sz
+    end
+    return sz + 4
 end
 
 function fleet.ship_view(ctx, d)
     local loc = ctx.loc
     local sizes = fleet.ship_sizes(ctx.game_dir)
-    local z = sizes[d.size] or {}
+    local comps = fleet.components(ctx.game_dir)
+    local st = fleet.ship_stats(ctx.game_dir, d)
+    local military = (fleet.CLASS[(sizes[d.size] or {}).class or ""] or 0) == 0
     local text = {
         ["/ship_view/name"] = name_text(loc, d.name),
-        ["/ship_view/type"] = d.type_text or "",
-        ["/ship_view/stats/hitpoints_value"] = d.stats and d.stats.hitpoints or tostring(math.floor(d.hp + 0.5)),
-        ["/ship_view/stats/armor_value"] = d.stats and d.stats.armor or tostring(math.floor(d.armor + 0.5)),
-        ["/ship_view/stats/shields_value"] = d.stats and d.stats.shields or tostring(math.floor(d.shield + 0.5)),
-        ["/ship_view/stats/speed_value"] = d.stats and d.stats.speed or tostring(z.max_speed or ""),
-        ["/ship_view/stats/evasion_value"] = d.stats and d.stats.evasion or "",
-        ["/ship_view/stats/damage_value"] = d.stats and d.stats.damage or "",
-        ["/ship_view/stats/rank_value"] = d.stats and d.stats.rank or "",
+        -- the design's long name: LONG_SHIPCLASS_NAME ("$NAME$-class $SIZE$") [I: the key]
+        ["/ship_view/type"] = loc_text(loc, "LONG_SHIPCLASS_NAME", { NAME = name_text(loc, d.design_name), SIZE = loc_text(loc, d.size) }),
+        ["/ship_view/stats/hitpoints_value"] = loc_text(loc, "SHIP_STAT_HITPOINTS_VALUE", { VALUE = d.hp_max }),
+        ["/ship_view/stats/armor_value"] = loc_text(loc, "SHIP_STAT_ARMOR_VALUE", { VALUE = d.armor_max }),
+        ["/ship_view/stats/shields_value"] = loc_text(loc, "SHIP_STAT_SHIELDS_VALUE", { VALUE = d.shield_max }),
+        ["/ship_view/stats/speed_value"] = loc_text(loc, "SHIP_STAT_SPEED_VALUE", { VALUE = st.speed }),
+        ["/ship_view/stats/evasion_value"] = loc_text(loc, "SHIP_STAT_EVASION_VALUE", { VALUE = st.evasion }),
+        ["/ship_view/stats/damage_value"] = loc_text(loc, "SHIP_STAT_DAMAGE_VALUE", { VALUE = st.damage }),
+        ["/ship_view/stats/rank_value"] = "§Y" .. loc_text(loc, ship_rank(d)) .. "§!",
+        ["/ship_view/buttons/open_designer"] = loc_text(loc, "OPEN_DESIGNER"),
     }
+    local from = #ctx.items + 1
+    local hide = set({ "cloaking", "cloaking_level", "growth", "rename_button", "ship_model" })
+    if not military then
+        hide.rank, hide.rank_value = true, true
+    end
     local _, wr = layout(ctx, SHIP_GUI, "ship_view", {
-        hide = set({ "cloaking", "cloaking_level", "growth", "rename_button" }),
+        hide = hide,
         text = text,
         actions = {
             ["/ship_view/close"] = "fleet:close_ship",
             ["/ship_view/buttons/open_fleet_manager"] = "fleet:manager",
         },
     })
+    -- the buttons: the local player's ship that can be upgraded (CShip::CanBeUpgraded) [V]
+    if not (d.player and d.upgradable) then
+        grey(ctx, from, "/ship_view/buttons/")
+    end
+    -- the core components: the design's required list, in order (UpdateComponents) [V]
+    local grid = wr.rects["/ship_view/components/components"]
+    if grid then
+        for i, key in ipairs(d.required or {}) do
+            local c = comps[key]
+            local col, row = (i - 1) % 6, math.floor((i - 1) / 6)
+            local p = "/ship_view/core/" .. i
+            local ep = p .. "/ship_view_required_component_entry"
+            layout(ctx, SHIP_GUI, "ship_view_required_component_entry", {
+                prefix = p,
+                parent = { x = grid.x + col * 58, y = grid.y + row * 78, w = 0, h = 0 },
+                hide = { icon = c == nil or c.icon == nil },
+                sprites = c and c.icon and { [ep .. "/icon"] = c.icon } or nil,
+                frames = c and c.icon and { [ep .. "/icon"] = c.icon_frame or 1 } or nil,
+            })
+        end
+    end
+    -- the armaments and utilities: every slot of the design's sections (empty ones too), by the
+    -- slot's type, each list in the order of the slot's size, then the component's [V]
+    local secs = sections(ctx.game_dir)
+    local placed = {}
+    for _, c in ipairs(d.components or {}) do
+        placed[c.section .. "/" .. c.slot] = c.template
+    end
+    local arms, utils = {}, {}
+    for _, sec in ipairs(d.sections or {}) do
+        for _, sl in ipairs(secs[sec] or {}) do
+            local key = placed[sec .. "/" .. sl.name]
+            local c = key and comps[key]
+            local t = SLOT_TYPE[sl.type] or 4
+            if t == 4 and c then
+                t = c.kind == "weapon_component_template" and 0 or 1
+            end
+            local e = { slot = sl, comp = c, size = SLOT_SIZE[sl.size] or 11, order = c and c.order or 1e9 }
+            local list = (t == 0 or t == 2) and arms or utils
+            e.index = #list + 1
+            list[#list + 1] = e
+        end
+    end
+    local function by_size(a, b)
+        if a.size ~= b.size then
+            return a.size < b.size
+        end
+        if a.order ~= b.order then
+            return a.order < b.order
+        end
+        return a.index < b.index
+    end
+    table.sort(arms, by_size)
+    table.sort(utils, by_size)
+    local sets = wr.rects["/ship_view/component_sets"]
+    if sets then
+        local y = sets.y
+        for k, part in ipairs({ { "ship_view_armaments", "armaments", arms }, { "ship_view_utilities", "utilities", utils } }) do
+            local p = "/ship_view/sets/" .. k
+            local _, sr = layout(ctx, SHIP_GUI, part[1], { prefix = p, parent = { x = sets.x, y = y, w = 0, h = 0 } })
+            local g = sr.rects[p .. "/" .. part[1] .. "/list/" .. part[2]]
+            if g then
+                for i, e in ipairs(part[3]) do
+                    local col, row = (i - 1) % 10, math.floor((i - 1) / 10)
+                    local ip = p .. "/" .. i
+                    local ep = ip .. "/ship_view_component_entry"
+                    local c = e.comp
+                    layout(ctx, SHIP_GUI, "ship_view_component_entry", {
+                        prefix = ip,
+                        parent = { x = g.x + col * 56, y = g.y + row * 56, w = 0, h = 0 },
+                        hide = { icon = c == nil or c.icon == nil },
+                        sprites = c and c.icon and { [ep .. "/icon"] = c.icon } or nil,
+                        frames = { [ep .. "/icon"] = c and c.icon_frame or 1, [ep .. "/icon_bg"] = slot_frame(e.slot, c) },
+                    })
+                end
+            end
+            y = y + 150
+        end
+    end
     return wr
 end
 
 ---------------------------------------------------------------- fleet_manager_view
 
+-- a fleet's command size ("§Y15§!/§Y50§! (15)": BuildFleetTemplateCountString) [V]
+local function template_count(loc, game_dir, f)
+    local sizes = fleet.ship_sizes(game_dir)
+    local used = 0
+    for _, s in ipairs(f.ships) do
+        used = used + ((sizes[s.size] or {}).size_multiplier or 1)
+    end
+    local tpl = f.template_size or used
+    return loc_text(loc, "FLEET_TEMPLATE_SIZE_WITH_LIMIT", {
+        SIZE_STRING = loc_text(loc, "VALUE_OUT_OF_MAX", { VALUE = "§Y" .. used .. "§!", MAX = "§Y" .. (f.command_limit or 50) .. "§!" }),
+        LIMIT_STRING = loc_text(loc, tpl > used and "FLEET_TEMPLATE_SIZE_LIMIT_UNREACHED_VALUE_FORMAT" or "FLEET_TEMPLATE_SIZE_LIMIT_REACHED_VALUE_FORMAT", { VALUE = tpl }),
+    }), used
+end
+
+-- the country's naval capacity (CCountry::CalcNavalCapacity): NAVAL_CAPACITY_BASE 50 plus
+-- country_naval_cap_add, times 1 + country_naval_cap_mult, cut to a whole number [I: the terms
+-- counted are the councilors' traits' councilor_modifier]
+local function naval_capacity(game_dir, d)
+    local add, mult = 0, 0
+    for _, file in ipairs(source.files(game_dir, "common/traits", "txt")) do
+        cache.trait_files = cache.trait_files or {}
+        if not cache.trait_files[file] then
+            cache.trait_files[file] = true
+            local tree = source.parse(game_dir, file)
+            cache.councilor_mods = cache.councilor_mods or {}
+            for _, e in ipairs(tree or {}) do
+                if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
+                    cache.councilor_mods[e.key.text] = modifier_values(game_dir, get(e.value, "councilor_modifier"), file_variables(tree))
+                end
+            end
+        end
+    end
+    for _, t in ipairs(d.councilor_traits or {}) do
+        local m = (cache.councilor_mods or {})[t] or {}
+        add = add + (m.country_naval_cap_add or 0)
+        mult = mult + (m.country_naval_cap_mult or 0)
+    end
+    return math.floor((50 + add) * (1 + mult) + 1e-9)
+end
+
 function fleet.manager_view(ctx, d)
-    layout(ctx, MANAGER_GUI, "fleet_manager_view", {
-        actions = { ["/fleet_manager_view/close"] = "fleet:close_manager" },
+    local loc = ctx.loc
+    local sizes = fleet.ship_sizes(ctx.game_dir)
+    local sel
+    for _, f in ipairs(d.fleets) do
+        if f.id == d.selected then
+            sel = f
+        end
+    end
+    local W = "/fleet_manager_view"
+    local cap = naval_capacity(ctx.game_dir, d)
+    local used_cap = d.used_naval_capacity or 0
+    -- the reinforcement: the fleets with fewer ships than their template (CalcAllShipsToReinforce)
+    local need = 0
+    for _, f in ipairs(d.fleets) do
+        if (f.template_ships or 0) > #f.ships then
+            need = need + 1
+        end
+    end
+    local text = {
+        [W .. "/box2/naval_capacity/naval_capacity_text"] = loc_text(loc, "NAVY_LIMIT_VALUE", {
+            NAVY_SIZE_TITLE = loc_text(loc, "NAVY_SIZE_TITLE"),
+            SIZE = used_cap > cap and ("§R" .. used_cap .. "§!") or used_cap, LIMIT = cap,
+        }),
+        [W .. "/box2/reinforcement/reinforce_fleet_text"] = need == 0 and loc_text(loc, "FLEET_MANAGER_VIEW_NO_REINFORCE_TEXT") or "",
+    }
+    local hide = { available_window = true, retrofit_window = true }
+    local only_hide = {}
+    if sel then
+        local lp = W .. "/box1/fleet_orders/stats"
+        local tc = template_count(loc, ctx.game_dir, sel)
+        local hp, hpm, ar, arm, sh, shm = 0, 0, 0, 0, 0, 0
+        for _, s in ipairs(sel.ships) do
+            hp, hpm, ar, arm, sh, shm = hp + s.hp, hpm + s.hp_max, ar + s.armor, arm + s.armor_max, sh + s.shield, shm + s.shield_max
+        end
+        text[W .. "/box1/fleet_name"] = name_text(loc, sel.name)
+        text[lp .. "/template_size"] = tc
+        text[lp .. "/offensive_power"] = loc_text(loc, "FLEET_TEMPLATE_MILITARY_POWER", {
+            POWER_STRING = loc_text(loc, "FLEET_TEMPLATE_POWER_MAX_REACHED_VALUE_FORMAT", { CURRENT_STRING = fleet.si_number(sel.military_power) }),
+        })
+        text[lp .. "/health"] = loc_text(loc, "FLEET_MANAGER_HEALTH", { VALUE = fraction(hp, hpm) })
+        text[lp .. "/armor"] = loc_text(loc, "FLEET_MANAGER_ARMOR", { VALUE = fraction(ar, arm) })
+        text[lp .. "/shields"] = loc_text(loc, "FLEET_MANAGER_SHIELD", { VALUE = fraction(sh, shm) })
+        text[lp .. "/current_order"] = loc_text(loc, "NO_ORDERS")
+        text[lp .. "/current_activity"] = ""
+        local used = 0
+        for _, s in ipairs(sel.ships) do
+            used = used + ((sizes[s.size] or {}).size_multiplier or 1)
+        end
+        text[W .. "/box2/box2_3/fleet_info/command_limit/command_limit_header"] = loc_text(loc, "COMMAND_LIMIT_VALUE", {
+            COMMAND_LIMIT = loc_text(loc, "COMMAND_LIMIT"), CURRENT = sel.template_size or used, LIMIT = sel.command_limit or 50,
+        })
+        hide.select_template_hint = true
+    else
+        hide.fleet_orders, hide.fleet_info = true, true
+    end
+    -- box1's background (the selected fleet's red bar) is a plain sprite at its own position:
+    -- drawn below at (317, 103)
+    hide[W .. "/box1/background"] = true
+    local from = #ctx.items + 1
+    local _, wr = layout(ctx, MANAGER_GUI, "fleet_manager_view", {
+        hide = hide, text = text,
+        sprites = { [W .. "/box1/fleet_orders/stats/change_stance"] = sel and (STANCE[sel.stance] or "GFX_fleet_order_button_stance_passive") or nil },
+        actions = {
+            [W .. "/close"] = "fleet:close_manager",
+            [W .. "/ship_designer_tab"] = "fleet:designer",
+        },
     })
+    -- the disabled ones: Space Fauna (artificial breeding), reinforce all (nothing to reinforce),
+    -- stop (no orders), the fleet's reinforce (complete) and repair (undamaged) [V: their
+    -- conditions; I: their states here]
+    local disabled = {
+        W .. "/creature_designer_tab", W .. "/reinforce_all", W .. "/box1/fleet_orders/header/stop",
+    }
+    if sel then
+        local damaged = false
+        for _, s in ipairs(sel.ships) do
+            damaged = damaged or s.hp < s.hp_max or s.armor < s.armor_max or s.shield < s.shield_max
+        end
+        if (sel.template_ships or 0) <= #sel.ships then
+            disabled[#disabled + 1] = W .. "/box2/box2_3/fleet_info/actions/reinforce"
+        end
+        if not damaged then
+            disabled[#disabled + 1] = W .. "/box2/box2_3/fleet_info/actions/repair"
+        end
+        if not sel.upgradable then
+            disabled[#disabled + 1] = W .. "/box2/box2_3/fleet_info/actions/upgrade"
+        end
+    end
+    for _, p in ipairs(disabled) do
+        for i = from, #ctx.items do
+            local it = ctx.items[i]
+            if it.kind == "sprite" and it.path == p and it.texture:sub(1, 1) ~= "@" then
+                it.texture = "@grey:" .. it.texture
+                if it.button then
+                    it.button.action = nil
+                end
+            end
+        end
+    end
+    local box1 = wr.rects[W .. "/box1"]
+    if sel and box1 then
+        local s = ctx.db.sprites.GFX_fleet_manager_fleet_bg_horizontal
+        local tw, th
+        if s and s.texture then
+            tw, th = ctx.texture_size(s.texture)
+        end
+        if tw and th then
+            -- drawn under the fleet's name: before the items laid out after the window's background
+            table.insert(ctx.items, from + 1, {
+                kind = "sprite", path = W .. "/box1/planet_view_bg", sprite = "GFX_fleet_manager_fleet_bg_horizontal",
+                texture = s.texture, sprite_kind = s.kind, frame = 1, frames = s.frames or 1,
+                x = box1.x + 317, y = box1.y + 103, w = tw / math.max(1, s.frames or 1), h = th,
+            })
+        end
+    end
+    -- the fleets' list (the templates' rows)
+    local tg = wr.rects[W .. "/box1/templates/templates_grid"]
+    if tg then
+        for i, f in ipairs(d.fleets) do
+            local rp = W .. "/templates/" .. i
+            local ep = rp .. "/fleet_manager_fleet_template_entity"
+            layout(ctx, MANAGER_GUI, "fleet_manager_fleet_template_entity", {
+                prefix = rp,
+                parent = { x = tg.x, y = tg.y + (i - 1) * 42, w = 0, h = 0 },
+                hide = { selected_overlay = f.id ~= d.selected },
+                text = {
+                    [ep .. "/fleet_name"] = name_text(loc, f.name),
+                    [ep .. "/fleet_size"] = (template_count(loc, ctx.game_dir, f)),
+                    [ep .. "/offensive_power"] = loc_text(loc, "MILITARY_POWER_YELLOW", { VALUE = fleet.si_number(f.military_power) }),
+                },
+                actions = { [ep] = "fleet:manager_fleet:" .. f.id },
+            })
+        end
+    end
+    if sel then
+        -- the leader
+        local lc = wr.rects[W .. "/box1/fleet_orders/leader_portrait_container"]
+        if lc and sel.leader then
+            paragon(ctx, sel.leader, { x = lc.x, y = lc.y, w = lc.w, h = lc.h }, W .. "/leader")
+        end
+        -- the command limit's bar: the size over the limit, in %
+        local used = 0
+        for _, s in ipairs(sel.ships) do
+            used = used + ((sizes[s.size] or {}).size_multiplier or 1)
+        end
+        bar(ctx, W .. "/box2/box2_3/fleet_info/command_limit/progress", 100 * (sel.template_size or used) / (sel.command_limit or 50))
+        -- the composition: per ship size of the template, the fleet's ships over the template's,
+        -- centred in its grid
+        local cg = wr.rects[W .. "/box2/box2_3/fleet_info/fleet_composition/fleet_composition_grid"]
+        local groups, order = {}, {}
+        for _, e in ipairs(sel.template_designs or {}) do
+            local g = groups[e.size]
+            if not g then
+                g = { size = e.size, template = 0, fleet = 0 }
+                groups[e.size] = g
+                order[#order + 1] = g
+            end
+            g.template = g.template + e.count
+        end
+        for _, s in ipairs(sel.ships) do
+            if groups[s.size] then
+                groups[s.size].fleet = groups[s.size].fleet + 1
+            end
+        end
+        table.sort(order, function(a, b)
+            return ((sizes[a.size] or {}).size_multiplier or 0) < ((sizes[b.size] or {}).size_multiplier or 0)
+        end)
+        if cg then
+            local x0 = cg.x + (cg.w - #order * 83) / 2
+            for i, g in ipairs(order) do
+                local p = W .. "/composition/" .. i
+                local ep = p .. "/fleet_manager_fleet_composition_entity"
+                local z = sizes[g.size] or {}
+                layout(ctx, MANAGER_GUI, "fleet_manager_fleet_composition_entity", {
+                    prefix = p,
+                    parent = { x = x0 + (i - 1) * 83, y = cg.y, w = 0, h = 0 },
+                    sprites = z.icon and { [ep .. "/icon"] = "GFX_" .. z.icon } or nil,
+                    text = { [ep .. "/template_count"] = loc_text(loc, "VALUE_OUT_OF_MAX", { VALUE = "§W" .. g.fleet .. "§!", MAX = "§W" .. g.template .. "§!" }) },
+                })
+            end
+        end
+        -- the Ships rows: the template's designs by size, then name [V]
+        local dg = wr.rects[W .. "/box2/box2_3/designs/designs_grid"]
+        local rows = {}
+        for _, e in ipairs(sel.template_designs or {}) do
+            rows[#rows + 1] = e
+        end
+        table.sort(rows, function(a, b)
+            local za, zb = (sizes[a.size] or {}).size_multiplier or 0, (sizes[b.size] or {}).size_multiplier or 0
+            if za ~= zb then
+                return za < zb
+            end
+            return name_text(loc, a.name) < name_text(loc, b.name)
+        end)
+        if dg then
+            for i, e in ipairs(rows) do
+                local p = W .. "/designs/" .. i
+                local ep = p .. "/fleet_manager_current_template_ship_design_entity"
+                local z = sizes[e.size] or {}
+                -- the ships of the slot (its design, or upgrading to it) and those already of it
+                local F, E = 0, 0
+                for _, s in ipairs(sel.ships) do
+                    if s.design == e.design or s.upgrade_to == e.design then
+                        F = F + 1
+                    end
+                    if s.design == e.design then
+                        E = E + 1
+                    end
+                end
+                local count
+                if E >= e.count then
+                    count = loc_text(loc, "FLEET_MANAGER_SHIP_DESIGN_COUNT_FULL", { TEMPLATE_COUNT = e.count })
+                elseif E < F then
+                    count = loc_text(loc, "FLEET_MANAGER_SHIP_DESIGN_UPGRADABLE_COUNT", { FLEET_COUNT = F, TEMPLATE_COUNT = e.count })
+                else
+                    count = loc_text(loc, "FLEET_MANAGER_SHIP_DESIGN_COUNT", { FLEET_COUNT = F, TEMPLATE_COUNT = e.count })
+                end
+                local from_row = #ctx.items + 1
+                layout(ctx, MANAGER_GUI, "fleet_manager_current_template_ship_design_entity", {
+                    prefix = p,
+                    parent = { x = dg.x, y = dg.y + (i - 1) * 42, w = 0, h = 0 },
+                    hide = { selected_overlay = true, auto_gen = not e.auto_design },
+                    sprites = z.icon and { [ep .. "/icon"] = "GFX_" .. z.icon } or nil,
+                    text = {
+                        [ep .. "/size"] = loc_text(loc, e.size),
+                        [ep .. "/name"] = loc_text(loc, "BUILDABLE_SHIP_NAME", { TYPE = name_text(loc, e.name) }),
+                        [ep .. "/ship_count"] = count,
+                        -- the fleet's strength (the designs' own, CalcMilitaryPower, not computed
+                        -- here: the fleet's whole [I])
+                        [ep .. "/offensive_power"] = loc_text(loc, "FLEET_MANAGER_SHIP_OFFENSIVE_POWER_FULL", { TEMPLATE_POWER = fleet.si_number(sel.military_power) }),
+                    },
+                })
+                if e.count <= F then
+                    grey(ctx, from_row, ep .. "/decrease_button")
+                end
+            end
+        end
+    end
+    -- the side panel: the Build Queue (CFleetManagerSideView's default mode), empty
+    local win = wr.rects[W]
+    if win then
+        layout(ctx, MANAGER_GUI, "fleet_manager_side_view", {
+            parent = { x = win.x, y = win.y, w = win.w, h = win.h },
+            hide = { available_window = true, retrofit_window = true },
+        })
+    end
 end
 
 ---------------------------------------------------------------- the windows

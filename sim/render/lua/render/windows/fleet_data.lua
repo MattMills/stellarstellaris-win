@@ -111,6 +111,7 @@ function fd.ship(sid)
         experience = num(world.field(s, "experience")) or 0,
         leader = num(world.field(s, "leader")),
         -- a newer design to upgrade to (ship_design_implementation.upgrade) [I]
+        upgrade_to = sdi and num(world.field(sdi, "upgrade")),
         upgradable = (function()
             local u = sdi and num(world.field(sdi, "upgrade"))
             return u ~= nil and u ~= NONE and u ~= did
@@ -119,8 +120,10 @@ function fd.ship(sid)
         required = {},
     }
     -- the design's components by slot (the ship's own sections name the weapons it carries)
+    out.sections = {}
     if stage then
         for _, sec in ipairs(world.fields(stage, "section")) do
+            out.sections[#out.sections + 1] = unquote(world.field(sec, "template")) or ""
             for _, c in ipairs(world.fields(sec, "component")) do
                 out.components[#out.components + 1] = {
                     slot = unquote(world.field(c, "slot")) or "",
@@ -246,8 +249,14 @@ function fd.ship_view(sid, observer)
     s.observer = observer
     local f = s.fleet and world.object("fleet", s.fleet)
     s.class = f and unquote(world.field(f, "ship_class")) or ""
-    if s.leader and s.leader ~= NONE then
-        s.leader_data = fd.leader(s.leader)
+    -- the fleet's leader (an admiral's skill counts in the ship's fire rate)
+    for _, v in ipairs(f and world.list(world.field(f, "ships")) or {}) do
+        local o = world.object("ships", tonumber(v))
+        local lid = o and num(world.field(o, "leader"))
+        if lid and lid ~= NONE then
+            s.fleet_leader = fd.leader(lid)
+            break
+        end
     end
     return s
 end
@@ -262,12 +271,29 @@ function fd.manager(observer, selected)
     if not pc then
         return out
     end
-    out.naval_capacity = num(world.field(pc, "naval_capacity")) or num(world.path(pc, "modules", "standard_economy_module", "naval_capacity"))
-    for _, o in ipairs(world.blocks(world.path(pc, "fleets_manager", "owned_fleets"))) do
-        local fid = tonumber(world.field(o, "fleet"))
+    out.used_naval_capacity = num(world.field(pc, "used_naval_capacity")) or 0
+    -- the councilors' traits' councilor_modifier (country_naval_cap_add, _mult): the naval
+    -- capacity's terms the renderer counts [I: technologies, traditions, starbase modules not]
+    out.councilor_traits = {}
+    for _, pid in ipairs(world.list(world.path(pc, "government", "council_positions"))) do
+        local pos = world.object("council_positions", tonumber(pid))
+        local lid = pos and num(world.field(pos, "leader"))
+        local l = lid and lid ~= NONE and world.object("leaders", lid)
+        if l then
+            for _, t in ipairs(world.fields(l, "traits")) do
+                out.councilor_traits[#out.councilor_traits + 1] = unquote(t)
+            end
+        end
+    end
+    -- the country's templates in its order (fleet_template_manager), each with its fleet
+    for _, tid in ipairs(world.list(world.path(pc, "fleet_template_manager", "fleet_template"))) do
+        local t = world.object("fleet_template", tonumber(tid))
+        local fid = t and num(world.field(t, "fleet"))
         local f = fid and world.object("fleet", fid)
-        if f and world.path(f, "properties", "station") ~= "yes" and world.field(f, "ship_class") == "shipclass_military" then
-            out.fleets[#out.fleets + 1] = fd.fleet(fid, observer)
+        if f then
+            local d = fd.fleet(fid, observer)
+            d.template_id = tonumber(tid)
+            out.fleets[#out.fleets + 1] = d
         end
     end
     out.selected = selected or (out.fleets[1] and out.fleets[1].id)

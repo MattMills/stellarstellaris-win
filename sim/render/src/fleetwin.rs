@@ -212,11 +212,15 @@ impl App {
     /// while it has the save's world. Returns the string the code returns.
     fn fleet_world_query(&mut self, code: &str) -> Result<String, String> {
         let m = self.map.as_mut().ok_or("no map loaded")?;
+        let code = format!("local fd = require('render.windows.fleet_data') {code}");
         if !m.has_world() {
-            return Err("the fleet windows read the save's world: not while the simulation runs".into());
+            // the simulation's thread has the world (and its definitions and modifiers: the ship
+            // view's stats)
+            let clock = m.clock.as_ref().ok_or("no world: neither the map's nor a simulation")?;
+            return clock.query(&code).map_err(|e| format!("render.windows.fleet_data (simulation): {e}"));
         }
         let lua = &m.runtime.lua;
-        lua.load(format!("local fd = require('render.windows.fleet_data') {code}"))
+        lua.load(code)
             .set_name("fleet windows' query")
             .eval::<String>()
             .map_err(|e| format!("render.windows.fleet_data: {e}"))

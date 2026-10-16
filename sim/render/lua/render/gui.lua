@@ -323,7 +323,8 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                         local bs = get(e.value, "spriteType") or get(e.value, "quadTextureSprite")
                         local s = bs and db.sprites[bs]
                         local fill = s and s.kind == "corneredTileSpriteType"
-                        if bs and not hidden(path .. "/background", "") then
+                        -- (a window may have more than one: each is hidden by its own name too)
+                        if bs and not hidden(path .. "/background", get(e.value, "name") or "") then
                             local bw, bh
                             if fill then
                                 bw, bh = w, h
@@ -357,7 +358,9 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             if sprite then
                 sprite_item(path, sprite, frame, x, y, w, h, button)
             end
-            local bt = field("buttonText")
+            -- a button's text: its buttonText, else its `text` (the game draws both: the fleet
+            -- manager's add_ship_design, "Add Ship")
+            local bt = field("buttonText") or (kind ~= "icontype" and field("text") or nil)
             if bt and bt ~= "" then
                 local text = opts.text and opts.text[path] or bt
                 text_item(path .. "/text", field("buttonFont") or field("font"), text, x, y, w, h, "center", "center",
