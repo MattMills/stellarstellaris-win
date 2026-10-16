@@ -104,6 +104,8 @@ pub struct Galaxy {
     pub sector_capitals: HashMap<u32, u32>,
     /// the outliner's and the observer outliner's view of the world (render.windows.outliner)
     pub outliner_view: crate::outliner::LuaData,
+    /// what the map labels show (render.windows.mapicons: mapicons.rs)
+    pub mapicons: std::sync::Arc<crate::mapicons::Data>,
 }
 
 impl Galaxy {
@@ -415,6 +417,7 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                 None => None,
             },
             core_radius: g.get::<Option<f32>>("core_radius")?.unwrap_or(0.0),
+            mapicons: std::sync::Arc::new(crate::mapicons::read(g.get("mapicons")?)?),
             player: g.get::<Option<u32>>("player")?.unwrap_or(0),
             communications: g.get::<Option<Table>>("communications")?.map(|t| t.sequence_values::<u32>().collect::<mlua::Result<Vec<_>>>()).transpose()?,
             outliner: match g.get::<Option<Table>>("outliner")? {

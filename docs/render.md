@@ -1323,6 +1323,7 @@ freed when the device is polled).
 
 ### Not done yet
 
+- The map icons (star labels, system labels): docs/windows/mapicons.md.
 - The galaxy star labels' own rules (CGalacticObjectMapIcon not read: owner flags, the capital
   plate, which names show, the fleets' presence icons, the empire's map name); the fleet type
   icon's frame (the rule is read, the EShipClass order is not: by eye now); the capital label's

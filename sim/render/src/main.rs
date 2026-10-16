@@ -43,6 +43,7 @@ mod font;
 mod galaxy;
 mod galaxymap;
 mod outliner;
+mod mapicons;
 mod mapnames;
 mod gui;
 mod render;

@@ -444,6 +444,8 @@ function galaxy.extract(game_dir)
         outliner_view = view,
         capital = capital,
     }
+    -- what the map labels show (render.windows.mapicons)
+    out.mapicons = require("render.windows.mapicons").extract(game_dir, pc and player or nil)
     out.notes = string.format(
         "%d fleets, %d nebulae; " ..
         "%d systems, %d hyperlanes, %d owners; %d star classes used (no texture for: %s); " ..
