@@ -101,6 +101,30 @@ local function definitions(game_dir)
             end
         end
     end
+    -- the traits' slave_cost (CTraitSet::CalcSlaveCost), the files in name order
+    d.slave_cost = {}
+    local p = io.popen("ls '" .. game_dir .. "/common/traits' 2>/dev/null")
+    local files = {}
+    if p then
+        for line in p:lines() do
+            if line:match("%.txt$") then
+                files[#files + 1] = "common/traits/" .. line
+            end
+        end
+        p:close()
+    end
+    table.sort(files)
+    for _, f in ipairs(files) do
+        local okf, t = pcall(source.parse, game_dir, f)
+        for _, e in ipairs(okf and t or {}) do
+            if e.op and e.key and type(e.value) == "table" and e.value.text == nil then
+                local sc = get(e.value, "slave_cost")
+                if type(sc) == "table" then
+                    d.slave_cost[e.key.text] = tonumber(get(sc, "trade")) or 0
+                end
+            end
+        end
+    end
     defs_cache[game_dir] = d
     return d
 end
@@ -305,6 +329,7 @@ function market.data(cid, game_dir)
             out.resources[#out.resources + 1] = e
         end
     end
+    out.slaves = market.slave_data(world, d, c, cid)
     -- the monthly trades: this country's [I: their save fields, none in the saves read]
     for k, v in world.statements(m) do
         if k == "monthly_trades" and type(v) == "table" then
@@ -321,6 +346,140 @@ function market.data(cid, game_dir)
         end
     end
     return out
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- the slave market (CSlaveMarketView) and the Sell Slaves window (CSlavePoolView)
+
+local function unquote(v)
+    return (tostring(v or ""):gsub('"', ""))
+end
+
+-- CSlaveMarketManager::CalcPricePerPop without a country's modifier: (the defines' base, 1000
+-- trade, + the species' traits' slave_cost) / POP_BULK_UNIT_SIZE (100) [I: the country's slave
+-- market cost modifier not evaluated]
+local function slave_price_per_pop(world, d, species)
+    local cost = 1000
+    for _, tr in ipairs(world.fields(world.field(species, "traits") or {}, "trait")) do
+        cost = cost + (d.slave_cost[unquote(tr)] or 0)
+    end
+    return cost / 100
+end
+
+-- a colony's planet
+local function colony_planet(world, colony)
+    local carrier = colony and world.field(colony, "carrier")
+    return type(carrier) == "table" and world.object("planet", tonumber(world.field(carrier, "reference"))) or nil
+end
+
+function market.slave_data(world, d, c, cid)
+    local galaxy = require("render.galaxy")
+    local s = { on_market = {}, colonies = {}, species = {}, pool = {} }
+    -- the enslaved species (the species rights: citizenship_slavery) [I: CanBeSoldOnSlaveMarket's
+    -- other conditions, robots and the trade bans, not evaluated]
+    local enslaved = {}
+    local sr = world.path(c, "modules", "standard_species_rights_module")
+    for _, b in ipairs(type(sr) == "table" and world.blocks(world.field(sr, "species_rights")) or {}) do
+        if unquote(world.field(b, "citizenship")) == "citizenship_slavery" then
+            enslaved[tonumber(world.field(b, "species_index"))] = true
+        end
+    end
+    -- the market's slaves (slave_market_manager.slaves_on_market: { key = pop group value = amount })
+    local on_market = {}
+    local smm = world.meta.slave_market_manager
+    for _, e in ipairs(type(smm) == "table" and world.blocks(world.field(smm, "slaves_on_market")) or {}) do
+        local g, n = tonumber(world.field(e, "key")), tonumber(world.field(e, "value")) or 0
+        local pg = g and world.object("pop_group", g)
+        if pg then
+            on_market[g] = n
+            local sp = world.object("species", tonumber(world.path(pg, "key", "species")))
+            local planet = colony_planet(world, world.object("colony", tonumber(world.field(pg, "planet"))))
+            s.on_market[#s.on_market + 1] = {
+                group = g, amount = n,
+                species = sp and galaxy.name_block(world.field(sp, "name")),
+                class = sp and unquote(world.field(sp, "class")),
+                habitability = math.floor((tonumber(world.field(pg, "habitability")) or 0) * 100 + 1e-9),
+                price = sp and math.ceil(slave_price_per_pop(world, d, sp) * n) or 0,
+                seller = planet and tonumber(world.field(planet, "owner")) == cid or false,
+            }
+        end
+    end
+    -- the country's colonies in its order (owned_planets: colony ids [I]), not being colonised
+    local capital = tonumber(world.field(c, "capital"))
+    local colonies = {}
+    for _, id in ipairs(world.list(world.field(c, "owned_planets"))) do
+        id = tonumber(id)
+        local colony = id and world.object("colony", id)
+        local planet = colony_planet(world, colony)
+        if planet and unquote(world.field(colony, "status")) ~= "in_progress" then
+            colonies[#colonies + 1] = { id = id, colony = colony, planet = planet }
+        end
+    end
+    for _, e in ipairs(colonies) do
+        -- the jobs: the colony's workforce over its jobs' workforce limits (CalcWorkforceAmount)
+        local a, b = 0, 0
+        for _, j in ipairs(world.list(world.field(e.colony, "pop_jobs"))) do
+            local job = world.object("pop_job", tonumber(j))
+            if job then
+                a = a + (tonumber(world.field(job, "workforce")) or 0)
+                b = b + math.max(0, tonumber(world.field(job, "workforce_limit")) or 0)
+            end
+        end
+        -- the habitability shown: the founder species' pop group's there [I: GetCachedHabitabilityUI]
+        local hab = 1
+        for _, g in ipairs(world.list(world.field(e.colony, "pop_groups"))) do
+            local pg = world.object("pop_group", tonumber(g))
+            if pg and tonumber(world.path(pg, "key", "species")) == tonumber(world.field(c, "founder_species_ref")) then
+                hab = tonumber(world.field(pg, "habitability")) or hab
+                break
+            end
+        end
+        s.colonies[#s.colonies + 1] = {
+            id = e.id, name = galaxy.name_block(world.field(e.planet, "name")), class = unquote(world.field(e.planet, "planet_class")),
+            habitability = math.floor(hab * 100 + 1e-9),
+            housing = tonumber(world.field(e.colony, "free_housing")) or 0,
+            unemployed = tonumber(world.field(e.colony, "unemploy_pop")) or 0,
+            jobs = { math.floor(a), math.floor(b) },
+        }
+    end
+    -- the slaves the country could sell: its colonies' enslaved pop groups in order; the species
+    -- in first-seen order (ListSpeciesWithSlavePops) with their pops and groups
+    local seen = {}
+    for _, e in ipairs(colonies) do
+        local groups = {}
+        for _, g in ipairs(world.list(world.field(e.colony, "pop_groups"))) do
+            g = tonumber(g)
+            local pg = g and world.object("pop_group", g)
+            local sp_id = pg and tonumber(world.path(pg, "key", "species"))
+            if sp_id and enslaved[sp_id] then
+                local sp = world.object("species", sp_id)
+                if not seen[sp_id] then
+                    seen[sp_id] = { id = sp_id, name = sp and galaxy.name_block(world.field(sp, "name")), total = 0, groups = 0 }
+                    s.species[#s.species + 1] = seen[sp_id]
+                end
+                local size = tonumber(world.field(pg, "size")) or 0
+                seen[sp_id].total = seen[sp_id].total + size
+                seen[sp_id].groups = seen[sp_id].groups + 1
+                local amount = math.min(size - (on_market[g] or 0), 100)
+                groups[#groups + 1] = {
+                    group = g, species = sp_id, category = unquote(world.path(pg, "key", "category")), amount = amount,
+                    price = sp and math.ceil(slave_price_per_pop(world, d, sp) * amount) or 0,
+                }
+            end
+        end
+        if #groups > 0 then
+            -- the capital first, then the others in their order [I: the others by distance]
+            local entry = { id = e.id, name = galaxy.name_block(world.field(e.planet, "name")), class = unquote(world.field(e.planet, "planet_class")), groups = groups }
+            if e.id == capital then
+                table.insert(s.pool, 1, entry)
+            else
+                s.pool[#s.pool + 1] = entry
+            end
+        end
+    end
+    -- CanSellSlaves: a colony with slaves and room on the market (SLAVE_MARKET_SIZE_CAP, 100)
+    s.can_sell = #s.species > 0 and #s.on_market < 100
+    return s
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -385,6 +544,174 @@ local function grid_entries(ctx, items, report, file, window, path, list, each)
     end
 end
 market.grid_entries = grid_entries
+
+-- a planet class's icon (the class's `icon`: GFX_planet_type_<class without pc_> in the game's
+-- files [I: read from the planet classes by the planner, assumed here])
+local function class_icon(class)
+    return "GFX_planet_type_" .. tostring(class or ""):gsub("^pc_", "")
+end
+
+-- a percentage coloured as the game's habitability (red under 40, yellow under 70, else green)
+local function habitability_text(n)
+    local c = n < 40 and "R" or n < 70 and "Y" or "G"
+    return "§" .. c .. tostring(n) .. "%§!"
+end
+
+-- the Slave Market tab (CSlaveMarketView::Update): the slaves on the market sorted by species name
+-- (stable), "No Slaves for sale..." without any, Sell Slaves enabled when the country has slaves
+-- to sell and the market room; the destinations: the country's colonies, none selected until
+-- one is clicked (a click selects it, again deselects)
+function market.slave_tab(ctx, items, report, s, state, access)
+    local names = require("render.names")
+    local loc = ctx.loc
+    local SM = V .. "/slave_market"
+    local L = SM .. "/left_box"
+    -- (laid out in the market window's report: its grids)
+    local sel_colony = tonumber(state.colony)
+    -- the market's slaves
+    local list = {}
+    for _, e in ipairs(s.on_market or {}) do
+        local r = {}
+        for k, v in pairs(e) do
+            r[k] = v
+        end
+        r.name = e.species and names.format(loc, e.species) or ""
+        list[#list + 1] = r
+    end
+    for i, r in ipairs(list) do
+        r._i = i
+    end
+    table.sort(list, function(a, b)
+        if a.name ~= b.name then
+            return a.name < b.name
+        end
+        return a._i < b._i
+    end)
+    grid_entries(ctx, items, report, FILE, "slave_market_pop_entry", L .. "/slaves_for_sale/slave_list", list, function(r, p)
+        local buy = r.seller and "CANCEL" or ("£trade£ " .. tostring(r.price))
+        return {
+            -- (the portrait not drawn: the species' portraits are not rendered here)
+            hide = { [p .. "/portrait"] = true },
+            text = {
+                [p .. "/species"] = r.name, [p .. "/type"] = r.class or "",
+                [p .. "/habitability"] = habitability_text(r.habitability or 0),
+                [p .. "/buy_cancel"] = buy,
+            },
+            disabled = { [p .. "/buy_cancel"] = (not r.seller and (not sel_colony or not access)) or nil },
+        }
+    end)
+    -- the destinations
+    grid_entries(ctx, items, report, FILE, "slave_market_planet_entry", SM .. "/right_box/selectable_planets/planet_list", s.colonies or {}, function(cl, p)
+        local a, b = cl.jobs[1], cl.jobs[2]
+        local housing = math.floor(cl.housing + (cl.housing > 0 and 0.5 or -0.5))
+        return {
+            sprites = { [p .. "/planet_info/planet_class_icon"] = class_icon(cl.class) },
+            text = {
+                [p .. "/planet_info/name"] = cl.name and names.format(loc, cl.name) or "",
+                [p .. "/planet_info/type"] = loc and loc.has(cl.class) and loc.get(cl.class) or cl.class,
+                [p .. "/planet_info/habitability"] = habitability_text(cl.habitability or 0),
+                [p .. "/planet_housing/planet_housing_amount"] = "§" .. (housing < 0 and "R" or housing == 0 and "Y" or "G") .. housing .. "§!",
+                [p .. "/planet_unemployed/planet_unemployed_amount"] = "§" .. (cl.unemployed > 0 and "R" or "G") .. math.floor(cl.unemployed) .. "§!",
+                [p .. "/planet_jobs/planet_jobs_amount"] = "§" .. (a >= b and "Y" or "W") .. a .. " / " .. b .. "§!",
+            },
+            hide = { [p .. "/selected_overlay"] = (cl.id ~= sel_colony) or nil },
+            actions = { [p] = "view_set:colony=" .. (cl.id == sel_colony and "" or tostring(cl.id)) },
+        }
+    end)
+end
+
+-- the Sell Slaves window (CSlavePoolView), opened by Sell Slaves: the first species with slaves
+-- (or the one chosen), its pops (SI_NUMBER, one decimal), its colonies' groups (the capital
+-- first; collapsed until clicked) and their pops (at most 100 each, the price without the
+-- country's modifier), disabled without the galactic market's access; the summary hidden and
+-- Put on Market disabled while nothing is selected
+function market.slave_pool(ctx, items, report, s, state, access)
+    local names = require("render.names")
+    local loc = ctx.loc
+    local P = "/slave_pool_view"
+    local species = (s.species or {})[1]
+    for _, sp in ipairs(s.species or {}) do
+        if tostring(sp.id) == state.pool_species then
+            species = sp
+        end
+    end
+    local texts, hide, actions, disabled = {}, {}, {}, {}
+    actions[P .. "/close"] = "view_set:pool="
+    if species then
+        texts[P .. "/species_dropdown/selected_species"] = species.name and names.format(loc, species.name) or ""
+        texts[P .. "/species_dropdown/slave_amount"] = market.stockpile(species.total)
+    else
+        hide[P .. "/species_dropdown/selected_species"] = true
+        hide[P .. "/species_dropdown/slave_amount"] = true
+        hide[P .. "/species_dropdown/slave_icon"] = true
+    end
+    hide[P .. "/summary_window/cost_summary"] = true
+    disabled[P .. "/put_on_market"] = true
+    local it, rp = gui.layout(ctx.game_dir, ctx.db, "interface/slave_pool_view.gui", "slave_pool_view", ctx.screen, {
+        texture_size = ctx.texture_size, loc = loc, text = texts, hide = hide, actions = actions, disabled = disabled,
+    })
+    gui.merge(items, report, it, rp)
+    local list = rp.rects[P .. "/slaves/planet_groups"]
+    if not list or not species then
+        return
+    end
+    -- the colony groups of the species, each 35 high, its pops under it when open (spacing 1,
+    -- the inner list's 4 [V: the .gui's spacing])
+    local y = list.y
+    for gi, cg in ipairs(s.pool or {}) do
+        local pops = {}
+        for _, g in ipairs(cg.groups) do
+            if g.species == species.id then
+                pops[#pops + 1] = g
+            end
+        end
+        if #pops > 0 then
+            local open = state.pool_open == tostring(cg.id)
+            local prefix = P .. "/slaves/planet_groups/" .. gi
+            local p = prefix .. "/slave_pool_planet_group_entry"
+            local ok, gi_items, grp = pcall(gui.layout, ctx.game_dir, ctx.db, "interface/slave_pool_view.gui", "slave_pool_planet_group_entry", ctx.screen, {
+                texture_size = ctx.texture_size, loc = loc, prefix = prefix, parent = { x = list.x, y = y, w = 0, h = 0 },
+                sprites = { [p .. "/planet_class"] = class_icon(cg.class) },
+                frames = { [p .. "/expand_icon"] = open and 2 or 1 },
+                text = { [p .. "/planet_name"] = cg.name and names.format(loc, cg.name) or "" },
+                actions = { [p .. "/background"] = "view_set:pool_open=" .. (open and "" or tostring(cg.id)) },
+            })
+            if ok then
+                gui.merge(items, report, gi_items, grp)
+            end
+            y = y + 35 + 1
+            if open then
+                y = y + 4
+                for k, g in ipairs(pops) do
+                    local pp = prefix .. "/" .. k
+                    local q = pp .. "/slave_pool_pop_entry"
+                    local cat = "pop_cat_" .. g.category
+                    local okp, pi, pr = pcall(gui.layout, ctx.game_dir, ctx.db, "interface/slave_pool_view.gui", "slave_pool_pop_entry", ctx.screen, {
+                        texture_size = ctx.texture_size, loc = loc, prefix = pp, parent = { x = list.x, y = y, w = 0, h = 0 },
+                        -- (the portrait, its planet background and building not drawn)
+                        hide = {
+                            [q .. "/selected_overlay"] = true, [q .. "/portrait/portrait"] = true,
+                            [q .. "/portrait/pop_background"] = true, [q .. "/portrait/building_icon"] = true,
+                            [q .. "/portrait/pop_mod"] = true, [q .. "/disabled_entry"] = access or nil,
+                        },
+                        frames = { [q .. "/portrait/pop_status"] = 2 },
+                        text = {
+                            [q .. "/portrait/amount"] = tostring(g.amount),
+                            [q .. "/species"] = species.name and names.format(loc, species.name) or "",
+                            [q .. "/category_name"] = loc and loc.has(cat) and loc.get(cat) or g.category,
+                            [q .. "/estimated_price/price"] = "£trade£ " .. tostring(g.price),
+                        },
+                    })
+                    if okp then
+                        gui.merge(items, report, pi, pr)
+                    end
+                    y = y + 65 + 4
+                end
+            end
+        end
+    end
+end
+
 
 -- market.extract(game_dir): the player's market (views.rs: where the galaxy is read)
 function market.extract(game_dir)
@@ -459,10 +786,25 @@ function market.build(ctx, data, state)
         texts[M .. "/market_info_window/market_info"] = data.galactic and "GALACTIC_MARKET_FOUNDED_NO_ACCESS_DESC" or "GALACTIC_MARKET_NOT_FOUNDED_DESC"
     end
 
+    -- the slave market tab's own (CSlaveMarketView::Update): "No Slaves for sale..." only without
+    -- any, Sell Slaves enabled by CanSellSlaves (it opens the Sell Slaves window)
+    local slaves = data.slaves or {}
+    if #(slaves.on_market or {}) > 0 then
+        hide[V .. "/slave_market/left_box/slaves_for_sale/no_slaves_for_sale"] = true
+    end
+    if slaves.can_sell then
+        actions[V .. "/slave_market/left_box/sell_slaves"] = "view_set:pool=1"
+    else
+        disabled[V .. "/slave_market/left_box/sell_slaves"] = true
+    end
     local items, report = gui.layout(game_dir, db, FILE, "market_view", screen, {
         texture_size = texture_size, loc = loc, hide = hide, text = texts, actions = actions, sizes = sizes, disabled = disabled,
     })
     if slave then
+        market.slave_tab(ctx, items, report, data.slaves or {}, state, data.access)
+        if state.pool == "1" then
+            market.slave_pool(ctx, items, report, data.slaves or {}, state, data.access)
+        end
         return items, report
     end
     local function rect_of(path)
@@ -519,6 +861,9 @@ function market.build(ctx, data, state)
                 },
             }
         end)
+    end
+    if state.pool == "1" then
+        market.slave_pool(ctx, items, report, data.slaves or {}, state, data.access)
     end
     return items, report
 end
