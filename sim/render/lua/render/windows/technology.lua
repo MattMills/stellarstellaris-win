@@ -323,6 +323,47 @@ local function card(opts, defs, ctx, W, tech, level)
     end
 end
 
+-- a text with "\n"s as one text item a line, `lh` apart (the GUI's text boxes break lines; the
+-- renderer's text items do not)
+local function split_lines(items, first, lh)
+    for i = #items, first, -1 do
+        local it = items[i]
+        if it.kind == "text" and it.text:find("\n", 1, true) then
+            table.remove(items, i)
+            local lines, line = {}, {}
+            for _, s in ipairs(it.spans) do
+                local parts = {}
+                for p in (s.text .. "\n"):gmatch("(.-)\n") do
+                    parts[#parts + 1] = p
+                end
+                for k, p in ipairs(parts) do
+                    if k > 1 then
+                        lines[#lines + 1], line = line, {}
+                    end
+                    if p ~= "" then
+                        line[#line + 1] = { text = p, colour = s.colour }
+                    end
+                end
+            end
+            lines[#lines + 1] = line
+            for k, spans in ipairs(lines) do
+                local plain = {}
+                for _, s in ipairs(spans) do
+                    plain[#plain + 1] = s.text
+                end
+                local copy = {}
+                for key, v in pairs(it) do
+                    copy[key] = v
+                end
+                copy.path, copy.spans, copy.text = it.path .. "/" .. k, spans, table.concat(plain)
+                copy.y, copy.h, copy.valign = it.y + lh * (k - 1), lh, "top"
+                table.insert(items, i + k - 1, copy)
+            end
+        end
+    end
+
+end
+
 -- technology.build(ctx, data, state) -> items, report
 function technology.build(ctx, data, state)
     local defs = definitions(ctx.game_dir)
@@ -335,6 +376,68 @@ function technology.build(ctx, data, state)
         local i, r = gui.layout(ctx.game_dir, ctx.db, FILE, window, ctx.screen, opts)
         gui.merge(items, report, i, r)
         return r
+    end
+
+    -- a card's `unlocks` list (TechnologyViewAddUnlocks; technology_unlocks.lua): its entries
+    -- stacked with no spacing, a text entry as high as its lines (16 apart [I: measured]), a
+    -- component entry 35 high, 18 with one component (its single_component_icon); a size icon
+    -- per component in its box, 26 apart (18 wide, spacing 8)
+    local unlocks = require("render.windows.technology_unlocks")
+    local LH = 16
+    local function entry_h(e)
+        if e.kind == "component" then
+            return #e.frames == 1 and 18 or 35
+        end
+        local _, n = e.text:gsub("\n", "")
+        return (n + 1) * LH
+    end
+    local function unlocks_of(tech)
+        local entries, h = unlocks.entries(ctx.game_dir, ctx.loc, tech), 0
+        for _, e in ipairs(entries) do
+            h = h + entry_h(e)
+        end
+        return entries, h
+    end
+    local function lay_unlocks(rect, entries, prefix, max_h)
+        if not rect then
+            return
+        end
+        local y = rect.y
+        for k, e in ipairs(entries) do
+            local h = entry_h(e)
+            if max_h and y + h > rect.y + max_h then
+                break
+            end
+            local p = prefix .. "/" .. k
+            if e.kind == "text" then
+                local P = p .. "/technology_view_unlock_entry"
+                local first = #items + 1
+                layout("technology_view_unlock_entry", {
+                    prefix = p, parent = { x = rect.x, y = y, w = 0, h = 0 },
+                    text = { [P .. "/desc"] = e.text }, sizes = { [P .. "/desc"] = { 345, h } },
+                })
+                split_lines(items, first, LH)
+            else
+                local P = p .. "/technology_view_unlock_entry_component"
+                local er = layout("technology_view_unlock_entry_component", {
+                    prefix = p, parent = { x = rect.x, y = y, w = 0, h = 0 },
+                    text = { [P .. "/header"] = e.header },
+                    frames = { [P .. "/single_component_icon"] = e.frames[1] },
+                    hide = { single_component_icon = #e.frames > 1 or nil },
+                })
+                local box = er.rects[P .. "/box"]
+                if #e.frames > 1 and box then
+                    for i, f in ipairs(e.frames) do
+                        local q = p .. "/size/" .. i
+                        layout("technology_view_component_size", {
+                            prefix = q, parent = { x = box.x + 26 * (i - 1), y = box.y, w = 0, h = 0 },
+                            frames = { [q .. "/technology_view_component_size/icon"] = f },
+                        })
+                    end
+                end
+            end
+            y = y + h
+        end
     end
 
     -- the window (Reload: select_window and researched_window hidden until opened)
@@ -365,41 +468,7 @@ function technology.build(ctx, data, state)
     local frames = { [V .. "/researched"] = state.researched and 3 or nil }
     local r = layout("technology_view_window", { hide = hide, text = text, actions = actions, frames = frames })
     -- the description's lines (SELECT_TECHNOLOGY_DESC has "\n"s), 17 apart [I: measured]
-    for i = #items, 1, -1 do
-        local it = items[i]
-        if it.kind == "text" and it.text:find("\n", 1, true) then
-            table.remove(items, i)
-            local lines, line = {}, {}
-            for _, s in ipairs(it.spans) do
-                local parts = {}
-                for p in (s.text .. "\n"):gmatch("(.-)\n") do
-                    parts[#parts + 1] = p
-                end
-                for k, p in ipairs(parts) do
-                    if k > 1 then
-                        lines[#lines + 1], line = line, {}
-                    end
-                    if p ~= "" then
-                        line[#line + 1] = { text = p, colour = s.colour }
-                    end
-                end
-            end
-            lines[#lines + 1] = line
-            for k, spans in ipairs(lines) do
-                local plain = {}
-                for _, s in ipairs(spans) do
-                    plain[#plain + 1] = s.text
-                end
-                local copy = {}
-                for key, v in pairs(it) do
-                    copy[key] = v
-                end
-                copy.path, copy.spans, copy.text = it.path .. "/" .. k, spans, table.concat(plain)
-                copy.y, copy.h, copy.valign = it.y + 17 * (k - 1), 17, "top"
-                table.insert(items, i + k - 1, copy)
-            end
-        end
-    end
+    split_lines(items, 1, 17)
 
     -- the head of research (paragon_portrait_container_research in research_container): its
     -- background, the council position's icon, the leader's name and the position's title
@@ -488,7 +557,11 @@ function technology.build(ctx, data, state)
         else
             opts.hide[W .. "/research"] = true
         end
-        layout("technology_view_area_window", opts)
+        local ar = layout("technology_view_area_window", opts)
+        -- the card's unlocks (not resized: its list's 66, scrolled)
+        if item then
+            lay_unlocks(ar.rects[W .. "/research/unlocks"], (unlocks_of(item.tech)), prefix .. "/unlocks", 66)
+        end
     end
 
     -- select_window's list: the area's alternatives (CanResearch), 120 apart [I: the rows are
@@ -497,13 +570,29 @@ function technology.build(ctx, data, state)
         local list = r.rects[V .. "/select_window/list"]
         local a = data.areas[sel_area] or { alternatives = {} }
         local y = list.y
-        for k, tech in ipairs(a.alternatives) do
-            if y + 120 > list.y + list.h then
+        -- (not the ones in the area's queue: the game's frame leaves out Blue Lasers while it is
+        -- researched [I: CanResearch])
+        local queued, offers = {}, {}
+        for _, q in ipairs(a.queue or {}) do
+            queued[q.tech] = true
+        end
+        for _, t in ipairs(a.alternatives) do
+            if not queued[t] then
+                offers[#offers + 1] = t
+            end
+        end
+        for k, tech in ipairs(offers) do
+            -- the row resized to its unlocks (UpdateEntry with resize: the list and bg_container
+            -- grow past their 54 and 70) [I: by the game's frames]
+            local entries, uh = unlocks_of(tech)
+            local grow = math.max(0, uh - 54)
+            if y + 120 + grow > list.y + list.h then
                 break
             end
             local prefix = "/select/" .. k
             local E = prefix .. "/technology_view_tech_entry_window"
-            local opts = { prefix = prefix, parent = { x = list.x, y = y, w = 0, h = 0 }, hide = {}, text = {}, sprites = {} }
+            local opts = { prefix = prefix, parent = { x = list.x, y = y, w = 0, h = 0 }, hide = {}, text = {}, sprites = {},
+                sizes = { [E .. "/bg_container"] = { 390, 70 + grow } } }
             card(opts, defs, ctx, E, tech)
             if tech ~= data.always then
                 opts.hide[E .. "/always_available"] = true
@@ -515,8 +604,9 @@ function technology.build(ctx, data, state)
             local cost = cost_of(defs, data, tech)
             local stored = data.stored and data.stored[tech] or 0
             opts.text[E .. "/cost"] = cost == 0 and "COST_FREE" or (stored > 0 and (whole(stored) .. "/" .. whole(cost)) or whole(cost))
-            layout("technology_view_tech_entry_window", opts)
-            y = y + 120
+            local er = layout("technology_view_tech_entry_window", opts)
+            lay_unlocks(er.rects[E .. "/unlocks"], entries, prefix .. "/unlocks")
+            y = y + 120 + grow
         end
     end
 
@@ -529,8 +619,10 @@ function technology.build(ctx, data, state)
             local e = data.researched[n]
             local t = defs.techs[e.tech]
             if t and t.area == state.researched then
+                local entries, uh = unlocks_of(e.tech)
+                local grow = math.max(0, uh - 54)
                 for level = e.level, 1, -1 do
-                    if y + 90 > list.y + list.h then
+                    if y + 90 + grow > list.y + list.h then
                         break
                     end
                     k = k + 1
@@ -539,8 +631,9 @@ function technology.build(ctx, data, state)
                     local opts = { prefix = prefix, parent = { x = list.x, y = y, w = 0, h = 0 }, hide = {}, text = {}, sprites = {} }
                     card(opts, defs, ctx, E, e.tech, level)
                     opts.text[E .. "/cost"] = t.start and "TECH_STARTING" or whole(cost_of(defs, data, e.tech))
-                    layout("technology_view_tech_researched_entry_window", opts)
-                    y = y + 105
+                    local er = layout("technology_view_tech_researched_entry_window", opts)
+                    lay_unlocks(er.rects[E .. "/unlocks"], entries, prefix .. "/unlocks")
+                    y = y + 90 + grow + 15
                 end
             end
         end
