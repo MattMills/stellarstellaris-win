@@ -12,8 +12,8 @@
 --   3. NColonyUpdate::MonthlySerialUpdate -> CColony::MonthlyUpdateSerial, per colony:
 --        GrowColonists (colonizing; pool at (colony + 6601) % 1000), ApplyAutoMigrationResults (not
 --        modelled), ApplyMonthlyGrowth, ApplyMonthlyAssembly, ApplyMonthlyDecline
---   4. NPlanetJobs::UpdatePopJobs, twice                                  -- a stand-in: the new pops'
---                                                                            category (pops.target)
+--   4. NPlanetJobs::UpdatePopJobs, twice                                  -- engine.jobs (the new pops
+--                                                                            first in pops.target's group)
 --   5. CColony::UpdateCachedGrowth, per colony: the pop groups' and the colony's growth of the month
 --
 -- Before it, the day's housing (CPopGroup::CalcHousingUsage in the daily pop group phase, which the
@@ -1151,6 +1151,118 @@ local function create_group(cid, sid, category, like)
     return id
 end
 
+-- pops.create_group(colony, species, category[, like]) -> a new group at the end of the colony's
+-- list (CColony::AddPopGroup 0x286a6e0), in the world's index of the planet's groups
+function pops.create_group(cid, sid, category, like)
+    local id = create_group(cid, sid, category, like)
+    local pid = world.colony_planet[cid]
+    if pid and world.pop_groups_of then
+        local l = world.pop_groups_of[pid]
+        if not l then l = {}; world.pop_groups_of[pid] = l end
+        l[#l + 1] = id
+    end
+    return id
+end
+
+-- the ethics' pops of a group: { names }, { counts }
+local function ethos_counts(g)
+    local ethos = world.field(g, "ethos")
+    if type(ethos) ~= "table" then return nil end
+    local names, counts = world.list(world.field(ethos, "ethics")), {}
+    for i, t in ipairs(world.list(world.field(ethos, "pops"))) do counts[i] = int(t) end
+    return names, counts
+end
+
+local function write_ethos(g, names, counts)
+    local ethos = world.field(g, "ethos")
+    if type(ethos) ~= "table" then return end
+    local idx = {}
+    for i = 1, #names do idx[i] = i end
+    table.sort(idx, function(a, b)
+        if counts[a] ~= counts[b] then return counts[a] > counts[b] end
+        return a < b
+    end)
+    local nb, cb = {}, {}
+    for _, i in ipairs(idx) do
+        if counts[i] > 0 then
+            nb[#nb + 1] = { text = names[i], quoted = true }
+            cb[#cb + 1] = { text = tostring(counts[i]) }
+        end
+    end
+    replace_field(ethos, "ethics", nb)
+    replace_field(ethos, "pops", cb)
+end
+
+-- pops.move_size(dst, src, n, detail, colony): CPopGroup::MoveSizeFrom (0x1e6d090): n (at most
+-- the source's size) pops from src to dst, their ethics with them (the source resized, the
+-- difference to the target by ethic [I]); an emptied source leaves the colony (CColony::
+-- RemovePopGroup 0x286ab70: the last group swapped into its place), is killed, and its month's
+-- details go to the target; the detail +n on the target and -n on the source, less what came with
+-- the source's details
+function pops.move_size(dst, src, n, detail, cid)
+    local gs, gd = world.object("pop_groups", src), world.object("pop_groups", dst)
+    if not gs or not gd or n <= 0 then return 0 end
+    local size = int(world.field(gs, "size"))
+    if n > size then n = size end
+    if n <= 0 then return 0 end
+    local names, before = ethos_counts(gs)
+    set_int(gs, "size", size - n)
+    resize_ethos(gs, size - n)
+    if names and #names == #before then
+        local an, after = ethos_counts(gs)
+        local amap = {}
+        for i, x in ipairs(an or {}) do amap[x] = after[i] or 0 end
+        local dn, dc = ethos_counts(gd)
+        if dn and #dn == #dc then
+            local at = {}
+            for i, x in ipairs(dn) do at[x] = i end
+            for i, x in ipairs(names) do
+                local moved = before[i] - (amap[x] or 0)
+                if moved > 0 then
+                    if not at[x] then
+                        dn[#dn + 1] = x
+                        dc[#dc + 1] = 0
+                        at[x] = #dn
+                    end
+                    dc[at[x]] = dc[at[x]] + moved
+                end
+            end
+            write_ethos(gd, dn, dc)
+        end
+    end
+    set_int(gd, "size", int(world.field(gd, "size")) + n)
+    local carried = 0
+    if size - n <= 0 then
+        local c = cid and world.object("colony", cid)
+        local list = c and world.field(c, "pop_groups")
+        if type(list) == "table" then
+            local last, at
+            for i, e in ipairs(list) do
+                if e.text ~= nil then
+                    last = i
+                    if tonumber(e.text) == src and not at then at = i end
+                end
+            end
+            if at then
+                if at ~= last then world.set_text(list, at, list[last].text) end
+                world.remove_at(list, last)
+            end
+        end
+        world.set(gs, "killed", "yes")
+        local sd = group_details(src)
+        local dd = group_details(dst)
+        for k, v in pairs(sd) do
+            dd[k] = (dd[k] or 0) + v
+            carried = carried + v
+        end
+        pops.stats.groups_killed = (pops.stats.groups_killed or 0) + 1
+    end
+    add_detail(dst, cid, detail, n - carried, true)
+    add_detail(src, cid, detail, -(n - carried), true)
+    touched[cid] = true
+    return n
+end
+
 -- pops.target(colony, species[, rank]) -> the pop group new pops of the species go to
 function pops.target(cid, sid, rank)
     local c = world.object("colony", cid)
@@ -1624,6 +1736,7 @@ end
 local function reset_caches()
     founder_cache, scale_cache = {}, {}
 end
+pops.remove_killed = remove_killed
 
 -- pops.monthly(host, date): NColonyUpdate::MonthlyUpdate's pops
 local monthly
@@ -1670,6 +1783,13 @@ monthly = function(host, date)
         apply_growth(host, cid, demo[cid])
         apply_assembly(host, cid, demo[cid])
         apply_decline(host, cid, demo[cid])
+    end
+    -- NPlanetJobs::UpdatePopJobs, twice (unless a cheat flag): the month's new pops into jobs
+    -- (engine.jobs; the new pops went to their species' civilian group, pops.target)
+    local ok_jobs, jobs = pcall(require, "engine.jobs")
+    if ok_jobs and jobs and not jobs.off then
+        jobs.update(colonies)
+        jobs.update(colonies)
     end
     -- the caches that follow the pops, the month's growth
     local col = colonies_module()

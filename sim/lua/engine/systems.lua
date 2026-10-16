@@ -250,6 +250,9 @@ P["daily.colonies_serial"] = function(host, date)
         end
     end
     call_optional("engine.colonies", "daily_serial", host, date)
+    -- NColonyUpdate::MonthlyOrDailyUpdatePopJobsInColony (0x28ecf80) from CGameState::DailyUpdate:
+    -- the jobs update twice over the colonies (engine.jobs; its place in the day [I])
+    call_optional("engine.jobs", "daily", host, date)
 end
 -- CModifierNodeManager::Update in the monthly update: the world's modifier graph brought up to date
 -- (when the modifiers come from the world: engine.economy.world_source; only what changed,
