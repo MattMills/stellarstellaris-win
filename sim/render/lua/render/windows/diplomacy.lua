@@ -102,6 +102,18 @@ end
 
 M.context = context
 
+-- a Lua chunk ("return { ... }") as its table, cached by the chunk (the windows lay out often)
+local chunks = setmetatable({}, { __mode = "v" })
+function M.load_chunk(chunk)
+    local t = chunks[chunk]
+    if not t then
+        local f = (loadstring or load)(chunk, "=diplomacy chunk")
+        t = f and f() or {}
+        chunks[chunk] = t
+    end
+    return t
+end
+
 -- intel (common/intel_levels, common/intel_categories): the levels' ranges, their frame and each
 -- category's level; an item (`authority`, `intel_economy_colonies_low`, ...) is known from its
 -- category's level on, its least intel the first level's range's low end. M.intel_need(game_dir,
@@ -191,7 +203,8 @@ function M.country_types(game_dir)
             end
             country_types_cache[name] = {
                 relations = yes("relations"), custom_opinion = yes("custom_opinion"),
-                show_in_contacts_list = yes("show_in_contacts_list"),
+                -- (show_in_contacts_list: yes by default, as the file's header says)
+                show_in_contacts_list = get(d.block, "show_in_contacts_list") ~= "no",
                 minimalist = yes("minimalist_contacts_list_profile"),
             }
         end

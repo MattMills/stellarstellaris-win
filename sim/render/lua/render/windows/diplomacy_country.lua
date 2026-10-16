@@ -47,14 +47,22 @@ function M.build(ctx, state)
     local their = data.their[id] or {}
     local op = data.opinion[id] or {}
     local human = data.player_names[id] ~= nil
+    local espionage = state.tab == "espionage"
+    local picked = state.action
     local hide = {
-        -- the espionage tab and its button's twin (ShowTab, UpdateTabVisibility)
-        espionage_tab = true, diplomacy_tab_button = true, espionage_tab_button_active = true,
+        -- the tabs (ShowTab: diplomacy_tab or espionage_tab; UpdateTabVisibility: the active
+        -- tab's _active button, the other's plain one)
+        espionage_tab = not espionage or nil, diplomacy_tab = espionage or nil,
+        diplomacy_tab_button = not espionage or nil, diplomacy_tab_button_active = espionage or nil,
+        espionage_tab_button = espionage or nil, espionage_tab_button_active = not espionage or nil,
         -- the portraits (CPortraitObject) [not drawn here]
         portrait_room = true, portrait_character = true, founder_species = true,
-        -- the action view and its confirmation (ShowDiplomaticActions: none selected)
-        action_diplomacy_view = true, ACTION_DEFAULT_VIEW = true, favors_container = true,
-        confirm_button = true, cancel_button = true, alien_message = true,
+        -- the action view and its confirmation (ShowDiplomaticActions: none picked; SelectAction
+        -- -> ShowActionView: the list hidden, the action's view, Confirm and Cancel)
+        action_diplomacy_view = not picked or nil, ACTION_DEFAULT_VIEW = not picked or nil,
+        confirm_button = not picked or nil, cancel_button = not picked or nil,
+        diplo_actions_window = picked or nil,
+        favors_container = true, alien_message = true,
         -- the council and custodian frames (no galactic community)
         council_frame = true, emperor_council_frame = true, custodian_frame = true, emperor_frame = true,
         -- the subject's specialist icon (no overlord)
@@ -138,10 +146,106 @@ function M.build(ctx, state)
     if intel_ok("civics") then
         hide.unknown_civic_icon = true
     end
+    -- the window's buttons: close (CloseClick), the capital (to_to_home_world, shown with a
+    -- capital: HasInworldCapital), the tabs (OnTabButton: the inactive tab's button; espionage
+    -- enabled by IsEspionageAvailableFor [I: a spy network on them])
+    local actions = {
+        [V] = "diplo:none", [V .. "/close"] = "diplo:close",
+        [V .. "/diplomacy_tab_button"] = "diplo:tab:diplomacy",
+    }
+    local disabled = {}
+    if c.capital_system then
+        actions[V .. "/to_to_home_world"] = "diplo:zoom:" .. id
+    else
+        hide.to_to_home_world = true
+    end
+    if c.spy_network then
+        actions[V .. "/espionage_tab_button"] = "diplo:tab:espionage"
+    else
+        disabled[V .. "/espionage_tab_button"] = true
+    end
+    text[V .. "/heading"] = espionage and "ESPIONAGE" or "DIPLOMACY"
+    -- the action view (ShowActionView): compact width, the action's title, description and icon
+    local A = require("render.windows.diplomacy_actions")
+    local sizes, sprites, positions = {}, {}, {}
+    local list = state.actions and diplomacy.load_chunk(state.actions) or {}
+    local picked_entry
+    for _, e in ipairs(list) do
+        if e.key == picked then
+            picked_entry = e
+        end
+    end
+    if picked then
+        -- SetWideMode: 990 wide, the window where it was (its left edge kept: centred at 1280)
+        sizes[V] = { 990, 635 }
+        positions[V] = { (990 - 1280) / 2, 0 }
+        local tk = A.title_key(picked, ctx.loc)
+        text[T .. "/ACTION_DEFAULT_VIEW/action_title"] = tk
+        text[T .. "/ACTION_DEFAULT_VIEW/action_desc"] = tk:gsub("_TITLE$", "_DESC")
+        text[T .. "/ACTION_DEFAULT_VIEW/effects_text"] = "EFFECTS"
+        hide.action_extra_desc = true
+        -- ShowActionView without an extra description: effects_text and action_desc at the
+        -- positionTypes effects_text_position_default (178, 50) and action_desc_position_default
+        -- (244, 50) [I: read as x, y]
+        positions[T .. "/ACTION_DEFAULT_VIEW/effects_text"] = { 178, 50 }
+        positions[T .. "/ACTION_DEFAULT_VIEW/action_desc"] = { 244, 50 }
+        -- HideSubWindows -> HideGeneralEmpireInfo: the empire's info under the action's view
+        for _, n in ipairs({ "diplomacy_status_window", "relation_window", "ethics_window", "civics_window",
+            "government_authority", "federation_icon", "empire_flag", "empire_name", "empire_government_type",
+            "empire_personality_type", "country_diplomacy_stats", "species_name", "species_type", "capital_icon",
+            "opinion_window", "awareness_window", "preftl_tech_window", "main_diplomacy_view" }) do
+            hide[n] = true
+        end
+        if picked_entry and picked_entry.icon then
+            sprites[T .. "/ACTION_DEFAULT_VIEW/diplomacy_icon"] = picked_entry.icon
+        end
+        actions[T .. "/confirm_button"] = "diplo:action_confirm"
+        actions[T .. "/cancel_button"] = "diplo:action_cancel"
+        text[T .. "/confirm_button"] = "HOTJOIN_CONFIRM"
+        text[T .. "/cancel_button"] = "CANCEL"
+        -- the confirm button: enabled when the action can be proposed (IsProposable)
+        if picked_entry and not picked_entry.possible then
+            disabled[T .. "/confirm_button"] = true
+            actions[T .. "/confirm_button"] = nil
+        end
+    end
+    -- the last proposal's answer, in the alien's bubble (SetAlienMessage) [I: the game's own
+    -- acceptance texts not generated here]; the greeting phrase (a weighted pick of
+    -- common/diplo_phrases) is not drawn [not done here]
+    if state.message then
+        text[T .. "/main_diplomacy_view/alien_message_window/alien_message_main"] = state.message
+    else
+        hide.alien_message_window = true
+    end
     local r = ctx.layout(FILE, "diplomacy_view", {
-        hide = hide, text = text, frames = frames,
-        actions = { [V] = "diplo:none", [V .. "/close"] = "diplo:close" },
+        hide = hide, text = text, frames = frames, actions = actions, disabled = disabled, sizes = sizes,
+        sprites = sprites, positions = positions,
     })
+    -- the actions (CDiploActionEntry, diplo_action_entry) down actions_list: the title, the
+    -- background enabled when the action can be proposed; the AI's acceptance icon not shown (the
+    -- engine does not compute the acceptance) [not done here]
+    local L = r.rects[T .. "/diplo_actions_window/actions_list"]
+    if L and not picked then
+        local y = L.y
+        for k, e in ipairs(list) do
+            if y + 29 > L.y + L.h then
+                break
+            end
+            local p = "/diplo_actions/" .. k
+            local w = p .. "/diplo_action_entry"
+            local er = ctx.layout(FILE, "diplo_action_entry", {
+                prefix = p, parent = { x = L.x, y = y, w = 0, h = 0 },
+                text = { [w .. "/action_title"] = A.title_key(e.key, ctx.loc) },
+                hide = { ai_acceptance_icon = true },
+                -- (its background is the window's: the click on the entry's path)
+                actions = { [w] = e.possible and ("diplo:action:" .. e.key) or nil },
+                disabled = (not e.possible) and { [w] = true } or nil,
+            })
+            local rect = er.rects[w]
+            -- the list's spacing (-5)
+            y = y + ((rect and rect.h > 0) and rect.h or 34) - 5
+        end
+    end
     -- the ethics' and civics' icons (ApplyEthicsToBox, FillOverlappingElementsBox), by name
     if intel_ok("ethics") then
         local sp = {}
