@@ -1113,6 +1113,10 @@ static _Bool my_CheckTick(void *idler, float dt) {
 //                      giving the local human no country): the player becomes an observer, who
 //                      knows the whole galaxy (no terra incognita) and sees every country's
 //                      borders; the reply is the console's text, the command runs with the frame
+//   event [ID]         the open player events (CGameState +0x180): `ok event ID:NAME ...`; with an
+//                      ID, its window opened as the message system opens it (CInGameIdler::
+//                      AddEventWindow): `step` runs the ticks without the message system's
+//                      update, so an event fired while stepping waits unopened
 //   frame PATH.png     waits for the picture to settle (from HEADLESS_FRAME_WAIT seconds, 2, and
 //                      HEADLESS_FRAME_MIN frames, 10, on: two captures in a row nearly equal, or
 //                      HEADLESS_FRAME_TIMEOUT seconds, 30), captures the window (X11 XGetImage),
@@ -1149,6 +1153,7 @@ static uintptr_t a_GalacticObjectDb;      // TPdxRef<CGalacticObject>::_pDatabas
 static uintptr_t a_GalaxyScaleMult;       // NDefines::NCamera::GALAXY_SPACE_SCALE_MULT
 static uintptr_t a_SystemScaleMult;       // NDefines::NCamera::SYSTEM_SPACE_SCALE_MULT
 static uintptr_t a_ExecuteObserve;        // OnExecute_Observe(CPdxArray<CString, int> const&)
+static uintptr_t a_AddEventWindow;        // CInGameIdler::AddEventWindow(COpenPlayerEvent const*, bool, CMessage const*)
 
 static struct symreq g_view_syms[] = {
 	{"_ZN11CGameCamera6UpdateEPK9CKeyBoardP6CMousePK18CPdxGameControllerR5CListI11CInputEventEf", &a_GameCameraUpdate},
@@ -1164,6 +1169,7 @@ static struct symreq g_view_syms[] = {
 	{"_ZN8NDefines7NCamera23GALAXY_SPACE_SCALE_MULTE", &a_GalaxyScaleMult},
 	{"_ZN8NDefines7NCamera23SYSTEM_SPACE_SCALE_MULTE", &a_SystemScaleMult},
 	{"_Z17OnExecute_ObserveRK9CPdxArrayI7CStringiE", &a_ExecuteObserve},
+	{"_ZN12CInGameIdler14AddEventWindowEPK16COpenPlayerEventbPK8CMessage", &a_AddEventWindow},
 	{NULL, NULL},
 };
 
@@ -1743,6 +1749,41 @@ static void frame_cmd(const char *arg) {
 	reply_fmt("ok frame %s %d %d %.0f %d%s", arg, w, h, ms, C.frames, diff > 0.25 ? " unsettled" : "");
 }
 
+// `event [ID]`: the game state's open player events (CGameState +0x180 an array of
+// COpenPlayerEvent*, +0x18c their count; COpenPlayerEvent +0x180 its id, +0x8 its CEventHandle*,
+// whose first member is the CEvent; CEvent +0x10 its id, a CString: the text at +0x10 of it), as
+// CGameState::GetOpenPlayerEvent (0x1b49110) finds them; with an ID, the event's window opened as
+// CMessageSystem::Update does (AddEventWindow(idler, event, true, message): no message here)
+static void event_cmd(void *gs, const char *arg) {
+	char *idler = *(char **)a_g_CurrentInGameIdler;
+	char **evs = *(char ***)((char *)gs + 0x180);
+	int n = I32((char *)gs + 0x18c), want = *arg ? atoi(arg) : -1;
+	char list[900] = "";
+	size_t used = 0;
+	for (int i = 0; i < n; i++) {
+		char *ev = evs[i];
+		int id = I32(ev + 0x180);
+		char **handle = *(char ***)(ev + 0x8);
+		const char *name = handle && *handle ? *(const char **)(*handle + 0x20) : NULL;
+		if (want < 0) {
+			if (used < sizeof list - 1) used += snprintf(list + used, sizeof list - used, " %d:%s", id, name ? name : "?");
+			continue;
+		}
+		if (id != want) continue;
+		if (!idler) {
+			reply_fmt("error event: not in game");
+			return;
+		}
+		((void (*)(void *, void *, _Bool, void *))a_AddEventWindow)(idler, ev, 1, NULL);
+		reply_fmt("ok event %d %s opened", id, name ? name : "?");
+		return;
+	}
+	if (want < 0)
+		reply_fmt("ok event%s", list);
+	else
+		reply_fmt("error event %d: no such open player event", want);
+}
+
 static void view_game(void *gs) {
 	if (g_in_game_frames++ == 0) {
 		hlog("view: in game after %.3f s", now() - g_t0);
@@ -1790,6 +1831,8 @@ static void view_game(void *gs) {
 		const char *text = *(const char **)(res + 0x18);
 		size_t len = *(size_t *)(res + 0x20);
 		reply_fmt("%s observe: %.*s", res[0] ? "ok" : "error", (int)(len < 200 ? len : 200), text ? text : "");
+	} else if (!strcmp(verb, "event")) {
+		event_cmd(gs, arg);
 	} else if (!strcmp(verb, "resize")) {
 		int w = 0, h = 0, ww = 0, wh = 0;
 		sscanf(arg, "%d %d", &w, &h);
