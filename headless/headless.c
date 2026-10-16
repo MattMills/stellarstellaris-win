@@ -2312,6 +2312,150 @@ static void open_designer_cmd(const char *arg) {
 		reply_fmt("ok open_designer %s", arg);
 }
 
+// ---------------------------------------------------------------- the left bar's views (open_view)
+//
+//   open_view NAME|N   CInGameIdler::ToggleTopBarView(ETopBarView), as the left bar's buttons
+//                      (CMainGuiLeftBarButton::OnClick) and the top bar's flag (government,
+//                      CMainGui::ToggleGovernmentView) open them: shown if hidden (the others
+//                      closed), hidden if shown; the reply a few frames later, with the view
+//                      shown then (idler +0xdc8)
+//   open_view close    CInGameIdler::CloseTopBarViews()
+// ETopBarView is the slot in the idler's views (+0xd38, the Access*View getters).
+
+static uintptr_t a_ToggleTopBarView, a_CloseTopBarViews;
+static const char *g_topbar_view_names[18] = {
+	"situation", "council", "traditions", "technology", "leaders", "species", "empire",
+	"expansion_planner", "fleet_manager", "contacts", "factions", "edicts", "view12", "view13",
+	"government", "discoveries", "claims", "market"};
+static struct symreq g_topbar_view_syms[] = {
+	{"_ZN12CInGameIdler16ToggleTopBarViewE11ETopBarView", &a_ToggleTopBarView},
+	{"_ZN12CInGameIdler16CloseTopBarViewsEv", &a_CloseTopBarViews},
+	{NULL, NULL},
+};
+
+static void open_view_cmd(const char *arg) {
+	static int resolved;
+	if (!resolved) {
+		if (resolve(g_topbar_view_syms) != 0) {
+			reply_fmt("error open_view: missing symbols");
+			return;
+		}
+		resolved = 1;
+	}
+	void *idler = *(void **)a_g_CurrentInGameIdler;
+	int view = -1;
+	if (!idler) {
+		reply_fmt("error open_view: no in-game idler");
+		return;
+	}
+	if (strcmp(arg, "close")) {
+		for (int i = 0; i < 18; i++)
+			if (!strcmp(arg, g_topbar_view_names[i])) view = i;
+		if (view < 0 && sscanf(arg, "%d", &view) == 1 && (view < 0 || view > 17)) view = -1;
+		if (view < 0) {
+			reply_fmt("error open_view: NAME (situation, council, ... government, ...), 0..17 or close");
+			return;
+		}
+	}
+	if (C.stage == 0) {
+		if (view < 0)
+			((void (*)(void *))a_CloseTopBarViews)(idler);
+		else
+			((char (*)(void *, int))a_ToggleTopBarView)(idler, view);
+		C.stage = 1;
+		return;
+	}
+	if (++C.frames < 4) return;
+	reply_fmt("ok open_view %s (current view %d)", arg, I32((char *)idler + 0xdc8));
+}
+
+// ---------------------------------------------------------------- `open_diplomacy`: the diplomacy
+// windows (docs/windows/diplomacy.md) opened with the game's own calls:
+//   open_diplomacy contacts [TAB]   CInGameIdler::ShowGalaxyView (the left bar's contacts button);
+//                                   with TAB (0 contacts, 1 agreements, 2 the shroud) then
+//                                   CGalaxyView::Show(ETabsGalaxyView) on the view (idler +0xd80)
+//   open_diplomacy country ID [TAB] CInGameIdler::ShowDiplomacyView(country, TAB (0), 1, 1), as
+//                                   Contacts' Diplomacy button (CGalaxyView::OnEmpireDiplomacy)
+//   open_diplomacy community [TAB]  CInGameIdler::ShowGalacticCommunityView(TAB (0))
+//   open_diplomacy federation       CFederationView::Show (the player's federation)
+//   open_diplomacy close            CInGameIdler::CloseTopBarViews, CDiplomacyView::Hide
+// The reply comes a few frames later (the views update on the next frames).
+
+static uintptr_t a_ShowGalaxyView, a_GalaxyViewShowTab, a_ShowDiplomacyView, a_ShowCommunityView;
+static uintptr_t a_AccessFederationView, a_FederationViewShow, a_DiploCloseTopBarViews, a_AccessDiplomacyView;
+static uintptr_t a_DiplomacyViewHide, a_CountryDb;
+static struct symreq g_diplo_syms[] = {
+	{"_ZN12CInGameIdler14ShowGalaxyViewEv", &a_ShowGalaxyView},
+	{"_ZN11CGalaxyView4ShowENS_15ETabsGalaxyViewE", &a_GalaxyViewShowTab},
+	{"_ZN12CInGameIdler17ShowDiplomacyViewEPK8CCountry17EDiplomacyTabTypebb", &a_ShowDiplomacyView},
+	{"_ZN12CInGameIdler25ShowGalacticCommunityViewE18ETabsCommunityView", &a_ShowCommunityView},
+	{"_ZN12CInGameIdler20AccessFederationViewEv", &a_AccessFederationView},
+	{"_ZN15CFederationView4ShowEv", &a_FederationViewShow},
+	{"_ZN12CInGameIdler16CloseTopBarViewsEv", &a_DiploCloseTopBarViews},
+	{"_ZN12CInGameIdler19AccessDiplomacyViewEv", &a_AccessDiplomacyView},
+	{"_ZN14CDiplomacyView4HideEv", &a_DiplomacyViewHide},
+	{"_ZN7TPdxRefI8CCountryE10_pDatabaseE", &a_CountryDb},
+	{NULL, NULL},
+};
+
+// a country by id (TPdxRef<CCountry>::_pDatabase: slots at +0x18, 16 bytes each, the object at
+// +8, the count at +0x20; CCountry's id at +0x20, as CGalaxyEmpireItem::Update reads it)
+static void *diplo_country(int id) {
+	char *db = *(char **)a_CountryDb;
+	if (!db || id < 0) return NULL;
+	uint32_t i = (uint32_t)id & 0xffffff;
+	if (i >= *(uint32_t *)(db + 0x20)) return NULL;
+	char *o = *(char **)(*(char **)(db + 0x18) + 16 * (size_t)i + 8);
+	return o && I32(o + 0x20) == id ? o : NULL;
+}
+
+static void open_diplomacy_cmd(const char *arg) {
+	static int resolved;
+	if (!resolved) {
+		if (resolve(g_diplo_syms) != 0) {
+			reply_fmt("error open_diplomacy: missing symbols");
+			return;
+		}
+		resolved = 1;
+	}
+	void *idler = *(void **)a_g_CurrentInGameIdler;
+	if (!idler) {
+		reply_fmt("error open_diplomacy: not in game");
+		return;
+	}
+	if (C.stage == 0) {
+		char what[32] = "";
+		int a = -1, b = -1;
+		sscanf(arg, "%31s %d %d", what, &a, &b);
+		if (!strcmp(what, "contacts")) {
+			((void (*)(void *))a_ShowGalaxyView)(idler);
+			if (a >= 0) ((void (*)(void *, int))a_GalaxyViewShowTab)(*(void **)((char *)idler + 0xd80), a);
+		} else if (!strcmp(what, "country")) {
+			void *c = diplo_country(a);
+			if (!c) {
+				reply_fmt("error open_diplomacy: no country %d", a);
+				return;
+			}
+			((void (*)(void *, void *, int, int, int))a_ShowDiplomacyView)(idler, c, b < 0 ? 0 : b, 1, 1);
+		} else if (!strcmp(what, "community")) {
+			((void (*)(void *, int))a_ShowCommunityView)(idler, a < 0 ? 0 : a);
+		} else if (!strcmp(what, "federation")) {
+			void *v = ((void *(*)(void *))a_AccessFederationView)(idler);
+			if (v) ((void (*)(void *))a_FederationViewShow)(v);
+		} else if (!strcmp(what, "close")) {
+			((void (*)(void *))a_DiploCloseTopBarViews)(idler);
+			void *v = ((void *(*)(void *))a_AccessDiplomacyView)(idler);
+			if (v) ((void (*)(void *))a_DiplomacyViewHide)(v);
+		} else {
+			reply_fmt("error open_diplomacy: contacts [TAB] | country ID [TAB] | community [TAB] | federation | close");
+			return;
+		}
+		C.stage = 1;
+		return;
+	}
+	if (++C.frames >= 4) reply_fmt("ok open_diplomacy %s", arg);
+}
+
 static void view_game(void *gs) {
 	if (g_in_game_frames++ == 0) {
 		hlog("view: in game after %.3f s", now() - g_t0);
@@ -2498,6 +2642,8 @@ static void view_command(void *gs) {
 		}
 	} else if (!strcmp(verb, "open_designer")) {
 		open_designer_cmd(arg);
+	} else if (!strcmp(verb, "open_diplomacy")) {
+		open_diplomacy_cmd(arg);
 	} else if (!strcmp(verb, "frame")) {
 		// frame PATH now: the frame the game presented last, no frame run (the input's frames
 		// exactly); frame PATH: once the picture settles
@@ -2511,6 +2657,8 @@ static void view_command(void *gs) {
 		g_frame_now = 0;
 	} else if (!strcmp(verb, "state")) {
 		state_json(gs, arg);
+	} else if (!strcmp(verb, "open_view")) {
+		open_view_cmd(arg);
 	} else {
 		reply_fmt("error unknown command %s", verb);
 	}

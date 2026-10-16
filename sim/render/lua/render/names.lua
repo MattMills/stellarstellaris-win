@@ -53,8 +53,20 @@ function names.format(loc, n, depth)
             return acronym(vars.base or first or "")
         end
         if engine == "ADJECTIVE" then
-            -- the adjective and the noun after it ("Uthabulan Order")
+            -- the adjective and the noun after it ("Uthabulan Order"); a word with an ending the
+            -- localisation's adj_NN<ending> keys name takes their form, `*` the word without the
+            -- ending, the longest ending first ("Mandasura": adj_NNa "*an", "Mandasuran")
             local a, noun = vars.adjective or first or "", vars["1"]
+            if loc and vars.adjective then
+                for n = math.min(3, #a - 1), 1, -1 do
+                    local key = "adj_NN" .. a:sub(-n)
+                    if loc.has(key) then
+                        local form = loc.raw(key):match("^(%S*)") or "*"
+                        a = (form:gsub("%*", escape(a:sub(1, -n - 1))))
+                        break
+                    end
+                end
+            end
             return noun and vars.adjective and (a .. " " .. noun) or a
         end
         if engine == "ADJ" then

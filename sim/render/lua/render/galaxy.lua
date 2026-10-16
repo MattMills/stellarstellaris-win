@@ -421,6 +421,10 @@ function galaxy.extract(game_dir)
         end
     end
 
+    -- the diplomacy windows' part of the world (render.windows.diplomacy_data, a Lua chunk): the
+    -- countries they list get their flags among the countries too
+    local diplomacy = require("render.windows.diplomacy_data").extract(game_dir, pc and player or nil, add_country)
+
     local hl = numbers(ng.HYPERLANE_DEFAULT_COLOR)
     local classes_used = 0
     for _ in pairs(star_info) do
@@ -443,6 +447,7 @@ function galaxy.extract(game_dir)
         outliner = outliner, sectors = sectors,
         outliner_view = view,
         capital = capital,
+        diplomacy = diplomacy,
     }
     -- what the map labels show (render.windows.mapicons)
     out.mapicons = require("render.windows.mapicons").extract(game_dir, pc and player or nil)

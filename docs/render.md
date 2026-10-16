@@ -930,6 +930,8 @@ home system at the same place and scale, the top bar's clock, the outliner.
 
 - The ship designer and the combat view (`open_designer`, the 3D view as an inset in the GUI):
   [windows/designer.md](windows/designer.md).
+- The diplomacy windows (Contacts, a country's diplomacy, the galactic community, the federation,
+  a war's overview): [windows/diplomacy.md](windows/diplomacy.md).
 
 ### The controls: input, bindings, actions (`sim/render/src/controls.rs`)
 

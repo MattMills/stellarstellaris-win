@@ -106,6 +106,8 @@ pub struct Galaxy {
     pub outliner_view: crate::outliner::LuaData,
     /// what the map labels show (render.windows.mapicons: mapicons.rs)
     pub mapicons: std::sync::Arc<crate::mapicons::Data>,
+    /// what the diplomacy windows show of the world: a Lua chunk (render.windows.diplomacy_data)
+    pub diplomacy: String,
 }
 
 impl Galaxy {
@@ -459,6 +461,7 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                     .collect::<mlua::Result<_>>()?,
                 None => HashMap::new(),
             },
+            diplomacy: g.get::<Option<String>>("diplomacy")?.unwrap_or_default(),
             outliner_view: crate::outliner::read_view(&g)?,
             alerts: match g.get::<Option<Table>>("alerts")? {
                 Some(t) => t

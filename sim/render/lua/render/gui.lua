@@ -30,6 +30,7 @@ local ANCHOR = {
 
 -- element kinds drawn (lists, scrollbars, edit boxes are filled at run time: not drawn)
 local CONTAINERS = { containerwindowtype = true, windowtype = true, dropdownboxtype = true }
+-- (a checkbox is a button whose frame is its state: the caller's opts.frames)
 local ICONS = { icontype = true, buttontype = true, effectbuttontype = true, guibuttontype = true, checkboxtype = true }
 local TEXTS = { instanttextboxtype = true, textboxtype = true }
 -- lists: laid out (their rectangle is recorded, for the rows the caller places) but not drawn
@@ -357,9 +358,13 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             if sprite then
                 sprite_item(path, sprite, frame, x, y, w, h, button)
             end
-            local bt = field("buttonText")
-            if bt and bt ~= "" then
-                local text = opts.text and opts.text[path] or bt
+            -- its buttonText (or `text`: the galactic community's assign_button shows its
+            -- LEADER_ASSIGNMENT in the game's frame), or a text the game sets at run time
+            -- (CButton::SetText)
+            local bt = field("buttonText") or (kind ~= "icontype" and field("text") or nil)
+            local given = opts.text and opts.text[path]
+            if (bt and bt ~= "") or (given and kind ~= "icontype") then
+                local text = given or bt
                 text_item(path .. "/text", field("buttonFont") or field("font"), text, x, y, w, h, "center", "center",
                     field("text_color_code"))
             end
