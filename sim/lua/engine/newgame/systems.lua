@@ -271,7 +271,9 @@ end
 -- usage_odds = 20, or { base = 20 modifier = { factor = 0 add = 1 <triggers> } ... }
 local function odds(ctx, sys, v, file, game)
     if v == nil then
-        return 1
+        -- no usage_odds: 0 (measured: the six random_empire_init have none, and GetRandomFromList
+        -- falls back to x % count, as for all weights 0)
+        return 0
     end
     if type(v) ~= "table" then
         return scenario.number(ctx.fs, v, file) or 0
