@@ -789,6 +789,8 @@ static int g_view_autoload;
 static void view_menu(void);
 static void view_game(void *gs);
 static void view_command(void *gs);
+static int g_newgame;
+static void ng_menu(int frame);
 
 static void my_FrontendDlcViewUpdate(void *view) {
 	(void)view;
@@ -797,6 +799,7 @@ static void my_FrontendDlcViewUpdate(void *view) {
 		g_menu_at = now() - g_t0;
 		hlog("main menu after %.3f s", g_menu_at);
 	}
+	if (g_newgame) return ng_menu(g_menu_frames);
 	if (g_viewmode && !g_view_autoload) {
 		// the save comes with a `load` command
 		if (g_menu_frames >= 3) view_menu();
@@ -973,6 +976,180 @@ static void write_gamestate_and_exit(void *gs) {
 	if (g_autosave) hlog("%d autosaves", g_autosaves);
 	fflush(NULL);
 	_exit(ok ? 0 : 1);
+}
+
+// ---------------------------------------------------------------- a new game
+//
+// HEADLESS_NEWGAME=1 (newgame.sh): no save is loaded; the game makes a new game through its own
+// path. At the main menu ng_menu does what the command line's `-empire=KEY` does in
+// CFrontEndIdler::UpdateInternal (a human with the design HEADLESS_NG_EMPIRE, a key of
+// CEmpireDesignDatabase, and the start flag +0x218; the game's own option refuses designs whose
+// `playable` fails, as the stub humans1), and the next front-end update calls StartNewGame ->
+// LaunchNewGame: the single-player galaxy
+// settings of settings.txt (CGameState::LoadGalaxyConfigSPSettings: `galaxy_setup_settings_sp`)
+// and the user's empire designs (ImportEmpireDesigns) make the configuration, and a task
+// (LaunchNewGame's lambda $_2) sets the date, the humans and the configuration and calls
+// CGameState::GenerateNewGalaxy(-1). That call is redirected to ng_generate:
+//   HEADLESS_NG_RANDOM  "SEED:POS": the synchronized generator (CRandom::_Random, the global
+//                       stream C of docs/newgame.md) is set to this right before the generation
+//   HEADLESS_NG_VALUE   the value GenerateNewGalaxy derives the galaxy seed from (default: one draw
+//                       of the global stream, as GenerateNewGalaxy(-1) makes it)
+//   HEADLESS_NG_DAY0    where the gamestate is written (relative to the user dir) right after the generation
+//                       (InitPostGalaxyCreation done, before the in-game idler's OnNewGameStarted)
+//   HEADLESS_TOKENS     token ids (comma-separated, decimal or 0x hex): logged with their strings
+// The run then goes on as from a save: the in-game idler (RestoreDeviceObjects runs
+// OnNewGameStarted), HEADLESS_TICKS ticks, HEADLESS_OUT.
+static uintptr_t a_NgCallSite;          // the lambda's `call CGameState::GenerateNewGalaxy(int)`
+static uintptr_t a_GenerateNewGalaxy;   // CGameState::GenerateNewGalaxy(int)
+static uintptr_t a_GetIntegerForMacro;  // CRandom::GetIntegerForMacro(char const*, unsigned int)
+static uintptr_t a_CrudeRandomCtor;     // CCrudeRandom::CCrudeRandom(unsigned int)
+static uintptr_t a_CrudeRandomSeed;     // CCrudeRandom::Seed(unsigned int)
+static uintptr_t a_CrudeRandomGetInt;   // CCrudeRandom::GetInteger()
+static uintptr_t a_StaticLexerGetString; // CStaticLexer::GetString(int): a CString
+static uintptr_t a_nSeed;               // CSystem::_nSeed
+static uintptr_t a_DesignDb, a_GetDesignByKey, a_DesignIsPlayable; // CEmpireDesignDatabase, its designs
+static uintptr_t a_SettingsInstance, a_SettingsLastName;          // CSettings: the player's last name
+static uintptr_t a_AccessCurrentSession, a_SessionId;             // the session's internal id
+static uintptr_t a_HumanCtor, a_HumanSetDesign, a_HumanDtor, a_AddHuman; // CHuman, CGameState::AddHuman
+static uintptr_t a_StartNewGame, a_FrontEndState;                 // CFrontEndIdler::StartNewGame(), _State
+static int g_ng_menu_done;
+
+static struct symreq g_ng_syms[] = {
+	{"_ZNSt17_Function_handlerIFvvEZN14CFrontEndIdler13LaunchNewGameEvE3$_2E9_M_invokeERKSt9_Any_data", &a_NgCallSite},
+	{"_ZN10CGameState17GenerateNewGalaxyEi", &a_GenerateNewGalaxy},
+	{"_ZN7CRandom18GetIntegerForMacroEPKcj", &a_GetIntegerForMacro},
+	{"_ZN12CCrudeRandomC1Ej", &a_CrudeRandomCtor},
+	{"_ZN12CCrudeRandom4SeedEj", &a_CrudeRandomSeed},
+	{"_ZN12CCrudeRandom10GetIntegerEv", &a_CrudeRandomGetInt},
+	{"_ZN12CStaticLexer9GetStringEi", &a_StaticLexerGetString},
+	{"_ZN7CSystem6_nSeedE", &a_nSeed},
+	{"_ZN21CEmpireDesignDatabase10_pInstanceE", &a_DesignDb},
+	{"_ZNK21CEmpireDesignDatabase14GetDesignByKeyEPKc", &a_GetDesignByKey},
+	{"_ZNK13CEmpireDesign10IsPlayableEv", &a_DesignIsPlayable},
+	{"_ZN9CSettings14AccessInstanceEv", &a_SettingsInstance},
+	{"_ZNK9CSettings11GetLastNameEv", &a_SettingsLastName},
+	{"_Z20AccessCurrentSessionv", &a_AccessCurrentSession},
+	{"_ZNK8CSession20GetInternalSessionIDEv", &a_SessionId},
+	{"_ZN6CHumanC1E7CStringib", &a_HumanCtor},
+	{"_ZN6CHuman9SetDesignEPK13CEmpireDesign", &a_HumanSetDesign},
+	{"_ZN6CHumanD1Ev", &a_HumanDtor},
+	{"_ZN10CGameState8AddHumanERK6CHuman", &a_AddHuman},
+	{"_ZN14CFrontEndIdler12StartNewGameEv", &a_StartNewGame},
+	{"_ZN14CFrontEndIdler6_StateE", &a_FrontEndState},
+	{NULL, NULL},
+};
+
+static void ng_tokens(const char *list) {
+	char *s = strdup(list), *save = NULL;
+	for (char *t = strtok_r(s, ", ", &save); t; t = strtok_r(NULL, ", ", &save)) {
+		int id = (int)strtol(t, NULL, 0);
+		size_t len;
+		const char *p = cstring_ptr(((void *(*)(int))a_StaticLexerGetString)(id), &len);
+		hlog("token %#x (%d) = \"%.*s\"", id, id, (int)len, p);
+	}
+	free(s);
+}
+
+static void ng_generate(void *gs, int value) {
+	const char *e;
+	if ((e = getenv("HEADLESS_TOKENS")) && *e) ng_tokens(e);
+	hlog("new game: GenerateNewGalaxy(%d) after %.3f s; random: seed %d position %u", value, now() - g_t0,
+	     (int)rng_seed(), rng_pos());
+	long long seed, pos;
+	if ((e = getenv("HEADLESS_NG_RANDOM")) && sscanf(e, "%lld:%lld", &seed, &pos) == 2) {
+		*(volatile uint32_t *)a_Random = (uint32_t)pos;
+		*(volatile uint32_t *)(a_Random + 4) = (uint32_t)seed;
+		*(volatile uint32_t *)a_nRandomCount = (uint32_t)pos;
+		*(volatile int32_t *)a_nSeed = (int32_t)seed;
+		hlog("random set to seed %d position %u", (int)rng_seed(), rng_pos());
+	}
+	// GenerateNewGalaxy(-1) draws the value itself (0x1b3fd7c); drawn here instead, the same draw,
+	// so that it is known.
+	if ((e = getenv("HEADLESS_NG_VALUE")) && *e) value = (int)strtoll(e, NULL, 10);
+	else value = ((int (*)(const char *, unsigned))a_GetIntegerForMacro)("headless.c", __LINE__);
+	_Alignas(16) uint8_t crude[64] = {0};
+	((void (*)(void *, unsigned))a_CrudeRandomCtor)(crude, 1);
+	((void (*)(void *, unsigned))a_CrudeRandomSeed)(crude, (unsigned)value);
+	int galaxy_seed = ((int (*)(void *))a_CrudeRandomGetInt)(crude);
+	uint32_t pos0 = rng_pos();
+	hlog("value %d -> galaxy seed %d (CGalaxyGenerator::Generate); random position %u", value, galaxy_seed, pos0);
+	double t = now();
+	((void (*)(void *, int))a_GenerateNewGalaxy)(gs, value);
+	hlog("generated in %.3f s; %u global draws; random: seed %d position %u", now() - t, rng_pos() - pos0,
+	     (int)rng_seed(), rng_pos());
+	if ((e = getenv("HEADLESS_NG_DAY0")) && *e) {
+		_Alignas(16) uint8_t path[0x30];
+		((void (*)(void *, const char *))a_CStringCtor)(path, e);
+		uint32_t p = rng_pos();
+		t = now();
+		int ok = ((int (*)(void *))a_SaveGameCheckMakeSave)(path) & 1;
+		hlog("SaveGameCheckMakeSave(\"%s\") -> %d in %.3f s%s", e, ok, now() - t,
+		     rng_pos() != p ? " (the write drew random values!)" : "");
+	}
+}
+
+// At the main menu: what `-empire=KEY` does in CFrontEndIdler::UpdateInternal (0x25c6fb5-0x25c70e4):
+// a CHuman (the settings' last name, the session's id) with the design HEADLESS_NG_EMPIRE added to
+// the front end's game state, then the start flag (+0x218, +0x219) that makes the next front-end
+// update call StartNewGame. If the front end has not started within 60 frames, StartNewGame is
+// called from here.
+static void ng_menu(int frame) {
+	void *fe = *(void **)a_g_CurrentFrontEndIdler;
+	if (!fe || frame < 3) return;
+	if (g_ng_menu_done) {
+		if (frame == g_ng_menu_done + 60) {
+			hlog("new game: the front end did not start (flag %d); StartNewGame called", U8((char *)fe + 0x218));
+			((void (*)(void *))a_StartNewGame)(fe);
+		}
+		return;
+	}
+	g_ng_menu_done = frame;
+	const char *key = getenv("HEADLESS_NG_EMPIRE");
+	if (!key || !*key) key = "humans1_1";
+	void *db = *(void **)a_DesignDb;
+	void *d = ((void *(*)(void *, const char *))a_GetDesignByKey)(db, key);
+	int valid = d && ((int (*)(void *))(*(uintptr_t **)d)[0x40 / 8])(d) & 1;
+	int playable = valid && ((int (*)(void *))a_DesignIsPlayable)(d) & 1;
+	hlog("new game: at the menu (frame %d, after %.3f s): front end state %d, start flag %d; design \"%s\" %s%s; random: seed %d position %u",
+	     frame, now() - g_t0, I32(a_FrontEndState), U8((char *)fe + 0x218), key, valid ? "valid" : "INVALID",
+	     playable ? ", playable" : ", not playable", (int)rng_seed(), rng_pos());
+	if (!playable) die(2, "new game: no playable design of that key");
+	uint8_t s_ggs = U8(a_g_AllowGlobalGameStateAccess);
+	U8(a_g_AllowGlobalGameStateAccess) = 1;
+	void *gs = game_state();
+	_Alignas(16) uint8_t name[0x30], human[0x100];
+	((void (*)(void *, void *))a_SettingsLastName)(name, ((void *(*)(void))a_SettingsInstance)());
+	int sid = ((int (*)(void *))a_SessionId)(((void *(*)(void))a_AccessCurrentSession)());
+	((void (*)(void *, void *, int, int))a_HumanCtor)(human, name, sid, 0);
+	human[0x58] |= 9;
+	((void (*)(void *, void *))a_HumanSetDesign)(human, d);
+	((void (*)(void *, void *))a_AddHuman)(gs, human);
+	((void (*)(void *))a_HumanDtor)(human);
+	U8(a_g_AllowGlobalGameStateAccess) = s_ggs;
+	*(volatile uint16_t *)((char *)fe + 0x218) = 0x101;
+	hlog("new game: human added (session %d, %d humans), start flag set", sid, I32((char *)gs + 0x24));
+}
+
+static void newgame_install(void) {
+	if (resolve(g_ng_syms) != 0) die(2, "newgame: missing symbols");
+	// the lambda: ... SetGalaxyConfiguration; mov $-1, %esi; call GenerateNewGalaxy (+0xa8)
+	uintptr_t site = a_NgCallSite + 0xa8;
+	if (*(uint8_t *)site != 0xE8 || site + 5 + *(int32_t *)(site + 1) != a_GenerateNewGalaxy)
+		die(2, "newgame: LaunchNewGame's task does not call GenerateNewGalaxy where expected");
+	uint8_t *stub = alloc_near(4096);
+	if (!stub) die(2, "newgame: no memory near the executable");
+	uint8_t code[12] = {0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0}; // movabs rax, ng_generate; jmp rax
+	void *to = (void *)ng_generate;
+	memcpy(code + 2, &to, 8);
+	memcpy(stub, code, sizeof code);
+	int32_t rel = (int32_t)((intptr_t)stub - (intptr_t)(site + 5));
+	uintptr_t page = site & ~(uintptr_t)0xfff;
+	if (mprotect((void *)page, 0x2000, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) die(2, "mprotect");
+	memcpy((void *)(site + 1), &rel, 4);
+	mprotect((void *)page, 0x2000, PROT_READ | PROT_EXEC);
+	__builtin___clear_cache((char *)site, (char *)site + 5);
+	g_newgame = 1; // no save: the menu hook starts the new game (ng_menu)
+	hlog("new game: GenerateNewGalaxy at %#lx redirected", (unsigned long)(site - g_base));
 }
 
 static void no_render(void *idler, int b) {
@@ -3117,6 +3294,7 @@ __attribute__((constructor)) static void headless_init(void) {
 	detour(a_CheckTick, (void *)my_CheckTick);
 	detour(a_FrontendDlcViewUpdate, (void *)my_FrontendDlcViewUpdate);
 	if (g_viewmode) view_init();
+	if ((e = getenv("HEADLESS_NEWGAME")) && *e == '1') newgame_install();
 	if ((e = getenv("HEADLESS_PROFILE")) && *e) profile_install(e);
 	if ((e = getenv("HEADLESS_AUTOSAVE")) && atoi(e) > 0) {
 		g_autosave = 1;
