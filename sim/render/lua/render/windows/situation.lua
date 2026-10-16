@@ -133,7 +133,14 @@ local function entries(ctx, data)
     end
     for _, f in ipairs(data and data.first_contacts or {}) do
         if f.status ~= "finished" then
-            out[#out + 1] = { kind = "first_contact", key = tostring(f.id), category = "first_contacts", name = f.name, title = "", icon = "GFX_first_contact_entry" }
+            -- its picture and text: its current event's (the frame's: first_contact.1's star chart
+            -- and description); its icon the category's [I]
+            local v = f.view or {}
+            out[#out + 1] = {
+                kind = "first_contact", key = tostring(f.id), category = "first_contacts", name = f.name, title = "",
+                icon = "GFX_category_first_contact", picture = v.picture, desc = v.desc, view = v,
+                days_left = f.days_left, difficulty = f.difficulty, leader = f.leader,
+            }
         end
     end
     for _, s in ipairs(data and data.sites or {}) do
@@ -202,7 +209,7 @@ function M.build(ctx, data, state)
     -- the window
     local root = "/situation_log"
     local hide = {
-        track = true, focus_window = true, victories_window = true,
+        focus_window = true, victories_window = true,
         leader_window = true, no_leader_window = true, target_container = true,
         tts_button = true, situation_log_detail = true,
         -- (the contracts' parts of the event chain subview)
@@ -217,12 +224,56 @@ function M.build(ctx, data, state)
             hide[s] = true
         end
     end
+    -- the header's buttons: `track` (the pin, GFX_button_track_project) and `goto` (the focus);
+    -- with goto hidden the pin takes its place (CSituationLog::UpdateTrackButtonPosition): an
+    -- event chain shows the pin alone, a first contact both [I: by the frames]
+    local positions = {}
     if not selected then
         hide["goto"] = true
+        hide.track = true
         hide.currently_selected_header_window = true
+    elseif selected.kind ~= "first_contact" then
+        hide["goto"] = true
+        positions[root .. "/track"] = { -80, 16 }
     end
-    local text, sprites = {}, {}
+    local text, sprites, sizes = { [root .. "/header"] = findings and "FINDINGS" or "SITUATION_LOG_HEADER" }, {}, {}
     local hw = root .. "/currently_selected_header_window"
+    if selected and selected.kind == "first_contact" then
+        -- (the subview's places are @findings_* variables of another window of the file, which the
+        -- layout's scoped variables do not reach: given here)
+        local fc = root .. "/log_window/currently_selected/first_contact_subview"
+        local tc, dc = fc .. "/time_container", fc .. "/difficulty_container"
+        positions[fc .. "/requirements"] = { 1, 1 }
+        sizes[fc .. "/requirements"] = { 410, 20 }
+        positions[tc] = { 0, 30 }
+        sizes[tc] = { 483, 60 }
+        positions[tc .. "/progress_bar"] = { 10, 33 }
+        positions[tc .. "/time_left_label"] = { 10, 10 }
+        sizes[tc .. "/time_left_label"] = { 250, 20 }
+        positions[tc .. "/time_left"] = { 423, 10 }
+        sizes[tc .. "/time_left"] = { 50, 20 }
+        positions[dc] = { 500, 18 }
+        positions[dc .. "/difficulty_type_text"] = { 0, -16 }
+        sizes[dc .. "/difficulty_type_text"] = { 100, 20 }
+        positions[dc .. "/difficulty_type_icon"] = { 105, -21 }
+        positions[dc .. "/difficulty_type_value"] = { 140, -16 }
+        sizes[dc .. "/difficulty_type_value"] = { 40, 20 }
+        positions[fc .. "/view_site"] = { 497, 30 }
+        local name = require("render.names").format(loc, selected.name)
+        -- no envoy: "Assign an Envoy to learn more about NAME"
+        local raw = loc and loc.raw("FIRST_CONTACT_ASSIGN_ENVOY") or ""
+        raw = raw:gsub("%$NAME|?%a*%$", function()
+            return "§Y" .. name .. "§!"
+        end)
+        text[fc .. "/requirements"] = loc and loc.resolve(raw) or raw
+        -- the roll's time bar: nearly empty in the game's frame (its fill not drawn) [I]
+        hide.progress_bar = true
+        text[tc .. "/time_left"] = "§Y" .. tostring(selected.days_left or 0) .. "§!"
+        -- the difficulty: the save's (the game's frame shows 7 for the save's 5: its modifiers are
+        -- not applied) [I]
+        text[dc .. "/difficulty_type_value"] = "§R" .. tostring(selected.difficulty or 0) .. "§!"
+        text[fc .. "/view_site"] = "SHOW_FIRST_CONTACT"
+    end
     -- (the description is drawn wrapped below)
     text[hw .. "/description"] = ""
     if selected then
@@ -243,6 +294,7 @@ function M.build(ctx, data, state)
     end
     local wi, wr = gui.layout(ctx.game_dir, db, FILE, "situation_log", ctx.screen, {
         texture_size = ctx.texture_size, loc = loc, hide = hide, text = text, sprites = sprites,
+        positions = positions, sizes = sizes,
         actions = {
             [root] = "view_set:noop=",
             [root .. "/close"] = "view_close",
@@ -255,7 +307,7 @@ function M.build(ctx, data, state)
     -- not drawn)
     local dr = wr.rects[hw .. "/description"]
     if selected and dr then
-        local desc = events.resolve(loc, selected.desc or "", nil)
+        local desc = events.resolve(loc, selected.desc or "", selected.view)
         local lines, lh = events.wrap(loc, desc, "cg_16b", dr.w, db, db.textcolors.W or { 1, 1, 1 })
         local keep = {}
         for i = 1, math.min(#lines, math.floor(dr.h / lh)) do

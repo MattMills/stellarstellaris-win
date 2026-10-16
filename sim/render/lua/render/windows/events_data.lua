@@ -597,7 +597,7 @@ local function store_entries(top, sub)
     return out
 end
 
-local function first_contacts(pid)
+local function first_contacts(pid, game_dir)
     local out = {}
     local ids = {}
     for _, id in ipairs(world.list(world.path(world.object("country", pid), "first_contact", "contacts") or {})) do
@@ -613,6 +613,13 @@ local function first_contacts(pid)
         local b = e.block
         if tonumber(world.field(b, "owner")) == pid or ids[e.id] then
             local ev = world.field(b, "event")
+            -- its current event as the Situation Log shows it (picture and text) [I: the event the
+            -- contact keeps]
+            local view
+            if game_dir and type(ev) == "table" and world.field(ev, "event_id") then
+                local ok, v = pcall(event_entry, game_dir, { id = -1, event = text(world.field(ev, "event_id")), roots = save_scope(world.field(ev, "scope")) }, pid)
+                view = ok and v or nil
+            end
             out[#out + 1] = {
                 id = e.id, name = name_block(world.field(b, "name")), country = tonumber(world.field(b, "country")),
                 status = text(world.field(b, "status")), stage = text(world.field(b, "stage")),
@@ -621,6 +628,7 @@ local function first_contacts(pid)
                 system_name = name_block(world.field(world.object("system", tonumber(world.field(b, "location")) or -1) or {}, "name")),
                 event = type(ev) == "table" and world.field(ev, "expired") ~= "yes" and text(world.field(ev, "event_id")) or nil,
                 leader = tonumber(world.field(b, "leader")),
+                view = view,
             }
         end
     end
@@ -761,8 +769,11 @@ function M.read(game_dir)
     local chains, projects = chains_and_projects(pid)
     return {
         player = pid, date = date, events = events,
-        first_contacts = first_contacts(pid), situations = situations(pid), sites = sites(pid),
-        chains = chains, projects = projects, anomalies = anomalies(pid),
+        first_contacts = first_contacts(pid, game_dir), situations = situations(pid), sites = sites(pid),
+        chains = chains, projects = projects,
+        -- (a planet's `anomaly` is one not found yet: the game's Findings list none of them here; the
+        -- found ones are not read yet)
+        anomalies = {},
     }
 end
 
@@ -774,8 +785,11 @@ function M.log(game_dir)
     local chains, projects = chains_and_projects(pid)
     return {
         player = pid, date = text(world.meta and world.meta.date) or "",
-        first_contacts = first_contacts(pid), situations = situations(pid), sites = sites(pid),
-        chains = chains, projects = projects, anomalies = anomalies(pid),
+        first_contacts = first_contacts(pid, game_dir), situations = situations(pid), sites = sites(pid),
+        chains = chains, projects = projects,
+        -- (a planet's `anomaly` is one not found yet: the game's Findings list none of them here; the
+        -- found ones are not read yet)
+        anomalies = {},
     }
 end
 
