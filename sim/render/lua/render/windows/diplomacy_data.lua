@@ -221,6 +221,15 @@ function data.extract(game_dir, player, add_country)
                 planets = #world.list(world.field(c, "owned_planets")),
                 flag = type(world.field(c, "flag")) == "table",
             }
+            -- the capital's system (`capital` is a colony id: its planet, the planet's system)
+            if e.capital then
+                if not world.colony_planet and world.index then
+                    pcall(world.index)
+                end
+                local pid = world.colony_planet and world.colony_planet[e.capital] or e.capital
+                local p = world.object("planet", pid)
+                e.capital_system = p and tonumber(world.path(p, "coordinate", "origin")) or nil
+            end
             -- the ruler's name (the `leaders` store: name = { full_names = { key } })
             local ok_r, ruler = pcall(world.object, "leaders", e.ruler or -1)
             ruler = ok_r and ruler or nil

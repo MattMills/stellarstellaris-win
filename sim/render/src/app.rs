@@ -1681,17 +1681,7 @@ impl App {
             // the event windows' and popups' buttons (events.rs)
             Some(a) if crate::events::handles(a) => crate::events::app_act(self, a)?,
             // the diplomacy windows (diplomacy.rs): Contacts from the left bar, the others from it
-            Some(a) if a == "view:contacts" || a.starts_with("diplo:") => {
-                if self.diplomacy.act(a)? {
-                    // Contacts is a left bar view: one view at a time (ToggleTopBarView)
-                    if self.diplomacy.open == Some(crate::diplomacy::Open::Contacts) {
-                        self.close_view();
-                        self.set_designer(Default::default());
-                    }
-                    self.overlay_key = None;
-                    self.invalidate();
-                }
-            }
+            Some(a) if a == "view:contacts" || a.starts_with("diplo:") => crate::diplomacy::act(self, a)?,
             // the left bar's views (views.rs): a button toggles its view, a view's close button
             // closes it, `view_set:KEY=VALUE;KEY2=VALUE2` sets keys of the view's state (`KEY=`
             // removes one)
@@ -2352,7 +2342,7 @@ impl App {
                     Action::Back if self.open_view.is_some() && self.view_escape() => {}
                     Action::Back if self.open_view.is_some() => self.close_view(),
                     // the diplomacy window closes first (its close button: ESCAPE)
-                    Action::Back if self.diplomacy.open.is_some() => self.act("/key/escape", Some("diplo:close"))?,
+                    Action::Back if self.diplomacy.open.is_some() => self.act("/key/escape", Some("diplo:escape"))?,
                     // the designer's close button has the shortcut ESCAPE (ship_designer.gui)
                     Action::Back if self.designer.open => self.set_designer(Default::default()),
                     Action::Back if self.starbase.megastructure.is_some() || self.starbase.network.is_some() => {

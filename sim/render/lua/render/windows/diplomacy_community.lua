@@ -132,8 +132,17 @@ function M.build(ctx, state)
         hide.join_leave_button = true
     end
 
+    -- disabled: the Senate Floor tab for a non-member (Update: tab_senate Disable). Join
+    -- (CJoinCommunityCommand, enabled by CGalacticCommunity::IsJoinValid) and Leave
+    -- (CLeaveCommunityCommand) [not done here: no community is formed in any save, and the engine
+    -- has no command for them]; Select a Leader (CAssignOfficialWindow: the leader selection)
+    -- [not done here]; both drawn as the game's frame shows them
+    local disabled = {}
+    if not member then
+        disabled[V .. "/tab_senate"] = true
+    end
     ctx.layout(FILE, "galactic_community_view", {
-        hide = hide, text = text, frames = frames, sizes = sizes, positions = positions,
+        hide = hide, text = text, frames = frames, sizes = sizes, positions = positions, disabled = disabled,
         actions = {
             [V] = "diplo:none", [V .. "/close"] = "diplo:close",
             [V .. "/tab_community"] = "diplo:tab:community", [V .. "/tab_resolutions"] = "diplo:tab:resolutions",
