@@ -210,9 +210,71 @@ function preview.build(ctx, b, design, opts)
         b.items[#b.items + 1] = { kind = "sprite", path = "/clip", sprite = "", texture = "", sprite_kind = "clip",
             frame = 1, frames = 1, x = 0, y = 0, w = 0, h = 0 }
     end
+    -- the lower part (the empire selection's: CSpeciesPreviewWindow::SetDesign): the government
+    -- type, its authority, the species' name and class
+    local GE, SW = P .. "/government_and_ethics", P .. "/species_window"
+    if d and not opts.hide_lower then
+        local gov = d.government
+        if not gov or gov == "" then
+            local ok, g = pcall(rules.government, R, d)
+            gov = ok and g or nil
+        end
+        o.text[GE .. "/government_type_name"] = gov and loc(ctx, gov) or ""
+        if d.authority then
+            o.text[GE .. "/government_authority_name"] = loc(ctx, d.authority)
+            o.textures[GE .. "/government_authority_icon"] = C.icon_file(ctx, "common/governments/authorities", d.authority,
+                "gfx/interface/icons/governments/authorities/" .. d.authority .. ".dds")
+        end
+        o.text[SW .. "/species_name"] = text_of(ctx, d.species.name)
+        o.text[SW .. "/species_class"] = loc(ctx, d.species.class or "")
+    end
     -- the window (its background already drawn)
     o.hide[P .. "/background"] = true
     local r = b:add(FILE, "species_preview", o)
+    -- its lists: the civics, the ethics (species_preview_civic / _ethic), the species' traits
+    -- (species_preview_trait), each entry under the one before
+    if d and not opts.hide_lower then
+        local function list(path, window, entries)
+            local lr = r.rects[path]
+            if not lr then
+                return
+            end
+            local y = lr.y
+            for i, e in ipairs(entries) do
+                local E_ = path .. "/" .. i .. "/" .. window
+                local er = b:add(FILE, window, {
+                    prefix = path .. "/" .. i, parent = { x = lr.x, y = y, w = lr.w, h = 33 },
+                    text = { [E_ .. "/name"] = e.name }, textures = { [E_ .. "/icon"] = e.texture },
+                    sprites = { [E_ .. "/icon"] = e.sprite },
+                    -- a civic's icon file at the entry's sprite's size (GFX_government_authority, 29) [I]
+                    sizes = e.size and { [E_ .. "/icon"] = e.size } or nil,
+                })
+                local rr = er.rects and er.rects["/" .. window] or er.rects and er.rects[path .. "/" .. i .. "/" .. window]
+                y = y + ((rr and rr.h) or 33)
+            end
+        end
+        local civics = {}
+        for _, k in ipairs(d.civics or {}) do
+            civics[#civics + 1] = { name = loc(ctx, k), size = { 29, 29 }, texture = C.icon_file(ctx, "common/governments/civics", k,
+                "gfx/interface/icons/governments/civics/" .. k .. ".dds") }
+        end
+        list(GE .. "/civics", "species_preview_civic", civics)
+        local ethics = {}
+        for _, k in ipairs(d.ethics or {}) do
+            local sprite = "GFX_" .. k
+            if ctx.db and ctx.db.sprites and not ctx.db.sprites[sprite] then
+                sprite = "GFX_" .. k:gsub("_fanatic", "")
+            end
+            ethics[#ethics + 1] = { name = loc(ctx, k), sprite = sprite }
+        end
+        list(GE .. "/ethics", "species_preview_ethic", ethics)
+        local traits = {}
+        for _, k in ipairs(d.species.traits or {}) do
+            traits[#traits + 1] = { name = loc(ctx, k), texture = C.icon_file(ctx, "common/traits", k,
+                "gfx/interface/icons/traits/" .. k .. ".dds") }
+        end
+        list(SW .. "/traits", "species_preview_trait", traits)
+    end
     -- the flag: its composed texture on GFX_empire_flag_200's frame
     local fr = r.rects[P .. "/empire_flag"]
     if fr and d then
