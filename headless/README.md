@@ -23,6 +23,7 @@ on the 24-core box were fine).
 |---|---|
 | `headless.c` | the `LD_PRELOAD` driver (C, no dependencies) |
 | `run.sh` | one run: save, ticks, output |
+| `newgame.sh` | the game makes a new game (no save): day 0 and after N ticks (a new game, below) |
 | `make_standard.sh` | a correctness standard: a long run with the game's own monthly autosaves |
 | `standard.sh` | our simulation against a standard at chosen horizons, or two standards compared |
 | `dev/standard_events.py` | what happens in a standard: counts per save, countries and wars appearing |
@@ -679,6 +680,49 @@ the profiled runs are byte-identical to unprofiled ones.
 
 Harmless: three empty DLC zips (dlc004, dlc013, dlc015) fail to mount ("unsupported"), no ALSA
 device, ~2 MB of error.log about sounds (no audio device).
+
+### A new game: `newgame.sh`
+
+```
+HEADLESS_NG_SETTINGS=tiny3.txt HEADLESS_NG_DESIGNS=designs3.txt HEADLESS_NG_RANDOM=0:0 \
+    headless/newgame.sh humans1_1 10 OUTDIR
+# OUTDIR/day0.gamestate: right after the generation; OUTDIR/ticks10.gamestate: after
+# OnNewGameStarted and 10 ticks (the first day); OUTDIR/headless.log
+```
+
+No save is loaded: the game makes a new game through its own path. At the main menu the driver
+does what the command line's `-empire=KEY` does in `CFrontEndIdler::UpdateInternal`: a `CHuman`
+(the settings' last name, the session's id) with that design is added to the front end's game
+state and the start flag (`+0x218`) is set, so that the next front-end update calls
+`StartNewGame` -> `LaunchNewGame`. That reads the single-player galaxy settings from
+`settings.txt` (`galaxy_config_sp = { template = "tiny" shape = "elliptical" num_empires = 3 ... }`:
+`HEADLESS_NG_SETTINGS` is appended to the run's settings) and the user's designs
+(`user_empire_designs_v3.4.txt`: `HEADLESS_NG_DESIGNS`, the same form as `prescripted_countries`;
+`spawn_enabled = always` forces a design for the AI empires, which are otherwise randomized in 95%
+of the slots). Its task calls `CGameState::GenerateNewGalaxy(-1)`; the call is redirected
+(`call rel32` to a stub near the executable) to `ng_generate`, which sets the global generator
+(`HEADLESS_NG_RANDOM=SEED:POS`, default `0:0`), draws the seed value as `GenerateNewGalaxy(-1)`
+would (or takes `HEADLESS_NG_VALUE`), logs the galaxy seed, generates, and writes the gamestate
+(`HEADLESS_NG_DAY0`). Then the run goes on as from a save: the in-game idler's
+`RestoreDeviceObjects` runs `OnNewGameStarted`, the ticks run, `HEADLESS_OUT` is written. Two runs
+are identical but for the galaxy's UUID `name`. About 28 s for a tiny galaxy (19 s to the menu,
+2 s of generation).
+
+The key `humans1` is refused (its `playable` is `empire_design_never`, also for `-empire=`); the
+UNE is `humans1_1`. The game owns the installed DLCs (`game/dlc`, 17), not all.
+
+For the comparison with the Lua generator (docs/newgame.md, 8.1):
+
+| variable | |
+|---|---|
+| `HEADLESS_NG_NEIGHBORS` | a file: each system's `_GalacticNeighbors` in order, after the generation |
+| `HEADLESS_NG_LANES` | a file: each system's hyperlanes (target/length[b]) right after `GenerateHyperlanes` (a second redirected call) |
+| `HEADLESS_NG_PARTITIONS` | a file: each system's partition and each partition's desired systems and bridges, at the same point |
+| `HEADLESS_NG_PROFILE` | with `HEADLESS_PROFILE=<site table>`: the generation's global draws per call site (`dev/callsites.py -f '^InitializeQueue' -f ...`) |
+| `HEADLESS_NG_LIST_DESIGNS` | log the configuration's designs and their spawn modes |
+| `HEADLESS_NG_DEPOSIT_TYPES` | a file: the deposit types database (names, flag bytes, categories) |
+| `HEADLESS_TOKENS` | token ids to log with their strings (`CStaticLexer::GetString`): how the setup's settings keys were found |
+| `HEADLESS_LAUNCH` | a command the game runs under, e.g. `gdb -q -batch -x FILE --args` (the game is `exec`ed by `env`: set the breakpoints in a `catch exec` handler; gdb loads the executable at `0x555555554000`) |
 
 ## Setup (done on 10.5.0.24)
 

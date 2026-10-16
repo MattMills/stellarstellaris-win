@@ -65,6 +65,22 @@ function fixed.to(raw)
     return raw / ONE
 end
 
+-- the squared distance of two systems (x, y in units) as the game's fixed point has it:
+-- fixmul(dx, dx) + fixmul(dy, dy), in units
+function fixed.dist2(a, b)
+    local dx, dy = fixed.from(a.x) - fixed.from(b.x), fixed.from(a.y) - fixed.from(b.y)
+    return (fixed.mul(dx, dx) + fixed.mul(dy, dy)) / ONE
+end
+
+-- CFixedPoint::SafeSqrt of a value in units, to the 1/100000 below (the game iterates in fixed
+-- point; the result is taken as the truncated exact root [I])
+function fixed.sqrt(v)
+    if v <= 0 then
+        return 0
+    end
+    return math.floor(math.sqrt(v) * ONE) / ONE
+end
+
 local mul = fixed.mul
 
 local function sinx(x)
