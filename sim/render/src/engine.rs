@@ -16,15 +16,24 @@
 //! - the clock (clock.rs: the simulation on its own thread): `pause` (stopped, as the game's
 //!   headless), `pause off` (running), `speed 1..5`, `wait SECONDS` (real time passes)
 //! - `select system|fleet|planet|ship ID`, `select none`: the selection (marked; `state` names it)
-//! - `key NAME down|up`, `mouse X Y [left|right down|up]`, `scroll DY`
-//! - `frame PATH.png` (renders the view, writes the PNG: `ok frame PATH W H MS`), `frame -`
+//! - input, as a keyboard and a mouse make it (controls.rs; headless.c makes the same in the
+//!   game by XTest): `key CHORD [down|up|tap]`, `hold CHORD DURATION`, `mouse X Y [BUTTON
+//!   [down|up]]`, `move X Y`, `button BUTTON down|up [X Y]`, `click X Y [BUTTON] [double]`,
+//!   `wheel NOTCHES [X Y]` (`scroll`), `drag BUTTON X0 Y0 X1 Y1 [STEPS [FRAMES]]`; `bindings`
+//! - frames: `timestep MS` (lockstep: frames of MS each run only by commands, the camera glides
+//!   as the game's, input reaches the app at the next frame as the game's does), `timestep off`,
+//!   `tick N` (N frames). A DURATION is frames (`30`, `30f`) or time (`500ms`, `0.5s`: frames of
+//!   the timestep)
+//! - `frame PATH.png` (renders the view, writes the PNG: `ok frame PATH W H MS`), `frame -`;
+//!   in lockstep the camera arrives first (frames run), `frame PATH now` takes the frame as it is
 //! - `bench SECONDS [FPS]`: frames drawn back to back at FPS (120) as a window draws them, the
 //!   clock running as it is; what each frame took against the frame's time
-//! - `state` (JSON: screen, view, camera, date, size), `quit`
+//! - `state` (JSON: screen, view, camera, date, the clock, the selection, the input, size), `quit`
 
 use std::io::{BufRead, BufReader, Write};
 
 use crate::app::{App, MapView, Screen};
+use crate::controls::{self, Action, Button, Input};
 use crate::scene::Pickable;
 use crate::camera::OrbitCamera;
 use crate::math::V3;
@@ -36,9 +45,18 @@ pub struct Engine {
     pub app: App,
     pub off: Offscreen,
     pub frames: u64,
-    mouse: (f32, f32),
     /// `bench`'s target texture
     target: Option<(u32, u32, wgpu::Texture)>,
+    /// a frame's time (`tick`), seconds: `timestep MS`, 1/60 s by default
+    timestep: f32,
+    /// lockstep (`timestep MS`): the camera glides as the game's, the input given since the last
+    /// frame reaches the app after the next frame's update (`pending`), as the game's SDL events
+    /// reach it at the start of the frame after the one they were made in
+    lockstep: bool,
+    pending: Vec<Input>,
+    /// frames run (`tick`), and the input's clock (their time, ms)
+    frame_no: u64,
+    clock_ms: f64,
 }
 
 /// A frame of `bench`: its parts, seconds: the app's update (the camera, the simulation's
@@ -84,7 +102,7 @@ impl Engine {
         let app = App::new(game_dir, size)?;
         let off = Offscreen::new(backend, adapter)?;
         eprintln!("rendering on: {}", off.adapter);
-        Ok(Engine { app, off, frames: 0, mouse: (0.0, 0.0), target: None })
+        Ok(Engine { app, off, frames: 0, target: None, timestep: 1.0 / 60.0, lockstep: false, pending: Vec::new(), frame_no: 0, clock_ms: 0.0 })
     }
 
     /// Frames drawn back to back at `fps` for `secs` seconds as a window draws them (the app
@@ -250,8 +268,23 @@ impl Engine {
             }
         }
         let states: Vec<String> = states.iter().map(|(k, n)| format!("\"{k}\":{n}")).collect();
+        // the input as the commands left it: the pointer, the buttons and keys held, the held
+        // actions going on, the timestep
+        let c = &a.controls;
+        let list = |v: Vec<String>| v.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(",");
+        let input = format!(
+            "{{\"pointer\":{},\"buttons\":[{}],\"keys\":[{}],\"held\":[{}],\"timestep\":{:.3},\"lockstep\":{},\"frame\":{},\"pending\":{}}}",
+            c.pointer().map_or("null".to_string(), |(x, y)| format!("[{x},{y}]")),
+            list(c.buttons().map(|b| b.name().to_string()).collect()),
+            list(c.keys().cloned().collect()),
+            list(c.held().iter().map(|h| h.name().to_string()).collect()),
+            self.timestep * 1000.0,
+            self.lockstep,
+            self.frame_no,
+            self.pending.len()
+        );
         format!(
-            "{{\"screen\":\"{:?}\",\"view\":\"{view}\",\"camera\":{camera},\"date\":\"{date}\",\"clock\":{clock},\"selected\":{selected},\"systems\":{systems},\"fleets\":{fleets},\"movement\":{{{}}},\"ftl_trails\":{jumping},\"simulation\":{sim},\"size\":[{},{}],\"frames\":{}}}",
+            "{{\"screen\":\"{:?}\",\"view\":\"{view}\",\"camera\":{camera},\"date\":\"{date}\",\"clock\":{clock},\"selected\":{selected},\"input\":{input},\"systems\":{systems},\"fleets\":{fleets},\"movement\":{{{}}},\"ftl_trails\":{jumping},\"simulation\":{sim},\"size\":[{},{}],\"frames\":{}}}",
             a.screen,
             states.join(","),
             a.size.0,
@@ -321,8 +354,8 @@ impl Engine {
                     Ok(Reply::ok(format!("view model {name}{}", if log.is_empty() { String::new() } else { format!(" ({})", log.join("; ")) })))
                 }
                 Some("menu") => {
-                    self.app.key("escape")?;
-                    self.app.key("escape")?;
+                    self.app.perform(Action::Back)?;
+                    self.app.perform(Action::Back)?;
                     Ok(Reply::ok(format!("view {:?}", self.app.screen).to_lowercase()))
                 }
                 other => Err(format!("view {other:?}: galaxy, system ID, model NAME, 2d, 3d or menu")),
@@ -395,8 +428,14 @@ impl Engine {
             "wait" => {
                 // real time passes (the clock runs on its own thread while unpaused)
                 let s: f64 = num(a.first(), "seconds")?;
-                std::thread::sleep(std::time::Duration::from_secs_f64(s.clamp(0.0, 600.0)));
-                self.app.update();
+                if self.lockstep {
+                    // that many frames of the timestep, as the game's in lockstep
+                    let n = self.frames_of(s)?;
+                    self.tick(n)?;
+                } else {
+                    std::thread::sleep(std::time::Duration::from_secs_f64(s.clamp(0.0, 600.0)));
+                    self.app.update();
+                }
                 Ok(Reply::ok(format!("wait {s} date {}", self.app.map.as_ref().map_or(String::new(), |m| m.date()))))
             }
             "speed" => {
@@ -441,45 +480,154 @@ impl Engine {
                 self.app.resize(w, h);
                 Ok(Reply::ok(format!("resize {w} {h}")))
             }
-            "key" => {
-                let name = a.first().ok_or("key NAME [down|up]")?.to_lowercase();
-                // a key acts when pressed
-                if a.get(1).copied() != Some("up") {
-                    let changed = self.app.key(&name)?;
-                    self.flush_log();
-                    return Ok(Reply::ok(format!("key {name} {}", if changed { "acted" } else { "nothing" })));
+            "timestep" => {
+                if a.first().copied() == Some("off") {
+                    self.lockstep = false;
+                    self.app.smooth = false;
+                    self.take_pending()?;
+                    return Ok(Reply::ok("timestep off"));
                 }
-                Ok(Reply::ok(format!("key {name} up")))
+                let ms: f32 = num(a.first(), "ms")?;
+                if !(ms > 0.0 && ms <= 1000.0) {
+                    return Err("timestep MS (0 < MS <= 1000) or timestep off".into());
+                }
+                self.timestep = ms / 1000.0;
+                self.lockstep = true;
+                self.app.smooth = true;
+                Ok(Reply::ok(format!("timestep {ms:.3}")))
             }
-            "mouse" => {
+            "tick" | "frames" => {
+                let n: u64 = num(a.first(), "frames")?;
+                self.tick(n.min(1_000_000))?;
+                Ok(Reply::ok(format!("tick {n} frame {}", self.frame_no)))
+            }
+            "bindings" => {
+                let d = self.app.controls.describe();
+                Ok(Reply::ok(format!("bindings {}: {}", d.len(), d.join("; "))))
+            }
+            "key" => {
+                // key CHORD [down|up|tap]: tap (the default) presses and releases in one frame
+                let c = controls::chord(a.first().ok_or("key CHORD [down|up|tap]")?)?;
+                let how = a.get(1).copied().unwrap_or("tap");
+                match how {
+                    "down" => self.feed_all(controls::chord_inputs(&c, true))?,
+                    "up" => self.feed_all(controls::chord_inputs(&c, false))?,
+                    "tap" => {
+                        self.feed_all(controls::chord_inputs(&c, true))?;
+                        self.feed_all(controls::chord_inputs(&c, false))?;
+                    }
+                    other => return Err(format!("key {c}: {other}? down, up or tap")),
+                }
+                Ok(self.reply_input(format!("key {c} {how} frame {}", self.frame_no)))
+            }
+            "hold" => {
+                // hold CHORD DURATION: pressed, DURATION's frames run, released
+                let c = controls::chord(a.first().ok_or("hold CHORD FRAMES|Nf|Nms|Ns")?)?;
+                let n = self.duration(a.get(1).ok_or("hold CHORD FRAMES|Nf|Nms|Ns")?)?;
+                self.feed_all(controls::chord_inputs(&c, true))?;
+                self.tick(n)?;
+                self.feed_all(controls::chord_inputs(&c, false))?;
+                Ok(self.reply_input(format!("hold {c} {n} frames frame {}", self.frame_no)))
+            }
+            "mouse" | "move" => {
+                // mouse X Y [BUTTON [down|up]]: the pointer to the pixel; a button alone clicks
                 let (x, y): (f32, f32) = (num(a.first(), "x")?, num(a.get(1), "y")?);
-                self.mouse = (x, y);
-                self.app.mouse_move(x, y)?;
-                if let Some(&button) = a.get(2) {
-                    match (button, a.get(3).copied()) {
-                        ("left", Some("down")) => {
-                            self.app.mouse_down(x, y)?;
-                        }
-                        ("left", Some("up")) | ("left", None) => {
-                            if a.get(3).is_none() {
-                                self.app.mouse_down(x, y)?;
-                            }
-                            self.app.mouse_up(x, y)?;
-                        }
-                        ("right", _) => {}
-                        other => return Err(format!("mouse: {other:?}")),
+                self.feed(Input::Move { x, y })?;
+                if let Some(b) = a.get(2) {
+                    let button = Button::parse(b).ok_or(format!("mouse: button {b}"))?;
+                    let how = a.get(3).copied();
+                    if how != Some("up") {
+                        self.feed(Input::Button { button, down: true })?;
+                    }
+                    if how != Some("down") {
+                        self.feed(Input::Button { button, down: false })?;
                     }
                 }
-                let log = self.flush_log();
-                Ok(Reply::ok(format!("mouse {x} {y}{}", if log.is_empty() { String::new() } else { format!(" {}", log.join("; ")) })))
+                Ok(self.reply_input(format!("{verb} {x} {y} frame {}", self.frame_no)))
             }
-            "scroll" => {
-                let dy: f32 = num(a.first(), "dy")?;
-                self.app.wheel(dy);
-                Ok(Reply::ok("scroll"))
+            "button" => {
+                // button BUTTON down|up [X Y]
+                let usage = "button left|right|middle down|up [X Y]";
+                let button = Button::parse(a.first().ok_or(usage)?).ok_or(usage)?;
+                let down = match a.get(1).copied() {
+                    Some("down") => true,
+                    Some("up") => false,
+                    _ => return Err(usage.into()),
+                };
+                if a.len() >= 4 {
+                    self.feed(Input::Move { x: num(a.get(2), "x")?, y: num(a.get(3), "y")? })?;
+                }
+                self.feed(Input::Button { button, down })?;
+                Ok(self.reply_input(format!("button {} {} frame {}", button.name(), if down { "down" } else { "up" }, self.frame_no)))
+            }
+            "click" => {
+                // click X Y [BUTTON] [double]: pressed and released there (twice: a double click)
+                let (x, y): (f32, f32) = (num(a.first(), "x")?, num(a.get(1), "y")?);
+                let button = a.get(2).and_then(|b| Button::parse(b)).unwrap_or(Button::Left);
+                let double = a[2..].contains(&"double");
+                self.feed(Input::Move { x, y })?;
+                for _ in 0..if double { 2 } else { 1 } {
+                    self.feed(Input::Button { button, down: true })?;
+                    self.feed(Input::Button { button, down: false })?;
+                }
+                Ok(self.reply_input(format!("click {x} {y}{} frame {}", if double { " double" } else { "" }, self.frame_no)))
+            }
+            "wheel" | "scroll" => {
+                // wheel NOTCHES [X Y]: a notch a frame (the game zooms by a frame's last), > 0 in
+                let n: f32 = num(a.first(), "notches")?;
+                if a.len() >= 3 {
+                    self.feed(Input::Move { x: num(a.get(1), "x")?, y: num(a.get(2), "y")? })?;
+                }
+                let k = n.abs().round() as u64;
+                for i in 0..k {
+                    self.feed(Input::Wheel { notches: n.signum() })?;
+                    if i + 1 < k {
+                        self.tick(1)?;
+                    }
+                }
+                Ok(self.reply_input(format!("{verb} {} frame {}", k as i64 * n.signum() as i64, self.frame_no)))
+            }
+            "drag" => {
+                // drag BUTTON X0 Y0 X1 Y1 [STEPS [FRAMES]]: pressed at the start, FRAMES frames,
+                // then STEPS moves along the line (whole pixels) each followed by FRAMES frames,
+                // released at the end
+                let usage = "drag BUTTON X0 Y0 X1 Y1 [STEPS [FRAMES]]";
+                let button = Button::parse(a.first().ok_or(usage)?).ok_or(usage)?;
+                let p: Vec<i64> = a[1..].iter().take(6).map(|v| v.parse::<i64>()).collect::<Result<_, _>>().map_err(|_| usage)?;
+                if p.len() < 4 {
+                    return Err(usage.into());
+                }
+                let (steps, frames) = (p.get(4).copied().unwrap_or(10), p.get(5).copied().unwrap_or(1));
+                if steps < 1 || frames < 1 {
+                    return Err(usage.into());
+                }
+                self.feed(Input::Move { x: p[0] as f32, y: p[1] as f32 })?;
+                self.feed(Input::Button { button, down: true })?;
+                self.tick(frames as u64)?;
+                for i in 1..=steps {
+                    // as headless.c computes it (C's integer division)
+                    let x = p[0] + (p[2] - p[0]) * i / steps;
+                    let y = p[1] + (p[3] - p[1]) * i / steps;
+                    self.feed(Input::Move { x: x as f32, y: y as f32 })?;
+                    self.tick(frames as u64)?;
+                }
+                self.feed(Input::Button { button, down: false })?;
+                Ok(self.reply_input(format!("drag to {} {} frame {}", p[2], p[3], self.frame_no)))
             }
             "frame" => {
                 let target = a.first().copied().ok_or("frame PATH.png or frame -")?;
+                // `now`: as it is; else in lockstep the camera arrives first, as the game's
+                // `frame` waits for its picture to settle
+                let now = a.get(1).copied() == Some("now");
+                let rest = rest.strip_suffix("now").map_or(rest, |r| if now { r.trim_end() } else { rest });
+                if self.lockstep && !now {
+                    self.take_pending()?;
+                    let mut n = 0;
+                    while (n < 2 || self.app.camera_moving()) && n < 3000 {
+                        self.tick(1)?;
+                        n += 1;
+                    }
+                }
                 let (px, ms) = self.render()?;
                 let (w, h) = self.app.size;
                 if target == "-" {
@@ -507,6 +655,67 @@ impl Engine {
 
     fn flush_log(&mut self) -> Vec<String> {
         self.app.log.drain(..).collect()
+    }
+
+    /// Input for the app: in lockstep kept for the next frame; else taken at once (the polled
+    /// part too: a frame of no time).
+    fn feed(&mut self, input: Input) -> Result<(), String> {
+        if self.lockstep {
+            self.pending.push(input);
+            return Ok(());
+        }
+        self.app.input(&input, self.clock_ms)?;
+        self.app.advance(0.0);
+        Ok(())
+    }
+
+    fn feed_all(&mut self, inputs: Vec<Input>) -> Result<(), String> {
+        inputs.into_iter().try_for_each(|i| self.feed(i))
+    }
+
+    /// The input given since the last frame, taken (the game's next frame's events).
+    fn take_pending(&mut self) -> Result<(), String> {
+        for i in std::mem::take(&mut self.pending) {
+            self.app.input(&i, self.clock_ms)?;
+        }
+        Ok(())
+    }
+
+    /// `n` frames of the timestep: each the app's update (the camera's), then the input given
+    /// before it taken (in the game: injected during frame f, its events reach frame f + 1).
+    fn tick(&mut self, n: u64) -> Result<(), String> {
+        for _ in 0..n {
+            self.app.advance(self.timestep);
+            self.frame_no += 1;
+            self.clock_ms += self.timestep as f64 * 1000.0;
+            self.take_pending()?;
+        }
+        Ok(())
+    }
+
+    /// A duration's frames: `N`, `Nf` frames; `Nms`, `Ns` time, in frames of the timestep.
+    fn duration(&self, s: &str) -> Result<u64, String> {
+        let bad = || format!("{s}: a duration: N, Nf, Nms or Ns");
+        if let Some(v) = s.strip_suffix("ms") {
+            return self.frames_of(v.parse::<f64>().map_err(|_| bad())? / 1000.0);
+        }
+        if let Some(v) = s.strip_suffix('s') {
+            return self.frames_of(v.parse::<f64>().map_err(|_| bad())?);
+        }
+        s.strip_suffix('f').unwrap_or(s).parse::<u64>().map_err(|_| bad())
+    }
+
+    fn frames_of(&self, secs: f64) -> Result<u64, String> {
+        if !(0.0..=3600.0).contains(&secs) {
+            return Err(format!("{secs} s: 0 to 3600"));
+        }
+        Ok((secs / self.timestep as f64).round() as u64)
+    }
+
+    /// An input command's reply, with what the app logged (clicks, actions not done).
+    fn reply_input(&mut self, line: String) -> Reply {
+        let log = self.flush_log();
+        Reply::ok(if log.is_empty() { line } else { format!("{line} ({})", log.join("; ")) })
     }
 }
 
