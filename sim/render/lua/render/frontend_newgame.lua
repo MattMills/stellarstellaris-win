@@ -414,7 +414,13 @@ function fe.act(game_dir, action, x, y)
     local verb, rest = action:match("^ng:([%w_]+):?(.*)$")
     if action:sub(1, 8) == "creator:" then
         local r = require("render.newgame_creator").act(state, action)
-        if r == "done" or r == "cancel" then
+        -- Done goes on to the galaxy settings with the new design (the game's frame: Game
+        -- Details shows it); Back returns to the empire selection
+        if r == "done" then
+            state.screen = "setup"
+            return "setup"
+        elseif r == "cancel" then
+            state.screen = "select"
             return "select"
         end
         return nil
