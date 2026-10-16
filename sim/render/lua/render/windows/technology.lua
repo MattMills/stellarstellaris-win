@@ -570,7 +570,18 @@ function technology.build(ctx, data, state)
         local list = r.rects[V .. "/select_window/list"]
         local a = data.areas[sel_area] or { alternatives = {} }
         local y = list.y
-        for k, tech in ipairs(a.alternatives) do
+        -- (not the ones in the area's queue: the game's frame leaves out Blue Lasers while it is
+        -- researched [I: CanResearch])
+        local queued, offers = {}, {}
+        for _, q in ipairs(a.queue or {}) do
+            queued[q.tech] = true
+        end
+        for _, t in ipairs(a.alternatives) do
+            if not queued[t] then
+                offers[#offers + 1] = t
+            end
+        end
+        for k, tech in ipairs(offers) do
             -- the row resized to its unlocks (UpdateEntry with resize: the list and bg_container
             -- grow past their 54 and 70) [I: by the game's frames]
             local entries, uh = unlocks_of(tech)
