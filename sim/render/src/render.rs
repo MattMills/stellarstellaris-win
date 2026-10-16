@@ -1478,6 +1478,11 @@ impl Renderer {
     /// post effects: everything straight into the target. With them: the world's layers into the
     /// HDR scene, the game's post-effect chain (post.wgsl) into the target, then the GUI's layers
     /// over it.
+    /// The size of the scene prepared (its depth buffer's), if any: the target it can be drawn to.
+    pub fn size(&self) -> Option<(u32, u32)> {
+        self.depth.as_ref().map(|d| (d.0, d.1))
+    }
+
     pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, mask: u32) {
         let Some(f) = &self.post else {
             self.draw_layers(encoder, target, self.clear_colour(), true, &self.ldr, &self.view_bind, mask, false);

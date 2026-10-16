@@ -205,7 +205,7 @@ pub struct App {
     pub view: MapView,
     pub system_camera: Option<OrbitCamera>,
     camera_goal: Option<OrbitCamera>,
-    system_camera_goal: Option<OrbitCamera>,
+    pub(crate) system_camera_goal: Option<OrbitCamera>,
     /// the cameras move to their goals over time (the window), else at once (commands)
     pub smooth: bool,
     /// the model view: the model shown (an entity or a pdxmesh), and the models read for it
@@ -273,6 +273,8 @@ pub struct App {
     /// the clock's commands of the input, done at the next frame ([`ClockCommand`])
     commands: Vec<ClockCommand>,
     cursor: Option<(f32, f32)>,
+    /// where the left button went down on the map (a box selection's corner: mapicons.rs)
+    pub(crate) map_press: Option<(f32, f32)>,
     last_update: Option<Instant>,
     /// the diplomacy windows (Contacts, a country's diplomacy, ...: diplomacy.rs)
     pub diplomacy: crate::diplomacy::State,
@@ -381,6 +383,7 @@ impl App {
             controls: Controls::from_env()?,
             commands: Vec::new(),
             cursor: None,
+            map_press: None,
             last_update: None,
             diplomacy: Default::default(),
         })
@@ -388,7 +391,7 @@ impl App {
 
     /// The camera of what the map shows (the galaxy's or the system's): its goal, where input
     /// moves it.
-    fn goal_mut(&mut self) -> Option<&mut OrbitCamera> {
+    pub(crate) fn goal_mut(&mut self) -> Option<&mut OrbitCamera> {
         match self.view {
             MapView::Galaxy => {
                 if self.camera_goal.is_none() {
@@ -406,7 +409,7 @@ impl App {
     }
 
     /// After the goal moved: without smoothing, the camera is there at once.
-    fn goal_moved(&mut self) {
+    pub(crate) fn goal_moved(&mut self) {
         if !self.smooth {
             match self.view {
                 MapView::Galaxy => self.camera = self.camera_goal,
@@ -430,7 +433,7 @@ impl App {
         self.goal_moved();
     }
     /// The camera drawn now (the galaxy's or the system's).
-    fn current(&self) -> Option<OrbitCamera> {
+    pub(crate) fn current(&self) -> Option<OrbitCamera> {
         match self.view {
             MapView::Galaxy => self.camera,
             MapView::System(_) | MapView::Model => self.system_camera,
@@ -551,6 +554,8 @@ impl App {
     /// simulation's newest snapshot taken. Whether the picture changed (a frame is due).
     pub fn advance(&mut self, dt: f32) -> bool {
         let mut changed = false;
+        // a system's camera fitted to a stand-in (its data not come yet) fitted again (mapicons.rs)
+        changed |= self.refit_system_camera();
         // the clock's commands of the last frame's input
         for c in std::mem::take(&mut self.commands) {
             let r = match c {
@@ -1427,7 +1432,7 @@ impl App {
         }
     }
 
-    fn button_at(&mut self, x: f32, y: f32) -> Result<Option<(String, Option<String>)>, String> {
+    pub(crate) fn button_at(&mut self, x: f32, y: f32) -> Result<Option<(String, Option<String>)>, String> {
         Ok(self.scene()?.button_at(x, y).map(|b| (b.path.clone(), b.action.clone())))
     }
 
@@ -1470,6 +1475,7 @@ impl App {
     }
 
     pub fn mouse_down(&mut self, x: f32, y: f32) -> Result<bool, String> {
+        self.map_press = Some((x, y));
         let pressed = self.button_at(x, y)?.map(|b| b.0);
         if pressed != self.pressed {
             self.pressed = pressed;
@@ -1628,6 +1634,8 @@ impl App {
             Some(a) if a.starts_with("fleet:") => self.fleet_act(a)?,
             // the planet view's and the colonize window's clicks (planet.rs)
             Some(a) if a.starts_with("planet:") => crate::planet::act(self, a)?,
+            // the map labels' own actions (mapicons.rs: a star label slides the camera there)
+            Some(a) if a.starts_with("map:") => self.map_act(a)?,
             Some(a) if a.starts_with("select:") => self.select(Some(pickable_of(a)?)),
             Some(a) if a.starts_with("starbase:") => crate::starbase::act(self, a)?,
             // the outliner's tabs, groups, observer list (outliner.rs State::act): laid out again
@@ -2047,6 +2055,8 @@ impl App {
             Effect::Down(..) => Ok(false),
             Effect::At(Action::Select, x, y) => self.mouse_up(x, y),
             Effect::At(Action::Focus, x, y) => self.double_click(x, y),
+            Effect::At(Action::Order, x, y) if self.screen == Screen::Map => self.order_at(x, y),
+            Effect::At(Action::BoxSelect, x, y) if self.screen == Screen::Map && self.pressed.is_none() => self.box_select(x, y),
             Effect::At(a, x, y) => {
                 // the left button's press over a GUI button ends without a click
                 if a == Action::BoxSelect && self.pressed.take().is_some() {
@@ -2175,13 +2185,11 @@ impl App {
                     // ESCAPE), before the view
                     Action::Back if crate::planet::escape(self) => {}
                     Action::Back if self.selected.is_some() => self.select(None),
-                    Action::Back if self.view != MapView::Galaxy && self.map.is_some() => {
-                        self.log.push(format!("escape: {:?} -> Galaxy", self.view));
-                        self.show_galaxy();
-                    }
+                    // nothing open: the game's menu window (main_bottom.gui button_topbar_menu,
+                    // shortcut ESCAPE) opens: not done here; the view stays (the game's frames)
                     Action::Back => {
-                        self.log.push("escape: Map -> Menu".into());
-                        self.show(Screen::Menu);
+                        self.log.push("escape: the game's menu window (not done here)".into());
+                        return Ok(false);
                     }
                     a => {
                         self.log.push(format!("{}: not done yet", a.name()));

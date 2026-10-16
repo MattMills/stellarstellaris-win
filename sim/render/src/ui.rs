@@ -173,6 +173,9 @@ fn run(mut app: App, rx: Receiver<Job>, sh: &Shared) {
                     }
                 }
                 let frame = Frame { generation: g, scene, textures: Arc::new(textures.clone()), screen: app.screen };
+                if std::env::var("RENDER_TRACE").is_ok() {
+                    eprintln!("scene {g} published ({}x{})", frame.scene.view.width, frame.scene.view.height);
+                }
                 *sh.latest.lock().unwrap() = Some(Arc::new(frame));
                 published = g;
             }
