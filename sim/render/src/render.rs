@@ -326,7 +326,7 @@ fn mesh_order(meshes: &[crate::scene::MeshDraw]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..meshes.len()).collect();
     order.sort_by_key(|&i| match meshes[i].shading {
         Shading::Lit | Shading::Emissive | Shading::Star => 0,
-        Shading::Clouds | Shading::Ring | Shading::Button => 1,
+        Shading::Clouds | Shading::Ring | Shading::Button | Shading::Portrait => 1,
         Shading::Atmosphere | Shading::StarAtmosphere | Shading::Additive => 2,
     });
     order
@@ -1587,7 +1587,7 @@ impl Renderer {
                 pass.set_pipeline(match d.shading {
                     Shading::Lit | Shading::Emissive | Shading::Star => &pipes.mesh_opaque,
                     Shading::Clouds | Shading::Button => &pipes.mesh_alpha,
-                    Shading::Ring => &pipes.mesh_ring,
+                    Shading::Ring | Shading::Portrait => &pipes.mesh_ring,
                     // PdxMeshAtmosphere: BlendStateAdditiveBlendNoAlpha; PdxMeshAtmosphereStar:
                     // BlendStateAdditiveBlend (alpha written: the star's bloom)
                     Shading::Atmosphere => &pipes.mesh_add_rgb,

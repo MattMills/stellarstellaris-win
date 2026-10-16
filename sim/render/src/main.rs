@@ -58,6 +58,7 @@ mod models;
 mod particles;
 mod pdxmesh;
 mod planet;
+mod portraits;
 mod system;
 mod font;
 mod galaxy;

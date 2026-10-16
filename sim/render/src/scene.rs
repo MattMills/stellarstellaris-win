@@ -153,6 +153,10 @@ pub enum Shading {
     /// a hyperlane exit's arrow (PixelPdxMeshNavigationButton: BlendStateAlphaBlend, no depth
     /// write): the texture's first of five frames, unlit
     Button,
+    /// a portrait's part (PixelPdxMeshPortrait: BlendStateAlphaBlendWriteAlpha,
+    /// RasterizerStateNoCulling, DepthStencilNoZ): its diffuse as it is, unlit (the character's
+    /// light is painted in its texture), blended by its alpha [the depth test kept: I]
+    Portrait,
 }
 
 impl Shading {
@@ -167,6 +171,7 @@ impl Shading {
             Shading::Ring => 6.0,
             Shading::Additive => 7.0,
             Shading::Button => 8.0,
+            Shading::Portrait => 9.0,
         }
     }
 }

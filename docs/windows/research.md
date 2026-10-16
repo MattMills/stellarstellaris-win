@@ -57,7 +57,8 @@ decelerated, when shown **[V gui]**; the renderer draws it in place).
   type is one of NGameplay.COUNCIL_RESEARCH_POSITIONS. Drawn: `bg_head_of_research`, the
   position's icon (`common/governments/councilors` `icon`: GFX_icon_councilor_research), the
   leader's name (`name.full_names`, `%LEADER_2%`: its two parts) and the position's name ("Head of
-  Research"). Not drawn: the portrait, rarity, class, skill and trait icons.
+  Research"), the portrait (docs/windows/portraits.md). Not drawn: the rarity, class, skill and
+  trait icons.
 - **The areas** (CTechnologyViewAreaEntry ctor 0x32d9ae0, UpdateEntry 0x32db240) **[V]**:
   `area_name` the area's name, `area_icon` GFX_resource_AREA, `topbar`
   GFX_scientist_top_bar_AREA; `modifier_icon` ApplyModifierToButton(ModifierType 0xae): the
@@ -278,8 +279,7 @@ research view must show what the game's start makes, not what the simulation's f
   (`unlock_council_slots`, `set_council_position_to_council`, `set_council_position`) are modelled
   (docs/script_objects.md "Leaders and policies"). The UNE start: Head of Research seated, +2%
   (councilor_research's all_technology_research_speed 0.02 x level 1) in each area.
-- The head of research's name and title show on the card; the portrait picture is a 3D portrait
-  (CPortraitObject), which no view of the renderer draws yet.
+- The head of research's name, title and portrait show on the card (docs/windows/portraits.md).
 
 Checked: `newgame scenario=tiny seed=1`, the view opened at 2200.01.01 without a day passed (Wu
 Cheng, +2%, Engineering offering Rare Crystal Mining, Weather Control Systems, Improved Corvette

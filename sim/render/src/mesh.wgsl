@@ -470,6 +470,11 @@ fn fs_mesh(i: VsOut) -> @location(0) vec4<f32> {
         let d = textureSample(diffuse_tex, samp, vec2<f32>(i.uv.x * 0.8, i.uv.y));
         return output(lin(d.rgb), d.a);
     }
+    if (kind > 8.5 && kind < 9.5) {
+        // PixelPdxMeshPortrait: the diffuse (the character texture) as it is, with its alpha
+        let d = textureSample(diffuse_tex, samp, i.uv);
+        return output(lin(d.rgb), d.a);
+    }
     if (kind < 0.5 && has(u32(draw.stdc.x + 0.5), F_SHIP)) {
         return ship(i);
     }

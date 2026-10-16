@@ -129,10 +129,15 @@ function technology.extract(game_dir)
                 local galaxy = require("render.galaxy")
                 -- its name: `name = { full_names = { key = "%LEADER_2%" variables ... } }`
                 local name = world.field(leader, "name")
+                -- its portrait (the leader's `portrait`, else its species'), for render.portraits
+                local sp = world.object("species", tonumber(world.field(leader, "species")) or -1)
                 d.head = {
                     name = galaxy.name_block(world.field(name, "full_names") or name),
                     level = tonumber(world.field(leader, "level")) or 1,
                     position = unquote(world.field(p, "type")),
+                    id = tonumber(world.field(p, "leader")),
+                    portrait = unquote(world.field(leader, "portrait")) or (sp and unquote(world.field(sp, "portrait"))),
+                    gender = unquote(world.field(leader, "gender")),
                 }
             end
         end
@@ -547,7 +552,8 @@ function technology.build(ctx, data, state)
             texture_size = ctx.texture_size, loc = ctx.loc, prefix = "/head",
             parent = { x = slot.x, y = slot.y, w = 0, h = 0 },
             hide = {
-                assign_character_button = true, character_portrait_container_clipping_mask = true,
+                -- (the portrait icon: the inset below)
+                assign_character_button = true, character_portrait = true,
                 leader_rarity_icon = true, leader_type = true, leader_subclass_layered_icon_locator_0 = true,
                 skill_icon_bg = true, skill_icon = true, rename_leader = true, leader_class_text = true,
                 traits_overlapping_box = true,
@@ -565,7 +571,14 @@ function technology.build(ctx, data, state)
             actions = { [P] = "view:council" },
         })
         if ok then
+            local n0 = #items
             gui.merge(items, report, hi, hr)
+            -- the portrait (the card's character_portrait: GFX_portrait_character_close_up):
+            -- render.portraits' inset
+            if head then
+                require("render.portraits").card(ctx.game_dir, items, n0, hr.rects, "interface/paragon_ui_types.gui",
+                    "paragon_portrait_container_research", head)
+            end
         end
     end
 
