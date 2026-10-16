@@ -148,7 +148,59 @@ chunk run on the started world, its result logged). Checked on .24 (/root/ngf): 
 its design replayed by command, the tiny parity run (the game's known systems, 10 days) and medium
 seed 7 (30 days), 0 errors; cargo test 24 passed.
 
-## 6. Not done
+## 6. The bar's look (progress_startend.shader)
+
+GFX_progressbar_933 is drawn with `gfx/FX/progress_startend.shader` **[V]** (the file): its
+textureFile1 (609 x 102) is three rows of 34, a start cap, the framed middle and an end cap. Up to
+the state each pixel is the middle row with the start cap laid over it by its alpha and the end
+cap, shifted by `1 - state` in u (its right end at the state), laid over by its alpha; after the
+state, textureFile2. The renderer drew textureFile1 whole, its three rows squeezed into the 34
+pixel bar: a thin fill with a faded left end and no frame, which looked shifted left of the empty
+part. Now gui.lua draws the three rows as the shader composes them (an item's `clip` carries the
+texture's v range and a u shift: `{ u0, u1, v0, v1, shift }`, scene.rs; a row is sampled half a
+texel in), for every progressbarType whose effectFile is progress_startend (the planet view's,
+the fleets' health and the queues' bars too).
+
+Checked against the real game's load screens (loading a save in view mode, its Xvfb display
+captured every 0.2 s: /root/nlb/gcap.sh on .24) at 1600x900 and 1920x1080: the bar's frame at the
+same place (x 485..1094, top 785 at 1600x900; x 655..1264, top 965 at 1920x1080), the fill inside
+it from its left edge, the middle's frame and the end cap's light at the state.
+
+The other bars the renderer draws do not take this path: the technology and traditions views'
+GFX_tech_research_progressbar has progress.shader; the fleet window's health, armour, shield and
+command limit bars are composed as `@bar:` textures (fleetwin.rs); the starbase build queue's bar
+has its own items (starbase.lua); the planet view's and the situations' bars are hidden. The
+planet (15), fleet (3), starbase (0), technology and traditions views of autosave_2210.01.01 are
+pixel for pixel the same with and without this change (master 0b73793 against it, .24
+/root/nlb/pb). (The starbase queue's GFX_queue_progressbar is a progress_startend sprite drawn
+whole by starbase.lua: when a save with a queued item is compared, it may want the same
+composition.)
+
+## 7. The load screens' console (the renderer's, not the game's)
+
+Over every load screen the renderer shows (a new game's START_NEW_GAME and LOAD_MAP_GFX, a save's
+LOAD_SAVE_GAME), a dark panel at the top left (GFX_tiles_dark_area_cut_8 at 85%, the cg_16b font)
+shows the last lines of the renderer's log, newest at the bottom, each cut to the panel's width, a
+line with errors in red ("0 errors" is not one). The game has no such panel; it is drawn after the
+load screen's window and apart from it.
+
+- What it shows (src/console.rs): every line the crate writes with `eprintln!` (main.rs shadows the
+  macro for the whole crate, from every thread), and the app's log as the load screen takes it.
+  The simulation's thread writes the new game's stages as each ends (the generator's summary and
+  steps, the engine's load with its `jobs:` line, the start script, the terra incognita, the
+  timings), so they come while the screen is up; then `simulation: loaded in`, the models' index.
+- Loading a save: the window's Load and Continue now load behind the load screen
+  (`App::start_load_save`: the simulation's thread loads the save, the map is shown as after a
+  new game). Commands keep `load` / `load-sim` at once; `load-sim async PATH` loads behind the
+  load screen and `loaded` waits for it.
+- Switches: on in the window, off when the renderer is driven by commands (`--script`,
+  `--listen`: the frames compare with the game's); STELLAR_LOAD_CONSOLE=1 / =0 forces it; the key
+  ` (`toggle_console`, any screen); the command `console on|off`.
+
+Checked on .24: a medium new game and a save loaded behind the load screen with `console on`
+(the stages coming in as they end), the default off when scripted, the tint.
+
+## 8. Not done
 
 - The game's own frames of its load screen (the headless path writes gamestates, not frames): the
   load screen's picture scaling and the status window's place are unverified against a game

@@ -195,6 +195,43 @@ function frontend.load_screen(game_dir, db, screen, texture_size, loc, key, perc
     return { items = items, report = report }
 end
 
+-- the load screens' console (src/console.rs; the renderer's, not the game's): the last lines of
+-- the renderer's log in a dark panel at the top left, newest at the bottom, each line cut to the
+-- panel's width, errors tinted. lines = { { text, error } } oldest first
+frontend.CONSOLE = { font = "cg_16b", line = 17, pad = 8, char = 7.2 }
+function frontend.load_console(screen, lines)
+    local C = frontend.CONSOLE
+    local w = math.floor(math.min(screen.width * 0.6, 1100))
+    local rows = math.max(4, math.min(#lines, math.floor(screen.height * 0.45 / C.line)))
+    local h = rows * C.line + 2 * C.pad
+    local x, y = 16, 16
+    local items = {
+        {
+            kind = "sprite", path = "/load_console/background", sprite = "GFX_tiles_dark_area_cut_8",
+            texture = "gfx/interface/tiles/dark_area_cut_8.dds", sprite_kind = "corneredTileSpriteType",
+            border = { x = 8, y = 8 }, frame = 1, frames = 1, x = x, y = y, w = w, h = h,
+            tint = { 1, 1, 1, 0.85 },
+        },
+    }
+    local max_chars = math.floor((w - 2 * C.pad) / C.char)
+    local first = math.max(1, #lines - rows + 1)
+    for i = first, #lines do
+        local l = lines[i]
+        local text = l[1]
+        if #text > max_chars then
+            text = text:sub(1, max_chars - 3) .. "..."
+        end
+        local colour = l[2] and { 1.0, 0.45, 0.4 } or { 0.82, 0.86, 0.82 }
+        items[#items + 1] = {
+            kind = "text", path = "/load_console/line" .. (i - first + 1), font = C.font, text = text,
+            spans = { { text = text, colour = colour } },
+            x = x + C.pad, y = y + C.pad + (i - first) * C.line, w = w - 2 * C.pad, h = C.line,
+            format = "left", fixed = true,
+        }
+    end
+    return { items = items }
+end
+
 -- the load game window over the menu, one LoadGameSessionEntry per save (as many as the list
 -- shows); saves = { { name, date, file } } newest first
 function frontend.load_window(game_dir, db, screen, texture_size, loc, saves)

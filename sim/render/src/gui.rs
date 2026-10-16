@@ -37,8 +37,9 @@ pub enum GuiItem {
         /// texel greyed, GreyOutLuminosity 0.85, brightness 0.75)
         disabled: bool,
         /// the part of its frame drawn, u0..u1 (a progress bar's two textures; the rectangle cut
-        /// the same)
-        clip: [f32; 2],
+        /// the same), the texture's v0..v1 and a shift of its u (progress_startend's rows and
+        /// end cap): { u0, u1, v0, v1, shift }
+        clip: [f32; 5],
     },
     Text {
         path: String,
@@ -193,8 +194,14 @@ pub(crate) fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
                 },
                 disabled: it.get::<Option<bool>>("disabled")?.unwrap_or(false),
                 clip: match it.get::<Option<Table>>("clip")? {
-                    Some(c) => [c.get(1)?, c.get(2)?],
-                    None => [0.0, 1.0],
+                    Some(c) => [
+                        c.get(1)?,
+                        c.get(2)?,
+                        c.get::<Option<f32>>(3)?.unwrap_or(0.0),
+                        c.get::<Option<f32>>(4)?.unwrap_or(1.0),
+                        c.get::<Option<f32>>(5)?.unwrap_or(0.0),
+                    ],
+                    None => [0.0, 1.0, 0.0, 1.0, 0.0],
                 },
             });
         } else {
@@ -391,6 +398,28 @@ pub fn load_screen(runtime: &Runtime, width: u32, height: u32, key: &str, percen
         Ok(Layout { items: read_items(t.get("items")?)?, missing: missing(&report)?, note: format!("load screen: {key} {percent}%"), rects: HashMap::new() })
     };
     read().map_err(|e| format!("render.frontend.load_screen: {e}"))
+}
+
+/// The load screens' console (console.rs; render.frontend.load_console) for a screen of `width`
+/// x `height`: `lines`, oldest first, errors tinted.
+pub fn load_console(runtime: &Runtime, width: u32, height: u32, lines: &[String]) -> Result<Vec<GuiItem>, String> {
+    let read = || -> mlua::Result<Vec<GuiItem>> {
+        let lua = &runtime.lua;
+        let list = lua.create_table()?;
+        for l in lines {
+            let e = lua.create_table()?;
+            e.push(l.as_str())?;
+            e.push(crate::console::is_error(l))?;
+            list.push(e)?;
+        }
+        let screen = lua.create_table()?;
+        screen.set("width", width)?;
+        screen.set("height", height)?;
+        let f: mlua::Function = lua.load("return require('render.frontend').load_console").eval()?;
+        let t: Table = f.call((screen, list))?;
+        read_items(t.get("items")?)
+    };
+    read().map_err(|e| format!("render.frontend.load_console: {e}"))
 }
 
 /// A save in the load window: the empire's name, the date, the file's name.
