@@ -1,13 +1,17 @@
-//! The windowed mode: the front end and the map (app.rs) in a window (winit). The mouse hovers,
-//! presses and clicks the GUI's buttons (the top bar's time controls too); on the map a click
-//! selects a system, fleet, planet or ship and a double click on a star opens its system; the
-//! right button drags to turn the camera, the left drags to pan, the wheel zooms by the game's
-//! zoom steps; W A S D and the arrows pan and Q E turn while held, the cursor at the window's
-//! edge scrolls, and the camera glides to where input sends it. Space pauses or runs the game's
-//! clock (on the simulation's thread: the window never waits for a day), + and - (the keypad's
-//! too, Shift+Up and Shift+Down) change its speed, `.` runs one day. Escape goes back (the
-//! selection, then system -> galaxy -> menu); C on the menu continues the newest save; Q on the
-//! menu closes. `frames` closes the window after that many frames (for tests).
+//! The windowed mode: the front end and the map (app.rs) in a window (winit). The window's keys,
+//! buttons, wheel and pointer go to the app as physical input (controls.rs: the keys by their
+//! place on a US layout, as the game's SDL key codes name them there), and the bindings make
+//! them the game's actions (docs/render.md section 12): the mouse hovers, presses and clicks the
+//! GUI's buttons (the top bar's time controls too); on the map a click selects a system, fleet,
+//! planet or ship and a double click on a star opens its system; the right button drags to turn
+//! the camera, the middle (or left and right together) drags the plane, the wheel zooms by the
+//! game's zoom steps; W A S D and the arrows scroll while held, the cursor at the window's edge
+//! scrolls, and the camera glides to where input sends it. Space pauses or runs the game's clock
+//! (on the simulation's thread: the window never waits for a day), the keypad's + and -, + = and
+//! -, Shift+Up and Shift+Down change its speed, `.` runs one day (when released, as the game).
+//! Escape goes back (the selection, then system -> galaxy -> menu); C on the menu continues the
+//! newest save; Q on the menu closes. `frames` closes the window after that many frames (for
+//! tests).
 //!
 //! The window's thread does nothing but render (ui.rs): the app runs on the UI thread, the input
 //! goes to it as jobs, and each frame, 120 a second, draws the newest scene it published.
@@ -16,12 +20,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
+use winit::keyboard::PhysicalKey;
 use winit::window::{Window, WindowId};
 
 use crate::app::{App, Screen};
+use crate::controls::{self, Button, Input};
 use crate::render::{self, Renderer};
 use crate::scene::ALL;
 use crate::ui::{self, Ui};
@@ -51,45 +56,51 @@ struct Win {
     drawn: u32,
     instance: wgpu::Instance,
     shown: Option<Shown>,
-    cursor: (f32, f32),
     error: Option<String>,
     /// when the first frame was drawn (the first seconds after it are redrawn on a timer)
     first_frame: Option<std::time::Instant>,
     /// fit the window to the screen (no size was asked for)
     fit: bool,
-    /// a mouse button held: which, where it went down, whether it moved (a drag, not a click)
-    held: Option<(MouseButton, (f32, f32), bool)>,
-    /// the keyboard's modifiers (Shift+Up and Shift+Down change the speed)
-    modifiers: Modifiers,
-    /// the last click: when and where (a second one near it soon after is a double click)
-    last_click: Option<(Instant, (f32, f32))>,
+    /// when the window opened (the input's times: a double click's)
+    start: Instant,
 }
 
-/// A key's name for the app: named keys, the keypad's + and -, characters (lower case).
-fn key_name(logical: &Key, physical: &PhysicalKey, shift: bool) -> Option<String> {
-    match physical {
-        PhysicalKey::Code(KeyCode::NumpadAdd) => return Some("kp_plus".into()),
-        PhysicalKey::Code(KeyCode::NumpadSubtract) => return Some("kp_minus".into()),
-        _ => {}
-    }
-    let name = match logical {
-        Key::Named(NamedKey::Escape) => "escape".to_string(),
-        Key::Named(NamedKey::ArrowUp) => "up".to_string(),
-        Key::Named(NamedKey::ArrowDown) => "down".to_string(),
-        Key::Named(NamedKey::ArrowLeft) => "left".to_string(),
-        Key::Named(NamedKey::ArrowRight) => "right".to_string(),
-        Key::Named(NamedKey::PageUp) => "pageup".to_string(),
-        Key::Named(NamedKey::PageDown) => "pagedown".to_string(),
-        Key::Named(NamedKey::Space) => "space".to_string(),
-        Key::Named(NamedKey::Home) => "home".to_string(),
-        Key::Named(NamedKey::Backspace) => "backspace".to_string(),
-        Key::Character(c) => c.as_str().to_lowercase(),
-        _ => return None,
+/// A key's name (controls.rs): its place on the keyboard, named as on a US layout.
+fn key_name(physical: &PhysicalKey) -> Option<String> {
+    let PhysicalKey::Code(code) = physical else { return None };
+    let n = format!("{code:?}");
+    let name = if let Some(c) = n.strip_prefix("Key") {
+        c.to_lowercase()
+    } else if let Some(d) = n.strip_prefix("Digit") {
+        d.to_string()
+    } else if let Some(d) = n.strip_prefix("Numpad").filter(|d| d.len() == 1) {
+        format!("kp_{d}")
+    } else if n.len() <= 3 && n.starts_with('F') {
+        n.to_lowercase()
+    } else {
+        match n.as_str() {
+            "NumpadAdd" => "kp_plus",
+            "NumpadSubtract" => "kp_minus",
+            "NumpadMultiply" => "kp_multiply",
+            "NumpadDivide" => "kp_divide",
+            "NumpadEnter" => "kp_enter",
+            "NumpadDecimal" => "kp_period",
+            "Enter" => "return",
+            "ArrowUp" => "up",
+            "ArrowDown" => "down",
+            "ArrowLeft" => "left",
+            "ArrowRight" => "right",
+            "Quote" => "apostrophe",
+            "Backquote" => "grave",
+            "ShiftLeft" | "ShiftRight" => "shift",
+            "ControlLeft" | "ControlRight" => "ctrl",
+            "AltLeft" | "AltRight" => "alt",
+            "PrintScreen" => "print",
+            other => return controls::key_name(other),
+        }
+        .to_string()
     };
-    if shift && (name == "up" || name == "down") {
-        return Some(format!("shift+{name}"));
-    }
-    Some(name)
+    controls::key_name(&name)
 }
 
 impl Win {
@@ -143,9 +154,10 @@ impl Win {
         event_loop.exit();
     }
 
-    /// A job for the app (the input), on its thread.
-    fn post(&self, f: impl FnOnce(&mut App) -> Result<(), String> + Send + 'static) {
-        self.ui.post(f);
+    /// Input for the app, on its thread, with its time.
+    fn input(&self, input: Input) {
+        let ms = self.start.elapsed().as_secs_f64() * 1000.0;
+        self.ui.post(move |app| app.input(&input, ms).map(|_| ()));
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
@@ -248,118 +260,27 @@ impl ApplicationHandler for Win {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::ModifiersChanged(m) => self.modifiers = m,
-            WindowEvent::KeyboardInput { event: KeyEvent { logical_key, physical_key, state, repeat, .. }, .. } => {
-                let shift = self.modifiers.state().shift_key();
-                let Some(key) = key_name(&logical_key, &physical_key, shift) else { return };
-                if state == ElementState::Released {
-                    self.post(move |app| {
-                        app.key_up(&key);
-                        if key.starts_with("shift+") {
-                            app.key_up(key.trim_start_matches("shift+"));
-                        }
-                        Ok(())
-                    });
-                    return;
-                }
-                let on_map = self.screen == Screen::Map;
-                if key == "q" && !on_map {
-                    event_loop.exit();
-                    return;
-                }
-                // a held key repeats: the clock's keys act once a press
-                if repeat && matches!(key.as_str(), "space" | "." | "kp_plus" | "kp_minus" | "+" | "=" | "-" | "shift+up" | "shift+down") {
-                    return;
-                }
-                self.post(move |app| app.key(&key).map(|_| ()));
+            WindowEvent::KeyboardInput { event: KeyEvent { physical_key, state, repeat, .. }, .. } => {
+                let Some(key) = key_name(&physical_key) else { return };
+                self.input(Input::Key { key, down: state == ElementState::Pressed, repeat });
             }
-            WindowEvent::CursorLeft { .. } => self.post(|app| {
-                app.mouse_left();
-                Ok(())
-            }),
-            WindowEvent::CursorMoved { position, .. } => {
-                let (px, py) = self.cursor;
-                self.cursor = (position.x as f32, position.y as f32);
-                let (dx, dy) = (self.cursor.0 - px, self.cursor.1 - py);
-                let on_map = self.screen == Screen::Map;
-                let cursor = self.cursor;
-                let mut drag = None;
-                if let Some((button, start, moved)) = self.held.as_mut() {
-                    let far = (cursor.0 - start.0).powi(2) + (cursor.1 - start.1).powi(2) > crate::camera::MOUSE_MOVEMENT_TO_START_ROTATION_SQ;
-                    if on_map && (*moved || far) {
-                        *moved = true;
-                        drag = Some(*button);
-                    }
-                }
-                if let Some(button) = drag {
-                    // the game's: the right button turns, the middle one drags the plane (the
-                    // grabbed point stays under the cursor); a left drag is its box selection
-                    // (not drawn)
-                    match button {
-                        MouseButton::Right => self.post(move |app| {
-                            app.set_holding(true);
-                            app.rotate(dx, dy);
-                            Ok(())
-                        }),
-                        MouseButton::Middle => self.post(move |app| {
-                            app.set_holding(true);
-                            app.drag(Some(cursor));
-                            Ok(())
-                        }),
-                        _ => {}
-                    }
-                    return;
-                }
-                self.post(move |app| app.mouse_move(cursor.0, cursor.1).map(|_| ()));
-            }
+            WindowEvent::CursorLeft { .. } => self.input(Input::Leave),
+            WindowEvent::CursorMoved { position, .. } => self.input(Input::Move { x: position.x as f32, y: position.y as f32 }),
             WindowEvent::MouseInput { state, button, .. } => {
-                let (x, y) = self.cursor;
-                match state {
-                    ElementState::Pressed => {
-                        self.held = Some((button, (x, y), false));
-                        if button == MouseButton::Left {
-                            self.post(move |app| app.mouse_down(x, y).map(|_| ()));
-                        }
-                        if button == MouseButton::Middle {
-                            // the plane's point under the cursor is grabbed
-                            self.post(move |app| {
-                                app.drag(None);
-                                app.drag(Some((x, y)));
-                                Ok(())
-                            });
-                        }
-                    }
-                    ElementState::Released => {
-                        let dragged = self.held.take().is_some_and(|h| h.2);
-                        self.post(|app| {
-                            app.set_holding(false);
-                            app.drag(None);
-                            Ok(())
-                        });
-                        if button == MouseButton::Left && !dragged {
-                            let double = self
-                                .last_click
-                                .is_some_and(|(t, (cx, cy))| t.elapsed() < Duration::from_millis(400) && (cx - x).abs() + (cy - y).abs() < 6.0);
-                            self.last_click = Some((Instant::now(), (x, y)));
-                            if double {
-                                self.last_click = None;
-                                self.post(move |app| app.double_click(x, y).map(|_| ()));
-                            } else {
-                                self.post(move |app| app.mouse_up(x, y).map(|_| ()));
-                            }
-                        }
-                    }
-                }
+                let button = match button {
+                    MouseButton::Left => Button::Left,
+                    MouseButton::Right => Button::Right,
+                    MouseButton::Middle => Button::Middle,
+                    _ => return,
+                };
+                self.input(Input::Button { button, down: state == ElementState::Pressed });
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
+                let notches = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
-                self.post(move |app| {
-                    app.wheel(dy);
-                    Ok(())
-                });
+                self.input(Input::Wheel { notches });
             }
             WindowEvent::Resized(size) => {
                 if let Some(s) = self.shown.as_mut() {
@@ -409,13 +330,10 @@ where
         drawn: 0,
         instance: render::instance(backend),
         shown: None,
-        cursor: (0.0, 0.0),
         error: None,
         first_frame: None,
         fit,
-        held: None,
-        modifiers: Modifiers::default(),
-        last_click: None,
+        start: Instant::now(),
     };
     event_loop.run_app(&mut win).map_err(|e| format!("event loop: {e}"))?;
     match win.error {
