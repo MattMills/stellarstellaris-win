@@ -152,6 +152,11 @@ pub struct App {
     pub overlay_items: Vec<GuiItem>,
     /// the map labels (mapicons.gui) of what the view shows
     pub overlay_labels: Vec<scene::Label>,
+    /// the outliner's state: its tab, the groups collapsed (render.windows.outliner)
+    pub outliner: crate::outliner::State,
+    /// the ship designer (designer.rs) and the ship models of its 3D views, by inset
+    pub designer: crate::designer::Designer,
+    designer_models: HashMap<String, crate::designer::ShipModel>,
     /// what the windows were laid out for: the size, view, selection, snapshot, GUI shown, paused,
     /// star names' zoom, observing
     overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool)>,
@@ -179,6 +184,8 @@ pub struct App {
     commands: Vec<ClockCommand>,
     cursor: Option<(f32, f32)>,
     last_update: Option<Instant>,
+    /// the diplomacy windows (Contacts, a country's diplomacy, ...: diplomacy.rs)
+    pub diplomacy: crate::diplomacy::State,
 }
 
 /// What the cursor is over: a GUI element (its path, e.g. "/maingui/topbar_static/
@@ -255,6 +262,9 @@ impl App {
             view_state: HashMap::new(),
             overlay_items: Vec::new(),
             overlay_labels: Vec::new(),
+            outliner: Default::default(),
+            designer: Default::default(),
+            designer_models: HashMap::new(),
             overlay_key: None,
             holding: false,
             drag_anchor: None,
@@ -272,6 +282,7 @@ impl App {
             commands: Vec::new(),
             cursor: None,
             last_update: None,
+            diplomacy: Default::default(),
         })
     }
 
@@ -781,312 +792,7 @@ impl App {
         }
     }
 
-    /// The system view's map labels (mapicons.gui; docs/render.md section 12): each fleet's and
-    /// station's `fleet_map_icon` (CFleetMapIcon::Update), each planet's `planet_map_icon` with
-    /// an owner or deposits (CPlanetMapIcon::Update), in the relation colour
-    /// (GetDiplomaticRelationColor: the player's, else neutral; the selected one gold).
-    fn system_labels(&mut self) -> Result<Vec<scene::Label>, String> {
-        if self.view == MapView::Galaxy && self.mode3d {
-            return self.galaxy_labels();
-        }
-        let MapView::System(si) = self.view else { return Ok(Vec::new()) };
-        let (w, h) = self.size;
-        let gd = self.game_dir.clone();
-        // the fonts (the name's width) come with the top bar
-        self.map.as_mut().ok_or("no map")?.topbar(w, h)?;
-        let map = self.map.as_mut().ok_or("no map")?;
-        if !map.gui {
-            return Ok(Vec::new());
-        }
-        let g = map.galaxy.clone();
-        let data = map.system_data(g.systems[si].id)?;
-        let player = map.player_country();
-        let selected = self.selected;
-        // CColor::SwitchHSVtoRGB of RELATION_COLOR_PLAYER_HSV and _NEUTRAL_HSV; _SELECTED_RGB
-        let tint = |owner: Option<usize>, sel: bool| -> [f32; 4] {
-            if sel {
-                [1.5, 1.1, 0.0, 1.0]
-            } else if owner.is_some() && owner == player {
-                [0.0, 0.89, 0.61, 1.0]
-            } else {
-                [0.56, 0.56, 0.56, 1.0]
-            }
-        };
-        let size = |name: &str| gui::sprite_size(&self.runtime, &self.cache, &gd, name).unwrap_or((32.0, 32.0));
-        let mut specs = Vec::new();
-        // (label index -> anchor, drop, bounds, sort, owner)
-        let mut meta: Vec<(V3, f32, Option<[f32; 4]>, i64, Option<usize>)> = Vec::new();
-        // the fleets, in the system's order of their ships
-        let mut seen = std::collections::HashSet::new();
-        for s in &data.ships {
-            if !seen.insert(s.fleet) {
-                continue;
-            }
-            let Some(f) = g.fleets.iter().find(|f| f.id == s.fleet) else { continue };
-            let prefix = format!("/label/fleet/{}", f.id);
-            let p = format!("{prefix}/fleet_map_icon");
-            let mut spec = gui::WindowSpec::new("interface/mapicons.gui", "fleet_map_icon");
-            spec.parent = Some([0.0, 0.0, 0.0, 0.0]);
-            // (the shield bar hidden at 0: the military ones have shields, the others none [I];
-            // the ship counters laid out below)
-            for n in ["fleet_icon", "fleet_type", "cloaked_state", "has_ftl_magnet", "has_ftl_inhibitor", "ship_counters", "resources", "special_project"] {
-                spec.hide.push(n.into());
-            }
-            if f.military_power <= 0.0 {
-                spec.hide.push("shield".into());
-            }
-            // the type icon (GFX_ship_class_small) by what the fleet is [I: CFleet::GetIconFrame
-            // not read; matched by eye to the game's frame]: military 3, a starbase 8, science and
-            // research 9, mining 7, construction 2, colony 6
-            let kind = s.size.as_str();
-            let frame = if kind.contains("starbase") {
-                8
-            } else if kind.contains("research") || kind.contains("science") || kind.contains("observation") {
-                9
-            } else if kind.contains("mining") {
-                7
-            } else if kind.contains("construct") {
-                2
-            } else if kind.contains("colon") {
-                6
-            } else {
-                3
-            };
-            spec.frames.push((format!("{p}/type"), frame));
-            let sel = selected == Some(Pickable::Fleet(f.id));
-            let c = tint(f.owner, sel);
-            for n in ["bg", "flag", "type_bg"] {
-                spec.tints.push((format!("{p}/{n}"), c));
-            }
-            spec.actions.push((format!("{p}/bg"), format!("select:fleet:{}", f.id)));
-            let military = f.military_power > 0.0;
-            if military {
-                // CFleetMapIcon: MILITARY_POWER "£military_power£ $VALUE|*0$" (*1 with K from 1000)
-                spec.text.push((format!("{p}/offensive_power"), format!("\u{a3}military_power\u{a3} {}", si_number(f.military_power.round()))));
-            } else {
-                spec.hide.push("offensive_power".into());
-            }
-            spec.prefix = Some(prefix.clone());
-            specs.push(spec);
-            // the ship counters (ship_counters: a ship_counter_entry per ship size of its military
-            // ships, centred under the bar; GFX_ship_counter_<n> by the size [I])
-            let c_tint = c;
-            if military && !f.station {
-                let mut counts: Vec<(u32, u32)> = Vec::new();
-                for sh in data.ships.iter().filter(|x| x.fleet == f.id) {
-                    let n = match sh.size.as_str() {
-                        "corvette" => 4,
-                        "destroyer" => 8,
-                        "cruiser" => 16,
-                        "battleship" => 32,
-                        "titan" => 64,
-                        "juggernaut" | "colossus" => 128,
-                        _ => continue,
-                    };
-                    match counts.iter_mut().find(|c| c.0 == n) {
-                        Some(c) => c.1 += 1,
-                        None => counts.push((n, 1)),
-                    }
-                }
-                let k = counts.len() as f32;
-                for (j, (n, c)) in counts.iter().enumerate() {
-                    let mut e = gui::WindowSpec::new("interface/mapicons.gui", "ship_counter_entry");
-                    let ep = format!("{prefix}/res{j}");
-                    e.parent = Some([-65.0 + 25.0 + 87.0 / 2.0 - k * 18.0 / 2.0 + j as f32 * 18.0, 8.0 + 24.0, 0.0, 0.0]);
-                    e.sprites.push((format!("{ep}/ship_counter_entry/icon"), format!("GFX_ship_counter_{n}")));
-                    e.text.push((format!("{ep}/ship_counter_entry/count"), c.to_string()));
-                    e.tints.push((format!("{ep}/ship_counter_entry/icon"), c_tint));
-                    e.prefix = Some(ep);
-                    specs.push(e);
-                }
-            }
-            // civilian fleets (not stations) take military_fleet_icon_size 108 x 48 less: 32
-            let bounds = [-65.0, 8.0, 108.0, if military || f.station { 48.0 } else { 32.0 }];
-            // (stations sort with the military: not flagged civilian [I], the frame's order)
-            let sort = f.id as i64 + if military || f.station { 0x1_FFFF_FFFE } else { 0xFFFF_FFFF };
-            meta.push((V3(s.x, 0.0, s.y), 0.0, Some(bounds), sort, f.owner));
-        }
-        // the planets with an owner or deposits; their names localised
-        let shown: Vec<&system::Body> = data.bodies.iter().filter(|b| b.owner >= 0 || !b.deposits.is_empty()).collect();
-        let names = gui::format_names(&self.runtime, &shown.iter().map(|b| &b.name).collect::<Vec<_>>())?;
-        let widths: Vec<f32> = names.iter().map(|n| map.fonts.as_ref().and_then(|f| f.get("cg_16b")).map_or(8.0 * n.len() as f32, |f| f.width(n)).min(800.0)).collect();
-        let flag_w = size("GFX_map_icon_flag").0;
-        let (cap_w, cap_h) = size("GFX_map_icon_flag_capital");
-        let (deco_w, deco_h) = size("GFX_map_icon_flag_capital_decoration");
-        let health_w = size("GFX_planet_map_icon_health").0;
-        for ((b, name), tw) in shown.iter().zip(names).zip(widths) {
-            let owner = if b.owner >= 0 { g.countries.iter().position(|c| c.id as i64 == b.owner) } else { None };
-            let capital = g.capital.is_some_and(|(p, _)| p == b.id);
-            let prefix = format!("/label/planet/{}", b.id);
-            let p = format!("{prefix}/planet_map_icon");
-            let mut spec = gui::WindowSpec::new("interface/mapicons.gui", "planet_map_icon");
-            spec.parent = Some([0.0, 0.0, 0.0, 0.0]);
-            let mut only: Vec<String> = vec!["name".into()];
-            let bg = if capital { "bg_capital" } else { "bg" };
-            only.push(bg.into());
-            spec.positions.push((format!("{p}/{bg}"), (-(tw + 23.0) / 2.0, 12.0)));
-            spec.sizes.push((format!("{p}/{bg}"), (tw + 23.0, 22.0)));
-            let left = |ew: f32, ox: f32| -tw / 2.0 - ew + ox;
-            if owner.is_some() {
-                if capital {
-                    only.push("flag_capital".into());
-                    only.push("flag_capital_decoration".into());
-                    spec.positions.push((format!("{p}/flag_capital"), (left(cap_w, -12.0), 3.0)));
-                    // the decoration about the flag [I]
-                    let fx = left(cap_w, -12.0);
-                    spec.positions.push((format!("{p}/flag_capital_decoration"), (fx + (cap_w - deco_w) / 2.0, 3.0 + (cap_h - deco_h) / 2.0)));
-                    spec.frames.push((format!("{p}/flag_capital_decoration"), 1));
-                } else {
-                    only.push("flag".into());
-                    spec.positions.push((format!("{p}/flag"), (left(flag_w, -14.0), 7.0)));
-                }
-            }
-            if b.colony {
-                for n in ["type", "type_bg", "type_bg2", "health"] {
-                    only.push(n.into());
-                }
-                spec.positions.push((format!("{p}/type"), (tw / 2.0 + 9.0, 8.0)));
-                spec.positions.push((format!("{p}/type_bg2"), (tw / 2.0 + 9.0, 8.0)));
-                spec.positions.push((format!("{p}/type_bg"), (tw / 2.0 + 5.0, 7.0)));
-                spec.positions.push((format!("{p}/health"), (left(health_w, -17.0), 11.0)));
-            }
-            let sel = selected == Some(Pickable::Body(b.id));
-            let c = tint(owner, sel);
-            for n in ["bg", "bg_capital", "flag", "flag_capital", "type_bg"] {
-                spec.tints.push((format!("{p}/{n}"), c));
-            }
-            spec.text.push((format!("{p}/name"), name.clone()));
-            spec.actions.push((format!("{p}/{bg}"), format!("select:planet:{}", b.id)));
-            spec.only = Some(only);
-            spec.prefix = Some(prefix.clone());
-            specs.push(spec);
-            // the deposits under the name: a resource_icon_item each, centred, the amount green
-            let n = b.deposits.len() as f32;
-            for (k, (res, amount)) in b.deposits.iter().enumerate() {
-                let mut r = gui::WindowSpec::new("interface/mapicons.gui", "resource_icon_item");
-                let rp = format!("{prefix}/res{k}");
-                r.parent = Some([-n * 19.0 / 2.0 + k as f32 * 19.0 + 3.0, 37.0, 0.0, 0.0]);
-                r.sprites.push((format!("{rp}/resource_icon_item/icon"), format!("GFX_resource_{}", res.trim_end_matches("_research"))));
-                r.text.push((format!("{rp}/resource_icon_item/num"), format!("\u{a7}G{}\u{a7}!", amount.trunc() as i64)));
-                r.prefix = Some(rp);
-                specs.push(r);
-            }
-            // the label's place: under the planet by 0.6 of its size (PLANET_MAP_ICON_OFFSET)
-            let radius = {
-                let crate::Map { models, runtime, .. } = &mut *map;
-                // the bounding sphere: half the largest extent
-                models.model(runtime, &gd, &b.entity).map(|m| { let (lo, hi) = m.aabb; 0.5 * (hi[0] - lo[0]).max(hi[1] - lo[1]).max(hi[2] - lo[2]) * m.scale }).unwrap_or(1.0)
-            };
-            let drop = radius * system::entity_scale(b.size, b.class_scale, b.moon_of >= 0) / system::SYSTEM_SPACE_SCALE * 0.6;
-            let hh = 22.0 + if b.deposits.is_empty() { 0.0 } else { 42.0 };
-            meta.push((V3(b.x, system::PLANE_Y, b.y), drop, Some([-tw / 2.0, -hh / 2.0, tw, hh]), b.id as i64, owner));
-        }
-        let layout = gui::layout_specs(&self.runtime, w, h, &specs)?;
-        // the items back to their labels (by their path's prefix)
-        let mut labels: Vec<scene::Label> = Vec::new();
-        let mut index: HashMap<String, usize> = HashMap::new();
-        let mut k = 0;
-        for s in &specs {
-            let key = s.prefix.clone().unwrap_or_default();
-            let base = key.split("/res").next().unwrap_or("").to_string();
-            if !index.contains_key(&base) {
-                let (anchor, drop, bounds, sort, _) = meta[k];
-                k += 1;
-                index.insert(base.clone(), labels.len());
-                labels.push(scene::Label { anchor, drop, items: Vec::new(), bounds, sort });
-            }
-        }
-        for it in layout.items {
-            let path = match &it {
-                GuiItem::Sprite { path, .. } | GuiItem::Text { path, .. } => path.clone(),
-            };
-            let base = path.split('/').take(4).collect::<Vec<_>>().join("/");
-            let base = base.split("/res").next().unwrap_or("").to_string();
-            if let Some(&i) = index.get(&base) {
-                labels[i].items.push(it);
-            }
-        }
-        // the owners' flags
-        let owners: Vec<Option<usize>> = meta.iter().map(|m| m.4).collect();
-        let map = self.map.as_mut().unwrap();
-        for (l, o) in labels.iter_mut().zip(owners) {
-            map.flags(&mut l.items, o);
-        }
-        let all: Vec<GuiItem> = labels.iter().flat_map(|l| l.items.iter().cloned()).collect();
-        gui::fonts(&self.runtime, &self.game_dir, &all, map.fonts.get_or_insert_with(HashMap::new))?;
-        Ok(labels)
-    }
-
-    /// The galaxy's star labels (mapicons.gui `star_mapicon`, CGalacticObjectMapIcon): the name of
-    /// each system the player knows (its terra incognita's systems) on its plate under the star,
-    /// within GALAXY_SHOW_STARNAME_ZOOM (800 of the game's world: 400 map units); the plate in
-    /// the owner's relation colour (the player's; others grey), gold when selected **[I]**: the
-    /// icon's own update not read.
-    fn galaxy_labels(&mut self) -> Result<Vec<scene::Label>, String> {
-        let (w, h) = self.size;
-        let gd = self.game_dir.clone();
-        if self.camera.is_some_and(|c| c.distance > 400.0) {
-            return Ok(Vec::new());
-        }
-        self.map.as_mut().ok_or("no map")?.topbar(w, h)?;
-        let map = self.map.as_mut().ok_or("no map")?;
-        if !map.gui {
-            return Ok(Vec::new());
-        }
-        let g = map.galaxy.clone();
-        let player = map.player_country();
-        let known: Vec<usize> = match &g.terra_incognita {
-            Some(ti) => ti.systems.iter().filter_map(|id| g.systems.iter().position(|s| s.id == *id)).collect(),
-            None => (0..g.systems.len()).collect(),
-        };
-        let names = gui::format_names(&self.runtime, &known.iter().map(|&i| &g.systems[i].name).collect::<Vec<_>>())?;
-        let widths: Vec<f32> = names.iter().map(|n| map.fonts.as_ref().and_then(|f| f.get("cg_16b")).map_or(8.0 * n.len() as f32, |f| f.width(n)).min(176.0)).collect();
-        let mut specs = Vec::new();
-        let mut anchors = Vec::new();
-        for ((&i, name), tw) in known.iter().zip(names).zip(widths) {
-            let s = &g.systems[i];
-            let prefix = format!("/label/system/{}", s.id);
-            let p = format!("{prefix}/star_mapicon");
-            let mut spec = gui::WindowSpec::new("interface/mapicons.gui", "star_mapicon");
-            spec.parent = Some([0.0, 0.0, 0.0, 0.0]);
-            spec.only = Some(vec!["name_bg".into(), "name".into()]);
-            // the plate fitted to the name (NMapIcon::AdjustNameBg), centred under the star
-            let bw = tw + 10.0;
-            spec.positions.push((format!("{p}/name_bg"), (-bw / 2.0, 14.0)));
-            spec.sizes.push((format!("{p}/name_bg"), (bw, 18.0)));
-            spec.text.push((format!("{p}/name"), name));
-            let sel = self.selected == Some(Pickable::System(i));
-            let owner = g.shown_owner(s);
-            let c = if sel {
-                [1.5, 1.1, 0.0, 1.0]
-            } else if owner.is_some() && owner == player {
-                [0.0, 0.89, 0.61, 1.0]
-            } else {
-                [0.56, 0.56, 0.56, 1.0]
-            };
-            spec.tints.push((format!("{p}/name_bg"), c));
-            spec.actions.push((format!("{p}/name_bg"), format!("select:system:{i}")));
-            spec.prefix = Some(prefix);
-            specs.push(spec);
-            anchors.push(V3(s.x, s.height * 0.5, s.y));
-        }
-        let layout = gui::layout_specs(&self.runtime, w, h, &specs)?;
-        let mut labels: Vec<scene::Label> = anchors.iter().map(|&a| scene::Label { anchor: a, drop: 0.0, items: Vec::new(), bounds: None, sort: 0 }).collect();
-        let index: HashMap<String, usize> = specs.iter().enumerate().map(|(k, s)| (s.prefix.clone().unwrap_or_default(), k)).collect();
-        for it in layout.items {
-            let path = match &it {
-                GuiItem::Sprite { path, .. } | GuiItem::Text { path, .. } => path.clone(),
-            };
-            let base = path.split('/').take(4).collect::<Vec<_>>().join("/");
-            if let Some(&k) = index.get(&base) {
-                labels[k].items.push(it);
-            }
-        }
-        let map = self.map.as_mut().unwrap();
-        let all: Vec<GuiItem> = labels.iter().flat_map(|l| l.items.iter().cloned()).collect();
-        gui::fonts(&self.runtime, &gd, &all, map.fonts.get_or_insert_with(HashMap::new))?;
-        Ok(labels)
-    }
+    // the map labels (system_labels, galaxy_labels): mapicons.rs
 
     /// The main screen's other windows (docs/render.md section 12): the left bar's buttons
     /// (main.gui `maingui_left_bar_buttons`, as collapsed), the alerts (alerts.gui), the bottom
@@ -1121,7 +827,7 @@ impl App {
             e.actions.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("view:{v}")));
             // its view shown (CMainGuiLeftBarButton::Update): the icons' frame 3 (2 x shown + 1)
             // and the highlight shown [V; which children: I, by the game's frame]
-            if self.open_view.as_deref() == Some(*v) {
+            if self.view_shown(v) {
                 e.only = Some(vec!["right_icon".into(), "highlight".into()]);
                 e.frames.push((format!("{prefix}/maingui_left_bar_button/right_icon"), 3));
             }
@@ -1256,18 +962,10 @@ impl App {
             _ => None,
         };
         let g = map.galaxy.clone();
+        let observe = map.observe;
 
-        let system_name = |id: i64| g.systems.iter().find(|s| s.id as i64 == id).map(|s| &s.name);
-        // the names to localise, in one call: each member's name and location, the sectors' names
-        let none = crate::galaxy::Name::default();
+        // the name of the selection's window, localised
         let mut names: Vec<&crate::galaxy::Name> = Vec::new();
-        for e in &g.outliner {
-            names.push(&e.name);
-            names.push(system_name(e.system).unwrap_or(&none));
-        }
-        for (_, n) in &g.sectors {
-            names.push(n);
-        }
         // the selection's window: a fleet (a station: the starbase's), a planet
         let mut selected: Option<(String, u32)> = None;
         match self.selected {
@@ -1285,59 +983,26 @@ impl App {
             }
             _ => {}
         }
-        let texts = gui::format_names(&self.runtime, &names)?;
-        let (member_texts, rest) = texts.split_at((2 * g.outliner.len()).min(texts.len()));
-        let (sector_names, rest) = rest.split_at(g.sectors.len().min(rest.len()));
-        let mut rest = rest.iter();
-        let mut next = || rest.next().cloned().unwrap_or_default();
-        let row_of = |i: usize, e: &crate::galaxy::OutlinerEntry| -> gui::OutlinerRow {
-            let selected = match self.selected {
-                Some(Pickable::Fleet(f)) => e.kind != "planet" && f == e.id,
-                Some(Pickable::Body(b)) => e.kind == "planet" && b == e.id,
-                _ => false,
-            };
-            gui::OutlinerRow {
-                id: e.id,
-                name: member_texts.get(2 * i).cloned().unwrap_or_default(),
-                // the second line: a ship size, a starbase type, a colony designation (keys the
-                // layout localises)
-                sub: e.sub.clone(),
-                location: member_texts.get(2 * i + 1).cloned().unwrap_or_default(),
-                power: if e.power > 0.0 { si_number(e.power.round()) } else { String::new() },
-                selected,
-            }
+        // a fleet in combat shows the combat view instead of its window (designer.rs)
+        let combat = match self.selected {
+            Some(Pickable::Fleet(id)) if crate::designer::in_combat(&map.runtime, id) => Some(id),
+            _ => None,
         };
-        // the Overview tab's groups (CCountryTabbedOutliner, COutlinerSettings::GetSort on Linux:
-        // the visible groups in reverse enum order): Utility Ships, Military Fleets, Starbases,
-        // Shipyards, then Sectors (a header with the count of sectors, each sector's own header and
-        // its colonies); Colonies (PLANETS) is disabled by default; empty groups are left out
-        let mut outliner = Vec::new();
-        for (title, kind, member) in [
-            ("OUTLINER_CIVILIAN_FLEETS", "civilian", "civilian"),
-            ("OUTLINER_FLEETS", "fleet", "military"),
-            ("OUTLINER_STARBASES", "starbase", "starbase"),
-            ("OUTLINER_SHIPYARDS", "starbase", "shipyard"),
-        ] {
-            let rows: Vec<gui::OutlinerRow> = g.outliner.iter().enumerate().filter(|(_, e)| e.kind == member).map(|(i, e)| row_of(i, e)).collect();
-            if !rows.is_empty() {
-                outliner.push(gui::OutlinerGroup { title: title.into(), kind: kind.into(), rows, header: None, amount: None });
-            }
+        if combat.is_some() {
+            selected = None;
         }
-        if !g.sectors.is_empty() {
-            outliner.push(gui::OutlinerGroup { title: "OUTLINER_SECTORS".into(), kind: "sectors".into(), rows: Vec::new(), header: None, amount: Some(g.sectors.len().to_string()) });
-            for (k, (sid, _)) in g.sectors.iter().enumerate() {
-                let rows: Vec<gui::OutlinerRow> = g.outliner.iter().enumerate().filter(|(_, e)| e.kind == "planet" && e.sector == *sid as i64).map(|(i, e)| row_of(i, e)).collect();
-                outliner.push(gui::OutlinerGroup {
-                    title: sector_names.get(k).cloned().unwrap_or_default(),
-                    kind: "planet".into(),
-                    rows,
-                    header: Some("outliner_sector_title_entry_window".into()),
-                    amount: None,
-                });
-            }
-        }
+        let texts = gui::format_names(&self.runtime, &names)?;
+        let mut rest = texts.iter();
+        let mut next = || rest.next().cloned().unwrap_or_default();
+        // the outliner (render.windows.outliner, from the world's view and its own state)
+        let row_selected = match self.selected {
+            Some(Pickable::Fleet(f)) => Some(("fleet", f)),
+            Some(Pickable::Body(b)) => Some(("planet", b)),
+            _ => None,
+        };
+        crate::outliner::install(&self.runtime, &g.outliner_view, &self.outliner, row_selected, observe)?;
         let selected = selected.map(|(kind, id)| gui::SelectedWindow { kind, id, name: next(), sub: String::new() });
-        let layout = gui::windows(&self.runtime, w, h, &outliner, selected.as_ref())?;
+        let layout = gui::windows(&self.runtime, w, h, &[], selected.as_ref())?;
         // the main screen's other windows under the outliner and the selection's window
         let mut items = self.main_screen_items()?;
         items.extend(layout.items);
@@ -1349,7 +1014,39 @@ impl App {
                 Err(e) => self.log.push(format!("view {name}: {e}")),
             }
         }
+        // the ship designer and the combat view over them
+        let map = self.map.as_ref().unwrap();
+        match crate::designer::layout(&self.runtime, &map.runtime, &self.game_dir, w, h, &self.designer, combat) {
+            Ok((more, models)) => {
+                items.extend(more);
+                self.designer_models = models;
+            }
+            Err(e) => {
+                eprintln!("windows: {e}");
+                self.log.push(format!("windows: {e}"));
+            }
+        }
         let map = self.map.as_mut().unwrap();
+        // the outliner's flags (the observer's countries: `@ID` in their path)
+        for it in items.iter_mut() {
+            let id = match it {
+                GuiItem::Sprite { path, .. } => crate::outliner::flag_country(path),
+                _ => None,
+            };
+            if let Some(id) = id {
+                let c = map.galaxy.countries.iter().position(|c| c.id == id);
+                map.flags(std::slice::from_mut(it), c);
+            }
+        }
+        // the diplomacy window open, over them (diplomacy.rs), its flags composed
+        let observe = self.map.as_ref().is_some_and(|m| m.observe);
+        let (mut diplo, flags) = self.diplomacy.items(&self.runtime, w, h, &g, observe)?;
+        let map = self.map.as_mut().unwrap();
+        for (i, id) in flags {
+            let c = map.galaxy.countries.iter().position(|c| c.id == id);
+            map.flags(std::slice::from_mut(&mut diplo[i]), c);
+        }
+        items.extend(diplo);
         gui::fonts(&self.runtime, &self.game_dir, &items, map.fonts.get_or_insert_with(HashMap::new))?;
         Ok(items)
     }
@@ -1481,6 +1178,12 @@ impl App {
                     scene::gui_scene(w, h, &items, &self.fonts, &mut self.textures, &mut self.cache.borrow_mut(), &self.game_dir, &states)
                 }
             };
+            // the designer's 3D views (designer.rs)
+            let mut scene = scene;
+            if let (Screen::Map, Some(map)) = (self.screen, self.map.as_mut()) {
+                let cache = map.cache.clone();
+                crate::designer::fill_insets(&mut scene, &self.designer_models, &mut map.models, &map.runtime, &self.game_dir, &mut map.textures, &mut cache.borrow_mut());
+            }
             self.scene = Some(std::sync::Arc::new(scene));
             // a new scene, whoever asked for it (a hit test builds it too)
             self.generation += 1;
@@ -1609,6 +1312,11 @@ impl App {
         Ok(())
     }
 
+    /// A button's action done as its click does it (the command protocol's window commands).
+    pub fn action(&mut self, action: &str) -> Result<(), String> {
+        self.act("/command", Some(action))
+    }
+
     fn act(&mut self, path: &str, action: Option<&str>) -> Result<(), String> {
         self.log.push(format!("click: {path} -> {}", action.unwrap_or("no action")));
         match action {
@@ -1629,6 +1337,18 @@ impl App {
                 // CInGameIdler::ModifyGameSpeed: one step, within 1..5
                 self.commands.push(ClockCommand::Speed(if action == Some("speed_up") { 1 } else { -1 }));
             }
+            // the diplomacy windows (diplomacy.rs): Contacts from the left bar, the others from it
+            Some(a) if a == "view:contacts" || a.starts_with("diplo:") => {
+                if self.diplomacy.act(a)? {
+                    // Contacts is a left bar view: one view at a time (ToggleTopBarView)
+                    if self.diplomacy.open == Some(crate::diplomacy::Open::Contacts) {
+                        self.close_view();
+                        self.set_designer(Default::default());
+                    }
+                    self.overlay_key = None;
+                    self.invalidate();
+                }
+            }
             // the left bar's views (views.rs): a button toggles its view, a view's close button
             // closes it, `view_set:KEY=VALUE;KEY2=VALUE2` sets keys of the view's state (`KEY=`
             // removes one)
@@ -1643,6 +1363,18 @@ impl App {
             // the selection's window closed; an outliner row selects its planet or fleet
             Some("close") => self.select(None),
             Some(a) if a.starts_with("select:") => self.select(Some(pickable_of(a)?)),
+            // the outliner's tabs, groups, observer list (outliner.rs State::act): laid out again
+            Some(a) if a.starts_with("outliner:") => {
+                if self.outliner.act(&a["outliner:".len()..]) {
+                    self.overlay_key = None;
+                    self.scene = None;
+                }
+            }
+            Some(a) if a.starts_with("designer:") => {
+                let mut d = self.designer.clone();
+                crate::designer::act(&mut d, a)?;
+                self.set_designer(d);
+            }
             Some(other) => self.log.push(format!("  {other}: not done yet (its window is not laid out)")),
             None => {}
         }
@@ -1652,11 +1384,28 @@ impl App {
     /// A left bar view toggled (CInGameIdler::ToggleTopBarView): shown, it is hidden; else the
     /// view open is closed and it is shown, its state anew. Whether it is shown.
     pub fn toggle_view(&mut self, name: &str) -> bool {
+        // Contacts is diplomacy.rs's (the `view:contacts` action)
+        if name == "contacts" {
+            let _ = self.diplomacy.act("view:contacts");
+            let shown = self.diplomacy.open == Some(crate::diplomacy::Open::Contacts);
+            if shown {
+                self.close_view();
+                self.set_designer(Default::default());
+            }
+            self.overlay_key = None;
+            self.scene = None;
+            return shown;
+        }
         if self.open_view.as_deref() == Some(name) {
             self.close_view();
             return false;
         }
         self.log.push(format!("view: {name}"));
+        // the other views closed: Contacts (diplomacy.rs) and the ship designer
+        if self.diplomacy.open == Some(crate::diplomacy::Open::Contacts) {
+            self.diplomacy.open = None;
+        }
+        self.set_designer(Default::default());
         self.open_view = Some(name.to_string());
         self.view_state.clear();
         self.overlay_key = None;
@@ -1681,6 +1430,29 @@ impl App {
         if let Some(v) = self.open_view.take() {
             self.log.push(format!("view: {v} closed"));
             self.view_state.clear();
+            self.overlay_key = None;
+            self.scene = None;
+        }
+    }
+
+    /// Whether the left bar's view NAME is shown (its button's state): the open view, or
+    /// Contacts in diplomacy.rs.
+    pub fn view_shown(&self, name: &str) -> bool {
+        self.open_view.as_deref() == Some(name)
+            || (name == "contacts" && self.diplomacy.open == Some(crate::diplomacy::Open::Contacts))
+    }
+
+    /// The ship designer opened, closed or given a design (designer.rs): the windows laid out again.
+    pub fn set_designer(&mut self, d: crate::designer::Designer) {
+        if d != self.designer {
+            // the designer opened: the left bar's view closed (one at a time)
+            if d.open && !self.designer.open {
+                self.close_view();
+                if self.diplomacy.open == Some(crate::diplomacy::Open::Contacts) {
+                    self.diplomacy.open = None;
+                }
+            }
+            self.designer = d;
             self.overlay_key = None;
             self.scene = None;
         }
@@ -1866,6 +1638,10 @@ impl App {
                         self.set_view_state(&[]);
                     }
                     Action::Back if self.open_view.is_some() => self.close_view(),
+                    // the diplomacy window closes first (its close button: ESCAPE)
+                    Action::Back if self.diplomacy.open.is_some() => self.act("/key/escape", Some("diplo:close"))?,
+                    // the designer's close button has the shortcut ESCAPE (ship_designer.gui)
+                    Action::Back if self.designer.open => self.set_designer(Default::default()),
                     Action::Back if self.selected.is_some() => self.select(None),
                     Action::Back if self.view != MapView::Galaxy && self.map.is_some() => {
                         self.log.push(format!("escape: {:?} -> Galaxy", self.view));

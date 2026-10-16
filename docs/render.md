@@ -928,6 +928,11 @@ and how the renderer does it. Checked against the game's frame after a load (`he
 the same commands: `H:\code_working\tmp_sym\render3d\parity\7_controls.png`, the game left): the
 home system at the same place and scale, the top bar's clock, the outliner.
 
+- The ship designer and the combat view (`open_designer`, the 3D view as an inset in the GUI):
+  [windows/designer.md](windows/designer.md).
+- The diplomacy windows (Contacts, a country's diplomacy, the galactic community, the federation,
+  a war's overview): [windows/diplomacy.md](windows/diplomacy.md).
+
 ### The controls: input, bindings, actions (`sim/render/src/controls.rs`)
 
 **Physical input is kept apart from the game's actions.** The window (winit) and the command
@@ -1323,6 +1328,7 @@ freed when the device is polled).
 
 ### Not done yet
 
+- The map icons (star labels, system labels): docs/windows/mapicons.md.
 - The galaxy star labels' own rules (CGalacticObjectMapIcon not read: owner flags, the capital
   plate, which names show, the fleets' presence icons, the empire's map name); the fleet type
   icon's frame (the rule is read, the EShipClass order is not: by eye now); the capital label's
@@ -1331,6 +1337,7 @@ freed when the device is polled).
   (SNavigationTextConstants), the arrows' hover and click (to the neighbour).
 - Alerts: the other 60 conditions; the tradition and agenda costs' modifiers.
 - The left bar background's 65 px offset (by the frame), the thin outline under it in the game.
+- The outliner and the alerts: docs/windows/outliner.md (what is drawn, the rules read, what is left).
 - The outliner rows' icons (fleet status, leader level, planet portrait, starbase type, status
   lists), the military row's size line ("15/50 (15)"), the location's colour, the frontier
   sector, the tab buttons over Overview, the other tabs, collapsing groups.

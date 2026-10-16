@@ -615,6 +615,8 @@ pub struct Scene {
     /// the galaxy view's map textures (galaxymap.rs; indices into the textures): terra incognita,
     /// the borders' distance, edge and fill colours, the dust's colour map, the nebulae's colours
     pub maps: Option<[usize; 6]>,
+    /// 3D views inside the GUI's windows
+    pub insets: Vec<Inset>,
 }
 
 impl Scene {
@@ -1107,6 +1109,7 @@ pub fn build(inp: &Inputs, tex: &mut Textures, cache: &mut Cache, width: u32, he
         sky: None,
         env: None,
         maps: scene_maps,
+        insets: gui.insets,
     }
 }
 
@@ -1145,6 +1148,26 @@ pub struct Gui {
     pub sprites: Vec<PlacedSprite>,
     pub texts: Vec<PlacedText>,
     pub buttons: Vec<PlacedButton>,
+    pub insets: Vec<Inset>,
+}
+
+/// A 3D view inside a GUI window (the ship designer's model, a CShip3DViewer): drawn in its
+/// rectangle (pixels, x0 y0 x1 y1) over the GUI batches before `batch` and under those after it,
+/// with its own view, light and meshes (render.rs). `add_gui` makes one where a sprite item of
+/// kind "inset" is (its path and rectangle); whoever built the window fills the rest.
+pub struct Inset {
+    pub path: String,
+    pub rect: [f32; 4],
+    pub batch: usize,
+    pub view: Option<ViewParams>,
+    pub meshes: Vec<MeshDraw>,
+    pub light: [f32; 4],
+    pub light_colour: [f32; 4],
+    pub cam_lights: [[f32; 4]; 5],
+    /// the environment map (an index into the scene's textures) and its intensity
+    pub env: Option<(usize, f32)>,
+    /// the sky behind it
+    pub sky: Option<SkyDraw>,
 }
 
 /// A button drawn: its element, its rectangle on screen, and what a click does.
@@ -1176,6 +1199,23 @@ pub fn add_gui(
     for item in items {
         match item {
             GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action, tint, clip } => {
+                if kind == "inset" {
+                    // an empty batch marks the inset's place (nothing merges into it)
+                    batches.push(Batch { layer: Layer::Gui, blend: Blend::Alpha, texture: usize::MAX, quads: Vec::new() });
+                    gui.insets.push(Inset {
+                        path: path.clone(),
+                        rect: [*x, *y, x + w, y + h],
+                        batch: batches.len() - 1,
+                        view: None,
+                        meshes: Vec::new(),
+                        light: [0.4, 0.8, 0.3, 0.0],
+                        light_colour: [1.3, 1.3, 1.3, 1.0],
+                        cam_lights: [[0.0; 4]; 5],
+                        env: None,
+                        sky: None,
+                    });
+                    continue;
+                }
                 let Some(t) = tex.game(cache, game_dir, texture) else { continue };
                 let img = tex.images[t].clone();
                 let (tw, th) = (img.width as f32, img.height as f32);
@@ -1345,5 +1385,6 @@ pub fn gui_scene(
         sky: None,
         env: None,
         maps: None,
+        insets: gui.insets,
     }
 }

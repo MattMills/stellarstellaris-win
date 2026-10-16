@@ -301,6 +301,34 @@ impl Engine {
         }
     }
 
+    fn open_designer(&mut self, a: &[&str]) -> Result<Reply, String> {
+        use crate::designer::Designer;
+        match (a.first().copied(), a.get(1)) {
+            (None, _) => self.app.set_designer(Designer { open: true, design: None }),
+            (Some("design"), Some(_)) => self.app.set_designer(Designer { open: true, design: Some(num(a.get(1), "id")?) }),
+            (Some("combat"), id) => {
+                let map = self.app.map.as_ref().ok_or("no map loaded")?;
+                let fleet = match id {
+                    Some(_) => Some(num(a.get(1), "id")?).filter(|&f| crate::designer::in_combat(&map.runtime, f)),
+                    None => crate::designer::first_in_combat(&map.runtime),
+                };
+                let fleet = fleet.ok_or("open_designer: no fleet in combat")?;
+                self.app.select(Some(Pickable::Fleet(fleet)));
+                self.flush_log();
+                return Ok(Reply::ok(format!("open_designer combat {fleet}")));
+            }
+            (Some("close"), _) => {
+                self.app.set_designer(Designer::default());
+                if matches!(self.app.selected, Some(Pickable::Fleet(_))) {
+                    self.app.select(None);
+                }
+            }
+            other => return Err(format!("open_designer {other:?}: [design ID | combat [FLEET] | close]")),
+        }
+        self.flush_log();
+        Ok(Reply::ok(format!("open_designer {}", a.join(" "))))
+    }
+
     fn system_index(&self, id: u32) -> Result<usize, String> {
         let m = self.app.map.as_ref().ok_or("no map loaded")?;
         m.galaxy.systems.iter().position(|s| s.id == id).ok_or(format!("no system {id}"))
@@ -433,6 +461,39 @@ impl Engine {
                     _ => Err("open_view NAME [KEY VALUE]".into()),
                 }
             }
+            "open_diplomacy" => {
+                // the diplomacy windows (headless.c serves it too, with the game's own calls):
+                // contacts, country ID, community, federation ID, war ID, close
+                // (contacts TAB: 0 contacts, 1 agreements, 2 the shroud, as CGalaxyView::Show)
+                if let ["contacts", tab] = a {
+                    if self.app.diplomacy.open != Some(crate::diplomacy::Open::Contacts) {
+                        self.app.action("view:contacts")?;
+                    }
+                    let name = match *tab {
+                        "1" => "agreements",
+                        "2" => "shroud",
+                        _ => "contacts",
+                    };
+                    self.app.action(&format!("diplo:tab:{name}"))?;
+                    self.flush_log();
+                    return Ok(Reply::ok(format!("open_diplomacy {rest}")));
+                }
+                let action = match a {
+                    ["contacts"] => "view:contacts".to_string(),
+                    ["close"] => "diplo:close".to_string(),
+                    ["community"] => "diplo:community".to_string(),
+                    [what @ ("country" | "federation" | "war"), id] => format!("diplo:{what}:{id}"),
+                    [what @ ("select" | "tab" | "sort"), v] => format!("diplo:{what}:{v}"),
+                    _ => return Err("open_diplomacy contacts|country ID|community|federation ID|war ID|close (or select ID, tab NAME, sort NAME)".into()),
+                };
+                // (the left bar's button toggles Contacts; the command opens it)
+                if action == "view:contacts" && self.app.diplomacy.open == Some(crate::diplomacy::Open::Contacts) {
+                    return Ok(Reply::ok("open_diplomacy contacts"));
+                }
+                self.app.action(&action)?;
+                self.flush_log();
+                Ok(Reply::ok(format!("open_diplomacy {rest}")))
+            }
             "observe" => {
                 // the game's console `observe` (headless.c serves it too): the player an observer
                 let m = self.app.map.as_mut().ok_or("no map loaded")?;
@@ -482,6 +543,10 @@ impl Engine {
                 self.flush_log();
                 Ok(Reply::ok(format!("select {}", a.join(" "))))
             }
+            // the game's headless `open_designer` (headless.c): the ship designer (CShipDesignerBase::
+            // Show, no design loaded; `design ID` loads one), a fleet in combat selected (the combat
+            // view: the first in combat without ID), `close`
+            "open_designer" => self.open_designer(a),
             "orbit" => {
                 self.app.orbit(num(a.first(), "dyaw")?, num(a.get(1), "dpitch")?);
                 Ok(Reply::ok("orbit"))
