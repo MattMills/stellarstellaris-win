@@ -12,9 +12,12 @@
 //!   outliner's rows too) and opens the selection's window, a double click enters a system or
 //!   follows a planet or fleet; the camera moves as the game's (docs/render.md section 12);
 //! - Escape clears the selection, leaves a system, goes back to the menu, closes the load window.
+//!
+//! Input comes as physical input (controls.rs: keys, buttons, the wheel, the pointer) through
+//! the bindings to actions: [`App::input`], [`App::perform`].
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -22,6 +25,7 @@ use stellar_sim::{save, Runtime};
 
 use crate::camera::{self, OrbitCamera};
 use crate::clock;
+use crate::controls::{Action, Button, Context, Controls, Effect, Input};
 use crate::dds::Cache;
 use crate::font::Font;
 use crate::math::V3;
@@ -166,9 +170,11 @@ pub struct App {
     /// the scene built (shared with the render thread once published: ui.rs)
     scene: Option<std::sync::Arc<Scene>>,
     generation: u64,
-    /// keys held (the camera's keys move it while held), the cursor (edge scrolling), the time of
-    /// the last update
-    held: HashSet<String>,
+    /// the input's state and the bindings (the held keys' actions move the camera each frame);
+    /// the cursor (edge scrolling), the time of the last update
+    pub controls: Controls,
+    /// the clock's commands of the input, done at the next frame ([`ClockCommand`])
+    commands: Vec<ClockCommand>,
     cursor: Option<(f32, f32)>,
     last_update: Option<Instant>,
 }
@@ -187,6 +193,19 @@ pub enum HoverTarget {
 /// has rested on the target (`App::hovered` keeps since when).
 pub trait Tooltips {
     fn text(&mut self, target: &HoverTarget, date: &str) -> Option<String>;
+}
+
+/// The clock's commands of the input (keys, the top bar's buttons) **[V]**: the game posts them
+/// to its session (CPauseGame with !paused, CIncreaseGameSpeedCommand, ...; HandleInputEvent
+/// @0x1c85c80) and runs them in the next frame: a key injected in frame f is seen in f + 1 and its
+/// clock changed in f + 2 (headless view mode). The pause is the clock's state as it is, negated
+/// (two Spaces in one frame pause once); the speed a step each (two presses in one frame: two
+/// steps, 3 to 5), within 1..5.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ClockCommand {
+    Paused(bool),
+    Speed(i8),
+    NextDay,
 }
 
 /// What the map screen shows.
@@ -246,7 +265,8 @@ impl App {
             items: None,
             scene: None,
             generation: 0,
-            held: HashSet::new(),
+            controls: Controls::from_env()?,
+            commands: Vec::new(),
             cursor: None,
             last_update: None,
         })
@@ -393,16 +413,59 @@ impl App {
         }
     }
 
-    /// Moves the cameras toward their goals, the held keys and the edge scrolling, takes the
-    /// simulation's newest snapshot. Whether the picture changed (a frame is due).
+    /// A frame in real time: [`App::advance`] by the time since the last one.
     pub fn update(&mut self) -> bool {
         let now = Instant::now();
         // the frame's time, at most 0.1 s (CGameIdler::Idle)
         let dt = self.last_update.map_or(0.0, |t| (now - t).as_secs_f32()).min(0.1);
         self.last_update = Some(now);
+        self.advance(dt)
+    }
+
+    /// The app's screen, the bindings' context.
+    pub fn context(&self) -> Context {
+        match self.screen {
+            Screen::Map => Context::Map,
+            Screen::Menu => Context::Menu,
+            Screen::Load => Context::Load,
+        }
+    }
+
+    /// A frame of `dt` seconds (the game's camera update): what the controls poll (the drags,
+    /// the wheel), the cameras toward their goals, the held keys and the edge scrolling, the
+    /// simulation's newest snapshot taken. Whether the picture changed (a frame is due).
+    pub fn advance(&mut self, dt: f32) -> bool {
         let mut changed = false;
+        // the clock's commands of the last frame's input
+        for c in std::mem::take(&mut self.commands) {
+            let r = match c {
+                ClockCommand::Paused(p) => self.set_paused(p),
+                ClockCommand::Speed(d) => {
+                    let s = self.map.as_ref().map_or(clock::DEFAULT_SPEED, |m| m.speed) as i8;
+                    self.set_speed((s + d).clamp(1, clock::SPEEDS as i8) as u8)
+                }
+                ClockCommand::NextDay => {
+                    if let Some(m) = self.map.as_mut() {
+                        m.next_day();
+                        self.log.push("clock: the next day".into());
+                    }
+                    Ok(())
+                }
+            };
+            match r {
+                Ok(()) => changed = true,
+                Err(e) => self.log.push(format!("clock: {e}")),
+            }
+        }
+        let ctx = self.context();
+        for e in self.controls.frame(ctx) {
+            match self.apply(e) {
+                Ok(c) => changed |= c,
+                Err(e) => self.log.push(format!("input: {e}")),
+            }
+        }
         if self.screen != Screen::Map {
-            return false;
+            return changed;
         }
         if let Some(m) = self.map.as_mut() {
             if m.sync() {
@@ -421,17 +484,17 @@ impl App {
             }
             self.goal_moved();
         }
-        // the camera's keys held (W A S D, the arrows; diagonals not normalised), the cursor at
-        // the screen's edge (toward it from the centre), Page Up and Page Down
+        // the camera's held actions (W A S D, the arrows; diagonals not normalised), the cursor
+        // at the screen's edge (toward it from the centre), Page Up and Page Down
         let (mut dx, mut dy, mut zoom) = (0.0f32, 0.0f32, 0.0f32);
-        for k in &self.held {
-            match k.as_str() {
-                "w" | "up" => dy += 1.0,
-                "s" | "down" => dy -= 1.0,
-                "a" | "left" => dx -= 1.0,
-                "d" | "right" => dx += 1.0,
-                "pageup" => zoom += 1.0,
-                "pagedown" => zoom -= 1.0,
+        for a in self.controls.held() {
+            match a {
+                Action::ScrollUp => dy += 1.0,
+                Action::ScrollDown => dy -= 1.0,
+                Action::ScrollLeft => dx -= 1.0,
+                Action::ScrollRight => dx += 1.0,
+                Action::ZoomIn => zoom += 1.0,
+                Action::ZoomOut => zoom -= 1.0,
                 _ => {}
             }
         }
@@ -492,16 +555,25 @@ impl App {
             return false;
         }
         let running = self.map.as_ref().is_some_and(|m| m.clock.is_some() && (!m.paused || m.clock.as_ref().is_some_and(|c| !c.status().ready)));
+        running || self.camera_moving()
+    }
+
+    /// Whether the camera moves without input: on its way to its goal (the galaxy's yaw back to
+    /// 0), held keys or a drag, the cursor at the edge, a thing followed.
+    pub fn camera_moving(&self) -> bool {
+        if self.screen != Screen::Map {
+            return false;
+        }
         let moving = match self.view {
             MapView::Galaxy => matches!((&self.camera, &self.camera_goal), (Some(c), Some(g)) if !c.at(g) || g.yaw != 0.0),
             _ => matches!((&self.system_camera, &self.system_camera_goal), (Some(c), Some(g)) if !c.at(g)),
         };
-        let keys = self.held.iter().any(|k| matches!(k.as_str(), "w" | "a" | "s" | "d" | "up" | "down" | "left" | "right" | "pageup" | "pagedown"));
+        let keys = !self.controls.held().is_empty() || self.controls.holding();
         let edge = self.cursor.is_some_and(|(x, y)| {
             let (cx, cy) = (self.size.0 as f32 / 2.0, self.size.1 as f32 / 2.0);
             cx - (x - cx).abs() < camera::EDGE_SCROLLING_PIXELS || cy - (y - cy).abs() < camera::EDGE_SCROLLING_PIXELS
         });
-        running || moving || keys || edge || self.follow.is_some()
+        moving || keys || edge || self.follow.is_some()
     }
 
     /// Shows the galaxy (CGameCamera::OnLeaveSystem from a system: the camera at its star,
@@ -599,9 +671,9 @@ impl App {
     /// its centre, pitch 50, yaw 0; the galaxy: pitch 57.5, yaw 0, at the last system,
     /// ZOOM_STEPS_GALAXY[1]); E and M enter the system under the cursor or go between the system
     /// and the galaxy; Home and Backspace go to the capital.
-    fn camera_key(&mut self, key: &str) -> Result<bool, String> {
-        match key {
-            "r" => {
+    fn camera_action(&mut self, action: Action) -> Result<bool, String> {
+        match action {
+            Action::ResetCamera => {
                 let last = self.last_system;
                 let map_ok = self.map.is_some();
                 match self.view {
@@ -630,7 +702,7 @@ impl App {
                 self.goal_moved();
                 Ok(true)
             }
-            "e" | "m" => {
+            Action::ToggleSystem => {
                 let (x, y) = self.cursor.unwrap_or((self.size.0 as f32 / 2.0, self.size.1 as f32 / 2.0));
                 match self.view {
                     MapView::Galaxy => {
@@ -648,7 +720,7 @@ impl App {
                 }
                 Ok(true)
             }
-            "home" | "backspace" => {
+            Action::HomeSystem => {
                 let Some((planet, system)) = self.map.as_ref().and_then(|m| m.galaxy.capital) else { return Ok(false) };
                 let Some(i) = self.map.as_ref().and_then(|m| m.galaxy.systems.iter().position(|s| s.id == system)) else { return Ok(false) };
                 let _ = planet;
@@ -1498,10 +1570,17 @@ impl App {
 
     /// A double click: on the galaxy, a system opens (the game's camera goes into it).
     pub fn double_click(&mut self, x: f32, y: f32) -> Result<bool, String> {
-        if self.screen != Screen::Map || self.button_at(x, y)?.is_some() {
+        if self.screen != Screen::Map {
             return Ok(false);
         }
-        match self.scene()?.pick_at(x, y, 6.0) {
+        // a map label (a star's name, a planet's or a fleet's icon) is its thing; another GUI
+        // element takes the double click
+        let under = match self.button_at(x, y)? {
+            Some((_, Some(a))) if a.starts_with("select:") => Some(pickable_of(&a)?),
+            Some(_) => return Ok(false),
+            None => self.scene()?.pick_at(x, y, 6.0),
+        };
+        match under {
             Some(p) => {
                 self.select(Some(p));
                 self.focus(p)?;
@@ -1533,15 +1612,14 @@ impl App {
                 let path = self.saves().get(i - 1).map(|s| s.path.clone()).ok_or(format!("no save {i}"))?;
                 self.load(&path)?;
             }
+            // the clock's commands, done at the next frame
             Some("pause") => {
                 let p = self.map.as_ref().is_some_and(|m| m.paused);
-                self.set_paused(!p)?;
+                self.commands.push(ClockCommand::Paused(!p));
             }
             Some("speed_up") | Some("speed_down") => {
                 // CInGameIdler::ModifyGameSpeed: one step, within 1..5
-                let s = self.map.as_ref().map_or(clock::DEFAULT_SPEED, |m| m.speed);
-                let s = if action == Some("speed_up") { (s + 1).min(clock::SPEEDS) } else { s.saturating_sub(1).max(1) };
-                self.set_speed(s)?;
+                self.commands.push(ClockCommand::Speed(if action == Some("speed_up") { 1 } else { -1 }));
             }
             // the event windows' and popups' buttons (events.rs)
             Some(a) if crate::events::handles(a) => {
@@ -1550,15 +1628,7 @@ impl App {
             }
             // the selection's window closed; an outliner row selects its planet or fleet
             Some("close") => self.select(None),
-            Some(a) if a.starts_with("select:") => {
-                let mut it = a.split(':').skip(1);
-                let (kind, id) = (it.next().unwrap_or(""), it.next().and_then(|v| v.parse::<u32>().ok()).ok_or(format!("bad action {a}"))?);
-                self.select(Some(match kind {
-                    "planet" => Pickable::Body(id),
-                    "system" => Pickable::System(id as usize),
-                    _ => Pickable::Fleet(id),
-                }));
-            }
+            Some(a) if a.starts_with("select:") => self.select(Some(pickable_of(a)?)),
             Some(other) => self.log.push(format!("  {other}: not done yet (its window is not laid out)")),
             None => {}
         }
@@ -1625,79 +1695,148 @@ impl App {
         self.load(&path)
     }
 
-    /// A key released (the camera's keys stop moving it).
-    pub fn key_up(&mut self, key: &str) {
-        self.held.remove(key);
+    /// Physical input (controls.rs): the bindings' effects carried out. `now_ms`: the input's
+    /// time (a double click's). Whether something changed.
+    pub fn input(&mut self, input: &Input, now_ms: f64) -> Result<bool, String> {
+        let ctx = self.context();
+        let mut changed = false;
+        for e in self.controls.input(input, now_ms, ctx) {
+            changed |= self.apply(e)?;
+        }
+        Ok(changed)
     }
 
-    /// A key: Escape (back from a system to the galaxy, from the map or the load window to the
-    /// menu), C (continue on the menu); on the map: Space pauses or runs the clock, the keypad's +
-    /// and - change the speed, W A S D and the arrows pan and Q E turn while held (one step when
-    /// not smooth), R F tilt, + - zoom a step, V the 2D map or 3D. Whether something changed.
-    pub fn key(&mut self, key: &str) -> Result<bool, String> {
-        if self.screen == Screen::Map {
-            // the camera's keys move it while held (UpdateScrollingMovement, UpdateZoom); without
-            // smoothing (commands) a key is a tenth of a second of it
-            let moving = matches!(key, "w" | "a" | "s" | "d" | "up" | "down" | "left" | "right" | "pageup" | "pagedown");
-            if moving && self.smooth {
-                self.held.insert(key.to_string());
-                return Ok(true);
+    /// An effect of the input.
+    fn apply(&mut self, e: Effect) -> Result<bool, String> {
+        match e {
+            Effect::Act(a) => self.perform(a),
+            Effect::Pointer(Some((x, y))) => self.mouse_move(x, y),
+            Effect::Pointer(None) => {
+                self.mouse_left();
+                Ok(false)
             }
-            if self.camera_key(key)? {
-                return Ok(true);
-            }
-            let step = camera::SCROLL_SPEED * 0.1;
-            match key {
-                "w" | "up" => self.pan(0.0, step),
-                "s" | "down" => self.pan(0.0, -step),
-                "a" | "left" => self.pan(-step, 0.0),
-                "d" | "right" => self.pan(step, 0.0),
-                "pageup" => self.zoom(1.0 - camera::KEYBOARD_ZOOM * 0.1),
-                "pagedown" => self.zoom(1.0 + camera::KEYBOARD_ZOOM * 0.1),
-                // the clock's keys (CInGameIdler::HandleInputEvent): Space pauses or runs; the
-                // keypad's + and -, + = and -, Shift+Up and Shift+Down the speed; `.` one day
-                "space" => {
-                    let p = self.map.as_ref().is_some_and(|m| m.paused);
-                    self.set_paused(!p)?;
-                }
-                "kp_plus" | "+" | "=" | "shift+up" => self.act("/key/speed_up", Some("speed_up"))?,
-                "kp_minus" | "-" | "shift+down" => self.act("/key/speed_down", Some("speed_down"))?,
-                "." => {
-                    if let Some(m) = self.map.as_mut() {
-                        m.next_day();
-                        self.log.push("clock: the next day".into());
-                    }
-                }
-                "v" => {
-                    self.mode3d = !self.mode3d;
+            Effect::Down(Button::Left, x, y) => self.mouse_down(x, y),
+            Effect::Down(..) => Ok(false),
+            Effect::At(Action::Select, x, y) => self.mouse_up(x, y),
+            Effect::At(Action::Focus, x, y) => self.double_click(x, y),
+            Effect::At(a, x, y) => {
+                // the left button's press over a GUI button ends without a click
+                if a == Action::BoxSelect && self.pressed.take().is_some() {
                     self.scene = None;
                 }
-                "escape" if self.selected.is_some() => self.select(None),
-                "escape" if self.view != MapView::Galaxy && self.map.is_some() => {
-                    self.log.push(format!("escape: {:?} -> Galaxy", self.view));
-                    self.show_galaxy();
+                if self.screen == Screen::Map {
+                    self.log.push(format!("{} at {x},{y}: not done yet", a.name()));
                 }
-                "escape" => {
-                    self.log.push("escape: Map -> Menu".into());
-                    self.show(Screen::Menu);
-                }
-                _ => return Ok(false),
+                Ok(false)
             }
-            return Ok(true);
+            Effect::DragStart(a, x, y) => {
+                self.set_holding(true);
+                if a == Action::DragPlane {
+                    // the plane's point under the cursor is grabbed
+                    self.drag(None);
+                    self.drag(Some((x, y)));
+                }
+                Ok(true)
+            }
+            Effect::Drag(Action::Rotate, dx, dy, ..) => {
+                if dx != 0.0 || dy != 0.0 {
+                    self.rotate(dx, dy);
+                }
+                Ok(true)
+            }
+            Effect::Drag(Action::DragPlane, _, _, x, y) => {
+                self.drag(Some((x, y)));
+                Ok(true)
+            }
+            Effect::Drag(..) => Ok(false),
+            Effect::DragEnd(_) => {
+                self.set_holding(self.controls.holding());
+                self.drag(None);
+                Ok(true)
+            }
+            Effect::Zoom(n, false) => {
+                self.wheel(n);
+                Ok(true)
+            }
+            Effect::Zoom(n, true) => {
+                // the right button held: a fifth of the distance (UpdateZoom @0x2e665ae)
+                let d = self.current().map_or(1.0, |c| c.distance);
+                if let Some(c) = self.goal_mut() {
+                    c.zoom_keys(n, 1.0 / 7.5, d);
+                }
+                self.goal_moved();
+                Ok(true)
+            }
         }
-        match (key, self.screen) {
-            ("escape", Screen::Load) => {
+    }
+
+    /// An action of a key binding (controls.rs `BINDINGS`). Whether something changed.
+    pub fn perform(&mut self, action: Action) -> Result<bool, String> {
+        match (action, self.screen) {
+            (Action::Back, Screen::Load) => {
                 self.log.push(format!("escape: {:?} -> Menu", self.screen));
                 self.show(Screen::Menu);
                 Ok(true)
             }
-            ("c", Screen::Menu) => {
+            (Action::Continue, Screen::Menu) => {
                 self.continue_game()?;
+                Ok(true)
+            }
+            (Action::Quit, _) => {
+                self.exit = true;
+                Ok(true)
+            }
+            (Action::ToggleGui, _) => {
+                let Some(m) = self.map.as_mut() else { return Ok(false) };
+                m.gui = !m.gui;
+                self.invalidate();
+                Ok(true)
+            }
+            (_, Screen::Map) => {
+                if self.camera_action(action)? {
+                    return Ok(true);
+                }
+                match action {
+                    // the clock (CInGameIdler::HandleInputEvent): Space pauses or runs; the speed
+                    // a step; `.` one day
+                    Action::Pause => self.act("/key/pause", Some("pause"))?,
+                    Action::SpeedUp => self.act("/key/speed_up", Some("speed_up"))?,
+                    Action::SpeedDown => self.act("/key/speed_down", Some("speed_down"))?,
+                    Action::NextDay => self.commands.push(ClockCommand::NextDay),
+                    Action::Map2D3D => {
+                        self.mode3d = !self.mode3d;
+                        self.scene = None;
+                    }
+                    Action::Back if self.selected.is_some() => self.select(None),
+                    Action::Back if self.view != MapView::Galaxy && self.map.is_some() => {
+                        self.log.push(format!("escape: {:?} -> Galaxy", self.view));
+                        self.show_galaxy();
+                    }
+                    Action::Back => {
+                        self.log.push("escape: Map -> Menu".into());
+                        self.show(Screen::Menu);
+                    }
+                    a => {
+                        self.log.push(format!("{}: not done yet", a.name()));
+                        return Ok(false);
+                    }
+                }
                 Ok(true)
             }
             _ => Ok(false),
         }
     }
+}
+
+/// The thing a GUI element's `select:KIND:ID` action names (a system by its index).
+fn pickable_of(action: &str) -> Result<Pickable, String> {
+    let mut it = action.split(':').skip(1);
+    let (kind, id) = (it.next().unwrap_or(""), it.next().and_then(|v| v.parse::<u32>().ok()).ok_or(format!("bad action {action}"))?);
+    Ok(match kind {
+        "planet" => Pickable::Body(id),
+        "system" => Pickable::System(id as usize),
+        _ => Pickable::Fleet(id),
+    })
 }
 
 /// A number as the game's `*0` / `*1` formats write it (CreateSIValueNoColor; the military

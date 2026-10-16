@@ -578,7 +578,7 @@ the renderer:
 | `load PATH` | at the main menu: the file copied into the user dir, `CFrontEndIdler::LaunchSave`; the reply once the game is in (one save per run) |
 | `pause` | ok: the game only ticks on `step` |
 | `step DAYS` | the loop mode's turns until the date moved DAYS days, frame smoothing off (nothing drawn; ~30 ms a day) |
-| `view galaxy`, `view system ID` | `CGameCamera::LeaveSystem`, `CGameCamera::EnterSystem` (the object from `TPdxRef<CGalacticObject>::_pDatabase`) |
+| `view galaxy`, `view system ID` | `CGameCamera::LeaveSystem`, `CGameCamera::EnterSystem` (the object from `TPdxRef<CGalacticObject>::_pDatabase`); the idler's own mode is not switched: after `view galaxy` the next click on the map enters the system again, so input runs leave a system with `key e` |
 | `focus system ID` | the galaxy camera's target on the system (`CGalacticObject::GetCoordinate` +0x408, x 2) |
 | `camera X Y Z YAW PITCH DISTANCE` | the camera's orientation, in map units and degrees, put back every frame after the game's camera update; `camera off` releases it |
 | `resize W H` | ok if the window is W x H (it is set at start: `--size`) |
@@ -586,8 +586,49 @@ the renderer:
 | `observe` | the console's `observe`: `OnExecute_Observe` posts `CAddCountryControllerCommand` giving the local human no country; from the next frame the player is an observer (no terra incognita, every country's borders, flags and names, every system's label). Replies with the console's text, `ok observe: Now observing` |
 | `open_view NAME` | a left bar button: `CInGameIdler::ToggleTopBarView` of the view whose `ETopBarView` token is NAME (`technology`, `traditions`, `situation`, `contacts`, ...: the names of the `GFX_topbar_NAME_button` sprites). It closes the other top bar views and shows that one, or hides it when it is shown (one view at a time, as the game). Replies `ok open_view NAME shown` or `hidden` |
 | `frame PATH.png`, `frame -` | the window captured from the X server once the picture settles: from 2 s and 10 frames on, two captures in a row nearly equal (at most 30 s; `HEADLESS_FRAME_WAIT`, `_MIN`, `_TIMEOUT`); a PNG (zlib) |
-| `state [planet ID]` | JSON: date, view, window, the camera (orientation and its smoothing target, eye, look-at, up, FOV, aspect, near, far, the view and projection matrices), the system's zoom steps; with a planet its `CPlanet::CalcCurrentEntityScale`, `GetDisplaySize` and entity world transform |
+| `frame PATH.png now` | the frame as the input left it: the camera's update not run meanwhile (the game draws fewer frames than it updates, so its last update is drawn some frames later), from 0.3 s and 3 frames on a capture every 0.1 s until two agree (at most 3 s) |
+| `key`, `hold`, `mouse`, `move`, `button`, `click`, `wheel` (`scroll`), `drag` | real input by XTest (below) |
+| `timestep MS`, `timestep off` | lockstep: the camera's frame time fixed at MS and no frame run between commands; off: the frames' own times |
+| `tick N` (`frames N`), `wait SECONDS` | N frames run; SECONDS of frames (with a timestep, that many frames of it) |
+| `state [planet ID]` | JSON: date, view, window, the clock (paused, speed), the input (pointer, buttons and keys held, timestep, frames run, frames held for the input's delivery), the camera (orientation and its smoothing target, eye, look-at, up, FOV, aspect, near, far, the view and projection matrices), the system's zoom steps; with a planet its `CPlanet::CalcCurrentEntityScale`, `GetDisplaySize` and entity world transform |
 | `quit` | `_exit(0)` (no gamestate written) |
+
+**Input** (`headless.c`, "input"; the renderer's side is `sim/render/src/controls.rs`,
+`docs/render.md` sections 9 and 12). The input commands make real input: libXtst's
+`XTestFakeKeyEvent`, `XTestFakeButtonEvent` and `XTestFakeMotionEvent` (loaded with `dlopen`, as
+libX11) put key presses, button presses, wheel notches (buttons 4 and 5) and pointer moves into the
+X server as its own keyboard and mouse would, so the game takes them its own way (SDL2's X11
+events, CKeyBoard, CMouse, the GUI's shortcuts). At the first input command the game's window gets
+the keyboard's focus (`XSetInputFocus`; the camera updates only with the window focused) and the
+server's key repeat is turned off (a key held across commands would repeat in real time). Keys are
+named as the renderer names them (X keysym names in lower case, aliases such as `.` `=` `pgup`;
+`plus` is Shift and `=` as on a US layout), chords as `shift+up`, `ctrl+f9`.
+
+- **When input arrives.** Injected from `CheckTick` (frame f, inside `CInGameIdler::UpdateInternal`,
+  before the camera's update), the events reach the game when SDL pumps them at the start of frame
+  f + 1: the camera's update of f does not see them, that of f + 1 does. The clock's keys go
+  through session commands (`CPauseGame`, `CIncreaseGameSpeedCommand`, ...): seen in f + 1, the
+  clock changed in f + 2. Measured with `state` after each `tick 1`.
+- **Lockstep.** With `timestep MS` the main thread waits in `CheckTick` for the next command, so no
+  frame runs between commands, and the camera's update is given MS as its frame time, as is the
+  idler's own (`g_CurrentIdler` +0xe0, which `UpdateZoom` multiplies Page Up and Page Down's
+  `KEYBOARD_ZOOM_RATE` by). A hold of N frames then moves the camera exactly N frames' worth
+  (`hold w 30` at 16.667 ms: 30 x 0.5518 x the distance / 60, to the last digit of `state`).
+- **Delivery.** An SDL event watch (`SDL_AddEventWatch`; SDL2 is linked in) counts the input events
+  the game takes against those injected. Once in a while (a slow frame, the X server busy with the
+  game's frames) an event reaches the frame after next; such a frame is held (the camera's update
+  not run, the frame not counted) until all have come, so a command sees exactly its frames
+  (`state`'s `held_frames` counts them). `HEADLESS_INPUT_TRACE=1` logs every event (key, button with
+  SDL's click count, motion, wheel) with its frame.
+- `key CHORD [down|up|tap]` (tap: pressed and released in one frame), `hold CHORD DURATION`
+  (frames `30`/`30f`, or `500ms`/`0.5s`: with a timestep that many frames of it, else real time),
+  `mouse X Y [BUTTON [down|up]]` (a button alone clicks), `move X Y`, `button BUTTON down|up [X Y]`,
+  `click X Y [BUTTON] [double]` (twice in one frame: the game's own double click, a second press
+  within 500 ms and no motion between), `wheel NOTCHES [X Y]` (a notch a frame: `UpdateZoom` takes
+  a frame's last notch only), `drag BUTTON X0 Y0 X1 Y1 [STEPS [FRAMES]]` (pressed at the start,
+  FRAMES frames, then STEPS moves along the line each followed by FRAMES frames, released). Each
+  reply names the frame (`frame N`).
+- An input command releases the camera that `camera` holds (the input moves it from there).
 
 How (all in `headless.c`, the layouts read from the Linux build's code):
 
@@ -602,8 +643,8 @@ How (all in `headless.c`, the layouts read from the Linux build's code):
 - planets: `CGameState` +0x918 the planet manager (entries of 16 bytes at +0xdc0, the `CPlanet` at
   +8, the count at +0xdc8; the planet's id at +0x18, its size at +0x150, its entity at +0xc20);
   `EntityInstanceGetWorldTransform` gives the entity's world matrix;
-- libX11 (`XGetImage` on the largest mapped top-level window) and zlib (`compress2`, `crc32`) are
-  loaded with `dlopen`, so the build line is unchanged.
+- libX11 (`XGetImage` on the largest mapped top-level window), libXtst (the input) and zlib
+  (`compress2`, `crc32`) are loaded with `dlopen`, so the build line is unchanged.
 
 Seen in the game (2210.01.01, system 401): its bodies sit at y = -150 of the system's world (the
 save's coordinates x 10), the ships at y = 0; a body's entity scale is `planet_size` x 0.1 x its
