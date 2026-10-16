@@ -101,6 +101,11 @@ pub fn install(runtime: &Runtime, game_dir: &str, cache: &Rc<RefCell<Cache>>) ->
     let gd = game_dir.to_string();
     let size = lua.create_function(move |_, path: String| {
         let mut c = c.borrow_mut();
+        // a composed flag (flag::compose_spec) is its frame texture's size
+        let path = match path.strip_prefix("@flag:") {
+            Some(spec) => spec.split('|').next().unwrap_or("").to_string(),
+            None => path,
+        };
         Ok(match c.get(&gd, &path) {
             Ok(img) => (Some(img.width), Some(img.height)),
             Err(_) => (None, None),
