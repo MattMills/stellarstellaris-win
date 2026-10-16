@@ -135,6 +135,43 @@ pub fn extract_one(runtime: &Runtime, game_dir: &str, name: &str) -> Option<Valu
     }
 }
 
+/// A view's command (the action `cmd:VIEW:ARG:ARG...`): its module's `command(ARG, ARG, ...)` run
+/// in the simulation's runtime between days (its world, definitions, modifiers: the game's own
+/// command, CResearchTechnologyCommand, CCountryActivateTraditionCommand, ...), started if it is not
+/// running; then a snapshot published and taken. The string it returns (what it did) for the log.
+pub fn command(map: &mut crate::Map, view: &str, args: &[&str]) -> Result<String, String> {
+    if !names().iter().any(|n| n == view) {
+        return Err(format!("no view {view}"));
+    }
+    let quoted: Vec<String> = args.iter().map(|a| format!("{a:?}")).collect();
+    let code = format!("return tostring(require('render.windows.{view}').command({}))", quoted.join(", "));
+    map.ready()?;
+    let clock = map.clock.as_ref().ok_or("no simulation")?;
+    let r = clock.query(&code).map_err(|e| format!("render.windows.{view}: command: {e}"))?;
+    clock.publish(true);
+    map.sync();
+    Ok(r)
+}
+
+/// What Escape does in the open view with side windows open: its module's `escape(state)` (an
+/// action: its innermost window closed), or none (the module has no escape: all of its state
+/// cleared).
+pub fn escape(runtime: &Runtime, name: &str, state: &HashMap<String, String>) -> Option<String> {
+    let read = || -> mlua::Result<Option<String>> {
+        let m: Table = runtime.lua.load(format!("return require('render.windows.{name}')")).eval()?;
+        let Some(f) = m.get::<Option<mlua::Function>>("escape")? else { return Ok(None) };
+        let s = runtime.lua.create_table()?;
+        for (k, v) in state {
+            s.set(k.as_str(), v.as_str())?;
+        }
+        f.call(s)
+    };
+    read().unwrap_or_else(|e| {
+        eprintln!("render.windows.{name}: escape: {e}");
+        None
+    })
+}
+
 /// The open view's data from a runtime's world (only the open one: a snapshot carries what is
 /// drawn; opening a view republishes it, Map::refresh_view).
 pub fn extract(runtime: &Runtime, game_dir: &str) -> HashMap<String, Value> {

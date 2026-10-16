@@ -1703,6 +1703,19 @@ impl App {
                 self.toggle_view(&a[5..]);
             }
             Some("view_close") => self.close_view(),
+            // a view's command in the simulation (views.rs): `cmd:VIEW:ARG...`, then `#K=V;K2=` the
+            // view's state set (a side window closed after a choice)
+            Some(a) if a.starts_with("cmd:") => {
+                let (cmd, then) = a[4..].split_once('#').unwrap_or((&a[4..], ""));
+                let mut parts = cmd.split(':');
+                let view = parts.next().unwrap_or("").to_string();
+                let args: Vec<&str> = parts.collect();
+                let map = self.map.as_mut().ok_or("no map")?;
+                let r = crate::views::command(map, &view, &args)?;
+                self.log.push(format!("{view}: {r}"));
+                let pairs: Vec<(&str, &str)> = if then.is_empty() { Vec::new() } else { then.split(';').map(|kv| kv.split_once('=').unwrap_or((kv, ""))).collect() };
+                self.set_view_state(&pairs);
+            }
             Some(a) if a.starts_with("view_set:") => {
                 let pairs: Vec<(&str, &str)> = a[9..].split(';').map(|kv| kv.split_once('=').unwrap_or((kv, ""))).collect();
                 self.set_view_state(&pairs);
@@ -1792,6 +1805,13 @@ impl App {
     /// `escape_keys`; without the list, all its state), true; nothing to close there, false.
     fn view_escape(&mut self) -> bool {
         let Some(name) = self.open_view.clone() else { return false };
+        // a view with M.escape(state) says what Escape does: its innermost window closed (a popup,
+        // then its dialog)
+        if !self.view_state.is_empty() {
+            if let Some(a) = crate::views::escape(&self.runtime, &name, &self.view_state) {
+                return self.act("/key/escape", Some(&a)).is_ok();
+            }
+        }
         let keys: Vec<String> = match crate::views::escape_keys(&self.runtime, &name) {
             Some(list) => list.into_iter().filter(|k| self.view_state.contains_key(k)).collect(),
             None => self.view_state.keys().cloned().collect(),
