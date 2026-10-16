@@ -287,6 +287,19 @@ impl Map {
         }
     }
 
+    /// The open view's data made now (views.rs): a snapshot published (waited for when `wait`),
+    /// or, the world here (before the simulation runs), the view's data read from it.
+    pub fn refresh_view(&mut self, name: &str, wait: bool) {
+        if let Some(c) = &self.clock {
+            c.publish(wait);
+            self.sync();
+        } else if self.world {
+            if let Some(v) = crate::views::extract_one(&self.runtime, &self.game_dir, name) {
+                Arc::make_mut(&mut self.galaxy).views.insert(name.to_string(), v);
+            }
+        }
+    }
+
     /// Takes the simulation's newest snapshot if there is a new one: the galaxy, the borders and
     /// the map textures, the top bar's texts. Whether something changed.
     pub fn sync(&mut self) -> bool {
