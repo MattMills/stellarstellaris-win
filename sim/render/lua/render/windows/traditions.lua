@@ -8,8 +8,8 @@
 -- (tradition_box), seven category slots (TRADITION_CATEGORIES_MAX) with the adopted categories
 -- first in their order then empty ones (tradition_category_grid_entry: an adopted category's tree
 -- from its tree_template with a tradition_entry in each of the template's containers, an empty one
--- "Empty" with its Select button), and the eight ascension perk slots (ap_0 .. ap_7). The crisis
--- (Ambition) tab is not drawn.
+-- "Empty" with its Select button), and the eight ascension perk slots (ap_0 .. ap_7). The Ambition
+-- tab (crisis_window, with the country's crisis progression): traditions_crisis.lua.
 
 local gui = require("render.gui")
 local source = require("stellar.script.source")
@@ -141,6 +141,9 @@ function traditions.extract(game_dir)
             end
         end
     end
+    -- the Ambition tab's data (nil without a crisis progression: the tab disabled)
+    local okc, cr = pcall(require("render.windows.traditions_crisis").extract, cid)
+    d.crisis = okc and cr or nil
     if d.cost == nil then
         -- (TRADITION_COST_AMOUNTS + (n x TRADITION_COST_TRADITION) ^ EXP) x (1 + size penalty)
         -- [I: the modifiers not applied: the administrative capacity is EMPIRE_SIZE_BASE]
@@ -252,7 +255,12 @@ function traditions.build(ctx, data, state)
 
     -- the window: the Traditions tab active (UpdateTabVisibility), the crisis window hidden
     local V = "/traditions_view"
-    local hide = { tab_traditions = true, tab_crisis_active = true, crisis_window = true }
+    -- the Ambition tab (CCrisisView) when the country has a crisis progression (Update 0x334c3e0:
+    -- tab 1 without one goes back to tab 0)
+    local crisis = require("render.windows.traditions_crisis")
+    local on_crisis = state.tab == "crisis" and data.crisis ~= nil
+    local hide = on_crisis and { tab_traditions_active = true, tab_crisis = true, traditions_window = true }
+        or { tab_traditions = true, tab_crisis_active = true, crisis_window = true }
     local text, progress = {}, {}
     if has_next then
         -- UpdateProgress: the cost with the unity icon, rounded up; the stock's share of it; the
@@ -273,15 +281,37 @@ function traditions.build(ctx, data, state)
     else
         hide.tradition_cost, hide.progress, hide.time_to_next_tradition = true, true, true
     end
+    local actions, sprites, disabled = { [V .. "/close"] = "view_close" }, {}, {}
+    -- (a text box without maxWidth is as wide as its text)
+    local sizes = { [V .. "/traditions_window/ascension_perks/ascension_perks_label"] = { 280, 25 } }
+    if data.crisis then
+        -- the tabs (OnTab: the tab set, UpdateTabVisibility)
+        actions[V .. "/tab_traditions"] = "view_set:tab="
+        actions[V .. "/tab_crisis"] = "view_set:tab=crisis"
+    else
+        -- the Ambition tab: disabled without the country's crisis data (Update 0x334c3e0)
+        disabled[V .. "/tab_crisis"] = true
+    end
+    if on_crisis then
+        crisis.build(ctx, data.crisis, state, V, { sprites = sprites, text = text, hide = hide, actions = actions, sizes = sizes })
+    end
     local r = layout("traditions_view", {
-        hide = hide, text = text, progress = progress,
-        -- (a text box without maxWidth is as wide as its text)
-        sizes = { [V .. "/traditions_window/ascension_perks/ascension_perks_label"] = { 280, 25 } },
-        actions = { [V .. "/close"] = "view_close" },
-        -- the Ambition tab: disabled without the country's crisis data (Update 0x334c3e0) [I: the
-        -- player has none here]
-        disabled = { [V .. "/tab_crisis"] = true },
+        hide = hide, text = text, progress = progress, actions = actions, sprites = sprites, disabled = disabled,
+        sizes = sizes,
     })
+    if on_crisis then
+        -- the window's lists (its levels, their perks, the objectives); the traditions tab's
+        -- dialogs are not over it
+        crisis.lists(ctx, data.crisis, state, r, function(file, window, opts)
+            for k, v in pairs(base) do
+                opts[k] = opts[k] or v
+            end
+            local i, rr = gui.layout(ctx.game_dir, ctx.db, file, window, ctx.screen, opts)
+            gui.merge(items, report, i, rr)
+            return rr
+        end, items)
+        return items, report
+    end
 
     -- the categories (UpdateTraditionsGridbox): slot i at the gridbox's (314 x 266) cell
     local grid = r.rects[V .. "/traditions_window/tradition_category_gridbox"]
@@ -434,6 +464,12 @@ end
 -- traditions.wheel(ctx, data, state, notches, x, y): the category selection's rows or the perk
 -- list scrolled when the pointer is over them
 function traditions.wheel(ctx, data, state, notches, x, y)
+    if state.tab == "crisis" and data and data.crisis then
+        -- the Ambition tab's objectives
+        local _, r = gui.layout(ctx.game_dir, ctx.db, FILE, "traditions_view", ctx.screen, { texture_size = ctx.texture_size, loc = ctx.loc })
+        local list = r.rects["/traditions_view/crisis_window/information_box/objectives_box/objectives_list"]
+        return require("render.windows.traditions_crisis").wheel(data.crisis, state, notches, x, y, list)
+    end
     local dialogs = require("render.windows.traditions_dialogs")
     if state.perks then
         return dialogs.perks_wheel(ctx, data, state, notches, x, y)

@@ -678,6 +678,7 @@ function research.add_technology(country, name)
             elseif k == "level" then
                 if found then
                     world.set_entry(status, e, (tonumber(e.value.text) or 1) + 1)
+                    research.take_stored(status, name)
                     return true
                 end
                 last = i
@@ -687,7 +688,38 @@ function research.add_technology(country, name)
     local pos = (last or 0) + 1
     world.insert(status, pos, "technology", name, true)
     world.insert(status, pos + 1, "level", 1)
+    research.take_stored(status, name)
     return true
+end
+
+-- research.stored_for(status, tech) -> the points stored for the technology
+-- (stored_techpoints_for_tech: a cancelled research's progress, CancelTechnologyResearch)
+function research.stored_for(status, name)
+    local block = world.field(status, "stored_techpoints_for_tech")
+    return type(block) == "table" and tonumber(world.field(block, name)) or 0
+end
+
+-- research.take_stored(status, tech): its stored points' entry taken out when the technology gains
+-- a level (CTechnologyStatus::IncreaseTechnologyLevel 0x20aaa6b: the last entry moved into its
+-- place, the order changed as the game's)
+function research.take_stored(status, name)
+    local block = world.field(status, "stored_techpoints_for_tech")
+    if type(block) ~= "table" then
+        return
+    end
+    local entries, at = {}, nil
+    for _, e in ipairs(block) do
+        entries[#entries + 1] = e
+        if e.op and e.key and e.key.text == name and not at then
+            at = #entries
+        end
+    end
+    if not at then
+        return
+    end
+    entries[at] = entries[#entries]
+    entries[#entries] = nil
+    world.replace(block, entries)
 end
 
 -- the stored_techpoints block's three values (the tokens, changed in place)
@@ -845,13 +877,16 @@ local function area_day(host, country, status, area, day)
             emptied = false
         else
             local pe = item_field(item, "progress")
-            local progress = pe and tonumber(pe.value.text) or 0
+            -- (the progress: the item's and the points stored for the technology,
+            -- CTechQueueItem::GetProgress 0x20a6de0; IsDone 0x20a7b10 compares that with the cost)
+            local extra = research.stored_for(status, name)
+            local progress = (pe and tonumber(pe.value.text) or 0) + extra
             local cost = research.cost(country, name)
             if progress >= cost then
                 complete(host, country, queue, item, name)
             elseif monthly and not halted then
                 local added = A + B
-                progress = add_month(item)
+                progress = add_month(item) + extra
                 if added > 0 and progress >= cost then
                     complete(host, country, queue, item, name)
                 else
@@ -892,6 +927,81 @@ function research.daily(host, date)
             for _, area in ipairs(research.AREAS) do
                 slice.check("research area")
                 area_day(host, country, status, area, day)
+            end
+            research.auto_research(country, status)
+        end
+    end
+end
+
+-- the technologies whose feature_flags have the flag (common/technology), once
+local feature_techs = {}
+local function has_feature(country, flag)
+    local list = feature_techs[flag]
+    if list == nil then
+        list = {}
+        for name, d in pairs(defs.folder("common/technology")) do
+            local ff = defs.field(d.block, "feature_flags")
+            for _, e in ipairs(type(ff) == "table" and ff or {}) do
+                if e.text == flag then
+                    list[#list + 1] = name
+                end
+            end
+        end
+        feature_techs[flag] = list
+    end
+    for _, name in ipairs(list) do
+        if research.level(country, name) then
+            return true
+        end
+    end
+    return false
+end
+
+-- the countries a human plays (the save's `player = { { name country } }`)
+local humans
+local function is_human(country)
+    if humans == nil then
+        humans = {}
+        for _, e in ipairs(world.tree or {}) do
+            if e.op and e.key and e.key.text == "player" and e.value.text == nil then
+                for _, p in ipairs(world.blocks(e.value)) do
+                    local c = tonumber(world.field(p, "country"))
+                    if c then humans[c] = true end
+                end
+            end
+        end
+    end
+    return humans[country] == true
+end
+
+-- research.auto_research(country, status): auto research (CCountry::DailyUpdateSerial
+-- 0x2354c70, after DailyResearch), for a country a human plays that has unlocks_auto_research
+-- (tech_space_exploration's feature flag): for physics, society, engineering in order, each with
+-- auto_researching_<area> = yes, a draw of the game's generator (CRandom::GetIntegerForMacro: every
+-- day, whether the area researches or not), then GetTechToResearch(area, r) (engine.ai.research:
+-- the alternatives weighted by their ai_weight and cost) queued (QueueResearch, not a command)
+research.stats.auto_draws, research.stats.auto_queued = 0, 0
+function research.auto_research(country, status)
+    if not is_human(country) then
+        return
+    end
+    local any = false
+    for _, area in ipairs(research.AREAS) do
+        if world.field(status, "auto_researching_" .. area) == "yes" then
+            any = true
+        end
+    end
+    if not any or not has_feature(country, "unlocks_auto_research") then
+        return
+    end
+    local airesearch = require("engine.ai.research")
+    for _, area in ipairs(research.AREAS) do
+        if world.field(status, "auto_researching_" .. area) == "yes" then
+            local r = E.rand()
+            research.stats.auto_draws = research.stats.auto_draws + 1
+            local name = airesearch.tech_to_research(country, status, area, r)
+            if name and airesearch.queue(country, name, today or "") then
+                research.stats.auto_queued = research.stats.auto_queued + 1
             end
         end
     end
