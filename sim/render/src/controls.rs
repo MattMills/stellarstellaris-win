@@ -207,6 +207,8 @@ pub enum Action {
     /// a screen's Return: its next or start button (the new game's screens)
     Accept,
     ToggleGui,
+    /// the renderer's load screen console (console.rs)
+    ToggleConsole,
     Map2D3D,
     Continue,
     Quit,
@@ -244,6 +246,7 @@ pub const ACTIONS: &[(Action, &str)] = &[
     (Action::Back, "back"),
     (Action::Accept, "accept"),
     (Action::ToggleGui, "toggle_gui"),
+    (Action::ToggleConsole, "toggle_console"),
     (Action::Map2D3D, "map_2d_3d"),
     (Action::Continue, "continue"),
     (Action::Quit, "quit"),
@@ -371,6 +374,7 @@ map   drag left+right       drag_plane       [V] UpdateDragMovement: IsPressedLe
 map   wheel -               zoom             [V] UpdateZoom @0x2e66518: one step a frame, toward the cursor; right held: smooth
 # the engine: CGameIdler::Idle @0x1afd770, every screen
 any   press ctrl+f9         toggle_gui       [V] Idle @0x1afdd9b: g_bNoGUI
+any   press grave           toggle_console   [R] the load screens' console of the renderer's log (console.rs)
 any   press ctrl+f10        lock_camera      [V] Idle @0x1afdda4: g_bLockCamera (not done here)
 any   press f11             screenshot       [V] Idle @0x1afdcf8 (not done here)
 # the screens: the game's Escape is the .gui shortcuts' (main_bottom.gui button_topbar_menu,

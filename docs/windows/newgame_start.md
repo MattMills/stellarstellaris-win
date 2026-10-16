@@ -167,7 +167,31 @@ same place (x 485..1094, top 785 at 1600x900; x 655..1264, top 965 at 1920x1080)
 it from its left edge, the middle's frame and the end cap's light at the state. The other
 progress_startend bars follow the same shader and were not compared with game frames.
 
-## 7. Not done
+## 7. The load screens' console (the renderer's, not the game's)
+
+Over every load screen the renderer shows (a new game's START_NEW_GAME and LOAD_MAP_GFX, a save's
+LOAD_SAVE_GAME), a dark panel at the top left (GFX_tiles_dark_area_cut_8 at 85%, the cg_16b font)
+shows the last lines of the renderer's log, newest at the bottom, each cut to the panel's width, a
+line with errors in red ("0 errors" is not one). The game has no such panel; it is drawn after the
+load screen's window and apart from it.
+
+- What it shows (src/console.rs): every line the crate writes with `eprintln!` (main.rs shadows the
+  macro for the whole crate, from every thread), and the app's log as the load screen takes it.
+  The simulation's thread writes the new game's stages as each ends (the generator's summary and
+  steps, the engine's load with its `jobs:` line, the start script, the terra incognita, the
+  timings), so they come while the screen is up; then `simulation: loaded in`, the models' index.
+- Loading a save: the window's Load and Continue now load behind the load screen
+  (`App::start_load_save`: the simulation's thread loads the save, the map is shown as after a
+  new game). Commands keep `load` / `load-sim` at once; `load-sim async PATH` loads behind the
+  load screen and `loaded` waits for it.
+- Switches: on in the window, off when the renderer is driven by commands (`--script`,
+  `--listen`: the frames compare with the game's); STELLAR_LOAD_CONSOLE=1 / =0 forces it; the key
+  ` (`toggle_console`, any screen); the command `console on|off`.
+
+Checked on .24: a medium new game and a save loaded behind the load screen with `console on`
+(the stages coming in as they end), the default off when scripted, the tint.
+
+## 8. Not done
 
 - The game's own frames of its load screen (the headless path writes gamestates, not frames): the
   load screen's picture scaling and the status window's place are unverified against a game

@@ -6,6 +6,9 @@
 //!
 //! Commands (angles in degrees, positions in map units):
 //! - `load PATH` (the save's world), `load-sim PATH` (as a running simulation), `step DAYS`
+//! - `load-sim async PATH`: the save loaded behind the load screen (as the window's Load and
+//!   Continue do); `loaded` waits for it. `console on|off`: the load screens' console of the
+//!   renderer's log (console.rs; off by default here, STELLAR_LOAD_CONSOLE=1 turns it on)
 //! - `newgame [async] KEY=VALUE ... [empire=DESIGN]`: a new game (newgame.rs; the keys are
 //!   newgame.generate's: scenario, shape, empires, seed, global_seed, ...), the load screen shown
 //!   while it is made (`frame` draws it, `state` says `Loading`); the reply when it is shown
@@ -106,7 +109,11 @@ fn num<T: std::str::FromStr>(s: Option<&&str>, what: &str) -> Result<T, String> 
 
 impl Engine {
     pub fn new(game_dir: &str, backend: Backend, adapter: Option<&str>, size: (u32, u32)) -> Result<Engine, String> {
-        let app = App::new(game_dir, size)?;
+        let mut app = App::new(game_dir, size)?;
+        // driven by commands: the load screens' console off unless asked for (STELLAR_LOAD_CONSOLE=1,
+        // `console on`), so the frames compare with the game's; the menu's loads at once
+        app.console = crate::console::enabled(true);
+        app.async_loads = false;
         let off = Offscreen::new(backend, adapter)?;
         eprintln!("rendering on: {}", off.adapter);
         Ok(Engine { app, off, frames: 0, target: None, timestep: 1.0 / 60.0, lockstep: false, pending: Vec::new(), frame_no: 0, clock_ms: 0.0 })
@@ -370,6 +377,22 @@ impl Engine {
         let a = &words[1..];
         let rest = line.trim_start()[verb.len()..].trim();
         match verb {
+            "console" => {
+                // the load screens' console (console.rs): `console on|off`
+                let on = match a.first().copied() {
+                    Some("on") => true,
+                    Some("off") => false,
+                    _ => return Err("console on|off".into()),
+                };
+                self.app.set_console(on);
+                Ok(Reply::ok(format!("console {}", if on { "on" } else { "off" })))
+            }
+            "load-sim" if a.first().copied() == Some("async") => {
+                // a save loaded behind the load screen, as the window's Load does; `loaded` waits
+                let path = rest["async".len()..].trim();
+                self.app.start_load_save(path)?;
+                Ok(Reply::ok(format!("load-sim async {path}")))
+            }
             "load" | "load-sim" => {
                 let t0 = std::time::Instant::now();
                 self.app.load_as(rest, verb == "load-sim")?;

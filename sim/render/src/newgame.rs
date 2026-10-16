@@ -226,6 +226,8 @@ pub fn sim_runtime(game_dir: &str, settings: &NewGameSettings, progress: &Arc<Pr
         newgame.set("last", game.clone())?;
         let summary: String = game.get("summary")?;
         let t1 = t0.elapsed().as_secs_f64();
+        // each stage's report written as it ends (the load screen's console shows them live)
+        eprintln!("{summary}\nnew game: generated in {t1:.1} s; loading the world");
         // InitPostGalaxyCreation's part of the bar
         progress.stage.store(POST, Ordering::Relaxed);
         let engine: Table = lua.load("return require('engine')").eval()?;
@@ -245,10 +247,13 @@ pub fn sim_runtime(game_dir: &str, settings: &NewGameSettings, progress: &Arc<Pr
             load.call((dir, tree))?
         };
         let t2 = t0.elapsed().as_secs_f64();
+        eprintln!("{loaded}\nnew game: loaded in {:.1} s; running the start script", t2 - t1);
         let start_script: mlua::Function = newgame.get("start_script")?;
         let script: String = start_script.call(game)?;
+        eprintln!("{script}");
         // InitPostGalaxyCreation's terra incognita: the maps, cleared in sensor range
         let post: String = lua.load("return require('engine.newgame.post').run()").eval()?;
+        eprintln!("{post}\nnew game: started in {:.1} s", t0.elapsed().as_secs_f64() - t2);
         // STELLAR_NEWGAME_EVAL=FILE: a Lua chunk run on the started world, its result logged (to
         // look into a new game's world)
         if let Ok(path) = std::env::var("STELLAR_NEWGAME_EVAL") {

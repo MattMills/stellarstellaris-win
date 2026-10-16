@@ -203,10 +203,8 @@ impl Clock {
                 let loaded = match &source {
                     Source::Save(path) => galaxy::sim_runtime(&game_dir, path).map(|r| (r, None)),
                     Source::NewGame(settings, progress) => {
-                        crate::newgame::sim_runtime(&game_dir, settings, progress).map(|(r, report)| {
-                            eprintln!("{report}");
-                            (r, Some(report))
-                        })
+                        // (its stages are written as they end: newgame.rs)
+                        crate::newgame::sim_runtime(&game_dir, settings, progress).map(|(r, report)| (r, Some(report)))
                     }
                 };
                 let runtime = match loaded {
