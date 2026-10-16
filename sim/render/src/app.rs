@@ -140,6 +140,8 @@ pub struct App {
     pub models: models::Library,
     /// what is selected on the map
     pub selected: Option<Pickable>,
+    /// the starbase window's tab (starbase.rs)
+    pub starbase: crate::starbase::State,
     /// the windows over the map for the selection (the outliner, an info window)
     pub overlay_items: Vec<GuiItem>,
     /// the map labels (mapicons.gui) of what the view shows
@@ -228,6 +230,7 @@ impl App {
             model: None,
             models: models::Library::default(),
             selected: None,
+            starbase: Default::default(),
             overlay_items: Vec::new(),
             overlay_labels: Vec::new(),
             overlay_key: None,
@@ -1249,6 +1252,7 @@ impl App {
             }
         }
         let selected = selected.map(|(kind, id)| gui::SelectedWindow { kind, id, name: next(), sub: String::new() });
+        crate::starbase::prepare(&self.runtime, &g, &self.starbase)?;
         let layout = gui::windows(&self.runtime, w, h, &outliner, selected.as_ref())?;
         // the main screen's other windows under the outliner and the selection's window
         let mut items = self.main_screen_items()?;
@@ -1260,6 +1264,12 @@ impl App {
 
     /// The scene must be built again (the world or the view changed).
     pub fn invalidate(&mut self) {
+        self.scene = None;
+    }
+
+    /// The windows must be laid out again (a window's own state changed: a tab).
+    pub fn relayout(&mut self) {
+        self.overlay_key = None;
         self.scene = None;
     }
 
@@ -1538,6 +1548,7 @@ impl App {
                     _ => Pickable::Fleet(id),
                 }));
             }
+            Some(a) if a.starts_with("starbase:") => crate::starbase::act(self, a)?,
             Some(other) => self.log.push(format!("  {other}: not done yet (its window is not laid out)")),
             None => {}
         }

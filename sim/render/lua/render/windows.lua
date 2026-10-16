@@ -15,9 +15,9 @@
 -- outliner_tab_window (the Overview tab), its list filled with a group header
 -- (outliner_title_entry_window) and the group's rows (outliner_member_*_entry_window) as far as
 -- the window reaches down the screen. A planet opens planet_view (planet_view.gui), a fleet
--- fleet_view (fleet_view.gui, one fleet_view_entry), a starbase starbase_view
--- (starbase_view.gui): each with its name and close button; their other parts (lists, tabs,
--- the bars the game fills) are not drawn. A row's background and a window's close button carry
+-- fleet_view (fleet_view.gui, one fleet_view_entry): each with its name and close button; their
+-- other parts (lists, tabs, the bars the game fills) are not drawn. A starbase opens starbase_view
+-- (starbase_view.gui), laid out by render.windows.starbase. A row's background and a window's close button carry
 -- the actions `select:KIND:ID` and `close`.
 
 local gui = require("render.gui")
@@ -141,15 +141,8 @@ local function selected_window(ctx, sel, items, report)
             merge(items, report, ri, rr)
         end
     elseif sel.kind == "starbase" then
-        local h = ctx.screen.height >= 801 and 765 or 611
-        local wi, wr = gui.layout(ctx.game_dir, ctx.db, "interface/starbase_view.gui", "starbase_view", ctx.screen, {
-            texture_size = ctx.texture_size, loc = ctx.loc,
-            sizes = { ["/starbase_view"] = { 562, h } },
-            only = { planet_bg_top = true, starbase_bg_bottom = true, empire_header_line = true, hex_bg = true, name = true, header_actions = true },
-            text = { ["/starbase_view/name"] = sel.name or "" },
-            actions = { ["/starbase_view/header_actions/close"] = "close" },
-        })
-        merge(items, report, wi, wr)
+        -- its tabs, grids and lists: render.windows.starbase
+        require("render.windows.starbase").build(ctx, sel, items, report)
     elseif sel.kind == "planet" then
         local wi, wr = gui.layout(ctx.game_dir, ctx.db, "interface/planet_view.gui", "planet_view", ctx.screen, {
             texture_size = ctx.texture_size, loc = ctx.loc,
