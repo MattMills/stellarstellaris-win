@@ -296,7 +296,12 @@ function fd.manager(observer, selected)
             out.fleets[#out.fleets + 1] = d
         end
     end
-    out.selected = selected or (out.fleets[1] and out.fleets[1].id)
+    -- the selected template (kept while it is listed), else the first
+    local listed = false
+    for _, f in ipairs(out.fleets) do
+        listed = listed or f.id == selected
+    end
+    out.selected = listed and selected or (out.fleets[1] and out.fleets[1].id)
     return out
 end
 

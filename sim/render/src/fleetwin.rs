@@ -73,7 +73,17 @@ impl App {
         match (verb, id) {
             ("ship", Some(id)) => self.fleet.ship = Some(id),
             ("close_ship", _) => self.fleet.ship = None,
-            ("manager", _) => self.fleet.manager = true,
+            // the fleet view's and ship view's Fleet Manager button (ShowFleetManagerView(the
+            // fleet's template)): the manager with that fleet; the ship view and the fleet view
+            // close (the game's frame after the click [V], the selection's end there [I])
+            ("manager", id) => {
+                self.fleet.manager = true;
+                self.fleet.ship = None;
+                if id.is_some() {
+                    self.fleet.manager_fleet = id;
+                }
+                self.select(None);
+            }
             // the left bar's button (`view:fleet_manager`): toggles it, as
             // CInGameIdler::ToggleTopBarView does a top bar view (ETopBarView 8)
             ("fleet_manager", _) => self.fleet.manager = !self.fleet.manager,

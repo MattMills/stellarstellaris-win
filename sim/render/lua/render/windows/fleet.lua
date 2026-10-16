@@ -631,7 +631,7 @@ function fleet.fleet_view(ctx, d)
         sprites = { [p .. "/top/header_button"] = header_sprite(d), [p .. "/top/disband"] = disband },
         actions = {
             [p .. "/top/deselect"] = "close",
-            [p .. "/top/open_fleet_manager"] = "fleet:manager",
+            [p .. "/top/open_fleet_manager"] = "fleet:manager:" .. d.id,
         },
     })
     -- the leader (portrait_container: CParagonPortraitContainer)
@@ -1018,7 +1018,7 @@ function fleet.ship_view(ctx, d)
         text = text,
         actions = {
             ["/ship_view/close"] = "fleet:close_ship",
-            ["/ship_view/buttons/open_fleet_manager"] = "fleet:manager",
+            ["/ship_view/buttons/open_fleet_manager"] = "fleet:manager:" .. tostring(d.fleet or ""),
         },
     })
     -- the buttons: the local player's ship that can be upgraded (CShip::CanBeUpgraded) [V]
