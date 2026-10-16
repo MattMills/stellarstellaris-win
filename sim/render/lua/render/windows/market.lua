@@ -405,7 +405,7 @@ function market.build(game_dir, db, screen, texture_size, loc, data, state)
     state = state or {}
     local ctx = { game_dir = game_dir, db = db, screen = screen, texture_size = texture_size, loc = loc }
     local slave = state.tab == "slave_market"
-    local hide, texts, actions, sizes = {}, {}, {}, {}
+    local hide, texts, actions, sizes, disabled = {}, {}, {}, {}, {}
     actions[V .. "/close"] = "close_view"
     -- the tabs (CGameGraphics::UpdateTabVisibility: the active tab's _active button, the other's
     -- plain one; the slave market's only with Megacorp)
@@ -420,6 +420,8 @@ function market.build(game_dir, db, screen, texture_size, loc, data, state)
     -- CMarketView::Update)
     if data.access then
         actions[V .. "/tab_slave_market"] = "state:tab=slave_market"
+    else
+        disabled[V .. "/tab_slave_market"] = true
     end
     hide[V .. (slave and "/market" or "/slave_market")] = true
     texts[V .. "/windows_title"] = slave and "SLAVE_MARKET" or "MARKET_VIEW"
@@ -458,7 +460,7 @@ function market.build(game_dir, db, screen, texture_size, loc, data, state)
     end
 
     local items, report = gui.layout(game_dir, db, FILE, "market_view", screen, {
-        texture_size = texture_size, loc = loc, hide = hide, text = texts, actions = actions, sizes = sizes,
+        texture_size = texture_size, loc = loc, hide = hide, text = texts, actions = actions, sizes = sizes, disabled = disabled,
     })
     if slave then
         return items, report
@@ -496,7 +498,7 @@ function market.build(game_dir, db, screen, texture_size, loc, data, state)
                     end
                     return {
                         sprites = { [p .. "/large_resource_icon"] = "GFX_resource_" .. sel .. "_large" },
-                        frames = { [p .. "/bg"] = e.ok and 1 or 3 },
+                        disabled = { [p] = not e.ok or nil },
                         text = { [p .. "/resource_amount"] = amount, [p .. "/price"] = "£" .. cur .. "£" .. price },
                     }
                 end)

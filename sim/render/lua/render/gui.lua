@@ -145,6 +145,8 @@ end
 --   opts.positions: element path -> { x, y } (a window at another of its places: hide_position)
 --   opts.sprites: element path -> sprite name (an icon the game sets at run time)
 --   opts.tints: element path -> { r, g, b, a } (a sprite coloured: the map labels' relation colour)
+--   opts.disabled: element path -> true (it and its children drawn as the game draws a disabled
+--                  button: greyed)
 --   opts.parent: the rectangle the window is laid out in (else the screen)
 --   opts.prefix: a path prefix for the window's elements (else "")
 --   opts.texture_size(path) -> w, h (the renderer's: the texture's pixels)
@@ -184,6 +186,26 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
         return tw / math.max(1, s.frames), th
     end
 
+    -- disabled: the path or one of its windows in opts.disabled (the game's Disable: the sprites
+    -- greyed, GreyOutLuminosity 0.85 x 0.75; a button's text too, TextDisable)
+    local function is_disabled(path)
+        if not opts.disabled then
+            return false
+        end
+        local p = path
+        while p and p ~= "" do
+            if opts.disabled[p] then
+                return true
+            end
+            p = p:match("^(.*)/[^/]*$")
+        end
+        return false
+    end
+    local function grey(c)
+        local g = 0.212671 * c[1] + 0.715160 * c[2] + 0.072169 * c[3]
+        return { (g * 0.85 + c[1] * 0.15) * 0.75, (g * 0.85 + c[2] * 0.15) * 0.75, (g * 0.85 + c[3] * 0.15) * 0.75 }
+    end
+
     local function sprite_item(path, name, frame, x, y, w, h, button)
         name, frame = resolve(name, frame)
         local s = db.sprites[name]
@@ -201,6 +223,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             frame = math.max(1, frame or 1), frames = s.frames, x = x, y = y, w = w or fw, h = h or fh,
             border = s.kind == "corneredTileSpriteType" and s.border or nil, button = button,
             tint = opts.tints and opts.tints[path] or nil,
+            disabled = is_disabled(path) or nil,
         }
         items[#items + 1] = item
         report.sprites = report.sprites + 1
@@ -419,6 +442,11 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                 local text = opts.text and opts.text[path] or bt
                 text_item(path .. "/text", field("buttonFont") or field("font"), text, x, y, w, h, "center", "center",
                     field("text_color_code"))
+                if is_disabled(path) then
+                    for _, s in ipairs(items[#items].spans) do
+                        s.colour = grey(s.colour)
+                    end
+                end
             end
         elseif TEXTS[kind] then
             local text = opts.text and opts.text[path]

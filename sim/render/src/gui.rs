@@ -33,6 +33,9 @@ pub enum GuiItem {
         action: Option<String>,
         /// its colour multiplied in (the relation colour of a map label)
         tint: [f32; 4],
+        /// drawn as the game draws a disabled button (buttonstate.shader's Disable effect: the
+        /// texel greyed, GreyOutLuminosity 0.85, brightness 0.75)
+        disabled: bool,
     },
     Text {
         path: String,
@@ -180,6 +183,7 @@ fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
                     Some(t) => [t.get(1)?, t.get(2)?, t.get(3)?, t.get::<Option<f32>>(4)?.unwrap_or(1.0)],
                     None => [1.0; 4],
                 },
+                disabled: it.get::<Option<bool>>("disabled")?.unwrap_or(false),
             });
         } else {
             let mut spans = Vec::new();
