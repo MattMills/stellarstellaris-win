@@ -742,7 +742,7 @@ impl App {
         self.enter_system(index, None)
     }
 
-    fn enter_system(&mut self, index: usize, focus: Option<Pickable>) -> Result<(), String> {
+    pub(crate) fn enter_system(&mut self, index: usize, focus: Option<Pickable>) -> Result<(), String> {
         let map = self.map.as_mut().ok_or("no map loaded")?;
         if index >= map.galaxy.systems.len() {
             return Err(format!("no system {index}"));
@@ -1072,6 +1072,8 @@ impl App {
     }
 
     fn window_items(&mut self) -> Result<Vec<GuiItem>, String> {
+        // the planet view's commands that waited for the simulation (planet.rs)
+        crate::planet::run_pending(self)?;
         let (w, h) = self.size;
         let Some(map) = self.map.as_mut() else { return Ok(Vec::new()) };
         if !map.gui || self.view == MapView::Model {
@@ -1139,7 +1141,8 @@ impl App {
             Some(s) if s.kind == "planet" => {
                 let tab = self.planet_view.tab_for(s.id).to_string();
                 let colonize = self.planet_view.colonize == Some(s.id);
-                planet_owner = crate::planet::prepare(&self.runtime, self.map.as_ref().unwrap(), s.id, &tab, colonize)?;
+                let side = self.planet_view.side.clone();
+                planet_owner = crate::planet::prepare(&self.runtime, self.map.as_ref().unwrap(), s.id, &tab, colonize, side.as_deref())?;
             }
             _ => crate::planet::clear(&self.runtime),
         }
@@ -1623,20 +1626,8 @@ impl App {
             // the selection's window closed; an outliner row selects its planet or fleet
             Some("close") => self.select(None),
             Some(a) if a.starts_with("fleet:") => self.fleet_act(a)?,
-            // the planet view's tabs, its colonize button and the colonize window's close (planet.rs)
-            Some(a) if a.starts_with("planet_tab:") => {
-                if let Some(Pickable::Body(id)) = self.selected {
-                    self.open_planet(id, &a["planet_tab:".len()..])?;
-                }
-            }
-            Some("planet_colonize") | Some("colonize_close") => {
-                if let Some(Pickable::Body(id)) = self.selected {
-                    self.planet_view.colonize = if action == Some("planet_colonize") { Some(id) } else { None };
-                    self.log.push(format!("planet view: colonize window {}", if action == Some("planet_colonize") { "open" } else { "closed" }));
-                    self.overlay_key = None;
-                    self.scene = None;
-                }
-            }
+            // the planet view's and the colonize window's clicks (planet.rs)
+            Some(a) if a.starts_with("planet:") => crate::planet::act(self, a)?,
             Some(a) if a.starts_with("select:") => self.select(Some(pickable_of(a)?)),
             Some(a) if a.starts_with("starbase:") => crate::starbase::act(self, a)?,
             // the outliner's tabs, groups, observer list (outliner.rs State::act): laid out again
@@ -2180,6 +2171,9 @@ impl App {
                         self.starbase.network = None;
                         self.relayout();
                     }
+                    // the planet view's side bar, then its colonize window (their close buttons:
+                    // ESCAPE), before the view
+                    Action::Back if crate::planet::escape(self) => {}
                     Action::Back if self.selected.is_some() => self.select(None),
                     Action::Back if self.view != MapView::Galaxy && self.map.is_some() => {
                         self.log.push(format!("escape: {:?} -> Galaxy", self.view));

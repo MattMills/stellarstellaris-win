@@ -21,6 +21,14 @@ pub struct State {
     pub tab: String,
     /// the colonize window (colonize_planet_view.gui, CSurfaceView), open for this planet
     pub colonize: Option<u32>,
+    /// the side bar's window (CPlanetView +0x390) and what it shows: `district:TYPE`,
+    /// `building:ID`, `construction:ZONE`, `zone_construction:DISTRICT:SLOT`, `designation`,
+    /// `decisions`, `terraform`, `automation`, `queue`, `pop:GROUP`, `job:TYPE`; None: closed
+    pub side: Option<String>,
+    /// the simulation's commands clicked before it was ready, done once it is (in order)
+    pub pending: Vec<(u32, String)>,
+    /// the last command's result, for the command protocol
+    pub last: String,
 }
 
 impl State {
@@ -46,37 +54,173 @@ impl State {
 
 /// The planet's data (a Lua expression, render.windows.planet.encode) from the map's world, or
 /// None when the map has no world (a running simulation: its world is on its own thread).
-pub fn data(map: &Map, id: u32) -> Result<Option<String>, String> {
-    if !map.world {
+pub fn data(map: &Map, id: u32, side: &str) -> Result<Option<String>, String> {
+    let gd = map.game_dir.replace('\\', "/");
+    let code = format!("local p = require('render.windows.planet') local d = p.data({gd:?}, {id}, {side:?}) return d and p.encode(d) or ''");
+    if map.world {
+        return map
+            .runtime
+            .lua
+            .load(code)
+            .eval::<String>()
+            .map(|s| if s.is_empty() { None } else { Some(s) })
+            .map_err(|e| format!("render.windows.planet.data: {e}"));
+    }
+    // the simulation's world (its own thread): asked once a snapshot, when it is ready (the
+    // window shows its frame and name until then; Clock::query would wait for the load)
+    let Some(clock) = map.clock.as_ref() else { return Ok(None) };
+    if !clock.status().ready {
         return Ok(None);
     }
+    let generation = map.snapshot.as_ref().map_or(0, |s| s.generation);
+    if let Some(d) = CACHE.with(|c| c.borrow().as_ref().filter(|(i, g, s, _)| *i == id && *g == generation && s == side).map(|(_, _, _, d)| d.clone())) {
+        return Ok(d);
+    }
+    let d = clock.query(&code).map(|s| if s.is_empty() { None } else { Some(s) }).map_err(|e| format!("render.windows.planet.data: {e}"))?;
+    CACHE.with(|c| *c.borrow_mut() = Some((id, generation, side.to_string(), d.clone())));
+    Ok(d)
+}
+
+thread_local! {
+    /// the last planet's data from the simulation: (planet, snapshot generation, data)
+    static CACHE: std::cell::RefCell<Option<(u32, u64, String, Option<String>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A planet view click (its `planet:` actions; docs/windows/planet.md, the buttons):
+///   tab:TAB              the tab shown (CPlanetView::On*Tab)
+///   colonize, colonize_close   the colonize window opened, closed
+///   side:WINDOW[:ARGS]   the side bar shows WINDOW (CPlanetView +0x390); side_close closes it
+///   prev, next           the previous / next planet of the owner's (previous_planet, next_planet)
+///   zoom                 the camera to the planet (zoom_to_planet_button)
+///   cmd:VERB[:ARGS]      a change to the game, done by the simulation (render.windows.planet
+///                        .command): queued until the simulation is ready
+pub fn act(app: &mut crate::app::App, action: &str) -> Result<(), String> {
+    use crate::scene::Pickable;
+    let rest = action.strip_prefix("planet:").unwrap_or(action);
+    let Some(Pickable::Body(id)) = app.selected else { return Ok(()) };
+    let (verb, arg) = rest.split_once(':').unwrap_or((rest, ""));
+    match verb {
+        "tab" => {
+            app.planet_view.side = None;
+            app.open_planet(id, arg)?;
+        }
+        "colonize" => app.planet_view.colonize = Some(id),
+        "colonize_close" => app.planet_view.colonize = None,
+        "side" => {
+            // the same window again closes it (the side bar's buttons toggle **[I]**)
+            app.planet_view.side = if app.planet_view.side.as_deref() == Some(arg) { None } else { Some(arg.to_string()) };
+        }
+        "side_close" => app.planet_view.side = None,
+        "prev" | "next" => {
+            let owned: Vec<u32> = app.map.as_ref().map(|m| m.galaxy.planets.iter().map(|p| p.id).collect()).unwrap_or_default();
+            if let Some(i) = owned.iter().position(|&p| p == id) {
+                let n = owned.len();
+                let j = if verb == "next" { (i + 1) % n } else { (i + n - 1) % n };
+                let tab = app.planet_view.tab.clone();
+                app.planet_view.side = None;
+                app.open_planet(owned[j], if tab.is_empty() { "summary" } else { &tab })?;
+            }
+        }
+        "zoom" => {
+            let system = app.map.as_ref().and_then(|m| {
+                let sid = m.galaxy.planets.iter().find(|p| p.id == id).map(|p| p.system).or(DATA_SYSTEM.with(|c| *c.borrow()))?;
+                m.galaxy.systems.iter().position(|s| s.id as i64 == sid)
+            });
+            if let Some(i) = system {
+                app.enter_system(i, None)?;
+                app.focus(Pickable::Body(id))?;
+            }
+        }
+        "cmd" => {
+            app.planet_view.pending.push((id, arg.to_string()));
+            run_pending(app)?;
+        }
+        _ => app.log.push(format!("  planet view: {action}: not done")),
+    }
+    app.relayout();
+    Ok(())
+}
+
+/// Escape on the planet view: closes its side bar, else its colonize window (both close buttons
+/// have the shortcut ESCAPE); false when neither is open (the view closes then).
+pub fn escape(app: &mut crate::app::App) -> bool {
+    use crate::scene::Pickable;
+    if !matches!(app.selected, Some(Pickable::Body(_))) {
+        return false;
+    }
+    if app.planet_view.side.take().is_some() || app.planet_view.colonize.take().is_some() {
+        app.relayout();
+        return true;
+    }
+    false
+}
+
+/// The simulation's commands waiting for it: done when it is ready (started if it is not), each
+/// as render.windows.planet.command in its world; the planet's data asked again after.
+pub fn run_pending(app: &mut crate::app::App) -> Result<(), String> {
+    if app.planet_view.pending.is_empty() {
+        return Ok(());
+    }
+    let Some(map) = app.map.as_mut() else { return Ok(()) };
+    map.start_clock();
+    let ready = map.clock.as_ref().is_some_and(|c| c.status().ready);
+    if !ready {
+        app.log.push(format!("planet view: {} command(s) wait for the simulation", app.planet_view.pending.len()));
+        return Ok(());
+    }
     let gd = map.game_dir.replace('\\', "/");
-    map.runtime
-        .lua
-        .load(format!(
-            "local p = require('render.windows.planet') local d = p.data({gd:?}, {id}) return d and p.encode(d)"
-        ))
-        .eval::<Option<String>>()
-        .map_err(|e| format!("render.windows.planet.data: {e}"))
+    for (id, cmd) in std::mem::take(&mut app.planet_view.pending) {
+        let mut parts = cmd.split(':');
+        let verb = parts.next().unwrap_or("");
+        let args: Vec<String> = parts.map(|a| format!("{a:?}")).collect();
+        let code = format!(
+            "local r = require('render.windows.planet').command({gd:?}, {id}, {verb:?}{}{}) return tostring(r)",
+            if args.is_empty() { "" } else { ", " },
+            args.join(", ")
+        );
+        let r = map.clock.as_ref().unwrap().query(&code).unwrap_or_else(|e| format!("error {e}"));
+        app.log.push(format!("planet view: {cmd}: {r}"));
+        app.planet_view.last = r;
+    }
+    // the change in the next snapshot, the window's data asked again
+    if let Some(c) = map.clock.as_ref() {
+        c.publish(true);
+    }
+    map.sync();
+    forget();
+    Ok(())
+}
+
+thread_local! {
+    /// the system of the planet whose data was read last (a planet not the player's: zoom)
+    static DATA_SYSTEM: std::cell::RefCell<Option<i64>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Forgets the simulation's data (a command changed the planet).
+pub fn forget() {
+    CACHE.with(|c| *c.borrow_mut() = None);
 }
 
 /// Hands planet `id`'s data and the tab shown to the front end's runtime (`RENDER_PLANET =
 /// { id, tab, colonize, data }`, render.windows reads it); returns the planet's owner (a country
 /// id).
-pub fn prepare(front: &Runtime, map: &Map, id: u32, tab: &str, colonize: bool) -> Result<Option<u32>, String> {
-    let data = data(map, id)?;
+pub fn prepare(front: &Runtime, map: &Map, id: u32, tab: &str, colonize: bool, side: Option<&str>) -> Result<Option<u32>, String> {
+    let data = data(map, id, side.unwrap_or(""))?;
     let lua = &front.lua;
     let set = || -> mlua::Result<Option<u32>> {
         let t = lua.create_table()?;
         t.set("id", id)?;
         t.set("tab", tab)?;
         t.set("colonize", colonize)?;
+        t.set("side", side)?;
         let mut owner = None;
         if let Some(d) = &data {
             lua.globals().set("RENDER_PLANET_TEXT", d.as_str())?;
             let decoded: mlua::Value = lua.load("local t = RENDER_PLANET_TEXT RENDER_PLANET_TEXT = nil return require('render.windows.planet').decode(t)").eval()?;
             if let mlua::Value::Table(dt) = &decoded {
                 owner = dt.get::<Option<u32>>("owner")?;
+                let system = dt.get::<Option<i64>>("system")?;
+                DATA_SYSTEM.with(|c| *c.borrow_mut() = system);
                 // the triggers the script layer could not evaluate (their parts drawn as false)
                 if let Some(errors) = dt.get::<Option<Vec<String>>>("errors")? {
                     for e in errors {
