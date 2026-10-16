@@ -140,6 +140,9 @@ pub struct App {
     pub models: models::Library,
     /// what is selected on the map
     pub selected: Option<Pickable>,
+    /// the left bar's view open (views.rs: CInGameIdler::ToggleTopBarView) and what it remembers
+    pub open_view: Option<String>,
+    pub view_state: HashMap<String, String>,
     /// the windows over the map for the selection (the outliner, an info window)
     pub overlay_items: Vec<GuiItem>,
     /// the map labels (mapicons.gui) of what the view shows
@@ -228,6 +231,8 @@ impl App {
             model: None,
             models: models::Library::default(),
             selected: None,
+            open_view: None,
+            view_state: HashMap::new(),
             overlay_items: Vec::new(),
             overlay_labels: Vec::new(),
             overlay_key: None,
@@ -703,6 +708,29 @@ impl App {
         }
     }
 
+    /// A left bar view shown, the others closed; hidden if it is shown
+    /// (CInGameIdler::ToggleTopBarView).
+    pub fn toggle_view(&mut self, name: &str) {
+        if self.open_view.as_deref() == Some(name) {
+            self.close_view();
+        } else {
+            self.open_view = Some(name.to_string());
+            self.view_state.clear();
+            self.log.push(format!("view: {name}"));
+            self.overlay_key = None;
+            self.scene = None;
+        }
+    }
+
+    /// The left bar's views closed (CInGameIdler::CloseTopBarViews).
+    pub fn close_view(&mut self) {
+        if self.open_view.take().is_some() {
+            self.view_state.clear();
+            self.overlay_key = None;
+            self.scene = None;
+        }
+    }
+
     /// The system view's map labels (mapicons.gui; docs/render.md section 12): each fleet's and
     /// station's `fleet_map_icon` (CFleetMapIcon::Update), each planet's `planet_map_icon` with
     /// an owner or deposits (CPlanetMapIcon::Update), in the relation colour
@@ -1037,6 +1065,8 @@ impl App {
             e.parent = Some([-225.0 + 34.0, 35.0 + 50.0 + 40.0 * i as f32, 0.0, 0.0]);
             e.only = Some(vec!["right_icon".into()]);
             e.sprites.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("GFX_topbar_{v}_button")));
+            // a click shows or hides its view (CMainGuiLeftBarButton::OnClick)
+            e.actions.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("view:{v}")));
             e.prefix = Some(prefix);
             specs.push(e);
         }
@@ -1252,6 +1282,20 @@ impl App {
         let layout = gui::windows(&self.runtime, w, h, &outliner, selected.as_ref())?;
         // the main screen's other windows under the outliner and the selection's window
         let mut items = self.main_screen_items()?;
+        // the left bar's view open: over the alerts, under the left bar (the game's frames)
+        let view = crate::views::items(self, w, h).unwrap_or_else(|e| {
+            self.log.push(e);
+            Vec::new()
+        });
+        if !view.is_empty() {
+            let is_bar = |it: &GuiItem| match it {
+                GuiItem::Sprite { path, .. } | GuiItem::Text { path, .. } => path.starts_with("/left_bar/") || path.starts_with("/maingui_left_bar_buttons"),
+            };
+            let (bar, rest): (Vec<GuiItem>, Vec<GuiItem>) = items.into_iter().partition(is_bar);
+            items = rest;
+            items.extend(view);
+            items.extend(bar);
+        }
         items.extend(layout.items);
         let map = self.map.as_mut().unwrap();
         gui::fonts(&self.runtime, &self.game_dir, &items, map.fonts.get_or_insert_with(HashMap::new))?;
@@ -1529,6 +1573,14 @@ impl App {
             }
             // the selection's window closed; an outliner row selects its planet or fleet
             Some("close") => self.select(None),
+            // the left bar's views: shown or hidden, closed, their state (a tab)
+            Some(a) if a.starts_with("view:") => self.toggle_view(&a[5..]),
+            Some("view_close") => self.close_view(),
+            Some(a) if a.starts_with("view_set:") => {
+                crate::views::set_state(&mut self.view_state, &a[9..]);
+                self.overlay_key = None;
+                self.scene = None;
+            }
             Some(a) if a.starts_with("select:") => {
                 let mut it = a.split(':').skip(1);
                 let (kind, id) = (it.next().unwrap_or(""), it.next().and_then(|v| v.parse::<u32>().ok()).ok_or(format!("bad action {a}"))?);

@@ -46,6 +46,7 @@ mod render;
 mod scene;
 mod ui;
 mod verify;
+mod views;
 mod window;
 mod worldgfx;
 
@@ -201,6 +202,11 @@ impl Map {
 
     pub fn rt(&self) -> &Runtime {
         &self.runtime
+    }
+
+    /// Whether `runtime` holds the save's world (no simulation runs yet).
+    pub fn has_world(&self) -> bool {
+        self.world
     }
 
     /// The world's date (the simulation's once it has published).

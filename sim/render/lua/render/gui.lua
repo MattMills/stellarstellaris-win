@@ -122,6 +122,9 @@ end
 --   opts.positions: element path -> { x, y } (a window at another of its places: hide_position)
 --   opts.sprites: element path -> sprite name (an icon the game sets at run time)
 --   opts.tints: element path -> { r, g, b, a } (a sprite coloured: the map labels' relation colour)
+--   opts.textures: element path -> a texture file (an icon the game gives a file at run time:
+--                  CIconBase::SetTextureFile, e.g. a civic's or an origin's icon), drawn in the
+--                  element's sprite's frame size (the texture's own without a sprite)
 --   opts.parent: the rectangle the window is laid out in (else the screen)
 --   opts.prefix: a path prefix for the window's elements (else "")
 --   opts.texture_size(path) -> w, h (the renderer's: the texture's pixels)
@@ -351,17 +354,46 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
             end
         elseif ICONS[kind] then
             local button
-            if kind ~= "icontype" and field("alwaysTransparent") ~= "yes" then
-                button = { name = name, id = field("id"), action = opts.actions and opts.actions[path] }
+            local action = opts.actions and opts.actions[path]
+            -- an icon the game takes clicks on (opts.actions names it: a window made a button by
+            -- its code, as the left bar's CMainGuiLeftBarButton) is a button too
+            if (kind ~= "icontype" and field("alwaysTransparent") ~= "yes") or action then
+                button = { name = name, id = field("id"), action = action }
             end
-            if sprite then
+            local tex = opts.textures and opts.textures[path]
+            if tex then
+                local tw, th = opts.texture_size(tex)
+                if tw then
+                    if w == 0 or h == 0 then
+                        w, h = tw * scale, th * scale
+                        report.rects[path] = { x = x, y = y, w = w, h = h }
+                    end
+                    items[#items + 1] = {
+                        kind = "sprite", path = path, sprite = tex, texture = tex, sprite_kind = "spriteType",
+                        frame = 1, frames = 1, x = x, y = y, w = w, h = h, button = button,
+                        tint = opts.tints and opts.tints[path] or nil,
+                    }
+                    report.sprites = report.sprites + 1
+                else
+                    report.missing_sprites[#report.missing_sprites + 1] = tex
+                end
+            elseif sprite then
                 sprite_item(path, sprite, frame, x, y, w, h, button)
             end
+            -- a button's text: buttonText, or its `text` (CButton reads either: government_view's
+            -- buttons have `text`, the game's frame shows it)
             local bt = field("buttonText")
-            if bt and bt ~= "" then
-                local text = opts.text and opts.text[path] or bt
-                text_item(path .. "/text", field("buttonFont") or field("font"), text, x, y, w, h, "center", "center",
-                    field("text_color_code"))
+            if (bt == nil or bt == "") and kind ~= "icontype" then
+                bt = field("text")
+            end
+            -- (or the text the game sets on it: a list header's expand button), in its `format`
+            -- (centred by default) within its borderSize
+            local text = opts.text and opts.text[path] or bt
+            if text and text ~= "" and kind ~= "icontype" then
+                local bs = field("borderSize")
+                local bx = type(bs) == "table" and number(get(bs, "x"), vars) or 0
+                text_item(path .. "/text", field("buttonFont") or field("font"), text, x + bx, y, w - 2 * bx, h,
+                    (field("format") or "center"):lower(), "center", field("text_color_code"))
             end
         elseif TEXTS[kind] then
             local text = opts.text and opts.text[path]

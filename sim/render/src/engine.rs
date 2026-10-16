@@ -13,6 +13,8 @@
 //!   game's camera: the eye at target + distance (-cos p sin y, sin p, cos p cos y), camera.rs),
 //!   `orbit DYAW DPITCH`, `zoom FACTOR` (< 1 closer), `pan DX DY` (fractions of the distance)
 //! - `resize W H`, `gui off|on` (the top bar, a system's orbit lines)
+//! - `open_view NAME|N|close`: a left bar view (views.rs) shown or hidden, as headless.c's
+//!   (the views' numbers: ETopBarView)
 //! - the clock (clock.rs: the simulation on its own thread): `pause` (stopped, as the game's
 //!   headless), `pause off` (running), `speed 1..5`, `wait SECONDS` (real time passes)
 //! - `select system|fleet|planet|ship ID`, `select none`: the selection (marked; `state` names it)
@@ -384,6 +386,21 @@ impl Engine {
                 m.set_observe();
                 self.app.invalidate();
                 Ok(Reply::ok("observe: Now observing"))
+            }
+            "open_view" => {
+                // a left bar view shown or hidden as its button does (headless.c serves it too:
+                // CInGameIdler::ToggleTopBarView); `open_view close` closes them
+                let name = a.first().copied().ok_or("open_view NAME (empire, government, leaders, ...) or close")?;
+                if name == "close" {
+                    self.app.close_view();
+                } else {
+                    let name = name.parse::<usize>().ok().and_then(|i| crate::views::VIEWS.get(i).copied()).unwrap_or(name);
+                    crate::views::index(name).ok_or(format!("open_view: no view {name}"))?;
+                    self.app.toggle_view(name);
+                }
+                self.flush_log();
+                let current = self.app.open_view.as_deref().and_then(crate::views::index).map_or(-1, |i| i as i64);
+                Ok(Reply::ok(format!("open_view {} (current view {current})", a.join(" "))))
             }
             "pause" => {
                 // `pause` (as the game's headless: the clock stopped), `pause off` runs it
