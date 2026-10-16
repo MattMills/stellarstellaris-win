@@ -61,8 +61,9 @@ impl NewGameSettings {
 
     /// The setup screens' settings table (render.newgame_setup.settings): every text, number and
     /// boolean key passed on (the generator ignores those it does not read), `empire = { kind,
-    /// key, design }`: prescripted -> its key, custom -> its design text, random -> none.
-    pub fn from_lua(t: &Table) -> mlua::Result<NewGameSettings> {
+    /// key, design }`: prescripted -> its key, custom -> its design (a text, or the empire
+    /// creator's table made text by render.creator_rules.to_text(design, key)), random -> none.
+    pub fn from_lua(lua: &mlua::Lua, t: &Table) -> mlua::Result<NewGameSettings> {
         let mut s = NewGameSettings::default();
         let mut keys: Vec<(String, String)> = Vec::new();
         for pair in t.pairs::<mlua::Value, mlua::Value>() {
@@ -77,7 +78,15 @@ impl NewGameSettings {
                 mlua::Value::Table(e) if k == "empire" => {
                     let kind: Option<String> = e.get("kind")?;
                     s.empire = match kind.as_deref() {
-                        Some("custom") => e.get::<Option<String>>("design")?.or(e.get("key")?),
+                        Some("custom") => match e.get::<mlua::Value>("design")? {
+                            mlua::Value::String(d) => Some(d.to_str()?.to_string()),
+                            mlua::Value::Table(d) => {
+                                let key = e.get::<Option<String>>("key")?.unwrap_or_else(|| "player_design".into());
+                                let to_text: mlua::Function = lua.load("return require('render.creator_rules').to_text").eval()?;
+                                Some(to_text.call::<String>((d, key))?)
+                            }
+                            _ => e.get("key")?,
+                        },
                         Some("random") => None,
                         _ => e.get("key")?,
                     };
