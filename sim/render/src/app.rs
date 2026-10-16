@@ -97,11 +97,17 @@ pub struct SaveInfo {
     pub name: String,
     pub date: String,
     pub modified: std::time::SystemTime,
+    /// its folder: the game's load window lists a folder's saves as one session
+    pub dir: String,
+    /// the save's `meta` (name, date, version, DLCs, flag, portrait, fleets, planets, ironman)
+    pub meta: String,
 }
 
-/// The saves in the known places, newest first: the folder of STELLAR_SAVE (or of the default
-/// save), the user's Stellaris save games (each game's folder), C:\lfm\saves and
-/// /opt/stellaris-saves. The empire's name and the date are read from each gamestate's head.
+/// The saves in the known places, newest first (by the file's time: the game's load window and
+/// Continue; whole seconds, see below): the folder of STELLAR_SAVE (or of the default save), each game's folder of the
+/// user's Stellaris save games and of STELLAR_SAVE_GAMES (a `save games` folder), C:\lfm\saves
+/// and /opt/stellaris-saves. The empire's name and the date come from each save's meta (from the
+/// gamestate's head for a save that is not zipped).
 pub fn list_saves() -> Vec<SaveInfo> {
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();
     for p in [std::env::var("STELLAR_SAVE").ok(), save::default_save()].into_iter().flatten() {
@@ -109,9 +115,16 @@ pub fn list_saves() -> Vec<SaveInfo> {
             dirs.push(d.to_path_buf());
         }
     }
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(r) = std::env::var("STELLAR_SAVE_GAMES") {
+        roots.push(r.into());
+    }
     if let Ok(home) = std::env::var("USERPROFILE") {
-        let root = std::path::Path::new(&home).join(r"Documents\Paradox Interactive\Stellaris\save games");
+        roots.push(std::path::Path::new(&home).join(r"Documents\Paradox Interactive\Stellaris\save games"));
+    }
+    for root in roots {
         if let Ok(rd) = std::fs::read_dir(&root) {
+            // (in the directory's own order: the game's sort keeps it for saves of the same second)
             dirs.extend(rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
         }
     }
@@ -133,21 +146,25 @@ pub fn list_saves() -> Vec<SaveInfo> {
             let path = p.to_string_lossy().into_owned();
             let modified = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
             let file = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let meta = save::read_meta(&path).ok().or_else(|| save::read_gamestate(&path).ok().map(|g| g.lines().take(60).collect::<Vec<_>>().join("
+"))).unwrap_or_default();
             let (mut name, mut date) = (String::new(), String::new());
-            if let Ok(gs) = save::read_gamestate(&path) {
-                for line in gs.lines().take(12) {
-                    if let Some(v) = line.strip_prefix("name=") {
-                        name = v.trim_matches('"').to_string();
-                    } else if let Some(v) = line.strip_prefix("date=") {
-                        date = v.trim_matches('"').to_string();
-                    }
+            for line in meta.lines() {
+                if let Some(v) = line.strip_prefix("name=") {
+                    name = v.trim_matches('"').to_string();
+                } else if let Some(v) = line.strip_prefix("date=") {
+                    date = v.trim_matches('"').to_string();
                 }
             }
-            out.push(SaveInfo { path, file, name, date, modified });
+            let dir = d.to_string_lossy().into_owned();
+            out.push(SaveInfo { path, file, name, date, modified, dir, meta });
         }
     }
-    // newest first: by the game's date, then the file's time
-    out.sort_by(|a, b| b.date.cmp(&a.date).then(b.modified.cmp(&a.modified)));
+    // newest first by the file's time in whole seconds, a stable sort (the game's
+    // DescendingFileDateSort in CLoadGameView::BuildSessionsList @0x2f216a8: saves of the same
+    // second stay in the directory's order)
+    let secs = |s: &SaveInfo| s.modified.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    out.sort_by(|a, b| secs(b).cmp(&secs(a)));
     out
 }
 
@@ -1260,8 +1277,18 @@ impl App {
                 }
             }
             let saves = self.saves().clone();
-            let rows: Vec<gui::SaveRow> =
-                saves.iter().map(|s| gui::SaveRow { name: &s.name, date: &s.date, file: &s.file }).collect();
+            let rows: Vec<gui::SaveRow> = saves
+                .iter()
+                .map(|s| gui::SaveRow {
+                    name: &s.name,
+                    date: &s.date,
+                    file: &s.file,
+                    path: &s.path,
+                    dir: &s.dir,
+                    meta: &s.meta,
+                    modified: s.modified.duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs() as f64),
+                })
+                .collect();
             let load = gui::load_window(&self.runtime, w, h, &rows)?;
             self.notes.push(format!("load window: {}", load.note));
             items.extend(load.items);
@@ -1493,7 +1520,21 @@ impl App {
             // the main menu's New Game: the empire selection with a new setup (render.newgame_setup)
             Some("new_game") => self.newgame_act("ng:open")?,
             Some(a) if a.starts_with("ng:") || a.starts_with("creator:") => self.newgame_act(a)?,
-            Some("open_load") => self.show(Screen::Load),
+            Some("open_load") => {
+                // the window opens on its first session (CLoadGameView::Show)
+                gui::load_act(&self.runtime, "loadwin:open")?;
+                self.show(Screen::Load);
+            }
+            // the load window's sessions, saves, delete toggle (render.frontend.load_act): laid out
+            // again, or a save loaded
+            Some(a) if a.starts_with("loadwin:") => {
+                let load = gui::load_act(&self.runtime, a)?;
+                self.items = None;
+                self.scene = None;
+                if let Some(path) = load {
+                    self.load(&path)?;
+                }
+            }
             Some("close_load") => self.show(Screen::Menu),
             // the galaxy setup's Start (CFrontEndIdler::LaunchNewGame): a new game from the setup
             Some("start_new_game") => {
