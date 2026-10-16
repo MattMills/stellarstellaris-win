@@ -232,57 +232,16 @@ function frontend.load_console(screen, lines)
     return { items = items }
 end
 
--- the load game window over the menu, one LoadGameSessionEntry per save (as many as the list
--- shows); saves = { { name, date, file } } newest first
+-- the load game window over the menu: one LoadGameSessionEntry per session (a save folder), the
+-- selected session's details and saves (render.loadgame); saves = { { name, date, file, path,
+-- dir, meta, modified } } newest first
 function frontend.load_window(game_dir, db, screen, texture_size, loc, saves)
-    local hide = {
-        -- the selected session's details (portrait, flag, its own list) and the delete and cloud
-        -- controls are filled at run time
-        selected_window = true, delete_toggle = true, syncing_label = true,
-    }
-    if #saves > 0 then
-        hide.nosaves_label = true
-    end
-    local opts = {
-        hide = hide, texture_size = texture_size, loc = loc,
-        actions = { ["/LoadGameScreen/hide"] = "close_load" },
-    }
-    local items, report = gui.layout(game_dir, db, "interface/loadgame_view.gui", "LoadGameScreen", screen, opts)
-    local list = report.rects["/LoadGameScreen/list"]
-    if list then
-        local entry = gui.find(game_dir, "interface/loadgame_view.gui", "LoadGameSessionEntry")
-        local size = entry and get(entry, "size")
-        local eh = tonumber(size and get(size, "height")) or 102
-        local shown = math.min(#saves, math.floor(list.h / eh))
-        for i = 1, shown do
-            local s = saves[i]
-            local prefix = "/LoadGameScreen/list/" .. i
-            local eopts = {
-                texture_size = texture_size, loc = loc,
-                parent = { x = list.x, y = list.y + (i - 1) * eh, w = list.w, h = eh },
-                prefix = prefix,
-                hide = {
-                    portrait_window = true, leader_frame_box = true, flag = true, cloud_file = true,
-                    ironman_icon = true, incompatible_save = true, selected_overlay = true,
-                    delete = true,
-                },
-                text = {
-                    [prefix .. "/LoadGameSessionEntry/name"] = s.name,
-                    [prefix .. "/LoadGameSessionEntry/date"] = s.date,
-                    [prefix .. "/LoadGameSessionEntry/save_name"] = s.file,
-                },
-                -- the row, or its Load Latest Save button, loads the save
-                actions = {
-                    [prefix .. "/LoadGameSessionEntry/select"] = "load:" .. i,
-                    [prefix .. "/LoadGameSessionEntry/load_latest"] = "load:" .. i,
-                },
-            }
-            local it, r = gui.layout(game_dir, db, "interface/loadgame_view.gui", "LoadGameSessionEntry", screen, eopts)
-            gui.merge(items, report, it, r)
-        end
-        report.saves_shown = shown
-    end
-    return { items = items, report = report }
+    return require("render.loadgame").build(game_dir, db, screen, texture_size, loc, saves)
+end
+
+-- an action of the load window ("loadwin:..."): the save to load, or nil
+function frontend.load_act(action)
+    return require("render.loadgame").act(action)
 end
 
 return frontend

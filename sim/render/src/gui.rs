@@ -427,6 +427,13 @@ pub struct SaveRow<'a> {
     pub name: &'a str,
     pub date: &'a str,
     pub file: &'a str,
+    pub path: &'a str,
+    /// its folder (a session of the game's load window)
+    pub dir: &'a str,
+    /// the save's meta text
+    pub meta: &'a str,
+    /// the file's time, seconds since 1970
+    pub modified: f64,
 }
 
 /// The load game window for a screen of `width` x `height`, one row per save (newest first).
@@ -439,6 +446,10 @@ pub fn load_window(runtime: &Runtime, width: u32, height: u32, saves: &[SaveRow]
             r.set("name", s.name)?;
             r.set("date", s.date)?;
             r.set("file", s.file)?;
+            r.set("path", s.path)?;
+            r.set("dir", s.dir)?;
+            r.set("meta", s.meta)?;
+            r.set("modified", s.modified)?;
             list.push(r)?;
         }
         lua.globals().set("RENDER_SAVES", list)?;
@@ -457,6 +468,16 @@ pub fn load_window(runtime: &Runtime, width: u32, height: u32, saves: &[SaveRow]
         })
     };
     read().map_err(|e| format!("render.frontend.load_window: {e}"))
+}
+
+/// An action of the load window ("loadwin:..." on its state RENDER_LOAD): the save to load, if
+/// the action loads one.
+pub fn load_act(runtime: &Runtime, action: &str) -> Result<Option<String>, String> {
+    runtime
+        .lua
+        .load(format!("return require('render.frontend').load_act({action:?})"))
+        .eval::<Option<String>>()
+        .map_err(|e| format!("render.frontend.load_act {action}: {e}"))
 }
 
 /// A row of the outliner: what it selects (its id), its name and the texts beside it.
