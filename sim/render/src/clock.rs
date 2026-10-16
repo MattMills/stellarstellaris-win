@@ -144,6 +144,15 @@ pub struct Status {
     /// the simulation's Lua heap after the last day (MB), and the most it has been
     pub lua_mb: f64,
     pub lua_max_mb: f64,
+    /// a new game's: what was generated, loaded and started (newgame.rs)
+    pub report: Option<String>,
+}
+
+/// What the simulation's thread loads: a save, or a new game generated from the setup's settings
+/// (newgame.rs), its progress shared with the window's load screen.
+pub enum Source {
+    Save(String),
+    NewGame(crate::newgame::NewGameSettings, Arc<crate::newgame::Progress>),
 }
 
 enum Cmd {
@@ -178,16 +187,33 @@ impl Clock {
     /// Starts the thread: it loads the save as a simulation (several seconds), then publishes the
     /// first snapshot and waits, paused or running at `speed`.
     pub fn start(game_dir: &str, save_path: &str, paused: bool, speed: u8, watch: Option<u32>) -> Clock {
+        Clock::start_from(game_dir, Source::Save(save_path.to_string()), paused, speed, watch)
+    }
+
+    /// Starts the thread on a save or a new game ([`Source`]).
+    pub fn start_from(game_dir: &str, source: Source, paused: bool, speed: u8, watch: Option<u32>) -> Clock {
         let (tx, rx) = mpsc::channel::<Cmd>();
         let shared = Arc::new(Shared { latest: Mutex::new(None), status: Mutex::new(Status { loading: true, ..Default::default() }) });
         let sh = shared.clone();
-        let (game_dir, save_path) = (game_dir.to_string(), save_path.to_string());
+        let game_dir = game_dir.to_string();
         let thread = std::thread::Builder::new()
             .name("simulation".into())
             .spawn(move || {
                 let t0 = Instant::now();
-                let runtime = match galaxy::sim_runtime(&game_dir, &save_path) {
-                    Ok(r) => r,
+                let loaded = match &source {
+                    Source::Save(path) => galaxy::sim_runtime(&game_dir, path).map(|r| (r, None)),
+                    Source::NewGame(settings, progress) => {
+                        crate::newgame::sim_runtime(&game_dir, settings, progress).map(|(r, report)| {
+                            eprintln!("{report}");
+                            (r, Some(report))
+                        })
+                    }
+                };
+                let runtime = match loaded {
+                    Ok((r, report)) => {
+                        sh.status.lock().unwrap().report = report;
+                        r
+                    }
                     Err(e) => {
                         let mut s = sh.status.lock().unwrap();
                         s.loading = false;
@@ -223,6 +249,9 @@ impl Clock {
                     s.loading = false;
                     s.ready = true;
                     s.load_s = t0.elapsed().as_secs_f64();
+                }
+                if let Source::NewGame(_, p) = &source {
+                    p.stage.store(crate::newgame::READY, std::sync::atomic::Ordering::Relaxed);
                 }
                 eprintln!("simulation: loaded in {:.1} s", t0.elapsed().as_secs_f64());
                 w.run(rx);

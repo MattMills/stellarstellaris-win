@@ -26,14 +26,20 @@ engine.systems = require("engine.systems")
 local host = require("simscript.host")
 engine.host = host
 
--- engine.load(game_dir, gamestate[, docs_dir]) -> report: the definitions, the script, the world
+-- engine.load(game_dir, gamestate[, docs_dir]) -> report: the definitions, the script, the world.
+-- gamestate: a save's text, or a tree in pdxscript's form (a new game's: engine.newgame)
 function engine.load(game_dir, gamestate, docs_dir)
     host.init(game_dir, docs_dir)
     local db = require("simscript.db")
     engine.defs.load(db.fs, game_dir)
     local lines = { "definitions: " .. engine.defs.summary() }
     if gamestate then
-        local ok, message = engine.world.load(gamestate)
+        local ok, message
+        if type(gamestate) == "table" then
+            ok, message = engine.world.load_tree(gamestate)
+        else
+            ok, message = engine.world.load(gamestate)
+        end
         lines[#lines + 1] = ok and ("world: " .. engine.world.summary()) or ("world: not loaded: " .. tostring(message))
         if ok then
             -- the script's flags and variables are the save's
