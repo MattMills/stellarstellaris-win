@@ -148,6 +148,40 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> HashMap<String, Value> {
     out
 }
 
+/// The wheel over the open view `name` (its module's `wheel(ctx, data, state, notches, x, y)`:
+/// the state's keys to set when the pointer is over one of its lists, else nil): the pairs, or
+/// None (the wheel is the map's).
+pub fn wheel(runtime: &Runtime, width: u32, height: u32, name: &str, data: Option<&Value>, state: &HashMap<String, String>, notches: f32, x: f32, y: f32) -> Option<Vec<(String, String)>> {
+    let lua = &runtime.lua;
+    let m: Table = lua.load(format!("return require('render.windows.{name}')")).eval().ok()?;
+    let f: mlua::Function = m.get::<Option<mlua::Function>>("wheel").ok()??;
+    let s = lua.create_table().ok()?;
+    for (k, v) in state {
+        s.set(k.as_str(), v.as_str()).ok()?;
+    }
+    let ctx: Table = lua
+        .load(format!("return {{ game_dir = RENDER_GAME_DIR, db = RENDER_GFX, screen = {{ width = {width}, height = {height} }}, texture_size = RENDER_TEXTURE_SIZE, loc = RENDER_LOC }}"))
+        .eval()
+        .ok()?;
+    let d = data.map_or(Ok(mlua::Value::Nil), |d| d.to_lua(lua)).ok()?;
+    let out: Option<Table> = f.call((ctx, d, s, notches, x, y)).map_err(|e| eprintln!("render.windows.{name}: wheel: {e}")).ok()?;
+    let out = out?;
+    let mut pairs = Vec::new();
+    for p in out.pairs::<String, String>() {
+        let (k, v) = p.ok()?;
+        pairs.push((k, v));
+    }
+    Some(pairs)
+}
+
+/// The state keys of the view `name` that are its side windows (its module's `escape_keys`:
+/// Escape closes them first), or None when the module lists none (then any state is one).
+pub fn escape_keys(runtime: &Runtime, name: &str) -> Option<Vec<String>> {
+    let m: Table = runtime.lua.load(format!("return require('render.windows.{name}')")).eval().ok()?;
+    let keys: Table = m.get::<Option<Table>>("escape_keys").ok()??;
+    keys.sequence_values::<String>().collect::<mlua::Result<Vec<_>>>().ok()
+}
+
 /// The view `name` laid out for a screen of `width` x `height` (in the UI's runtime: the GUI and
 /// the localisation installed), with its data and its state.
 pub fn layout(runtime: &Runtime, width: u32, height: u32, name: &str, data: Option<&Value>, state: &HashMap<String, String>) -> Result<Layout, String> {

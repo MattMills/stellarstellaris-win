@@ -1570,6 +1570,20 @@ impl App {
         Ok(false)
     }
 
+    /// A right click on a GUI button whose action is `LEFT||RIGHT` (a monthly trade's entry:
+    /// removed): RIGHT done; whether there was one.
+    fn gui_right_click(&mut self, x: f32, y: f32) -> Result<bool, String> {
+        if let Some((path, Some(a))) = self.button_at(x, y)? {
+            if let Some((_, right)) = a.split_once("||") {
+                let right = right.to_string();
+                self.log.push(format!("right click: {path} -> {right}"));
+                self.act(&path, Some(&right))?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// A double click: on the galaxy, a system opens (the game's camera goes into it).
     pub fn double_click(&mut self, x: f32, y: f32) -> Result<bool, String> {
         if self.screen != Screen::Map {
@@ -1610,6 +1624,8 @@ impl App {
 
     fn act(&mut self, path: &str, action: Option<&str>) -> Result<(), String> {
         self.log.push(format!("click: {path} -> {}", action.unwrap_or("no action")));
+        // an action `LEFT||RIGHT`: a left click does LEFT (a right click RIGHT: gui_right_click)
+        let action = action.map(|a| a.split_once("||").map_or(a, |(l, _)| l));
         match action {
             Some("exit") => self.exit = true,
             // the main menu's New Game: the empire selection with a new setup (render.newgame_setup)
@@ -1700,6 +1716,7 @@ impl App {
             Some(a) if a.starts_with("map:") => self.map_act(a)?,
             Some(a) if a.starts_with("select:") => self.select(Some(pickable_of(a)?)),
             Some(a) if a.starts_with("starbase:") => crate::starbase::act(self, a)?,
+            Some(a) if a.starts_with("economy:") => crate::economy::act(self, a)?,
             // the outliner's tabs, groups, observer list (outliner.rs State::act): laid out again
             Some(a) if a.starts_with("outliner:") => {
                 if self.outliner.act(&a["outliner:".len()..]) {
@@ -1769,6 +1786,39 @@ impl App {
         }
         self.overlay_key = None;
         self.scene = None;
+    }
+
+    /// Escape on the open view: its side windows closed (the state keys its module lists in
+    /// `escape_keys`; without the list, all its state), true; nothing to close there, false.
+    fn view_escape(&mut self) -> bool {
+        let Some(name) = self.open_view.clone() else { return false };
+        let keys: Vec<String> = match crate::views::escape_keys(&self.runtime, &name) {
+            Some(list) => list.into_iter().filter(|k| self.view_state.contains_key(k)).collect(),
+            None => self.view_state.keys().cloned().collect(),
+        };
+        if keys.is_empty() {
+            return false;
+        }
+        let pairs: Vec<(&str, &str)> = keys.iter().map(|k| (k.as_str(), "")).collect();
+        self.set_view_state(&pairs);
+        true
+    }
+
+    /// The wheel over the open view: its lists scroll (views::wheel); whether it took it.
+    fn view_wheel(&mut self, notches: f32) -> bool {
+        let (Some(name), Some((x, y))) = (self.open_view.clone(), self.cursor) else { return false };
+        let data = self.map.as_ref().and_then(|m| m.galaxy.views.get(&name).cloned());
+        let (w, h) = self.size;
+        match crate::views::wheel(&self.runtime, w, h, &name, data.as_ref(), &self.view_state, notches, x, y) {
+            Some(pairs) => {
+                if !pairs.is_empty() {
+                    let p: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                    self.set_view_state(&p);
+                }
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn close_view(&mut self) {
@@ -2138,9 +2188,20 @@ impl App {
             Effect::Down(..) => Ok(false),
             Effect::At(Action::Select, x, y) => self.mouse_up(x, y),
             Effect::At(Action::Focus, x, y) => self.double_click(x, y),
-            // a right click on the GUI (an alert dismissed, an outliner row's camera: mainbars.rs)
-            Effect::At(Action::Order, x, y) if self.screen == Screen::Map && crate::mainbars::right_click(self, x, y)? => Ok(true),
-            Effect::At(Action::Order, x, y) if self.screen == Screen::Map => self.order_at(x, y),
+            Effect::At(Action::Order, x, y) if self.screen == Screen::Map => {
+                // a button's own right click (`action||right`: the market's amounts, economy)
+                if self.gui_right_click(x, y)? {
+                    return Ok(true);
+                }
+                // a map label orders as the place it is on (mapicons.rs order_at); another GUI
+                // element takes the right click itself (an alert dismissed, an outliner row's
+                // camera: mainbars.rs), never an order under it
+                let label = matches!(self.button_at(x, y)?, Some((p, _)) if p.starts_with("/label/"));
+                if !label && crate::mainbars::right_click(self, x, y)? {
+                    return Ok(true);
+                }
+                self.order_at(x, y)
+            }
             Effect::At(Action::BoxSelect, x, y) if self.screen == Screen::Map && self.pressed.is_none() => self.box_select(x, y),
             Effect::At(a, x, y) => {
                 // the left button's press over a GUI button ends without a click
@@ -2181,6 +2242,8 @@ impl App {
                 self.newgame_act(&format!("ng:wheel:{n}"))?;
                 Ok(true)
             }
+            // the wheel over the open view's list scrolls it (the view's own `wheel`)
+            Effect::Zoom(n, _) if self.view_wheel(n) => Ok(true),
             Effect::Zoom(n, false) => {
                 self.wheel(n);
                 Ok(true)
@@ -2261,10 +2324,9 @@ impl App {
                     // GUI's input before the idler's): a side window's (the view's state: the
                     // game's frames, the researched window closes and the view stays), then the
                     // view's
-                    Action::Back if self.open_view.is_some() && !self.view_state.is_empty() => {
-                        self.view_state.clear();
-                        self.set_view_state(&[]);
-                    }
+                    // (a view that lists its side windows' keys, M.escape_keys, has those closed
+                    // first and is closed itself otherwise: its other keys are its filters, tabs)
+                    Action::Back if self.open_view.is_some() && self.view_escape() => {}
                     Action::Back if self.open_view.is_some() => self.close_view(),
                     // the diplomacy window closes first (its close button: ESCAPE)
                     Action::Back if self.diplomacy.open.is_some() => self.act("/key/escape", Some("diplo:close"))?,
