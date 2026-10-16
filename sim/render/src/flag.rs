@@ -106,3 +106,31 @@ pub fn compose(cache: &mut Cache, game_dir: &str, sprite: &FlagSprite, flag: &Fl
     }
     Some(Image { width: w, height: h, rgba, format: "generated".into() })
 }
+
+/// A flag named by its parts (`@flag:FRAME|MASK|TEXTURE_SIZE|BG|SYMBOL|MASK_RECT|CATEGORY/FILE|BACKGROUND|COLOURS`,
+/// render.empire_preview.flag_texture: a flagSpriteType's frame texture, mask, texture size and
+/// rectangles `x,y,w,h` (empty for none), the emblem, the background file and four colours
+/// `r,g,b` 0..1 joined by `;`): the flags of designs the GUI shows that no country has yet (the
+/// empire creator's, the empire selection's).
+pub fn compose_spec(cache: &mut Cache, game_dir: &str, spec: &str) -> Option<Image> {
+    let p: Vec<&str> = spec.strip_prefix("@flag:")?.split('|').collect();
+    if p.len() < 9 {
+        return None;
+    }
+    let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
+    let rect = |s: &str| -> Option<([f32; 2], [f32; 2])> {
+        let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        (v.len() == 4).then(|| ([v[0], v[1]], [v[2], v[3]]))
+    };
+    let sprite = FlagSprite { frame: p[0].to_string(), mask: opt(p[1]), texture_size: opt(p[2]), bg: rect(p[3]), symbol: rect(p[4]), mask_rect: rect(p[5]) };
+    let (cat, file) = p[6].split_once('/').unwrap_or(("", ""));
+    let colours = p[8]
+        .split(';')
+        .map(|c| {
+            let v: Vec<f32> = c.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+            [v.first().copied().unwrap_or(0.0), v.get(1).copied().unwrap_or(0.0), v.get(2).copied().unwrap_or(0.0)]
+        })
+        .collect();
+    let flag = Flag { icon: (cat.to_string(), file.to_string()), background: ("backgrounds".to_string(), p[7].to_string()), colours };
+    compose(cache, game_dir, &sprite, &flag, [1.0; 4])
+}

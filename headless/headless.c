@@ -787,6 +787,7 @@ static double g_menu_at;
 static int g_viewmode;
 static int g_view_autoload;
 static void view_menu(void);
+static void view_menu_one(void);
 static void view_game(void *gs);
 static void view_command(void *gs);
 static int g_newgame;
@@ -2443,8 +2444,72 @@ static void open_starbase_cmd(const char *arg) {
 	reply_fmt("ok open_starbase %s %ld%s %s", kind, id, tab >= 0 ? " tab" : "", shown ? "shown" : "not shown");
 }
 
+static void frame_cmd(const char *arg);
+static int g_frame_now;
+
+// The front end's own commands (the main menu and the screens it opens: the new game's setup,
+// the load window, the settings): the input commands, tick, wait, timestep, frame, as in game
+// (no lockstep: frames run between commands). 1 if the verb is one of them.
+static int menu_command(const char *verb, char *arg) {
+	if (input_command(verb, arg)) return 1;
+	if (!strcmp(verb, "tick") || !strcmp(verb, "frames")) {
+		if (C.stage == 0) {
+			C.n = atoi(arg), C.secs = -1, C.stage = 1;
+			if (C.n > 0) return 1;
+		} else if (!waited()) {
+			return 1;
+		}
+		reply_fmt("ok tick %d frame %d", C.n, g_frame_no);
+		return 1;
+	}
+	if (!strcmp(verb, "wait")) {
+		if (C.stage == 0) {
+			char d[64];
+			snprintf(d, sizeof d, "%gs", atof(arg));
+			duration(d, &C.n, &C.secs);
+			C.stage = 1;
+			C.t0 = now();
+			if (C.n > 0 || C.secs > 0) return 1;
+		} else if (!waited()) {
+			return 1;
+		}
+		reply_fmt("ok wait %s frame %d", arg, g_frame_no);
+		return 1;
+	}
+	if (!strcmp(verb, "timestep")) {
+		double ms = atof(arg);
+		g_timestep = !strcmp(arg, "off") || ms <= 0 ? 0 : (float)(ms / 1000);
+		if (g_timestep > 0)
+			reply_fmt("ok timestep %.3f (main menu)", ms);
+		else
+			reply_fmt("ok timestep off");
+		return 1;
+	}
+	if (!strcmp(verb, "frame")) {
+		size_t al = strlen(arg);
+		if (al > 4 && !strcmp(arg + al - 4, " now")) {
+			arg[al - 4] = 0;
+			g_frame_now = 1;
+		}
+		frame_cmd(arg[0] ? arg : "frame.png");
+		g_frame_now = 0;
+		return 1;
+	}
+	return 0;
+}
+
 static void view_menu(void) {
-	if (!*(void **)a_g_CurrentFrontEndIdler || !next_command()) return;
+	if (!*(void **)a_g_CurrentFrontEndIdler) return;
+	g_frame_no++;
+	// the commands that take no frame run one after another in this frame (as view_game)
+	for (int guard = 0; guard < 10000; guard++) {
+		if (!next_command()) return;
+		view_menu_one();
+		if (C.active || g_launched) return;
+	}
+}
+
+static void view_menu_one(void) {
 	char verb[64] = "", arg[960] = "";
 	sscanf(C.line, "%63s %959[^\n]", verb, arg);
 	if (!strcmp(verb, "load")) {
@@ -2479,9 +2544,10 @@ static void view_menu(void) {
 		return;
 	}
 	if (!strcmp(verb, "state")) {
-		reply_fmt("ok {\"screen\":\"menu\"}");
+		reply_fmt("ok {\"screen\":\"menu\",\"frame\":%d}", g_frame_no);
 		return;
 	}
+	if (menu_command(verb, arg)) return;
 	reply_fmt("error %s: no game loaded (load SAVE first)", verb);
 }
 
@@ -2601,7 +2667,6 @@ static void step_days(void *gs, int days) {
 }
 
 static int g_frame_min = 10;
-static int g_frame_now;
 static double g_frame_wait = 2.0, g_frame_timeout = 30.0;
 
 // `frame`: from HEADLESS_FRAME_WAIT seconds (default 2: the GUI's fades, the camera's last
@@ -3135,6 +3200,7 @@ static void event_cmd(void *gs, const char *arg) {
 static void view_game(void *gs) {
 	if (g_in_game_frames++ == 0) {
 		hlog("view: in game after %.3f s", now() - g_t0);
+		g_frame_no = 0; // the menu's frames counted before
 		if (g_rng_pos_set >= 0) {
 			*(volatile uint32_t *)a_Random = (uint32_t)g_rng_pos_set;
 			*(volatile uint32_t *)a_nRandomCount = (uint32_t)g_rng_pos_set;

@@ -29,6 +29,7 @@ mod border;
 mod camera;
 mod clock;
 mod controls;
+mod creator;
 mod dds;
 mod designer;
 mod diplomacy;

@@ -40,8 +40,25 @@ pub enum Screen {
     Menu,
     Load,
     Map,
+    /// the new game: empire selection (select_empire_design.gui), the empire creator (session
+    /// ng-creator's render.newgame_creator), the galaxy settings (game_setup/setup.gui)
+    SelectEmpire,
+    Creator,
+    GameSetup,
     /// the load screen of a new game (newgame.rs)
     Loading,
+}
+
+impl Screen {
+    /// One of the new game's screens (render.frontend_newgame): its name there.
+    pub fn newgame(self) -> Option<&'static str> {
+        match self {
+            Screen::SelectEmpire => Some("select"),
+            Screen::Creator => Some("creator"),
+            Screen::GameSetup => Some("setup"),
+            _ => None,
+        }
+    }
 }
 
 /// A new game on its way (App::start_new_game): the simulation's thread generating and loading
@@ -489,6 +506,7 @@ impl App {
             Screen::Map => Context::Map,
             Screen::Menu => Context::Menu,
             Screen::Load | Screen::Loading => Context::Load,
+            Screen::SelectEmpire | Screen::Creator | Screen::GameSetup => Context::Setup,
         }
     }
 
@@ -1207,6 +1225,16 @@ impl App {
             }
         }
         let (w, h) = self.size;
+        if let Some(name) = self.screen.newgame() {
+            let l = gui::newgame(&self.runtime, w, h, name)?;
+            self.notes = vec![l.note.clone()];
+            if !l.missing.is_empty() {
+                self.notes.push(format!("sprites without a definition or texture: {}", l.missing.join(", ")));
+            }
+            gui::fonts(&self.runtime, &self.game_dir, &l.items, &mut self.fonts)?;
+            self.items = Some((key, l.items.clone()));
+            return Ok(l.items);
+        }
         if self.screen == Screen::Loading {
             let picture = self.pending.as_ref().and_then(|p| p.picture.clone());
             let l = gui::load_screen(&self.runtime, w, h, shown.0, shown.1, picture.as_deref())?;
@@ -1460,6 +1488,9 @@ impl App {
         self.log.push(format!("click: {path} -> {}", action.unwrap_or("no action")));
         match action {
             Some("exit") => self.exit = true,
+            // the main menu's New Game: the empire selection with a new setup (render.newgame_setup)
+            Some("new_game") => self.newgame_act("ng:open")?,
+            Some(a) if a.starts_with("ng:") || a.starts_with("creator:") => self.newgame_act(a)?,
             Some("open_load") => self.show(Screen::Load),
             Some("close_load") => self.show(Screen::Menu),
             // the galaxy setup's Start (CFrontEndIdler::LaunchNewGame): a new game from the setup
@@ -1635,6 +1666,41 @@ impl App {
         }
     }
 
+    /// An action of the new game's screens (render.frontend_newgame.act on the setup state
+    /// RENDER_NEWGAME): the screen it goes to, laid out again.
+    fn newgame_act(&mut self, action: &str) -> Result<(), String> {
+        let to = gui::newgame_act(&self.runtime, action, self.cursor.unwrap_or((0.0, 0.0)))?;
+        self.log.push(format!("new game: {action} -> {}", to.as_deref().unwrap_or("-")));
+        self.items = None;
+        self.scene = None;
+        match to.as_deref() {
+            Some("menu") => self.show(Screen::Menu),
+            Some("select") => self.show(Screen::SelectEmpire),
+            Some("creator") => self.show(Screen::Creator),
+            Some("setup") => self.show(Screen::GameSetup),
+            Some("play") => self.newgame_play()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Play on the galaxy settings (and Return there): a new game from the setup state
+    /// (render.newgame_setup.settings of RENDER_NEWGAME, newgame.rs NewGameSettings::from_lua).
+    fn newgame_play(&mut self) -> Result<(), String> {
+        let settings = {
+            let t: stellar_sim::mlua::Table = self
+                .runtime
+                .lua
+                .load("return require('render.newgame_setup').settings(RENDER_NEWGAME)")
+                .eval()
+                .map_err(|e| format!("render.newgame_setup.settings: {e}"))?;
+            crate::newgame::NewGameSettings::from_lua(&self.runtime.lua, &t).map_err(|e| format!("the new game's settings: {e}"))?
+        };
+        let summary = gui::newgame_summary(&self.runtime)?;
+        self.log.push(format!("new game: play {summary}"));
+        self.start_new_game(settings)
+    }
+
     fn show(&mut self, screen: Screen) {
         self.screen = screen;
         self.hover = None;
@@ -1798,12 +1864,33 @@ impl App {
     /// Physical input (controls.rs): the bindings' effects carried out. `now_ms`: the input's
     /// time (a double click's). Whether something changed.
     pub fn input(&mut self, input: &Input, now_ms: f64) -> Result<bool, String> {
+        // the empire creator's text fields (render.newgame_creator): with one focused, a key
+        // typed goes to it (the game's CEditBox takes the keyboard), Shift giving capitals
+        if self.screen == Screen::Creator {
+            if let Input::Key { key, down: true, .. } = input {
+                if !matches!(key.as_str(), "shift" | "ctrl" | "alt") && self.creator_focused() {
+                    if let Some(a) = creator_key(key, self.controls.mods().shift) {
+                        self.newgame_act(&a)?;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
         let ctx = self.context();
         let mut changed = false;
         for e in self.controls.input(input, now_ms, ctx) {
             changed |= self.apply(e)?;
         }
         Ok(changed)
+    }
+
+    /// Whether a text field of the empire creator has the keyboard.
+    fn creator_focused(&self) -> bool {
+        self.runtime
+            .lua
+            .load("return RENDER_NEWGAME ~= nil and RENDER_NEWGAME.creator ~= nil and RENDER_NEWGAME.creator.focus ~= nil")
+            .eval::<bool>()
+            .unwrap_or(false)
     }
 
     /// An effect of the input.
@@ -1854,6 +1941,10 @@ impl App {
                 self.drag(None);
                 Ok(true)
             }
+            Effect::Zoom(n, _) if self.screen.newgame().is_some() => {
+                self.newgame_act(&format!("ng:wheel:{n}"))?;
+                Ok(true)
+            }
             Effect::Zoom(n, false) => {
                 self.wheel(n);
                 Ok(true)
@@ -1876,6 +1967,14 @@ impl App {
             (Action::Back, Screen::Load) => {
                 self.log.push(format!("escape: {:?} -> Menu", self.screen));
                 self.show(Screen::Menu);
+                Ok(true)
+            }
+            (Action::Back, s) if s.newgame().is_some() => {
+                self.newgame_act("ng:back")?;
+                Ok(true)
+            }
+            (Action::Accept, s) if s.newgame().is_some() => {
+                self.newgame_act("ng:accept")?;
                 Ok(true)
             }
             (Action::Continue, Screen::Menu) => {
@@ -1973,4 +2072,22 @@ pub fn si_number(v: f32) -> String {
     } else {
         format!("{s}{:.1}M", (a / 100_000.0).trunc() / 10.0)
     }
+}
+
+/// A key typed into the empire creator's focused field: its character (`creator:text:C`) or an
+/// editing key (`creator:key:NAME`); keys are named by their place on a US layout (controls.rs).
+fn creator_key(key: &str, shift: bool) -> Option<String> {
+    let c = match key {
+        "space" => " ".to_string(),
+        "minus" => if shift { "_" } else { "-" }.to_string(),
+        "apostrophe" => if shift { "\"" } else { "'" }.to_string(),
+        "period" => ".".to_string(),
+        "comma" => ",".to_string(),
+        "backspace" | "return" | "escape" | "tab" | "delete" => return Some(format!("creator:key:{key}")),
+        k if k.len() == 1 && k.chars().all(|c| c.is_ascii_alphanumeric()) => {
+            if shift { k.to_ascii_uppercase() } else { k.to_string() }
+        }
+        _ => return None,
+    };
+    Some(format!("creator:text:{c}"))
 }
