@@ -3,40 +3,35 @@
 The renderer's economy windows, from the game's own files (4.5.2) and the views' code in the
 Linux build (the classes and addresses below), bound to the save's world or to the running
 simulation. **[V]**: read in the game's code or files, or measured on its frames; **[I]**:
-inferred. Code: `sim/render/src/economy.rs`, `sim/render/lua/render/windows/market.lua`,
-`expansion.lua`, `text.lua` (localisation texts with values), `serial.lua` (a window's data
-between runtimes). The full reverse-engineering notes: `code_working/tmp_sim/economy_market_re.md`,
+inferred. Code: `sim/render/lua/render/windows/market.lua` (with the slave market),
+`expansion_planner.lua`, `trade.lua`, `sim/render/lua/render/loctext.lua` (localisation texts
+with values). The full reverse-engineering notes: `code_working/tmp_sim/economy_market_re.md`,
 `economy_expansion_re.md`, `economy_gridbox_re.md`.
 
 Checked against the game's frames of 2210.01.01 at 1600x900 (`headless/view.sh`, the game left,
-the renderer right): `code_working/tmp_sym/render3d/parity/economy_market.png` (`open_view market`)
-and `economy_planner.png` (`open_view expansion_planner`, then the Surveyed box clicked off).
+the renderer right): `code_working/tmp_sym/render3d/parity/economy_market.png` (`open_view market`),
+`economy_planner.png` (`open_view expansion_planner`, then the Surveyed box clicked off) and
+`economy_planner_dropdown.png` (then the minimum habitability's arrow).
 
-## Opening a view
+## Opening a view, where its values come from
+
+The windows are win-research's left bar views (`sim/render/src/views.rs`): a Lua module
+`lua/render/windows/NAME.lua` for the view's ETopBarView token (the stem of its
+GFX_topbar_NAME_button): `market.lua`, `expansion_planner.lua`, and `trade.lua` (opened with a
+recipient). `extract(game_dir)` runs where the galaxy is read (the save's world after `load`,
+the simulation's thread after `load-sim`: the values come with each snapshot);
+`build(ctx, data, state)` lays the window out with the view's state.
 
 - The left bar's entries (main.gui `maingui_left_bar_button`) take clicks on their `button`
-  element: `view:NAME`, NAME the view's ETopBarView token, the stem of its GFX_topbar_NAME_button
-  (market, expansion_planner, technology, ...). A click opens the view, a second closes it, as
-  CInGameIdler::ToggleTopBarView does (one view at a time) **[V]**. Escape closes the open view
-  first (its close button's `shortcut = "ESCAPE"`) **[V]**.
-- The command `open_view NAME [KEY=VALUE ...]` opens it (KEY=VALUE: the view's state, below);
-  `open_view` alone closes it. The headless game's `open_view NAME` (headless.c, from
-  win-research) toggles the same view in the game, so one command file takes both frames.
-- A view's own buttons change its state with `state:KEY=VALUE;KEY=VALUE` (App::view_state): the
-  market's resource and tab, the planner's checkboxes and sort column. The state starts anew
-  when a view opens **[I: the game keeps the market's selected resource while it stays valid,
-  and the planner's filters, across openings]**.
-- App::view_items dispatches on the view's name to the module that draws it (one match arm per
-  window's owner).
-
-## Where the values come from
-
-A view's module has `data(country, state, game_dir)`, run where the save's world is: in the
-map's runtime after `load` (it holds the world), in the simulation's after `load-sim`
-(Clock::view: the request, a Lua chunk, is evaluated with every snapshot the simulation
-publishes and the snapshot carries the answer). The data are plain values, serialised as a
-table constructor (`serial.lua`) and laid out by `build(...)` in the front end's runtime, which
-has the localisation and the .gfx database.
+  (right_icon is an iconType, never a button): `view:NAME` toggles the view, one at a time, as
+  CInGameIdler::ToggleTopBarView **[V]**. Escape (the controls' Back) closes an open view first
+  (its close button's `shortcut = "ESCAPE"`) **[V]**.
+- `open_view NAME [KEY VALUE]` toggles it (with a state key); the headless game's `open_view
+  NAME` (headless.c) toggles the same view in the game, so one command file takes both frames.
+- A view's buttons set its state with `view_set:KEY=VALUE;KEY=VALUE` (an empty value removes the
+  key) and close it with `view_close`. The state starts anew when a view opens **[I: the game
+  keeps the market's selected resource while it stays valid, and the planner's filters, across
+  openings]**.
 
 ## The market (interface/market_view.gui, CMarketView)
 
@@ -70,8 +65,8 @@ CMarketViewTradeResourcesGridEntry, CMarketViewMonthlyTradeGridEntry); CMarket's
   (1 5 10 50 100) x market_amount; GFX_resource_KEY_large; "+N" to buy, "-N" to sell (red when
   the stockpile has less); the price after the currency's icon, a buy rounded up ("-130", red
   when the trade stockpile cannot pay it), a sell rounded down ("+70"). The unit prices
-  (RESOURCE_UNIT_PRICE, two decimals cut): "1 = 1.30" and "0.70". Disabled entries are drawn
-  grey by the game (its button shader) **[not done: the renderer has no grey]**.
+  (RESOURCE_UNIT_PRICE, two decimals cut): "1 = 1.30" and "0.70". Disabled entries are grey
+  (the button shader's Disable, below).
 - `total_bought_text`, `total_sold_text`: MARKET_TOTAL_BOUGHT/SOLD with the market's
   `resources_bought`/`resources_sold` for the country (by its index, the id's low 24 bits, when
   `id[index]` is its id). `trade_fee_value` "§Y30%§!" (built in code); the trade stockpile
@@ -127,6 +122,12 @@ the capital); off: Runa III (Desert World, 20, 13), Toarus I (Ocean, 15, 22), To
   centres one slot across the grid's width (x = col x slot + trunc((width - slot) / 2)), the
   others as their names say (the full table in economy_gridbox_re.md). The market's grids are
   4 and 17 pixels right of their corners, as in the game.
+- A disabled button is drawn as buttonstate.shader's Disable effect: GreyOutLuminosity
+  (greyness 0.85, brightness 0.75) of the texel, its text the same (TextDisable) **[V]**
+  (opts.disabled, GuiItem::Sprite `disabled`, map.wgsl mode 4): the market's unaffordable
+  entries and the slave market's tab, as in the game's frame.
+- A drop-down's expanded window is laid out when opened (opts.open); the planner's two lists
+  match the game's frames.
 - A field given twice takes its later value **[V: the planner's title]**.
 - A text wider than its box wraps at its spaces; a box with fixedSize keeps the lines its height
   holds (one line: cut with " ..."), one without grows **[V: the market's info on three lines,
@@ -137,12 +138,55 @@ the capital); off: Runa III (Desert World, 20, 13), Toarus I (Ocean, 15, 22), To
   sprite set at run time keeps its own frame; a text icon without a GFX_text_ sprite uses the
   resource's GFX_resource_ one **[I: the two prefixes side by side in the game's strings]**.
 
+## The slave market tab and Sell Slaves (CSlaveMarketView, CSlavePoolView)
+
+**[V]** CSlaveMarketView::Update, CSlaveMarketPopEntry, CSlaveMarketColonyEntry, CSlavePoolView
+(the notes: `code_working/tmp_sim/economy_slaves_re.md`). Drawn in market.lua.
+
+- The tab exists with Megacorp and takes clicks only with the galactic market's access (greyed
+  otherwise, as in the game's frame). Its slaves (slave_market_manager.slaves_on_market) sorted
+  by species name, stable; "No Slaves for sale..." without any; Sell Slaves enabled when the
+  country has slaves to sell and the market room (CanSellSlaves: no access check). A slave's
+  price: (1000 trade + its species' traits' slave_cost) / 100 a pop **[V]**, times the amount,
+  without the country's slave market cost modifier **[I]**. The destinations: the country's
+  colonies (owned_planets **[I]**), none selected until one is clicked; a slave's Buy disabled
+  without one. A colony shows its free housing (red below 0, yellow at 0, green), its
+  unemployment (red above 0) and its jobs, the workforce over the jobs' limits (yellow when
+  full, else white).
+- Sell Slaves (`view_set:pool=1`): the first species with slaves, its pops (one decimal, K),
+  its colonies' groups (the capital first, the others in their order **[I: by distance]**;
+  collapsed until clicked), each group's pops (at most 100 a group, priced without the country's
+  modifier), disabled without the market's access; the summary hidden and Put on Market disabled
+  while nothing is selected. Portraits are not drawn.
+- 2210.01.01 (`open_view market tab slave_market`; the game cannot open the tab there): no
+  slaves for sale, Sell Slaves enabled, Uthab 100%, 1188 free housing, 5323 / 3600 jobs, 799
+  unemployed; Sell Slaves: Qvagh, 2.6K, two groups of 100 at 1600 trade each.
+
+## The trade window (interface/trade_view.gui, CTradeView)
+
+**[V]** CTradeView::Show, SetRecipient, Setup, Update, UpdateAcceptance, CreateCategories (the
+notes: `code_working/tmp_sim/economy_trade_re.md`). `trade.lua`, opened with `open_view trade
+country ID` (the game: the diplomacy view's Trade action for its selected country).
+
+- The actor (the player) and the recipient: names, "Gives" under each. Above 1470 pixels of width
+  (TRADE_VIEW_WIDE_MODE_THRESHHOLD, the game's unchecked interface defines) the window is 1470
+  wide, the demands' categories at trade_view_wide_mode_demands_pos (1220, 10), no tabs; else
+  the Offer and Demands tabs. Nothing offered: both lists empty, the deal length hidden (no
+  treaty), Propose disabled (an empty deal is not proposable), Cancel enabled.
+- The categories, ETradeCategory's order (resources, transfer_control, transfer_leader,
+  transfer_fleet, action, sensor, loyalty, specimens, join_war, leave_war, allow_to_leave_war),
+  each shown when its side has items: here Resources when the side has a tradable resource **[I:
+  the others not evaluated]**.
+- Not drawn: the recipient's ruler's portrait, the flags, the AI's acceptance and willingness.
+- 2210.01.01: the player's one contact (country 6) has no communications and is an exterminator:
+  the game cannot open the window there; no game frame to compare.
+
 ## Not done yet
 
-- The trade window (trade_view.gui, CTradeView), the slave market tab and the slave pool
-  (slave_pool_view.gui): not drawn.
-- Disabled buttons grey (the game's buttonstate shaders); the animated overlays of the planner's
-  rows (brighter frames in the game).
+- The animated overlays of the planner's rows (brighter frames in the game).
 - The market's trade fee modifiers; the expenses rule of the internal market's resources.
-- The planner's district grids, modifiers, hostile and anomaly icons, the drop-downs' lists
-  (closed: their selected value only), the colonize click.
+- The planner's district grids, modifiers, hostile and anomaly icons, the colonize click.
+- Portraits (slave market, Sell Slaves, trade) and flags inside a view (trade, the market
+  leader).
+- Comparisons with the game for the slave market, Sell Slaves and trade: the saves at hand
+  cannot open them (no galactic market, no country to trade with).
