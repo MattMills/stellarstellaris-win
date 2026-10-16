@@ -233,6 +233,9 @@ end
 -- the items whose path starts with `prefix` (laid out just now: from index `from`) greyed: a
 -- disabled button (`@grey:` texture, fleetwin.rs)
 local function grey(ctx, from, prefix)
+    if ctx.plain then
+        return
+    end
     for i = from, #ctx.items do
         local it = ctx.items[i]
         if it.kind == "sprite" and it.path:sub(1, #prefix) == prefix and it.texture:sub(1, 1) ~= "@" then
@@ -247,6 +250,9 @@ end
 -- a progress bar sprite (progressbarType) at `value` 0..100: its texture made of the full and
 -- empty textures (progress.shader: texture one where the bar's coordinate <= the state)
 local function bar(ctx, path, value)
+    if ctx.plain then
+        return
+    end
     for i = #ctx.items, 1, -1 do
         local it = ctx.items[i]
         if it.path == path and it.kind == "sprite" then
@@ -1209,7 +1215,7 @@ function fleet.manager_view(ctx, d)
         hide = hide, text = text,
         sprites = { [W .. "/box1/fleet_orders/stats/change_stance"] = sel and (STANCE[sel.stance] or "GFX_fleet_order_button_stance_passive") or nil },
         actions = {
-            [W .. "/close"] = "fleet:close_manager",
+            [W .. "/close"] = d.view and "view_close" or "fleet:close_manager",
             [W .. "/ship_designer_tab"] = "fleet:designer",
         },
     })
@@ -1237,7 +1243,7 @@ function fleet.manager_view(ctx, d)
     for _, p in ipairs(disabled) do
         for i = from, #ctx.items do
             local it = ctx.items[i]
-            if it.kind == "sprite" and it.path == p and it.texture:sub(1, 1) ~= "@" then
+            if not ctx.plain and it.kind == "sprite" and it.path == p and it.texture:sub(1, 1) ~= "@" then
                 it.texture = "@grey:" .. it.texture
                 if it.button then
                     it.button.action = nil
@@ -1276,7 +1282,7 @@ function fleet.manager_view(ctx, d)
                     [ep .. "/fleet_size"] = (template_count(loc, ctx.game_dir, f)),
                     [ep .. "/offensive_power"] = loc_text(loc, "MILITARY_POWER_YELLOW", { VALUE = fleet.si_number(f.military_power) }),
                 },
-                actions = { [ep] = "fleet:manager_fleet:" .. f.id },
+                actions = { [ep] = d.view and ("view_set:fleet=" .. f.id) or ("fleet:manager_fleet:" .. f.id) },
             })
         end
     end
@@ -1400,7 +1406,7 @@ end
 -- fleet.build(game_dir, db, screen, texture_size, loc, data) -> items, report
 function fleet.build(game_dir, db, screen, texture_size, loc, data)
     local ctx = {
-        game_dir = game_dir, db = db, screen = screen, texture_size = texture_size, loc = loc,
+        game_dir = game_dir, db = db, screen = screen, texture_size = texture_size, loc = loc, plain = data.plain,
         items = {}, report = { sprites = 0, texts = 0, missing_sprites = {}, skipped = {}, rects = {} },
     }
     if data.fleet then
