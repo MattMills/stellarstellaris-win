@@ -66,6 +66,8 @@ impl Screen {
 /// LOAD_MAP_GFX's steps) before the map is shown.
 pub struct Pending {
     pub settings: crate::newgame::NewGameSettings,
+    /// a save loaded behind the load screen (App::start_load_save) instead of a new game
+    pub save: Option<String>,
     pub progress: std::sync::Arc<crate::newgame::Progress>,
     clock: Option<clock::Clock>,
     pub bar: crate::newgame::Bar,
@@ -84,6 +86,9 @@ impl Pending {
     pub fn shown(&self) -> (&'static str, i32) {
         match self.map_gfx {
             Some(k) => ("LOAD_MAP_GFX", crate::newgame::map_gfx_percent(k)),
+            // a save's load (CFrontEndIdler::LaunchSave's own stages are not followed: the bar
+            // stays at 0 until the simulation has loaded it) [I]
+            None if self.save.is_some() => ("LOAD_SAVE_GAME", 0),
             None => ("START_NEW_GAME", self.bar.percent()),
         }
     }
@@ -245,7 +250,15 @@ pub struct App {
     pub tooltips: Option<Box<dyn Tooltips>>,
     hover: Option<String>,
     pressed: Option<String>,
-    items: Option<((u32, u32, Screen, (&'static str, i32)), Vec<GuiItem>)>,
+    items: Option<((u32, u32, Screen, (&'static str, i32, u64)), Vec<GuiItem>)>,
+    /// the load screens' console shown (console.rs), the app log's lines it has taken, the console
+    /// lines laid out
+    pub console: bool,
+    console_seen: usize,
+    console_gen: u64,
+    /// the window's Load and Continue load behind the load screen (App::start_load_save); commands
+    /// load at once (`load`, `load-sim`)
+    pub async_loads: bool,
     /// a new game starting (its load screen shown), and the setup the menu's Start begins one
     /// from (the galaxy settings and the empire: the setup screens fill it; none: the scenario's
     /// defaults)
@@ -359,6 +372,10 @@ impl App {
             items: None,
             pending: None,
             newgame_setup: None,
+            console: crate::console::enabled(false),
+            console_seen: 0,
+            console_gen: 0,
+            async_loads: true,
             scene: None,
             generation: 0,
             controls: Controls::from_env()?,
@@ -1237,7 +1254,9 @@ impl App {
             (Some(p), Screen::Loading) => p.shown(),
             _ => ("", 0),
         };
-        let key = (self.size.0, self.size.1, self.screen, shown);
+        // (and the console's lines: laid out again when new ones came)
+        let console = if self.console && self.screen == Screen::Loading { crate::console::generation() + 1 } else { 0 };
+        let key = (self.size.0, self.size.1, self.screen, (shown.0, shown.1, console));
         if let Some((k, items)) = &self.items {
             if *k == key {
                 return Ok(items.clone());
@@ -1256,10 +1275,15 @@ impl App {
         }
         if self.screen == Screen::Loading {
             let picture = self.pending.as_ref().and_then(|p| p.picture.clone());
-            let l = gui::load_screen(&self.runtime, w, h, shown.0, shown.1, picture.as_deref())?;
+            let mut l = gui::load_screen(&self.runtime, w, h, shown.0, shown.1, picture.as_deref())?;
             self.notes = vec![l.note.clone()];
             if !l.missing.is_empty() {
                 self.notes.push(format!("sprites without a definition or texture: {}", l.missing.join(", ")));
+            }
+            // the renderer's console over it (console.rs; not the game's)
+            if self.console {
+                let lines = crate::console::tail(80);
+                l.items.extend(gui::load_console(&self.runtime, w, h, &lines)?);
             }
             gui::fonts(&self.runtime, &self.game_dir, &l.items, &mut self.fonts)?;
             self.items = Some((key, l.items.clone()));
@@ -1532,7 +1556,11 @@ impl App {
                 self.items = None;
                 self.scene = None;
                 if let Some(path) = load {
-                    self.load(&path)?;
+                    if self.async_loads {
+                        self.start_load_save(&path)?;
+                    } else {
+                        self.load(&path)?;
+                    }
                 }
             }
             Some("close_load") => self.show(Screen::Menu),
@@ -1544,7 +1572,11 @@ impl App {
             Some(a) if a.starts_with("load:") => {
                 let i: usize = a[5..].parse().map_err(|_| format!("bad action {a}"))?;
                 let path = self.saves().get(i - 1).map(|s| s.path.clone()).ok_or(format!("no save {i}"))?;
-                self.load(&path)?;
+                if self.async_loads {
+                    self.start_load_save(&path)?;
+                } else {
+                    self.load(&path)?;
+                }
             }
             // the clock's commands, done at the next frame
             Some("pause") => {
@@ -1776,7 +1808,39 @@ impl App {
         let clock = clock::Clock::start_from(&self.game_dir, clock::Source::NewGame(settings.clone(), progress.clone()), true, clock::DEFAULT_SPEED, None);
         self.pending = Some(Pending {
             settings,
+            save: None,
             progress,
+            clock: Some(clock),
+            bar: Default::default(),
+            picture: crate::newgame::background(&self.game_dir, seed),
+            started: Instant::now(),
+            map_gfx: None,
+            map_at: None,
+            report: None,
+        });
+        self.show(Screen::Loading);
+        Ok(())
+    }
+
+    /// The load screens' console shown or hidden (console.rs).
+    pub fn set_console(&mut self, on: bool) {
+        self.console = on;
+        self.items = None;
+        self.scene = None;
+    }
+
+    /// A save loaded behind the load screen (the window's Load and Continue; the command `load-sim
+    /// async PATH`): the simulation's thread loads it, then the map is shown as after a new game.
+    pub fn start_load_save(&mut self, path: &str) -> Result<(), String> {
+        self.log.push(format!("loading {path}"));
+        self.map = None;
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+        let seed = std::env::var("STELLAR_LOADSCREEN").ok().and_then(|v| v.parse().ok()).unwrap_or(seed);
+        let clock = clock::Clock::start_from(&self.game_dir, clock::Source::Save(path.to_string()), true, clock::DEFAULT_SPEED, None);
+        self.pending = Some(Pending {
+            settings: Default::default(),
+            save: Some(path.to_string()),
+            progress: Default::default(),
             clock: Some(clock),
             bar: Default::default(),
             picture: crate::newgame::background(&self.game_dir, seed),
@@ -1792,6 +1856,26 @@ impl App {
     /// A frame of the load screen: the bar moved as the game moves it while the game is made, then
     /// the map made (LOAD_MAP_GFX at 0) and shown (at 100). Whether the screen changed.
     fn loading(&mut self, dt: f32) -> Result<bool, String> {
+        // the app's log in the console too (what the engine's and the window's outputs take from
+        // it later), and the screen laid out again when the console has new lines
+        if self.log.len() < self.console_seen {
+            self.console_seen = 0;
+        }
+        for line in &self.log[self.console_seen..] {
+            crate::console::push(line);
+        }
+        self.console_seen = self.log.len();
+        let changed = self.loading_step(dt)?;
+        let gen = crate::console::generation();
+        if self.console && self.screen == Screen::Loading && gen != self.console_gen {
+            self.console_gen = gen;
+            self.scene = None;
+            return Ok(true);
+        }
+        Ok(changed)
+    }
+
+    fn loading_step(&mut self, dt: f32) -> Result<bool, String> {
         let Some(p) = self.pending.as_mut() else {
             self.show(Screen::Menu);
             return Ok(true);
@@ -1815,8 +1899,9 @@ impl App {
             Some(0) => {
                 let clock = p.clock.take().ok_or("no simulation")?;
                 let t0 = p.started;
-                let map = Map::of_clock(&self.game_dir, "new game", clock)?;
-                self.show_map(map, "a new game", t0)?;
+                let name = p.save.clone().unwrap_or_else(|| "a new game".into());
+                let map = Map::of_clock(&self.game_dir, &name, clock)?;
+                self.show_map(map, &name, t0)?;
                 let p = self.pending.as_mut().unwrap();
                 p.map_gfx = Some(100);
                 self.screen = Screen::Loading;
@@ -1839,7 +1924,10 @@ impl App {
                 }
                 // DestroyLoadScreen: the game is shown
                 let p = self.pending.take().unwrap();
-                self.log.push(format!("new game ({}) started in {:.1} s", p.settings.describe(), p.started.elapsed().as_secs_f64()));
+                match &p.save {
+                    Some(path) => self.log.push(format!("{path} loaded behind the load screen in {:.1} s", p.started.elapsed().as_secs_f64())),
+                    None => self.log.push(format!("new game ({}) started in {:.1} s", p.settings.describe(), p.started.elapsed().as_secs_f64())),
+                }
                 if let Some(r) = p.report {
                     self.log.push(r);
                 }
@@ -1916,7 +2004,11 @@ impl App {
     pub fn continue_game(&mut self) -> Result<(), String> {
         let path = self.saves().first().map(|s| s.path.clone()).ok_or("no saves")?;
         self.log.push(format!("continue: {path}"));
-        self.load(&path)
+        if self.async_loads {
+            self.start_load_save(&path)
+        } else {
+            self.load(&path)
+        }
     }
 
     /// Physical input (controls.rs): the bindings' effects carried out. `now_ms`: the input's
@@ -2041,6 +2133,10 @@ impl App {
             }
             (Action::Quit, _) => {
                 self.exit = true;
+                Ok(true)
+            }
+            (Action::ToggleConsole, _) => {
+                self.set_console(!self.console);
                 Ok(true)
             }
             (Action::ToggleGui, _) => {

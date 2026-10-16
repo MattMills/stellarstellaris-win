@@ -1301,12 +1301,23 @@ pub fn add_gui(
                 let (u0, u1) = (f / nf, (f + 1.0) / nf);
                 let fw = tw / nf;
                 // a part of the frame (a progress bar's): its u range and the rectangle cut the same
+                // (and its v range, a row of the texture, and its u shifted: progress_startend's
+                // caps)
                 let (a, b) = (clip[0].clamp(0.0, 1.0), clip[1].clamp(0.0, 1.0));
-                let (u0, u1, cx, cw) = (u0 + (u1 - u0) * a, u0 + (u1 - u0) * b, x + w * a, w * (b - a));
+                let (mut v0, mut v1, shift) = (clip[2].clamp(0.0, 1.0), clip[3].clamp(0.0, 1.0), clip[4]);
+                // a row of the texture: half a texel in, so the filtering takes none of the next
+                // row (the game's shader samples the points)
+                if v0 > 0.0 || v1 < 1.0 {
+                    v0 += 0.5 / th;
+                    v1 -= 0.5 / th;
+                }
+                let (u0, u1, cx, cw) =
+                    (u0 + (u1 - u0) * (a + shift), u0 + (u1 - u0) * (b + shift), x + w * a, w * (b - a));
                 let (x, w) = (&cx, &cw);
                 let visible = {
                     let (a, bx) = ((u0 * tw) as u32, (u1 * tw) as u32);
-                    (0..img.height).any(|yy| (a..bx.min(img.width)).any(|xx| img.pixel(xx, yy)[3] > 0))
+                    let (ya, yb) = ((v0 * th) as u32, ((v1 * th).ceil() as u32).min(img.height));
+                    (ya..yb).any(|yy| (a..bx.min(img.width)).any(|xx| img.pixel(xx, yy)[3] > 0))
                 };
                 let layer = if kind == "still" { Layer::Background } else { Layer::Gui };
                 match border {
@@ -1323,7 +1334,7 @@ pub fn add_gui(
                             }
                         }
                     }
-                    _ => push(batches, layer, Blend::Alpha, t, quad([*x, *y, x + w, y + h], [u0, 0.0, u1, 1.0])),
+                    _ => push(batches, layer, Blend::Alpha, t, quad([*x, *y, x + w, y + h], [u0, v0, u1, v1])),
                 }
                 if layer == Layer::Gui {
                     let order = gui.sprites.len() + gui.texts.len();

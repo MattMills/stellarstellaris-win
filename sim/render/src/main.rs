@@ -24,6 +24,20 @@
 //! by format). In the window: the mouse hovers and clicks the buttons, Escape goes back to the
 //! menu, C on the menu continues the newest save, Q closes.
 
+// every line the crate writes to stderr goes to the load screens' console too (console.rs), from
+// every thread: this shadows std's eprintln! in all the modules below
+macro_rules! eprintln {
+    () => {
+        std::eprintln!()
+    };
+    ($($arg:tt)*) => {{
+        let line = format!($($arg)*);
+        crate::console::push(&line);
+        std::eprintln!("{}", line);
+    }};
+}
+
+mod console;
 mod app;
 mod border;
 mod camera;

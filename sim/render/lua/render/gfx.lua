@@ -73,6 +73,9 @@ local function read_sprite(kind, b, file)
         local t2 = get(b, "textureFile2")
         s.texture2 = t2 and unquote(t2):gsub("\\", "/") or nil
         s.horizontal = get(b, "horizontal") ~= "no"
+        -- progress_startend.shader: textureFile1 is three rows (start cap, middle, end cap)
+        local fx = get(b, "effectFile")
+        s.startend = type(fx) == "string" and unquote(fx):lower():find("progress_startend", 1, true) ~= nil or nil
     end
     -- a sprite that is a frame of another (sprite_sheet_sprite_type, default_frame)
     local sheet = get(b, "sprite_sheet_sprite_type")
