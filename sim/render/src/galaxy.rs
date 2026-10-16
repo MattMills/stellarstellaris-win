@@ -102,6 +102,8 @@ pub struct Galaxy {
     pub sectors: Vec<(u32, Name)>,
     /// the player's sectors' capital systems (sector id -> system id)
     pub sector_capitals: HashMap<u32, u32>,
+    /// the outliner's and the observer outliner's view of the world (render.windows.outliner)
+    pub outliner_view: crate::outliner::LuaData,
 }
 
 impl Galaxy {
@@ -454,6 +456,7 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                     .collect::<mlua::Result<_>>()?,
                 None => HashMap::new(),
             },
+            outliner_view: crate::outliner::read_view(&g)?,
             alerts: match g.get::<Option<Table>>("alerts")? {
                 Some(t) => t
                     .sequence_values::<Table>()
