@@ -40,6 +40,7 @@ mod system;
 mod font;
 mod galaxy;
 mod galaxymap;
+mod mapicons;
 mod mapnames;
 mod gui;
 mod render;
