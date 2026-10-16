@@ -2142,8 +2142,16 @@ static void open_starbase_cmd(const char *arg) {
 	reply_fmt("ok open_starbase %s %ld%s %s", kind, id, tab >= 0 ? " tab" : "", shown ? "shown" : "not shown");
 }
 
+static void frame_cmd(const char *arg);
+static int g_frame_now;
+
+// At the main menu and the screens it opens (the game setup, the empire creator: the front end
+// idler's frames), the frames count and the input, tick, timestep and frame commands run as in
+// the game (no lockstep: frames run between commands).
 static void view_menu(void) {
-	if (!*(void **)a_g_CurrentFrontEndIdler || !next_command()) return;
+	if (!*(void **)a_g_CurrentFrontEndIdler) return;
+	g_frame_no++;
+	if (!next_command()) return;
 	char verb[64] = "", arg[960] = "";
 	sscanf(C.line, "%63s %959[^\n]", verb, arg);
 	if (!strcmp(verb, "load")) {
@@ -2178,7 +2186,32 @@ static void view_menu(void) {
 		return;
 	}
 	if (!strcmp(verb, "state")) {
-		reply_fmt("ok {\"screen\":\"menu\"}");
+		reply_fmt("ok {\"screen\":\"menu\",\"frame\":%d}", g_frame_no);
+		return;
+	}
+	if (input_command(verb, arg)) return;
+	if (!strcmp(verb, "tick") || !strcmp(verb, "frames")) {
+		if (C.stage == 0) {
+			C.n = atoi(arg), C.secs = -1, C.stage = 1;
+			if (C.n > 0) return;
+		} else if (!waited()) {
+			return;
+		}
+		reply_fmt("ok tick %d frame %d (main menu)", C.n, g_frame_no);
+		return;
+	}
+	if (!strcmp(verb, "timestep")) {
+		reply_fmt("ok timestep %s (main menu: frames run between commands)", arg);
+		return;
+	}
+	if (!strcmp(verb, "frame")) {
+		size_t al = strlen(arg);
+		if (al > 4 && !strcmp(arg + al - 4, " now")) {
+			arg[al - 4] = 0;
+			g_frame_now = 1;
+		}
+		frame_cmd(arg[0] ? arg : "frame.png");
+		g_frame_now = 0;
 		return;
 	}
 	reply_fmt("error %s: no game loaded (load SAVE first)", verb);
@@ -2300,7 +2333,6 @@ static void step_days(void *gs, int days) {
 }
 
 static int g_frame_min = 10;
-static int g_frame_now;
 static double g_frame_wait = 2.0, g_frame_timeout = 30.0;
 
 // `frame`: from HEADLESS_FRAME_WAIT seconds (default 2: the GUI's fades, the camera's last
