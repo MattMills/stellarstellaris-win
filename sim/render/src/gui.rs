@@ -532,6 +532,20 @@ pub fn layout_specs(runtime: &Runtime, width: u32, height: u32, specs: &[WindowS
     read().map_err(|e| format!("render.windows.specs: {e}"))
 }
 
+/// A layout's `{ items, report }` table (render.gui's), read: its items, the sprites missing,
+/// the rectangles laid out.
+pub fn read_layout(t: Table) -> mlua::Result<Layout> {
+    let report: Table = t.get("report")?;
+    let mut rects = HashMap::new();
+    if let Some(r) = report.get::<Option<Table>>("rects")? {
+        for p in r.pairs::<String, Table>() {
+            let (k, v) = p?;
+            rects.insert(k, [v.get("x")?, v.get("y")?, v.get("w")?, v.get("h")?]);
+        }
+    }
+    Ok(Layout { items: read_items(t.get("items")?)?, missing: missing(&report)?, note: String::new(), rects })
+}
+
 /// A sprite's frame size in pixels (its texture's width over its frames).
 pub fn sprite_size(runtime: &Runtime, cache: &Rc<RefCell<Cache>>, game_dir: &str, name: &str) -> Option<(f32, f32)> {
     let s: Table = runtime.lua.load(format!("return RENDER_GFX.sprites[{name:?}]")).eval::<Option<Table>>().ok()??;

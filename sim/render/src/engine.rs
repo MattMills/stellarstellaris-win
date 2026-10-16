@@ -378,6 +378,22 @@ impl Engine {
                 self.app.invalidate();
                 Ok(Reply::ok(format!("gui {}", if on { "on" } else { "off" })))
             }
+            "open_view" => {
+                // a left or top bar view opened by its button's name (market,
+                // expansion_planner, ...), `open_view` alone (or `none`) closes it; KEY=VALUE
+                // words set its state (a tab, the entry chosen)
+                match a.first().copied() {
+                    None | Some("none") => self.app.open_view_named(None),
+                    Some(v) => self.app.open_view_named(Some(v)),
+                }
+                for kv in a.iter().skip(1) {
+                    if let Some((k, v)) = kv.split_once('=') {
+                        self.app.set_view_state(k, v);
+                    }
+                }
+                self.flush_log();
+                Ok(Reply::ok(format!("open_view {}", a.join(" "))))
+            }
             "observe" => {
                 // the game's console `observe` (headless.c serves it too): the player an observer
                 let m = self.app.map.as_mut().ok_or("no map loaded")?;

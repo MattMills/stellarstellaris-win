@@ -145,8 +145,14 @@ pub struct App {
     /// the map labels (mapicons.gui) of what the view shows
     pub overlay_labels: Vec<scene::Label>,
     /// what the windows were laid out for: the size, view, selection, snapshot, GUI shown, paused,
-    /// star names' zoom, observing
-    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool)>,
+    /// star names' zoom, observing, the open view and its state's generation
+    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool, Option<String>, u64)>,
+    /// the view the left or top bar opened (its button's name: market, expansion_planner, ...)
+    /// and the views' own state (a tab, the resource chosen: key -> value; `view_generation`
+    /// counts its changes)
+    pub open_view: Option<String>,
+    pub view_state: HashMap<String, String>,
+    pub view_generation: u64,
     /// the player holds the camera (a drag, a turn); the plane's point a drag holds; what the
     /// camera follows; the systems' cameras as they were left; the last system shown
     holding: bool,
@@ -231,6 +237,9 @@ impl App {
             overlay_items: Vec::new(),
             overlay_labels: Vec::new(),
             overlay_key: None,
+            open_view: None,
+            view_state: HashMap::new(),
+            view_generation: 0,
             holding: false,
             drag_anchor: None,
             follow: None,
@@ -1035,8 +1044,10 @@ impl App {
             let mut e = gui::WindowSpec::new("interface/main.gui", "maingui_left_bar_button");
             let prefix = format!("/left_bar/{i}");
             e.parent = Some([-225.0 + 34.0, 35.0 + 50.0 + 40.0 * i as f32, 0.0, 0.0]);
-            e.only = Some(vec!["right_icon".into()]);
+            // (the entry's `button` takes the clicks: it opens the view)
+            e.only = Some(vec!["right_icon".into(), "button".into()]);
             e.sprites.push((format!("{prefix}/maingui_left_bar_button/right_icon"), format!("GFX_topbar_{v}_button")));
+            e.actions.push((format!("{prefix}/maingui_left_bar_button/button"), format!("view:{v}")));
             e.prefix = Some(prefix);
             specs.push(e);
         }
@@ -1253,6 +1264,8 @@ impl App {
         // the main screen's other windows under the outliner and the selection's window
         let mut items = self.main_screen_items()?;
         items.extend(layout.items);
+        // the view the left or top bar opened, over them
+        items.extend(self.view_items()?);
         let map = self.map.as_mut().unwrap();
         gui::fonts(&self.runtime, &self.game_dir, &items, map.fonts.get_or_insert_with(HashMap::new))?;
         Ok(items)
@@ -1343,7 +1356,7 @@ impl App {
             let (w, h) = self.size;
             let states = self.states();
             if self.screen == Screen::Map {
-                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0), m.observe));
+                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0), m.observe, self.open_view.clone(), self.view_generation));
                 if key != self.overlay_key {
                     let t = Instant::now();
                     self.overlay_items = self.selection_windows();
@@ -1538,10 +1551,65 @@ impl App {
                     _ => Pickable::Fleet(id),
                 }));
             }
+            // a left or top bar button opens its view (a second click closes it); a view's own
+            // buttons change its state (`state:KEY=VALUE`)
+            Some(a) if a.starts_with("view:") => self.toggle_view(&a[5..]),
+            Some("close_view") => self.open_view_named(None),
+            Some(a) if a.starts_with("state:") => {
+                let (k, v) = a[6..].split_once('=').ok_or(format!("bad action {a}"))?;
+                self.set_view_state(k, v);
+            }
             Some(other) => self.log.push(format!("  {other}: not done yet (its window is not laid out)")),
             None => {}
         }
         Ok(())
+    }
+
+    /// Opens a view by its bar button's name, or closes it when it is the one open.
+    pub fn toggle_view(&mut self, name: &str) {
+        if self.open_view.as_deref() == Some(name) {
+            self.open_view_named(None);
+        } else {
+            self.open_view_named(Some(name));
+        }
+    }
+
+    /// Opens a view (None: closes the open one); its state starts anew.
+    pub fn open_view_named(&mut self, name: Option<&str>) {
+        self.log.push(format!("view: {}", name.unwrap_or("closed")));
+        self.open_view = name.map(str::to_string);
+        self.view_state.clear();
+        self.view_generation += 1;
+        self.scene = None;
+    }
+
+    /// A view's own state (its tab, the entry chosen), from its buttons' `state:KEY=VALUE`.
+    pub fn set_view_state(&mut self, key: &str, value: &str) {
+        self.view_state.insert(key.to_string(), value.to_string());
+        self.view_generation += 1;
+        self.scene = None;
+    }
+
+    /// The open view's window, laid out by the module that draws it (none for a view without
+    /// one yet).
+    fn view_items(&mut self) -> Result<Vec<GuiItem>, String> {
+        let Some(view) = self.open_view.clone() else { return Ok(Vec::new()) };
+        let items = match view.as_str() {
+            "market" | "expansion_planner" => crate::economy::items(self, &view),
+            other => Err(format!("its window is not laid out yet ({other})")),
+        };
+        // a view that fails is left out (the rest of the screen still drawn)
+        let items = match items {
+            Ok(items) => items,
+            Err(e) => {
+                eprintln!("view {view}: {e}");
+                self.log.push(format!("view {view}: {e}"));
+                Vec::new()
+            }
+        };
+        let map = self.map.as_mut().ok_or("no map")?;
+        gui::fonts(&self.runtime, &self.game_dir, &items, map.fonts.get_or_insert_with(HashMap::new))?;
+        Ok(items)
     }
 
     fn show(&mut self, screen: Screen) {
@@ -1650,6 +1718,8 @@ impl App {
                     self.mode3d = !self.mode3d;
                     self.scene = None;
                 }
+                // an open view closes first (its close button's ESCAPE shortcut)
+                "escape" if self.open_view.is_some() => self.open_view_named(None),
                 "escape" if self.selected.is_some() => self.select(None),
                 "escape" if self.view != MapView::Galaxy && self.map.is_some() => {
                     self.log.push(format!("escape: {:?} -> Galaxy", self.view));
