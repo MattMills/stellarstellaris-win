@@ -30,7 +30,7 @@ end
 -- a context: the layout's common arguments and what it collects
 local function context(game_dir, db, screen, texture_size, loc, data)
     local ctx = { game_dir = game_dir, db = db, screen = screen, texture_size = texture_size, loc = loc,
-        data = data, items = {}, report = new_report(), flags = {} }
+        data = data, items = {}, report = new_report(), flags = {}, lists = {} }
     -- ctx:layout(file, window, opts) lays a window out and keeps its items; the report's rects
     function ctx.layout(file, window, opts)
         opts = opts or {}
@@ -299,7 +299,7 @@ function M.build(game_dir, db, screen, texture_size, loc, state, chunk)
     else
         io.stderr:write("render.windows.diplomacy: no window " .. tostring(state.window) .. " (" .. tostring(M.last_error) .. ")\n")
     end
-    return ctx.items, ctx.report, ctx.flags
+    return ctx.items, ctx.report, ctx.flags, ctx.lists
 end
 
 M.set = set

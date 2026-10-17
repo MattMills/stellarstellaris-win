@@ -577,8 +577,9 @@ impl Engine {
                     return Ok(Reply::ok("open_diplomacy contacts"));
                 }
                 self.app.action(&action)?;
-                self.flush_log();
-                Ok(Reply::ok(format!("open_diplomacy {rest}")))
+                // what it did (the log: a proposal's answer and its terms), in the reply
+                let lines = self.flush_log();
+                Ok(Reply::ok(if lines.is_empty() { format!("open_diplomacy {rest}") } else { format!("open_diplomacy {rest} ({})", lines.join("; ")) }))
             }
             "observe" => {
                 // the game's console `observe` (headless.c serves it too): the player an observer

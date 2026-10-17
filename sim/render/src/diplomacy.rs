@@ -51,6 +51,10 @@ pub struct State {
     pub actions: Option<(u32, String)>,
     pub action: Option<String>,
     pub message: Option<String>,
+    /// the windows' lists scrolled (rows skipped, by list name), and their places and rows as last
+    /// laid out (name, rect, rows, rows shown)
+    pub scroll: std::collections::BTreeMap<String, usize>,
+    pub lists: Vec<(String, [f32; 4], usize, usize)>,
 }
 
 type Snap = (Option<Open>, Option<u32>, Option<String>, Option<String>, std::collections::BTreeSet<String>, Option<String>, Option<String>);
@@ -146,9 +150,10 @@ impl State {
 
     /// The open window laid out for a screen of `width` x `height` (none: nothing), in the front
     /// end's runtime, and the flags among its items: (item index, country id).
-    pub fn items(&self, runtime: &Runtime, width: u32, height: u32, galaxy: &Galaxy, observe: bool) -> Result<(Vec<GuiItem>, Vec<(usize, u32)>), String> {
+    pub fn items(&mut self, runtime: &Runtime, width: u32, height: u32, galaxy: &Galaxy, observe: bool) -> Result<(Vec<GuiItem>, Vec<(usize, u32)>), String> {
         let Some(open) = &self.open else { return Ok((Vec::new(), Vec::new())) };
-        let read = || -> mlua::Result<(Vec<GuiItem>, Vec<(usize, u32)>)> {
+        type Lists = Vec<(String, [f32; 4], usize, usize)>;
+        let read = || -> mlua::Result<(Vec<GuiItem>, Vec<(usize, u32)>, Lists)> {
             let lua = &runtime.lua;
             let (window, id) = open.name();
             let s = lua.create_table()?;
@@ -180,13 +185,26 @@ impl State {
                     s.set("actions", chunk.as_str())?;
                 }
             }
+            let sc = lua.create_table()?;
+            for (k, v) in &self.scroll {
+                sc.set(k.as_str(), *v)?;
+            }
+            s.set("scroll", sc)?;
             lua.globals().set("RENDER_DIPLO_STATE", s)?;
             lua.globals().set("RENDER_DIPLO_DATA", galaxy.diplomacy.as_str())?;
             let t: Table = lua
                 .load(format!(
-                    "local items, report, flags = require('render.windows.diplomacy').build(RENDER_GAME_DIR, RENDER_GFX, {{ width = {width}, height = {height} }}, RENDER_TEXTURE_SIZE, RENDER_LOC, RENDER_DIPLO_STATE, RENDER_DIPLO_DATA) return {{ items = items, report = report, flags = flags }}"
+                    "local items, report, flags, lists = require('render.windows.diplomacy').build(RENDER_GAME_DIR, RENDER_GFX, {{ width = {width}, height = {height} }}, RENDER_TEXTURE_SIZE, RENDER_LOC, RENDER_DIPLO_STATE, RENDER_DIPLO_DATA) return {{ items = items, report = report, flags = flags, lists = lists }}"
                 ))
                 .eval()?;
+            // the lists laid out: { name = { x, y, w, h, rows, shown } }
+            let mut lists = Vec::new();
+            if let Some(l) = t.get::<Option<Table>>("lists")? {
+                for p in l.pairs::<String, Table>() {
+                    let (k, v) = p?;
+                    lists.push((k, [v.get(1)?, v.get(2)?, v.get(3)?, v.get(4)?], v.get::<usize>(5)?, v.get::<usize>(6)?));
+                }
+            }
             let items = gui::read_items(t.get("items")?)?;
             // the flags: element path -> country id
             let mut by_path = std::collections::HashMap::new();
@@ -204,10 +222,29 @@ impl State {
                     _ => None,
                 })
                 .collect();
-            Ok((items, flags))
+            Ok((items, flags, lists))
         };
-        read().map_err(|e| format!("render.windows.diplomacy: {e}"))
+        let (items, flags, lists) = read().map_err(|e| format!("render.windows.diplomacy: {e}"))?;
+        self.lists = lists;
+        Ok((items, flags))
     }
+}
+
+/// The wheel over a diplomacy window's list (Contacts' empires, a country's actions): a row a
+/// notch (> 0 up), within the rows it has; whether it took the wheel.
+pub fn wheel(app: &mut crate::app::App, notches: f32, at: Option<(f32, f32)>) -> bool {
+    let Some((x, y)) = at else { return false };
+    let hit = app.diplomacy.lists.iter().find(|(_, r, _, _)| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3]).cloned();
+    let Some((name, _, rows, shown)) = hit else { return false };
+    let max = rows.saturating_sub(shown);
+    let cur = app.diplomacy.scroll.get(&name).copied().unwrap_or(0);
+    let step = notches.round() as i64;
+    let next = (cur as i64 - step).clamp(0, max as i64) as usize;
+    if next != cur {
+        app.diplomacy.scroll.insert(name, next);
+        app.relayout();
+    }
+    true
 }
 
 /// Contacts' command in the simulation (render-buttons-1's views.rs: render.windows.contacts's
@@ -266,21 +303,29 @@ pub fn act(app: &mut crate::app::App, a: &str) -> Result<(), String> {
         };
         let (me, id_s) = (me.to_string(), id.to_string());
         let out = world_command(app, &["propose", &key, &me, &id_s])?;
-        let note: Option<String> = app
+        // the answer: the recipient's reply phrase (accept or refuse), else what was not done; the
+        // log has the acceptance's terms
+        let (shown, logged): (String, String) = app
             .runtime
             .lua
-            .load(format!("local t = (loadstring or load)({out:?})() return t.done and '' or (t.note or 'not done')"))
+            .load(format!(
+                "local t = (loadstring or load)({out:?})() return t.phrase or (t.done and '' or (t.note or 'not done')), \n                 (t.accepted == nil and '' or (t.accepted and 'accepted' or 'refused')) .. ' ' .. tostring(t.total or '') .. ' (' .. tostring(t.reasons or '') .. ') ' .. tostring(t.note or '')"
+            ))
             .eval()
             .map_err(|e| format!("diplomacy: {e}"))?;
-        app.log.push(format!("diplomacy: {key} proposed to {id}: {}", note.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| "done".into())));
+        app.log.push(format!("diplomacy: {key} proposed to {id}: {logged}"));
         app.diplomacy.action = None;
-        app.diplomacy.message = note.filter(|n| !n.is_empty());
+        app.diplomacy.message = Some(shown).filter(|n| !n.is_empty());
         list_actions(app, id);
         app.relayout();
         return Ok(());
     }
     let was = app.diplomacy.open.clone();
     if app.diplomacy.act(a)? {
+        // another window: its lists from their top
+        if app.diplomacy.open != was {
+            app.diplomacy.scroll.clear();
+        }
         // Contacts is a left bar view: one view at a time (ToggleTopBarView)
         if app.diplomacy.open == Some(Open::Contacts) && was != Some(Open::Contacts) {
             app.close_view();

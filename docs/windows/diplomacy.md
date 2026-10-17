@@ -180,14 +180,14 @@ NAME`, `zoom ID`, `select ID`, `tab NAME`, `sort NAME` do the same as the clicks
 | Contacts | Espionage | the window on its espionage tab; disabled without IsEspionageAvailableFor | UI only (disabled: the spy networks are not read here [I]) |
 | Contacts | zoom to capital | OnEmpireZoomToCapital: the camera to the capital | wired (the capital's system entered) |
 | Contacts | the Agreements tab | the agreements' list (CAgreementsListViewController); disabled without an overlord or subjects | disabled as the game; its lists not done |
-| Contacts | the list's wheel | the list scrolled | not done (no save lists more than three rows) |
+| Contacts and Diplomacy | the lists' wheel (the empires, the actions) | the list scrolled | wired: a row a notch over the list (no save lists more rows than fit, so it has not had rows to move) |
 | Diplomacy | close, Escape | CloseClick; Escape cancels a picked action first | wired |
 | Diplomacy | the capital (to_to_home_world) | the camera to the capital | wired |
 | Diplomacy | the tabs | OnTabButton: Diplomacy, Espionage (enabled by IsEspionageAvailableFor) | Diplomacy wired; Espionage disabled (its tab's lists not done) |
 | Diplomacy | an action's entry | SelectAction: its view (the window 990 wide, the action's title, description, icon), Confirm and Cancel; disabled when it cannot be proposed | wired; the trade deal, declare war, proxy war, offer peace, agreements and claims open their own windows in the game [not done here] |
 | Diplomacy | Cancel | CancelAction: the list again | wired |
-| Diplomacy | Confirm | the action proposed (CDiploActionProposeCommand) | wired for close and open borders, rivalry (declared and ended), the embassy recalled, the pacts broken; the actions that need the AI's acceptance are not accepted (the engine has no acceptance yet): the bubble says so [not done here] |
-| Diplomacy | the AI's acceptance icons | frame 1 refuses, 2 accepts, 3 with favours | not drawn (no acceptance computed) |
+| Diplomacy | Confirm | the action proposed (CDiploActionProposeCommand); an AI recipient accepts when its acceptance is above 0 | wired: the acceptance computed (section 9), the reply phrase in the bubble; accepted: the pacts (both sides; a defensive pact clears a non-aggression pact and a guarantee), the embassy (both sides), a guarantee, borders, rivalries, the embassy recalled, the pacts broken; the on_accept effects and on_sign_* on_actions, insults' opinion, federation joins and associations, subjugation, trade deals [not done here] |
+| Diplomacy | the AI's acceptance icons | frame 2 accepts, 3 with the favors held, 1 refuses; for diplo_view_acceptance_icon actions and an AI recipient | wired where the acceptance is computed (section 9) |
 | Community | close, Escape; the tabs | Hide; Community, Senate Floor (disabled for a non-member), Resolutions | wired |
 | Community | Join / Leave | CJoinCommunityCommand / CLeaveCommunityCommand | not done (no community is formed in any save; the engine has no command) |
 | Community | Select a Leader | the delegate's leader selection (CAssignOfficialWindow) | not done |
@@ -207,3 +207,41 @@ test save (autosave_2212.07.01 with communications added to the empire 16777223)
 lists the game's seventeen actions plus Pledge Secret Fealty; the game puts Close Borders among the
 possible and Make Claims among the impossible ones, the renderer the other way round: the script
 layer's `possible` checks that read intel (`has_intel`) are not those of the game yet.
+
+## 9. The AI's acceptance (`diplomacy_actions.lua` A.acceptance, run in the simulation)
+
+Read in GetAIAcceptance @27f7230 and its per-type functions (the long notes:
+`code_working/tmp_diplo/re_acceptance.md`) **[V]** unless marked:
+
+- The total: an auto-accepted action without `diplo_view_acceptance_icon` 1000; else the action
+  type's own terms (below; an action without a function of its own: none), + favors x
+  DIPLO_ACTION_FAVOR_AI_ACCEPTANCE_VALUE (5), + the type's scripted `ai_acceptance` weight (root =
+  recipient, from = actor; the actor's `diplo_action_acceptance_add` modifier is not added here
+  **[I]**). Accepted above 0 (0 refuses). The actions needing a federation's vote end as 1 or 0;
+  with the recipient its federation's leader no other member votes, so its own total decides.
+- Each term truncated to an integer, in the game's order. ATTITUDE: the recipient AI's attitude
+  towards the actor (common/attitudes behaviour: alliance, coexist, attack or weaken: -1000,
+  other); OPINION: the recipient's opinion of the actor (engine.ai.opinion) x the type's factor;
+  relative power min((max(p, 0) - 1) x factor, max), p = the actor's power over the recipient's
+  (RELATIVE_POWER_FLEET/ECONOMY/TECH_MULT on the saves' military, economy and tech power; intel
+  not applied **[I]**); shared allies (third countries in a defensive pact with both), shared
+  rivals **[I: rivals of both, either way]**; the recipient's pacts of the kind x NUM_PACTS (unless
+  the pact exists); the recipient's personality's `<type>_acceptance` (the embassy reads
+  defensive_pact_acceptance, as the game); DISTANCE: 0 when bordering, else min(border distance,
+  1000) x mult, rounded (the relation's `borders` and `border_range` **[I]**).
+- Per type: the embassy, the defensive and non-aggression pacts, the guarantee (its base plus the
+  whole non-aggression formula plus THREATENED), the commercial pact (the trade given and received
+  not computed: 0 **[I]**), the research agreement (the techs one has that the other lacks, each way,
+  x -0.5, within -100..100), the migration treaty (the actor's largest threat x -0.5), asking for
+  association (the non-aggression block) and asking to join a federation (the federation terms; the
+  voted-down modifier, the war philosophy's difference and the crisis term not read **[I]**). Not
+  computed: trade deals, subjugation, secret fealty, invitations to a federation, the pre-FTL
+  actions (no icon, no answer). The shared threat (GetSharedThreatFactor) is 0 here **[I]**; the
+  recently-human term is not applied.
+- The reply: the first phrase of common/diplo_phrases' `<action> = { accept|refuse }` whose trigger
+  holds (root = recipient, from = actor) **[I: the game picks a weighted random one with the
+  action's seed]**, shown in the bubble.
+- Checked on the test save: the game's frame shows the refusal icon on the embassy, the commercial
+  pact, the research agreement, the migration treaty, the association and joining the federation;
+  the renderer computes all six as refused (the embassy -27: attitude -25, opinion 13, personality
+  10, distance -25), the same icons.

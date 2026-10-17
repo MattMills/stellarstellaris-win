@@ -2301,6 +2301,8 @@ impl App {
             }
             // the wheel over the open view's list scrolls it (the view's own `wheel`)
             Effect::Zoom(n, _) if self.view_wheel(n) => Ok(true),
+            // the wheel over a diplomacy window's list (diplomacy.rs)
+            Effect::Zoom(n, _) if self.diplomacy.open.is_some() && { let at = self.cursor; crate::diplomacy::wheel(self, n, at) } => Ok(true),
             // the wheel over the starbase window's side view scrolls its list (starbase.rs)
             Effect::Zoom(n, _) if crate::starbase::wheel(self, n) => Ok(true),
             // the wheel over the ship designer's lists (designer.rs)

@@ -344,7 +344,11 @@ function M.build(ctx, state)
     end
     local y, bottom = list.y, list.y + list.h
     local types = diplomacy.country_types(ctx.game_dir)
-    for _, row in ipairs(rows) do
+    -- the list scrolled by the wheel (rows skipped), its place and rows for the wheel
+    local skip = (state.scroll or {}).contacts or 0
+    ctx.lists.contacts = { list.x, list.y, list.w, list.h, #rows, math.floor(list.h / ROW_H) }
+    for k = skip + 1, #rows do
+        local row = rows[k]
         if y + ROW_H > bottom then
             break
         end
