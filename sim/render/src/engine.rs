@@ -567,10 +567,12 @@ impl Engine {
                     ["close"] => "diplo:close".to_string(),
                     ["community"] => "diplo:community".to_string(),
                     [what @ ("country" | "federation" | "war"), id] => format!("diplo:{what}:{id}"),
-                    [what @ ("select" | "tab" | "sort" | "action" | "filter" | "zoom"), v] => format!("diplo:{what}:{v}"),
+                    [what @ ("select" | "tab" | "sort" | "action" | "filter" | "zoom" | "peace" | "member"), v] => format!("diplo:{what}:{v}"),
                     // the picked action proposed (its Confirm button), whether or not the list offers it
                     ["confirm"] => "diplo:action_confirm".to_string(),
-                    _ => return Err("open_diplomacy contacts|country ID|community|federation ID|war ID|close (or select ID, tab NAME, sort NAME, action KEY, confirm, filter NAME, zoom ID)".into()),
+                    // a war's selected peace option sent (Send Offer)
+                    ["peace_send"] => "diplo:peace_send".to_string(),
+                    _ => return Err("open_diplomacy contacts|country ID|community|federation ID|war ID|close (or select ID, tab NAME, sort NAME, action KEY, confirm, filter NAME, zoom ID, peace OPTION, peace_send, member VERB)".into()),
                 };
                 // (the left bar's button toggles Contacts; the command opens it)
                 if action == "view:contacts" && self.app.diplomacy.open == Some(crate::diplomacy::Open::Contacts) {

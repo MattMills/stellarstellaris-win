@@ -6,8 +6,8 @@
 //!
 //! Actions (a button's, App::act): `view:contacts` opens Contacts; `diplo:<what>[:<arg>]`:
 //! `close`, `select:ID` (an empire's row), `country:ID` (its diplomacy), `tab:NAME`,
-//! `sort:NAME`, `community`, `federation:ID`, `war:ID`, `none` (a window's background: takes
-//! the click).
+//! `sort:NAME`, `community`, `federation:ID`, `war:ID`, `peace:OPTION` (a war's peace option
+//! selected), `peace_send`, `none` (a window's background: takes the click).
 
 use stellar_sim::mlua::{self, Table};
 use stellar_sim::Runtime;
@@ -47,7 +47,8 @@ pub struct State {
     /// Contacts' filters the player has unchecked (CGalaxyView's checkboxes: all checked at Setup)
     pub filters_off: std::collections::BTreeSet<String>,
     /// a country's diplomacy: its actions (render.windows.diplomacy_actions.list, a Lua chunk) for
-    /// that country, the action picked (ShowActionView), the text after a proposal
+    /// that country, the action picked (ShowActionView; a war's peace option), the text after a
+    /// proposal
     pub actions: Option<(u32, String)>,
     pub action: Option<String>,
     pub message: Option<String>,
@@ -142,6 +143,14 @@ impl State {
             ("diplo", "war") => {
                 self.open = Some(Open::War(id(arg)?));
                 self.tab = None;
+                self.action = None;
+                self.message = None;
+            }
+            // the war overview's peace options: a click selects one, again unselects it
+            // (OnClickOfferPeaceOption); kept in `action`
+            ("diplo", "peace") => {
+                let o = arg.map(String::from);
+                self.action = if self.action == o { None } else { o };
             }
             _ => return Err(format!("unknown diplomacy action {action}")),
         }
@@ -281,7 +290,11 @@ fn list_actions(app: &mut crate::app::App, id: u32) {
 /// - `diplo:zoom:ID` (Contacts' zoom_to_capital_button, the diplomacy view's to_to_home_world:
 ///   CGalaxyViewEmpireProfile::OnEmpireZoomToCapital): the camera to the capital's system;
 /// - `diplo:action_confirm` (the action view's confirm_button): the picked action proposed to the
-///   country (render.windows.diplomacy_actions.apply), the list made again.
+///   country (render.windows.diplomacy_actions.apply), the list made again;
+/// - `diplo:peace_send` (the war overview's send): the selected peace offered
+///   (render.windows.diplomacy_peace.apply), the window closed;
+/// - `diplo:member:leave_federation|join_community|leave_community` (the federation view's leave
+///   button, the community view's join_leave_button): render.windows.diplomacy_membership.
 pub fn act(app: &mut crate::app::App, a: &str) -> Result<(), String> {
     if let Some(id) = a.strip_prefix("diplo:zoom:") {
         let id: u32 = id.parse().map_err(|_| format!("bad action {a}"))?;
@@ -295,6 +308,47 @@ pub fn act(app: &mut crate::app::App, a: &str) -> Result<(), String> {
             app.relayout();
             app.focus(crate::scene::Pickable::System(i))?;
         }
+        return Ok(());
+    }
+    if let Some(verb) = a.strip_prefix("diplo:member:") {
+        // Leave Federation, the community's Join / Leave (render.windows.diplomacy_membership); the
+        // game's yes/no popup before a leave is not shown [not done here]
+        let Some(me) = player(app) else { return Ok(()) };
+        let verb = match verb {
+            "leave_federation" | "join_community" | "leave_community" => verb,
+            _ => return Err(format!("bad action {a}")),
+        };
+        let out = world_command(app, &[verb, &me.to_string()])?;
+        let note: String = app
+            .runtime
+            .lua
+            .load(format!("local t = (loadstring or load)({out:?})() return tostring(t.note or '')"))
+            .eval()
+            .map_err(|e| format!("diplomacy: {e}"))?;
+        app.log.push(format!("diplomacy: {verb}: {note}"));
+        app.relayout();
+        return Ok(());
+    }
+    if a == "diplo:peace_send" {
+        // the war overview's Send Offer (CWarOverview::OnOfferPeaceSendOffer): the offer posted,
+        // the recipient's answer, the window closed
+        let (Some(Open::War(id)), Some(opt), Some(me)) = (app.diplomacy.open.clone(), app.diplomacy.action.clone(), player(app)) else {
+            return Ok(());
+        };
+        let (me, id_s) = (me.to_string(), id.to_string());
+        let out = world_command(app, &["peace", &id_s, &opt, &me])?;
+        let logged: String = app
+            .runtime
+            .lua
+            .load(format!(
+                "local t = (loadstring or load)({out:?})() return (t.accepted == nil and '' or (t.accepted and 'accepted' or 'refused')) .. ' ' .. tostring(t.acceptance or '') .. ' (' .. tostring(t.reasons or '') .. ') ' .. tostring(t.phrase or '') .. ' ' .. tostring(t.ran or '') .. ' ' .. tostring(t.note or '')"
+            ))
+            .eval()
+            .map_err(|e| format!("diplomacy: {e}"))?;
+        app.log.push(format!("diplomacy: peace ({opt}) offered in war {id}: {logged}"));
+        app.diplomacy.open = None;
+        app.diplomacy.action = None;
+        app.relayout();
         return Ok(());
     }
     if a == "diplo:action_confirm" {
@@ -368,5 +422,22 @@ mod tests {
         assert_eq!(s.open, None);
         assert!(s.act("diplo:country:x").is_err());
         assert!(s.act("diplo:what").is_err());
+    }
+
+    #[test]
+    fn peace_option_toggles() {
+        let mut s = State::default();
+        assert!(s.act("diplo:war:0").unwrap());
+        assert!(s.act("diplo:peace:status_quo").unwrap());
+        assert_eq!(s.action.as_deref(), Some("status_quo"));
+        // another option replaces it; the same one again unselects it
+        assert!(s.act("diplo:peace:surrender").unwrap());
+        assert_eq!(s.action.as_deref(), Some("surrender"));
+        assert!(s.act("diplo:peace:surrender").unwrap());
+        assert_eq!(s.action, None);
+        // a war opened again starts with none selected
+        s.act("diplo:peace:force_demands").unwrap();
+        s.act("diplo:war:0").unwrap();
+        assert_eq!(s.action, None);
     }
 }

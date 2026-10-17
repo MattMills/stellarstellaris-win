@@ -80,6 +80,8 @@ local function relation(a, b)
     return nil
 end
 
+A.relation = relation
+
 local function flag(r, name)
     return r ~= nil and world.field(r, name) == "yes"
 end
@@ -247,6 +249,8 @@ local function nai(game_dir)
     end
     return nai_cache
 end
+
+A.nai = nai
 
 -- definitions of a common/ folder, by name (once)
 local def_cache = {}

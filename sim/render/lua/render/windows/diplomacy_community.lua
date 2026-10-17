@@ -34,7 +34,7 @@ function M.build(ctx, state)
         -- Show(): the tabs' windows, the focus view; UpdateFocus: no focus, no top-level focus
         senate_window = tab ~= "senate" or nil, resolutions_window = tab ~= "resolutions" or nil,
         community_window = tab ~= "community" or nil,
-        change_galactic_focus_view = true, focus_container = true,
+        change_galactic_focus_view = true,
         -- UpdateCommunity: no custodian, no Galactic Imperium
         galactic_custodian_container = true, galactic_empire_container = true, navy_group = true,
         defense_force_group = true,
@@ -132,23 +132,64 @@ function M.build(ctx, state)
         hide.join_leave_button = true
     end
 
-    -- disabled: the Senate Floor tab for a non-member (Update: tab_senate Disable). Join
+    -- disabled: the Senate Floor tab for a non-member (Update: tab_senate Disable); Join
     -- (CJoinCommunityCommand, enabled by CGalacticCommunity::IsJoinValid) and Leave
-    -- (CLeaveCommunityCommand) [not done here: no community is formed in any save, and the engine
-    -- has no command for them]; Select a Leader (CAssignOfficialWindow: the leader selection)
-    -- [not done here]; both drawn as the game's frame shows them
+    -- (CLeaveCommunityCommand::IsValid) by render.windows.diplomacy_membership's costs and checks;
+    -- Select a Leader (CAssignOfficialWindow: the leader selection) [not done here]
     local disabled = {}
     if not member then
         disabled[V .. "/tab_senate"] = true
     end
-    ctx.layout(FILE, "galactic_community_view", {
-        hide = hide, text = text, frames = frames, sizes = sizes, positions = positions, disabled = disabled,
+    local can = member and gc.can_leave or (not member and gc.can_join)
+    if not can then
+        disabled[V .. "/join_leave_button"] = true
+    end
+    -- UpdateFocus: the top-level focus_container (no custodian, no Imperium) on the Community tab
+    -- with a focus: its icon (common/galactic_focuses `icon`), its name
+    local sprites = {}
+    if tab ~= "community" or not gc.focus then
+        hide.focus_container = true
+    else
+        local fd = require("stellar.script.source").definitions(ctx.game_dir, "common/galactic_focuses") or {}
+        local d = fd[gc.focus]
+        local icon = d and require("render.gfx").get(d.block, "icon")
+        if icon then
+            sprites[V .. "/focus_container/focus_icon"] = tostring(icon):gsub('"', "")
+        end
+        text[V .. "/focus_container/focus_text"] = gc.focus
+    end
+    local r = ctx.layout(FILE, "galactic_community_view", {
+        hide = hide, text = text, frames = frames, sizes = sizes, positions = positions, disabled = disabled, sprites = sprites,
         actions = {
             [V] = "diplo:none", [V .. "/close"] = "diplo:close",
             [V .. "/tab_community"] = "diplo:tab:community", [V .. "/tab_resolutions"] = "diplo:tab:resolutions",
             [V .. "/tab_senate"] = member and "diplo:tab:senate" or nil,
+            [V .. "/join_leave_button"] = can and ("diplo:member:" .. (member and "leave_community" or "join_community")) or nil,
         },
     })
+    -- UpdateMembers: a member_country_entry per member not in the council, in the members_gridbox
+    -- (slots 35 x 42, eight a row): the flag; the diplomatic weight under it not computed here (a
+    -- pop jobs and modifiers total: not in the save) and the members in the save's order [I: the
+    -- game sorts them by that weight]
+    local G = r.rects[CW .. "/members_container/members_box_container/members_gridbox"]
+    if G and tab == "community" then
+        local council = {}
+        for _, c in ipairs(gc.council or {}) do council[c] = true end
+        local k = 0
+        for _, m in ipairs(gc.members or {}) do
+            if not council[m] and data.countries[m] then
+                local p = "/gc_members/" .. m
+                ctx.layout(FILE, "member_country_entry", {
+                    prefix = p, parent = { x = G.x + (k % 8) * 35, y = G.y + math.floor(k / 8) * 42, w = 0, h = 0 },
+                    hide = { council_frame = true, emperor_council_frame = true, custodian_frame = true, emperor_frame = true,
+                        weight = true, status_icon = true },
+                    actions = { [p .. "/member_country_entry/flag"] = "diplo:country:" .. m },
+                })
+                ctx.flags[p .. "/member_country_entry/flag"] = m
+                k = k + 1
+            end
+        end
+    end
 end
 
 return M
