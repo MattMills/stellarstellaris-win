@@ -521,10 +521,11 @@ function system.design_model(game_dir, design_id, owner)
     return system.stage_model(game_dir, plain, tostring(world.field(design, "graphical_culture") or ""):gsub('"', ""), owner)
 end
 
--- system.stage_model(game_dir, stage, culture, owner) -> the model of a design's stage { size,
--- sections = { { template, slot, components = { [slot] = template } } } } (the ship designer's
--- design under modification), as design_model's
-function system.stage_model(game_dir, stage, culture, owner)
+-- system.stage_model(game_dir, stage, culture, owner, colours) -> the model of a design's stage
+-- { size, sections = { { template, slot, components = { [slot] = template } } } } (the ship
+-- designer's design under modification), as design_model's; colours: the flag's colour names
+-- (an empire design's, without an owner: the new game's preview)
+function system.stage_model(game_dir, stage, culture, owner, colours)
     local f = files(game_dir)
     local size = stage and stage.size
     if not size then
@@ -559,7 +560,7 @@ function system.stage_model(game_dir, stage, culture, owner)
     end
     local country = owner and world.object("country", owner)
     local colour
-    for _, n in ipairs(country and world.list(world.path(country, "flag", "colors")) or {}) do
+    for _, n in ipairs(colours or (country and world.list(world.path(country, "flag", "colors"))) or {}) do
         n = tostring(n):gsub('"', "")
         colour = colour or f.ship_swatches[n]
     end

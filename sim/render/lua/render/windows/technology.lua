@@ -138,6 +138,7 @@ function technology.extract(game_dir)
                     id = tonumber(world.field(p, "leader")),
                     portrait = unquote(world.field(leader, "portrait")) or (sp and unquote(world.field(sp, "portrait"))),
                     gender = unquote(world.field(leader, "gender")),
+                    class = unquote(world.field(leader, "class")),
                 }
             end
         end

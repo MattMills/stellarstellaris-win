@@ -63,4 +63,56 @@ function O.publish_world(W)
     end
 end
 
+-- the world in the store (STELLAR_WORLD=store): nothing is published. An object is found in its
+-- store's own block (`country = { <id> = { ... } }`) through that block's key index, and the ids
+-- are that block's keys, in the save's order: the world's data, read in place by any state.
+local S = require("engine.store.core")
+local IN_STORE = os.getenv("STELLAR_WORLD") == "store"
+local holders            -- store name -> its block id, found once per state from the world's root
+local KIDS = {}          -- an id -> its key's string id (this state's cache of the interned key)
+local function holder(name)
+    if holders == nil then
+        holders = {}
+        require("engine.store.world").find_stores(S.H.roots[0], function(n, bid) holders[n] = bid end)
+    end
+    return holders[name]
+end
+local function store_get(name, id)
+    local h = holder(name)
+    if not h then return nil end
+    local k = KIDS[id]
+    if k == nil then
+        k = S.kid(tostring(id)) or false
+        KIDS[id] = k
+    end
+    if not k then return nil end
+    local i = S.find(h, k)
+    if not i then return nil end
+    local e = S.E[i]
+    if e.kind == S.BLOCK then return e.v.u.a end
+    return nil
+end
+local IDS = {}           -- store name -> the ids, read from its block (per refresh)
+local function store_ids(name)
+    local l = IDS[name]
+    if l then return l end
+    l = {}
+    local h = holder(name)
+    if h then
+        local b = S.B[h]
+        for i = b.first, b.first + b.count - 1 do
+            local e = S.E[i]
+            if e.op ~= 0 and e.kind == S.BLOCK then l[#l + 1] = tonumber(S.str(e.key)) end
+        end
+    end
+    IDS[name] = l
+    return l
+end
+if IN_STORE then
+    function O.get(name, id) return store_get(name, id) end
+    function O.ids(name) return store_ids(name) end
+    function O.refresh() IDS = {} end
+    function O.publish() end
+end
+
 return O

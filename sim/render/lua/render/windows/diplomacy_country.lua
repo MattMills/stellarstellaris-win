@@ -222,12 +222,16 @@ function M.build(ctx, state)
         sprites = sprites, positions = positions,
     })
     -- the actions (CDiploActionEntry, diplo_action_entry) down actions_list: the title, the
-    -- background enabled when the action can be proposed; the AI's acceptance icon not shown (the
-    -- engine does not compute the acceptance) [not done here]
+    -- background enabled when the action can be proposed; the AI's acceptance icon where the
+    -- simulation computed it (render.windows.diplomacy_actions.acceptance)
     local L = r.rects[T .. "/diplo_actions_window/actions_list"]
     if L and not picked then
         local y = L.y
-        for k, e in ipairs(list) do
+        -- the list scrolled by the wheel (rows skipped), its place and rows for the wheel
+        local skip = (state.scroll or {}).actions or 0
+        ctx.lists.actions = { L.x, L.y, L.w, L.h, #list, math.floor((L.h - 5) / 29) }
+        for k = skip + 1, #list do
+            local e = list[k]
             if y + 29 > L.y + L.h then
                 break
             end
@@ -236,7 +240,10 @@ function M.build(ctx, state)
             local er = ctx.layout(FILE, "diplo_action_entry", {
                 prefix = p, parent = { x = L.x, y = y, w = 0, h = 0 },
                 text = { [w .. "/action_title"] = A.title_key(e.key, ctx.loc) },
-                hide = { ai_acceptance_icon = true },
+                -- the AI's acceptance icon: frame 2 accepts, 3 with favors, 1 refuses (shown for
+                -- the actions with diplo_view_acceptance_icon, an AI recipient)
+                hide = (not e.icon_frame) and { ai_acceptance_icon = true } or nil,
+                frames = e.icon_frame and { [w .. "/ai_acceptance_icon"] = e.icon_frame } or nil,
                 -- (its background is the window's: the click on the entry's path)
                 actions = { [w] = e.possible and ("diplo:action:" .. e.key) or nil },
                 disabled = (not e.possible) and { [w] = true } or nil,

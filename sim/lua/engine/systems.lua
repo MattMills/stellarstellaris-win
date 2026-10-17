@@ -220,24 +220,40 @@ P["daily.colonies_parallel"] = function(host, date)
 end
 P["daily.galaxy"] = function()
     each_object(other_stores(), count_down_modifiers)
+    -- CArchaeologicalSiteManager::DailyUpdate, after the borders and the market: its draws
+    require("engine.draws").archaeology()
 end
 -- CConstructionManager::DailyUpdate: the construction queues (engine.construction)
 P["daily.construction_manager"] = function(host, date)
     require("engine.construction").daily(date)
 end
--- CCountry::DailyUpdateSerial: the country's events, then (after diplomacy and elections) its
--- research (engine.research)
+-- CCountry::DailyUpdateSerial (0x2354100), country by country: its modules, first contacts, the
+-- surveyed deposit holders, its events (special projects first), research, envoys, auto research;
+-- then CPlanetManager::DailyUpdate. The draws of what is not modelled are made where the game
+-- makes them (engine.draws)
 P["daily.countries_serial"] = function(host, date)
+    local draws = require("engine.draws")
+    local research = require("engine.research")
+    research.begin_day(date)
     each_country(function(id)
+        -- the country's modules' daily updates: the pop factions' (a draw)
+        draws.factions(id)
         -- CCountry::UpdateContacts -> CFirstContactsData::DailyUpdate: the country's first
         -- contacts (engine.first_contact), before its events
         call_optional("engine.first_contact", "country_daily", host, date, id)
         -- then the deposit holders the day's shared intel surveyed or unsurveyed (_NewSurveyed,
         -- _NewUnsurveyed: AddSurveyedDepositHolder, RemoveSurveyedDepositHolder; engine.exploration)
         call_optional("engine.exploration", "country_serial", host, date, id)
+        -- CCountryEventManager::DailyUpdateSerial: the special projects, then the events
+        draws.special_projects(id, date)
         host.scope_daily_events("country", id)
+        -- CTechnologyStatus::DailyResearch (engine.research), CCountry::UpdateEnvoys, auto research
+        research.country_daily(host, id)
+        draws.envoys(id)
+        research.country_auto(id)
     end)
-    require("engine.research").daily(host, date)
+    -- CPlanetManager::DailyUpdate: the planets' serial update (a draw per owned planet)
+    draws.planets(date)
 end
 -- NColonyUpdate::DailySerialUpdate: the planets' daily events; the colonies' serial day
 -- (engine.colonies, once it is there)
@@ -283,10 +299,15 @@ P["monthly.countries_serial"] = function(host, date)
     call_optional("engine.situations", "monthly_progress", host, date)
     call_optional("engine.ai.strategy", "monthly", host, date)
     require("engine.leaders").monthly()
+    local draws = require("engine.draws")
     each_country(function(id)
-        -- CCountry::MonthlyUpdateSerial (0x6f4b10): one draw, the pulse's scope made from it
-        -- (CEventScope position H(draw)); the pulse only for a country type with has_pulse_events
+        -- CCountry::MonthlyUpdateSerial (0x6f4b10): the modules' monthly updates (their draws:
+        -- engine.draws), then one draw, the pulse's scope made from it (CEventScope position
+        -- H(draw)), then the personality and species integration draws; the pulse only for a
+        -- country type with has_pulse_events
+        draws.monthly_modules(id)
         local seed = RUST.rand()
+        draws.monthly_after_pulse_draw(id)
         -- CCountryEventManager::MonthlyUpdateSerial: the country's situations, before its pulse
         call_optional("engine.situations", "country_monthly", host, date, id)
         if systems.has_pulse_events(id) then
@@ -331,6 +352,9 @@ end
 -- CFleet::HandleOrders, fleet by fleet (engine.fleets.orders: the current orders ticked and
 -- finished, the next ones started; docs/fleet_orders.md)
 P["daily.ships_fleets_armies"] = function(host, date)
+    -- first the pop groups' serial update's draws (CPopGroup::OnEthicsDivergence, counted in the
+    -- parallel pop group phase: engine.draws)
+    require("engine.draws").flush()
     call_optional("engine.fleets.orders", "daily", host, date)
 end
 -- CGameState::MicroUpdate, every tick: first the fleet phase's movement (engine.fleets.movement:

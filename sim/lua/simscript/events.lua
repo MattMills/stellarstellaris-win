@@ -481,24 +481,85 @@ function M.run_delayed(key)
     end
 end
 
--- mean time to happen: the chance per daily check is 1 - 2^(-1/mtth_days) (half the scopes
--- that keep meeting the trigger have fired by the MTTH). Not the game's yet: the game rolls each
--- country's and colony's MTTH events from a stream of the daily pool
--- (CStandardEventCountryModule::DailyUpdateOnlyChangeSafePrivate 0x84c670: pool[(id + 4696) % 1000],
--- CNoiseRandom::GetInt64 % 1000000 against CEvent::GetChance); here one draw of the game's
--- generator per roll, as before [I]
+-- mean time to happen: the game rolls a country's and a colony's MTTH events from a stream made
+-- from the day's pool, never from the global generator:
+-- - a country (CStandardEventCountryModule::DailyUpdateOnlyChangeSafePrivate, Linux 0x2552890): a
+--   CCrudeRandom of pool[(id + 4696) % 1000]; its first integer seeds the scope; then for each MTTH
+--   event (not fired once already, its trigger met) CNoiseRandom::GetInt64 % MAX_MTTH_CHANCE
+--   (1,000,000) against CEvent::GetChance [V];
+-- - a colony (CColony::DailyUpdateSelfDontReadOthers 0x287c790: the scope from
+--   pool[(colony + 5353) % 1000] [V]): the same stream from that value [I].
+-- The chance per check here is 1 - 2^(-1/mtth_days) (half the scopes that keep meeting the trigger
+-- have fired by the MTTH), not CEvent::GetChance's own [I].
+local CRUDE_SEED = 0x5ea6ba9f
+local function u32(x) return x % 4294967296 end
+-- CCrudeRandom(v): a CNoiseRandom { position = noise(v, 0x5ea6ba9f), seed 0 } (0x422b070)
+local function crude(v)
+    local h = RUST.noise_raw(u32(v), CRUDE_SEED)
+    return { pos = u32(bit.bxor(h, bit.rshift(h, 8))) }
+end
+-- CNoiseRandom::GetInteger (0x42359d0): (h & 0x7ffffffe) ^ h >> 8
+local function crude_int(s)
+    local h = RUST.noise_raw(s.pos, 0)
+    s.pos = u32(s.pos + 1)
+    return u32(bit.bxor(bit.band(h, 0x7ffffffe), bit.rshift(h, 8)))
+end
+-- CNoiseRandom::GetInt64 (0x4235a20) % m: high = GetInteger's value at p, low = (h ^ h >> 8) at
+-- p + 1 (32 bits), p += 2; the remainder taken without the 63-bit value (doubles hold 53 bits)
+local TWO32 = 4294967296
+local function crude_int64_mod(s, m)
+    local hi = crude_int(s)
+    local h = RUST.noise_raw(s.pos, 0)
+    s.pos = u32(s.pos + 1)
+    local lo = u32(bit.bxor(h, bit.rshift(h, 8)))
+    return ((hi % m) * (TWO32 % m) + lo) % m
+end
+M.crude, M.crude_int, M.crude_int64_mod = crude, crude_int, crude_int64_mod
+
+-- the colony of a planet (the colonies' `planet`), refreshed with the colonies' count
+local colony_of, colonies_seen = {}, -1
+local function planet_colony(planet)
+    local world = require("engine.world")
+    local all = world.all("colony")
+    if #all ~= colonies_seen then
+        colony_of, colonies_seen = {}, #all
+        for _, cid in ipairs(all) do
+            local p = tonumber(world.field(world.object("colony", cid), "planet"))
+            if p then colony_of[p] = cid end
+        end
+    end
+    return colony_of[planet]
+end
+
+-- the scope's MTTH stream: nil when there is no pool (the rolls are then not made)
+local function mtth_stream(scope)
+    local pool = RUST.daily_pool and RUST.daily_pool()
+    if not pool or #pool == 0 then return nil end
+    if scope.kind == "country" then
+        local s = crude(pool[(scope.id + 4696) % 1000 + 1])
+        crude_int(s) -- the scope's seed
+        return s
+    elseif scope.kind == "planet" then
+        local colony = planet_colony(scope.id)
+        return colony and crude(pool[(colony + 5353) % 1000 + 1]) or nil
+    end
+end
+
 function M.run_mtth(scope)
     local l = mtth_by_kind[scope.kind]
     if not l then return end
+    local stream
     for _, ev in ipairs(l) do
         if not (ev.once and state.fired_once[ev.id]) then
             local ctx = eval.new_ctx(scope, NONE, nil, ev.file)
             if valid(ev, ctx) then
                 local days = eval.weight(ev.mtth, ctx, 360)
                 stats.mtth_rolls = stats.mtth_rolls + 1
-                if days > 0 then
-                    local p = 1 - 2 ^ (-1 / days)
-                    if eval.rand() % 1000000 < p * 1000000 then
+                stream = stream or mtth_stream(scope) or false
+                if stream then
+                    -- the roll is made for every event whose trigger is met, whatever its chance
+                    local roll = crude_int64_mod(stream, 1000000)
+                    if days > 0 and roll < (1 - 2 ^ (-1 / days)) * 1000000 then
                         run(ev, ctx)
                     end
                 end

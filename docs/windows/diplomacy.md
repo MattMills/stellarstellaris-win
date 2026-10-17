@@ -13,7 +13,8 @@ the renderer is here.
   federation, a war), its tab, the selected empire and the sort. Actions: `view:contacts` (the left
   bar's button, a toggle as CInGameIdler::ToggleTopBarView), `diplo:close`, `diplo:select:ID`,
   `diplo:country:ID`, `diplo:tab:NAME`, `diplo:sort:METHOD[:desc]`, `diplo:community`,
-  `diplo:federation:ID`, `diplo:war:ID`, `diplo:none` (a window's background takes the click).
+  `diplo:federation:ID`, `diplo:war:ID`, `diplo:peace:OPTION`, `diplo:peace_send`,
+  `diplo:member:VERB`, `diplo:none` (a window's background takes the click).
   Escape closes the window first. `App::action` does an action as its click does.
 - `lua/render/windows/diplomacy_data.lua`: what the windows read of the world (every country, the
   player's relation to each and theirs to the player, intel, opinion where the engine computes it,
@@ -112,15 +113,53 @@ the renderer is here.
   the Senate Floor tab disabled. Checked against the game's frame (2212.07.01). The diplomatic
   weight (country +0x2f40, a modifier total not in the save) is not shown **[I]**.
 - **Federation** (CFederationView) **[V]**: only the observed country's federation; without one
-  (the player in every save) the button is hidden and the view hides itself. Tabs Levels (first),
-  Members, Fleets, Laws.
+  the button is hidden and the view hides itself. Tabs Levels (first), Members, Fleets, Laws.
+  UpdateGeneralInfo: the name, the type (FEDERATION_VIEW_TYPE: the type's name, e.g.
+  default_federation "Galactic Union") and its icon, its description, "Formed:", the first perk's
+  modifier under its header (FEDERATION_PERK_FED_MOD and the modifier's `description`), a law
+  (FEDERATION_VIEW_LAW_DESC; the centralization **[I: which category]**), the members by economy
+  (small_member_item: flag, name, economy rounded). The Levels tab: the level (FEDERATION_LEVEL), XP
+  against the next level's (FEDERATION_EXPERIENCE; the type's `levels` and the file's
+  @xp_to_level_N), the XP gain (cohesion x FEDERATION_COHESION_TO_XP 0.1: -3.50 at -35), the
+  cohesion bars (progress bars: the positive one filled to cohesion / 100, the negative one to 1 -
+  |cohesion| / 100), the envoys; a level_item per level of the type with its perks' icons
+  (gfx/interface/icons/federation/federation_perks/<perk>.dds **[I]**). Not computed: the monthly
+  cohesion growth (a modifier total), the members' diplomatic weight and envoys, the president's
+  portrait.
 
 ## 5. War overview (interface/waroverview.gui, CWarOverview)
 
 - The player's side on the left (ATTACKERS or DEFENDERS), exhaustion as a whole percent coloured
   by side (green/red under 30 %, yellow to 70 %, red/green above), the top bar split at
-  d = theirs - ours **[V]**. Opened from the at-war badges, the diplomacy view's action, war
-  messages and alerts, not from Contacts **[V]**. No save has a war: laid out by the code only.
+  d = theirs - ours: progress bars (progressbarType, textureFile1 up to the state), the left one
+  filled to 1 + d, the right one to d **[V]**. Opened from the at-war badges, the diplomacy view's
+  action, war messages and alerts, not from Contacts **[V]**.
+- **Exhaustion** (CWar::CalcCachedWarExhaustion @2142840; not saved) **[V]**: attrition is the
+  war's attacker/defender_war_exhaustion; the battles add theirs by type (ships, armies,
+  static_war_exhaustion) in order while the running total is under
+  WAR_EXHAUSTION_FROM_UNITS_CUTOFF (1.0); the total is their sum. Occupation (CalcOccupationPercent)
+  is not computed here: 0 **[I]**.
+- **Participants** (NWarParticipantsList) **[V]**: the list's height is the positionType's (305 x
+  155 with the Set War Goal button, else 305 x 194; the gui's own is 0); a 38-high entry per
+  participant in the save's order: the flag, the name, the `frame` never shown, the `type` icon by
+  the call type (none for the main participant; `alliance` GFX_diplomacy_status_federation, and so
+  on: NWar::ApplyCallerTypeToButton @2153d60).
+- **Peace offers** (COfferPeaceAction, `diplomacy_peace.lua`) **[V]**: the actor is the player, the
+  recipient the other side's main participant. Achieve War Goals = demand (status 2), Settle Status
+  Quo = 0, Surrender = 1. Surrender is always auto-accepted (shown "Auto" with the check, frame 2);
+  it cannot be sent by an attacker before the defenders set their war goal
+  (SEND_OFFER_NO_DEFENDER_DEMANDS: label and value greyed). The acceptance (GetOfferPeaceAcceptance
+  @27f7710, NAI defines): status quo PEACE_STATUS_QUO_FACTOR (-75), +100 at the recipient's war
+  exhaustion 1.0 or more; demands PEACE_DEMAND_SURRENDER_FACTOR (-100) and the war goal's
+  `surrender_acceptance`; both + war exhaustion x 100 + occupation x 100 + the relative navy:
+  min(50, (ratio - 1) x 50), ratio = (100 + the actor side's fleet power) / (100 + the recipient
+  side's), clamped to 0.1..10. The fleet power is the save's `military_power` **[I]**. Shown green
+  above 0, red otherwise, no sign; "Auto" at 1000. Not computed: the stalemate term, the demanded
+  systems' terms, favors. The war goal icon on Achieve (ours) and Surrender (theirs): GFX_ and the
+  type's icon, else its key **[I]**; none keeps the gui's. The goals' names above the options
+  (war_goal_<type>).
+- On the test save (war_gc_2212.sav) the renderer gives Achieve War Goals -243 and Settle Status
+  Quo -118, as the game: -100 - 100 - 43 and -75 - 43, the navy term (271.9 / 1901.7 - 1) x 50.
 
 ## 6. Names, layout rules (shared files)
 
@@ -156,9 +195,19 @@ Same commands on both (autosave_2212.07.01, 1600 x 900, the game by `headless/vi
   diplomacy view for them. `g2_agreements.png`: `open_diplomacy contacts 1` shows the Contacts tab
   in the game (the agreements tab is disabled without an overlord or subjects): the renderer
   likewise.
-- The diplomacy view of a regular empire, the federation and the war overview have no frame to
-  compare: in every save the player has communications only with the marauders, belongs to no
-  federation and is at no war. They are laid out by the code read (sections 3 to 5).
+- Test saves made by the game itself (headless.c's `console NAME ARGS` runs a console command,
+  `save DIR` saves; on .24 in /root/diplo): contact_2212.sav (communications with 16777223),
+  war_gc_2212.sav (the player attacks 16777223, allied with 49 and 50, Vassalize; the galactic
+  community formed with 11 members), fed_2212.sav (the federation 1, Rebel Coalition, Galactic
+  Union, the player leading it with 16777218). war_dgoal_2212.sav is war_gc's with a defender war
+  goal (wg_humiliation) written in, so that Surrender can be sent. The game's frames: g8_war.png,
+  g8_community.png, g9_federation.png.
+- The war overview against g8_war.png: the same participants (the player; 16777223, then 49 and 50
+  with the federation icon), the exhaustion 0 % in every row with the bars green, the top bar,
+  Vassalize over Achieve War Goals -243 and Settle Status Quo -118 with the red X, Surrender
+  greyed with "Auto" and the check. Sending: Achieve War Goals refused (-243); on
+  war_dgoal_2212.sav Surrender accepted (1000), wg_humiliation's on_accept, on_war_won /
+  on_war_lost (the game's "Defeated by ..." event shows) and on_war_ended run, the war gone.
 
 ## 8. The buttons
 
@@ -166,8 +215,11 @@ What each element the game takes clicks on does, and how far the renderer does i
 changes go through the simulation (render-buttons-1's views.rs: `render.windows.contacts`'s
 `command(...)`, run between days, the simulation started if it is not running, a snapshot taken
 after): `list` (a country's actions) and `propose` (an action) in `lua/render/windows/
-diplomacy_actions.lua`. The command protocol's `open_diplomacy action KEY`, `confirm`, `filter
-NAME`, `zoom ID`, `select ID`, `tab NAME`, `sort NAME` do the same as the clicks.
+diplomacy_actions.lua`; `peace` (a war's peace offer) in `diplomacy_peace.lua`;
+`leave_federation`, `join_community`, `leave_community` in `diplomacy_membership.lua`. The command
+protocol's `open_diplomacy action KEY`, `confirm`, `filter NAME`, `zoom ID`, `select ID`, `tab
+NAME`, `sort NAME`, `peace OPTION` (force_demands, status_quo, surrender), `peace_send`, `member
+VERB` do the same as the clicks.
 
 | window | element | the game | here |
 |---|---|---|---|
@@ -180,22 +232,26 @@ NAME`, `zoom ID`, `select ID`, `tab NAME`, `sort NAME` do the same as the clicks
 | Contacts | Espionage | the window on its espionage tab; disabled without IsEspionageAvailableFor | UI only (disabled: the spy networks are not read here [I]) |
 | Contacts | zoom to capital | OnEmpireZoomToCapital: the camera to the capital | wired (the capital's system entered) |
 | Contacts | the Agreements tab | the agreements' list (CAgreementsListViewController); disabled without an overlord or subjects | disabled as the game; its lists not done |
-| Contacts | the list's wheel | the list scrolled | not done (no save lists more than three rows) |
+| Contacts and Diplomacy | the lists' wheel (the empires, the actions) | the list scrolled | wired: a row a notch over the list (no save lists more rows than fit, so it has not had rows to move) |
 | Diplomacy | close, Escape | CloseClick; Escape cancels a picked action first | wired |
 | Diplomacy | the capital (to_to_home_world) | the camera to the capital | wired |
 | Diplomacy | the tabs | OnTabButton: Diplomacy, Espionage (enabled by IsEspionageAvailableFor) | Diplomacy wired; Espionage disabled (its tab's lists not done) |
 | Diplomacy | an action's entry | SelectAction: its view (the window 990 wide, the action's title, description, icon), Confirm and Cancel; disabled when it cannot be proposed | wired; the trade deal, declare war, proxy war, offer peace, agreements and claims open their own windows in the game [not done here] |
 | Diplomacy | Cancel | CancelAction: the list again | wired |
-| Diplomacy | Confirm | the action proposed (CDiploActionProposeCommand) | wired for close and open borders, rivalry (declared and ended), the embassy recalled, the pacts broken; the actions that need the AI's acceptance are not accepted (the engine has no acceptance yet): the bubble says so [not done here] |
-| Diplomacy | the AI's acceptance icons | frame 1 refuses, 2 accepts, 3 with favours | not drawn (no acceptance computed) |
+| Diplomacy | Confirm | the action proposed (CDiploActionProposeCommand); an AI recipient accepts when its acceptance is above 0 | wired: the acceptance computed (section 9), the reply phrase in the bubble; accepted: the pacts (both sides; a defensive pact clears a non-aggression pact and a guarantee), the embassy (both sides), a guarantee, borders, rivalries, the embassy recalled, the pacts broken, an insult (opinion_insult on the recipient's opinion of us, through the engine's add_opinion_modifier: +27 to -173 on the test save); then the type's on_accept effect and the pacts' on_sign_* on_actions through the script layer; federation joins and associations, subjugation, trade deals [not done here] |
+| Diplomacy | the AI's acceptance icons | frame 2 accepts, 3 with the favors held, 1 refuses; for diplo_view_acceptance_icon actions and an AI recipient | wired where the acceptance is computed (section 9) |
 | Community | close, Escape; the tabs | Hide; Community, Senate Floor (disabled for a non-member), Resolutions | wired |
-| Community | Join / Leave | CJoinCommunityCommand / CLeaveCommunityCommand | not done (no community is formed in any save; the engine has no command) |
+| Community | Join / Leave | CJoinCommunityCommand (100 influence; not within 7200 days of leaving: left_galactic_community) / CLeaveCommunityCommand (sprawl x 0.5 influence, 100..500; not the custodian), after a yes/no popup | wired (`diplomacy_membership.lua`): the cost paid, `members` (and the council, the emissaries) changed, left_galactic_community for 7200 days, on_add_community_member / on_remove_community_member run; the popup and the new member's communications [not done here] |
 | Community | Select a Leader | the delegate's leader selection (CAssignOfficialWindow) | not done |
-| Community | resolutions, votes, the senate floor | CResolution proposals, CVoteCommand | not done (no community formed) |
-| Federation | close, the tabs (Levels, Members, Fleets, Laws) | Hide, SwitchToTab | wired (the view opens only for the player's federation: none in the saves) |
-| Federation | leave, rename, type, laws' votes | CLeaveFederationAction, the federation commands | not done |
+| Community | resolutions, votes, the senate floor | CProposeResolutionCommand, the decisions (support, oppose, abstain, veto, ...) | not done: the test save's community has no resolution proposed and 718 days of recess |
+| Federation | close, the tabs (Levels, Members, Fleets, Laws) | Hide, SwitchToTab | wired |
+| Federation | the members' sort buttons | OnSetSortType: by the button, the same one again reverses | wired for name, economy, fleet, technology (the others by name [I]) |
+| Federation | Leave Federation | a yes/no popup, CLeaveFederationAction (auto-accepted; requires_actor_peace) | wired (`diplomacy_membership.lua`): out of `members` and its envoys, its `federation` gone, cohesion -100, each remaining member a truce (alliance) and opinion_broke_federation towards it; with fewer than 2 members left the federation ends (the game at the next day's tick, here at once [I]). Not done: the popup, a new leader by the succession law, Ask to Leave |
+| Federation | rename, type, laws' votes, Select a Leader | CRenameAllianceCommand, CVoteForFederationTypeAction / LawAction (a vote), the leader selection | not done |
 | War | close | Hide | wired |
-| War | the peace options, Send, set war goal, the battle log's headers | COfferPeaceAction, CWarGoalsView | not done (no war in any save) |
+| War | the peace options | OnClickOfferPeaceOption: one selected, the same again unselects; disabled when invalid | wired |
+| War | Send Offer | the offer proposed, the window closed; an AI accepts above 0 | wired (`diplomacy_peace.lua`): accepted, the winner's war goal `on_accept` (status quo: both goals' `on_status_quo`, on_status_quo), on_war_won / on_war_lost, a truce between every attacker and defender (the war's name, truce_type war), the war out of the relations' `wars`, on_war_ended, the war removed; a refused status quo gives opinion_status_quo_not_accepted [I: its direction]. Not done: claims ceded, the opinion between the main participants, the effects the script layer does not have (set_subject_of) |
+| War | set war goal, the battle log's headers | CWarGoalsView, SortBattles (stable, ascending first) | not done (no battles in the test save) |
 
 The diplomatic actions listed (§3): common/diplomatic_actions in file order, `is_listed = no`
 dropped, their `potential` triggers evaluated by the simulation's script layer (this = the
@@ -207,3 +263,41 @@ test save (autosave_2212.07.01 with communications added to the empire 16777223)
 lists the game's seventeen actions plus Pledge Secret Fealty; the game puts Close Borders among the
 possible and Make Claims among the impossible ones, the renderer the other way round: the script
 layer's `possible` checks that read intel (`has_intel`) are not those of the game yet.
+
+## 9. The AI's acceptance (`diplomacy_actions.lua` A.acceptance, run in the simulation)
+
+Read in GetAIAcceptance @27f7230 and its per-type functions (the long notes:
+`code_working/tmp_diplo/re_acceptance.md`) **[V]** unless marked:
+
+- The total: an auto-accepted action without `diplo_view_acceptance_icon` 1000; else the action
+  type's own terms (below; an action without a function of its own: none), + favors x
+  DIPLO_ACTION_FAVOR_AI_ACCEPTANCE_VALUE (5), + the type's scripted `ai_acceptance` weight (root =
+  recipient, from = actor; the actor's `diplo_action_acceptance_add` modifier is not added here
+  **[I]**). Accepted above 0 (0 refuses). The actions needing a federation's vote end as 1 or 0;
+  with the recipient its federation's leader no other member votes, so its own total decides.
+- Each term truncated to an integer, in the game's order. ATTITUDE: the recipient AI's attitude
+  towards the actor (common/attitudes behaviour: alliance, coexist, attack or weaken: -1000,
+  other); OPINION: the recipient's opinion of the actor (engine.ai.opinion) x the type's factor;
+  relative power min((max(p, 0) - 1) x factor, max), p = the actor's power over the recipient's
+  (RELATIVE_POWER_FLEET/ECONOMY/TECH_MULT on the saves' military, economy and tech power; intel
+  not applied **[I]**); shared allies (third countries in a defensive pact with both), shared
+  rivals **[I: rivals of both, either way]**; the recipient's pacts of the kind x NUM_PACTS (unless
+  the pact exists); the recipient's personality's `<type>_acceptance` (the embassy reads
+  defensive_pact_acceptance, as the game); DISTANCE: 0 when bordering, else min(border distance,
+  1000) x mult, rounded (the relation's `borders` and `border_range` **[I]**).
+- Per type: the embassy, the defensive and non-aggression pacts, the guarantee (its base plus the
+  whole non-aggression formula plus THREATENED), the commercial pact (the trade given and received
+  not computed: 0 **[I]**), the research agreement (the techs one has that the other lacks, each way,
+  x -0.5, within -100..100), the migration treaty (the actor's largest threat x -0.5), asking for
+  association (the non-aggression block) and asking to join a federation (the federation terms; the
+  voted-down modifier, the war philosophy's difference and the crisis term not read **[I]**). Not
+  computed: trade deals, subjugation, secret fealty, invitations to a federation, the pre-FTL
+  actions (no icon, no answer). The shared threat (GetSharedThreatFactor) is 0 here **[I]**; the
+  recently-human term is not applied.
+- The reply: the first phrase of common/diplo_phrases' `<action> = { accept|refuse }` whose trigger
+  holds (root = recipient, from = actor) **[I: the game picks a weighted random one with the
+  action's seed]**, shown in the bubble.
+- Checked on the test save: the game's frame shows the refusal icon on the embassy, the commercial
+  pact, the research agreement, the migration treaty, the association and joining the federation;
+  the renderer computes all six as refused (the embassy -27: attitude -25, opinion 13, personality
+  10, distance -25), the same icons.

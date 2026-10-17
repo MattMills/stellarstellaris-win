@@ -2998,6 +2998,60 @@ static void open_view_cmd(const char *arg) {
 	reply_fmt("ok open_view %s (current view %d)", arg, I32((char *)idler + 0xdc8));
 }
 
+// ---------------------------------------------------------------- `console`, `save`: test saves made
+// by the game itself (docs/windows/diplomacy.md section 10)
+//   console NAME ARG...  the console command's handler OnExecute_NAME(CPdxArray<CString, int> const&)
+//                        with the arguments (CPdxArray: data at +8, count at +0x14; CString 0x30
+//                        bytes, as OnExecute_War reads them); the reply is the console's text
+//   save DIR             the game's autosave (CInGameIdler::PostRenderUpdate with the request flag
+//                        +0xab0 raised, then CSaveGameTaskManager::Update(true), as handle_autosave
+//                        does), the file moved to DIR
+static void console_cmd(const char *arg) {
+	char name[64] = "", rest[900] = "";
+	if (sscanf(arg, "%63s %899[^\n]", name, rest) < 1) {
+		reply_fmt("error console NAME ARG...");
+		return;
+	}
+	char mangled[160];
+	snprintf(mangled, sizeof mangled, "_Z%zuOnExecute_%sRK9CPdxArrayI7CStringiE", strlen("OnExecute_") + strlen(name), name);
+	uintptr_t fn = 0;
+	struct symreq req[] = {{mangled, &fn}, {NULL, NULL}};
+	if (resolve(req) != 0 || !fn) {
+		reply_fmt("error console: no handler %s", mangled);
+		return;
+	}
+	_Alignas(16) static uint8_t strs[64][0x30];
+	int n = 0;
+	for (char *tok = strtok(rest, " "); tok && n < 64; tok = strtok(NULL, " ")) {
+		memset(strs[n], 0, 0x30);
+		((void (*)(void *, const char *))a_CStringCtor)(strs[n], tok);
+		n++;
+	}
+	_Alignas(16) uint8_t array[0x18];
+	memset(array, 0, sizeof array);
+	*(void **)(array + 8) = n ? (void *)strs : NULL;
+	*(int32_t *)(array + 0x10) = n;
+	*(int32_t *)(array + 0x14) = n;
+	_Alignas(16) uint8_t res[64];
+	memset(res, 0, sizeof res);
+	((void (*)(void *, void *))fn)(res, array);
+	const char *text = *(const char **)(res + 0x18);
+	size_t len = *(size_t *)(res + 0x20);
+	reply_fmt("%s console %s: %.*s", res[0] ? "ok" : "error", name, (int)(len < 300 ? len : 300), text ? text : "");
+}
+
+static void save_cmd(void *gs, const char *arg) {
+	void *idler = *(void **)a_g_CurrentInGameIdler;
+	if (!idler || !arg[0]) {
+		reply_fmt("error save DIR (in game)");
+		return;
+	}
+	U8((char *)idler + 0xab0) = 1;
+	g_autosave_dir = strdup(arg);
+	handle_autosave(gs);
+	reply_fmt("ok save %s", arg);
+}
+
 // ---------------------------------------------------------------- `open_diplomacy`: the diplomacy
 // windows (docs/windows/diplomacy.md) opened with the game's own calls:
 //   open_diplomacy contacts [TAB]   CInGameIdler::ShowGalaxyView (the left bar's contacts button);
@@ -3007,12 +3061,13 @@ static void open_view_cmd(const char *arg) {
 //                                   Contacts' Diplomacy button (CGalaxyView::OnEmpireDiplomacy)
 //   open_diplomacy community [TAB]  CInGameIdler::ShowGalacticCommunityView(TAB (0))
 //   open_diplomacy federation       CFederationView::Show (the player's federation)
+//   open_diplomacy war ID           CWarOverview::ShowForWar (AccessWarOverview)
 //   open_diplomacy close            CInGameIdler::CloseTopBarViews, CDiplomacyView::Hide
 // The reply comes a few frames later (the views update on the next frames).
 
 static uintptr_t a_ShowGalaxyView, a_GalaxyViewShowTab, a_ShowDiplomacyView, a_ShowCommunityView;
 static uintptr_t a_AccessFederationView, a_FederationViewShow, a_DiploCloseTopBarViews, a_AccessDiplomacyView;
-static uintptr_t a_DiplomacyViewHide, a_CountryDb;
+static uintptr_t a_DiplomacyViewHide, a_CountryDb, a_AccessWarOverview, a_ShowForWar, a_WarDb;
 static struct symreq g_diplo_syms[] = {
 	{"_ZN12CInGameIdler14ShowGalaxyViewEv", &a_ShowGalaxyView},
 	{"_ZN11CGalaxyView4ShowENS_15ETabsGalaxyViewE", &a_GalaxyViewShowTab},
@@ -3024,13 +3079,16 @@ static struct symreq g_diplo_syms[] = {
 	{"_ZN12CInGameIdler19AccessDiplomacyViewEv", &a_AccessDiplomacyView},
 	{"_ZN14CDiplomacyView4HideEv", &a_DiplomacyViewHide},
 	{"_ZN7TPdxRefI8CCountryE10_pDatabaseE", &a_CountryDb},
+	{"_ZN12CInGameIdler17AccessWarOverviewEv", &a_AccessWarOverview},
+	{"_ZN12CWarOverview10ShowForWarEPK4CWar", &a_ShowForWar},
+	{"_ZN7TPdxRefI4CWarE10_pDatabaseE", &a_WarDb},
 	{NULL, NULL},
 };
 
 // a country by id (TPdxRef<CCountry>::_pDatabase: slots at +0x18, 16 bytes each, the object at
 // +8, the count at +0x20; CCountry's id at +0x20, as CGalaxyEmpireItem::Update reads it)
-static void *diplo_country(int id) {
-	char *db = *(char **)a_CountryDb;
+static void *diplo_object(uintptr_t dbsym, int id) {
+	char *db = *(char **)dbsym;
 	if (!db || id < 0) return NULL;
 	uint32_t i = (uint32_t)id & 0xffffff;
 	if (i >= *(uint32_t *)(db + 0x20)) return NULL;
@@ -3060,7 +3118,7 @@ static void open_diplomacy_cmd(const char *arg) {
 			((void (*)(void *))a_ShowGalaxyView)(idler);
 			if (a >= 0) ((void (*)(void *, int))a_GalaxyViewShowTab)(*(void **)((char *)idler + 0xd80), a);
 		} else if (!strcmp(what, "country")) {
-			void *c = diplo_country(a);
+			void *c = diplo_object(a_CountryDb, a);
 			if (!c) {
 				reply_fmt("error open_diplomacy: no country %d", a);
 				return;
@@ -3068,6 +3126,15 @@ static void open_diplomacy_cmd(const char *arg) {
 			((void (*)(void *, void *, int, int, int))a_ShowDiplomacyView)(idler, c, b < 0 ? 0 : b, 1, 1);
 		} else if (!strcmp(what, "community")) {
 			((void (*)(void *, int))a_ShowCommunityView)(idler, a < 0 ? 0 : a);
+		} else if (!strcmp(what, "war")) {
+			// CWarOverview::ShowForWar (the at-war badges, the war messages): the war by id (CWar +0x20)
+			void *w = diplo_object(a_WarDb, a);
+			void *v = w ? ((void *(*)(void *))a_AccessWarOverview)(idler) : NULL;
+			if (!v) {
+				reply_fmt("error open_diplomacy: no war %d", a);
+				return;
+			}
+			((void (*)(void *, void *))a_ShowForWar)(v, w);
 		} else if (!strcmp(what, "federation")) {
 			void *v = ((void *(*)(void *))a_AccessFederationView)(idler);
 			if (v) ((void (*)(void *))a_FederationViewShow)(v);
@@ -3456,6 +3523,10 @@ static void view_command(void *gs) {
 		open_cmd(arg);
 	} else if (!strcmp(verb, "open_designer")) {
 		open_designer_cmd(arg);
+	} else if (!strcmp(verb, "console")) {
+		console_cmd(arg);
+	} else if (!strcmp(verb, "save")) {
+		save_cmd(gs, arg);
 	} else if (!strcmp(verb, "open_diplomacy")) {
 		open_diplomacy_cmd(arg);
 	} else if (!strcmp(verb, "open_planet")) {
