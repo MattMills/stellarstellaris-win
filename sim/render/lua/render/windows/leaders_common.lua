@@ -416,7 +416,7 @@ function L.card(ctx, b, template, rect, d, opts)
     })
     -- the portrait (CPortraitObject): the leader's, else its species' (d.species_portrait)
     require("render.portraits").card(ctx.game_dir, b.items, n0, r.rects, PARAGON, template,
-        { id = d.id, gender = d.gender, portrait = d.portrait or d.species_portrait })
+        { id = d.id, gender = d.gender, portrait = d.portrait or d.species_portrait, class = d.class, ruler = d.ruler })
     -- the traits in their overlapping box (CLeaderTraitListboxEntry: the trait's layered icon)
     local box
     for path, rr in pairs(r.rects) do

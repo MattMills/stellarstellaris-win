@@ -1473,6 +1473,10 @@ impl App {
                 crate::designer::fill_insets(&mut scene, &self.designer_models, &mut map.models, &map.runtime, &self.game_dir, &mut map.textures, &mut cache.borrow_mut());
                 // the leaders' portraits in the views (portraits.rs)
                 crate::portraits::fill_insets(&mut scene, &mut map.models, &map.runtime, &self.game_dir, &mut map.textures, &mut cache.borrow_mut());
+            } else if self.screen != Screen::Map {
+                // the front end's portraits, home worlds and ships (the new game's screens:
+                // portraits.rs), with the front end's runtime and textures
+                crate::portraits::fill_insets(&mut scene, &mut self.models, &self.runtime, &self.game_dir, &mut self.textures, &mut self.cache.borrow_mut());
             }
             // the Situation Log's trackers on the galaxy (events.rs)
             if let (Screen::Map, Some(map)) = (self.screen, self.map.as_mut()) {

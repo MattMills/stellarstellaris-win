@@ -174,8 +174,8 @@ All checked side by side at 1600 x 900 (`tmp_sym/render3d/newgame_creator/cmp_*.
 left; `cmpall.sh` on 10.5.0.24):
 
 - **Species & Portrait** [V]: categories (`species_portrait_category_entry`), the grid of
-  `species_portrait_picker_entry` (9 a row, cut to `portraits_container`). The portraits are 3D in
-  the game: their frames are drawn, not the characters.
+  `species_portrait_picker_entry` (9 a row, cut to `portraits_container`), each with its species'
+  portrait (docs/windows/portraits.md).
 - **Government & Ethics** [V]: points left, the ethics' circle, the authorities' grid (two rows of
   four), the authority's description (NO_GOVERNMENT_SELECTED), the civics list and picks left.
 - **Origin** [V]: the origins' pictures in a 3-wide grid cut to its window, the chosen one's
@@ -209,8 +209,8 @@ letters, digits, space, `-`, `'`, `.`, `,`; Shift for capitals; Backspace, Retur
 
 ## 5. Not done
 
-- Portraits, the home world's planets, ships: 3D in the game (the renderer draws no species
-  portraits yet: the frames are drawn).
+- The Homeworld editor's planets and the Shipsets editor's ship and thumbnails (3D in the game;
+  the preview's ruler, species portraits, home world and ship are drawn: docs/windows/portraits.md).
 - The secondary species' editors, the advisor editor, nomadic empires (the nomad toggle, arkships).
 - The right column of DLC icons and *Recommended DLC* (the selection screen's, ng-flow's).
 - Tooltips (the errors show in the menu's tooltips in the game), the list scrollbars and wheel.

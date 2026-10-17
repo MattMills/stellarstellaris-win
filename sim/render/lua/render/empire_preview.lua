@@ -9,13 +9,15 @@
 --   opts.hide_lower = true               -- only the top (the creator's editors cover the rest)
 --   opts.actions                         -- element path -> action (the flag, the room, the planet)
 --
--- The 3D parts are not drawn: the ruler's portrait (a character in the room), the home world's
--- planet. In their place: the room's texture (gfx/portraits/city_sets/<room>.dds) over the city
--- (<city culture>_city_l03.dds) [I: the room's planet layer, portraits' `room = { planet }`], the
--- planet class's name.
+-- The 3D parts (render.portraits' insets, portraits.rs): the ruler in the room (portrait_window's
+-- GFX_portrait_gamesetup_mask: the room's render target), the species' portrait (species_window),
+-- the home world's planet (home_world/3d_icon) and the ship (ship_preview/render_target). The
+-- room: its texture (gfx/portraits/city_sets/<room>.dds) over the city (<city culture>_city_l03.dds)
+-- [I: the room's planet layer, portraits' `room = { planet }`].
 
 local C = require("render.windows.empire_common")
 local rules = require("render.creator_rules")
+local portraits = require("render.portraits")
 
 local preview = {}
 
@@ -116,6 +118,26 @@ function preview.flag_texture(ctx, sprite, flag)
     }, "|")
 end
 
+-- preview.planet_entity(game_dir, class) -> the entity of a planet class (common/planet_classes
+-- `entity`: its first variant, <entity>_01_entity, else <entity>_entity, else itself), or nil
+local planet_entities = {}
+function preview.planet_entity(game_dir, class)
+    if planet_entities[class] == nil then
+        local source = require("stellar.script.source")
+        local base
+        for _, f in ipairs(RUST and RUST.list_files and RUST.list_files(game_dir, "common/planet_classes", "txt") or {}) do
+            for _, e in ipairs(source.parse(game_dir, f) or {}) do
+                if not base and e.op and e.key and e.key.text == class and type(e.value) == "table" then
+                    base = C.raw_field(e.value, "entity")
+                    base = type(base) == "string" and base:gsub('"', "") or nil
+                end
+            end
+        end
+        planet_entities[class] = base and (base .. "_01_entity") or false
+    end
+    return planet_entities[class] or nil
+end
+
 -- a design table from what the caller has (a creator design, or a prescripted block)
 local function design_of(ctx, d)
     if type(d) ~= "table" then
@@ -206,6 +228,10 @@ function preview.build(ctx, b, design, opts)
             if ctx.texture_size(room) then
                 b:texture("/preview/room", room, px + 4, py + 4, rw, rh)
             end
+            -- the ruler in the room (CPortraitObject::SetEmpireDesign)
+            portraits.put(ctx.game_dir, b.items, portraits.ruler(ctx.game_dir, d),
+                portraits.element(ctx.game_dir, FILE, "species_preview", { "portrait_window", "portrait" }),
+                { x = px, y = py, w = 771, h = 285 }, nil, "/preview/ruler")
         end
         b.items[#b.items + 1] = { kind = "sprite", path = "/clip", sprite = "", texture = "", sprite_kind = "clip",
             frame = 1, frames = 1, x = 0, y = 0, w = 0, h = 0 }
@@ -230,6 +256,14 @@ function preview.build(ctx, b, design, opts)
     end
     -- the window (its background already drawn)
     o.hide[P .. "/background"] = true
+    o.hide[P .. "/species_window/portrait/portrait"] = true
+    -- the ship's render target (drawn below at its size) and the bioships' warning (a bioship
+    -- culture's [I: by its name])
+    o.hide[P .. "/ship_preview/render_target"] = true
+    if not (d and (d.graphical_culture or ""):find("bio", 1, true)) then
+        o.hide[P .. "/ship_preview/bioship_warning"] = true
+    end
+    local n_window = #b.items
     local r = b:add(FILE, "species_preview", o)
     -- its lists: the civics, the ethics (species_preview_civic / _ethic), the species' traits
     -- (species_preview_trait), each entry under the one before
@@ -274,6 +308,41 @@ function preview.build(ctx, b, design, opts)
                 "gfx/interface/icons/traits/" .. k .. ".dds") }
         end
         list(SW .. "/traits", "species_preview_trait", traits)
+    end
+    -- the species' portrait (species_window/portrait/portrait), under its frame
+    if d and not opts.hide_lower then
+        local at
+        for i = n_window + 1, #b.items do
+            if not at and (b.items[i].path or ""):find(SW .. "/species_frame", 1, true) == 1 then
+                at = i
+            end
+        end
+        portraits.put(ctx.game_dir, b.items, portraits.species(ctx.game_dir, d),
+            portraits.element(ctx.game_dir, FILE, "species_preview", { "species_window", "portrait", "portrait" }),
+            r.rects[SW .. "/portrait"], at, "/preview/species")
+    end
+    -- the home world (CSpeciesPreviewWindow::CreateHomeworldPreview: the planet class's entity, one
+    -- of its variants [I: the game draws one at random], in 3d_icon) and the ship (the country's
+    -- latest design of ship class 3 (GetLatestShipDesignOfClass(3, 2) [I: the science ship, by the
+    -- game's frame: humanoid_01's]): its culture's science ship, in ship_preview/render_target)
+    if d then
+        local hw = r.rects[P .. "/home_world/3d_icon"]
+        local ent = hw and preview.planet_entity(ctx.game_dir, d.planet_class or "pc_continental")
+        if ent then
+            b.items[#b.items + 1] = { kind = "sprite", path = "/preview/model|planet|" .. ent, sprite = "", texture = "",
+                sprite_kind = "inset", frame = 1, frames = 1, x = hw.x, y = hw.y, w = hw.w, h = hw.h }
+        end
+        local sp = not opts.hide_lower and r.rects[P .. "/ship_preview"]
+        if sp then
+            -- (render_target at (7, 8), its image at its size, 396 x 160: the button's sprite is
+            -- drawn at its texture's size here, hidden)
+            local sr = { x = sp.x + 7, y = sp.y + 8, w = 396, h = 160 }
+            b:texture("/preview/ship_bg", "gfx/interface/ship_designer/ship_design_entry_bg.dds", sr.x, sr.y, sr.w, sr.h)
+            local cols = table.concat((d.empire_flag or {}).colors or {}, ",")
+            b.items[#b.items + 1] = { kind = "sprite", path = "/preview/model|ship|" .. (d.graphical_culture or "mammalian_01")
+                .. "|science|DEFAULT_SCIENCESHIP_SECTION|mid|" .. cols,
+                sprite = "", texture = "", sprite_kind = "inset", frame = 1, frames = 1, x = sr.x, y = sr.y, w = sr.w, h = sr.h }
+        end
     end
     -- the flag: its composed texture on GFX_empire_flag_200's frame
     local fr = r.rects[P .. "/empire_flag"]

@@ -37,6 +37,8 @@ local function design_of(entry)
     return nil
 end
 
+design.design_of = design_of
+
 -- a name the player typed (literal) or a localisation key
 local function text_of(ctx, s)
     if not s or s == "" then
