@@ -148,6 +148,8 @@ struct Running {
     old_forbidden: bool,
     /// the unit's time so far, seconds
     secs: f64,
+    /// the generator's position at the unit's start (its pools included)
+    position: u32,
 }
 
 pub struct Simulation {
@@ -159,6 +161,9 @@ pub struct Simulation {
     pub errors: Vec<String>,
     /// Time spent per phase (`kind.name`): calls and seconds, for profiling.
     pub phase_times: std::collections::BTreeMap<String, (u64, f64)>,
+    /// Draws of the synchronized generator per unit (`kind.name`, the pools' included), to compare
+    /// with the game's (examples/drawprof).
+    pub phase_draws: std::collections::BTreeMap<String, u64>,
     tick_count: i32,
     cached_month: i32,
     cached_year: i32,
@@ -181,6 +186,7 @@ impl Simulation {
             ticks: 0,
             errors: Vec::new(),
             phase_times: std::collections::BTreeMap::new(),
+            phase_draws: std::collections::BTreeMap::new(),
             tick_count: 0,
             cached_month: d.month_index(),
             cached_year: d.year(),
@@ -312,6 +318,8 @@ impl Simulation {
             self.current = Some(r);
             return Step { unit, done: false, tick_done: false };
         }
+        let drawn = self.runtime.rng.borrow().position.wrapping_sub(r.position);
+        *self.phase_draws.entry(unit.label()).or_insert(0) += drawn as u64;
         if r.thread.is_some() {
             let e = self.phase_times.entry(unit.label()).or_insert((0, 0.0));
             e.0 += 1;
@@ -377,6 +385,7 @@ impl Simulation {
     /// A unit's start: its mark, the pools drawn where the game draws them, the forbidden zone of a
     /// parallel phase, and the phase's coroutine (run by [`Simulation::step_until`]).
     fn start_unit(&mut self, unit: Unit) {
+        let position = self.runtime.rng.borrow().position;
         let parallel = match unit {
             Unit::Micro => {
                 self.mark(Phase::Micro);
@@ -392,7 +401,7 @@ impl Simulation {
                     self.pool = self.runtime.rng.borrow_mut().draw_pool(DAILY_POOL_SIZE);
                     *self.runtime.daily_pool.borrow_mut() = self.pool.clone();
                     let old = self.runtime.rng.borrow().is_forbidden();
-                    self.current = Some(Running { unit, thread: None, started: true, old_forbidden: old, secs: 0.0 });
+                    self.current = Some(Running { unit, thread: None, started: true, old_forbidden: old, secs: 0.0, position });
                     return;
                 }
                 PARALLEL.contains(&name)
@@ -422,7 +431,7 @@ impl Simulation {
                 None
             }
         };
-        self.current = Some(Running { unit, thread, started: false, old_forbidden, secs: 0.0 });
+        self.current = Some(Running { unit, thread, started: false, old_forbidden, secs: 0.0, position });
     }
 
     /// The day's pool of random draws (taken in `random_pool`), for the parallel phases.
