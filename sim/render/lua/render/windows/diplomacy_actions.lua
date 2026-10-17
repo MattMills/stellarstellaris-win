@@ -770,8 +770,43 @@ function A.apply(game_dir, key, actor, recipient)
     elseif broken and PACTS[broken] then
         -- a pact ends on both sides
         out.ok = set_flag(ours, PACTS[broken], false) and set_flag(theirs, PACTS[broken], false)
+    elseif k == "insult" then
+        -- CInsultAction: the recipient's opinion of the actor gets opinion_insult (the engine's
+        -- add_opinion_modifier; the actor's insult efficiency multiplier not applied [I])
+        local okc = pcall(require, "engine.script.creation")
+        local oks, systems = pcall(require, "engine.systems")
+        if okc and oks and systems.effects and systems.effects.add_opinion_modifier then
+            out.ok = pcall(systems.effects.add_opinion_modifier, { kind = "country", id = recipient, who = actor, modifier = "opinion_insult" })
+        else
+            out.note = "the engine's add_opinion_modifier is not loaded"
+        end
     else
         out.note = "accepted; its effect (" .. key .. ") is not done here"
+    end
+    -- the pacts' on_actions (ROOT = recipient, FROM = actor), then CDiplomaticAction::ExecuteAccept:
+    -- the type's on_accept effect (ROOT = actor, FROM = recipient), through the script layer
+    local SIGN = { commercial_pact = "on_sign_commercial_pact", defensive_pact = "on_sign_defensive_pact",
+        non_aggression_pact = "on_sign_non_aggression_pact", research_agreement = "on_sign_research_pact",
+        migration_pact = "on_sign_migration_pact" }
+    local ok, eval = pcall(require, "simscript.eval")
+    if ok and eval.effect then
+        local run = {}
+        if formed and SIGN[formed] then
+            local okev, events = pcall(require, "simscript.events")
+            if okev then
+                local okr, err = pcall(events.on_action, SIGN[formed], eval.S("country", recipient),
+                    eval.new_ctx(eval.S("country", actor), eval.S("country", recipient)))
+                run[#run + 1] = SIGN[formed] .. (okr and "" or (" failed: " .. tostring(err)))
+            end
+        end
+        local oa = def and field(def.block, "on_accept")
+        if type(oa) == "table" then
+            local okr, err = pcall(eval.effect, oa, eval.new_ctx(eval.S("country", actor), eval.S("country", recipient)))
+            run[#run + 1] = "on_accept" .. (okr and "" or (" failed: " .. tostring(err)))
+        end
+        if #run > 0 then
+            out.reasons = ((out.reasons and out.reasons ~= "") and (out.reasons .. "; ") or "") .. "ran " .. table.concat(run, ", ")
+        end
     end
     out.done = out.ok
     return require("render.windows.diplomacy_data").serialize(out)
