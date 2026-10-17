@@ -112,3 +112,11 @@ sites in 599 functions were checked.
 - The micro phase advances the position by the ship count each tick (`RUST.skip`), since the ship pool's values matter only in combat.
 - The daily and monthly pools are drawn where the game draws them (`RUST.daily_pool`, `RUST.monthly_pool`).
 - The AI's unsynced generator restarts at the country id, as a loaded game does without `-loadrandomseed` (`sim/lua/engine/ai/rng.lua`).
+- The draws of engine updates whose own work is not modelled are made where the game makes them, and their values dropped (`sim/lua/engine/draws.lua`), each checked against the headless trace of every draw **[V]**:
+  - per country, in `CCountry::DailyUpdateSerial`: the pop factions module (1), the special projects (2 per project, 2 more while a pending one waits for its `ai_research_date`), `UpdateEnvoys` (1, after the research);
+  - one per owned planet in `CPlanetManager::DailyUpdate` (the bombardment's scope);
+  - `OnEthicsDivergence` (2 per pop group whose ethics changed), made at the start of the next serial phase;
+  - archaeology: one value per site (its excavation pool), then one per site;
+  - monthly, per country: the grand archive module (1), a personality for a country without one (1), `HandleForcedSpeciesIntegration` (1).
+- MTTH events draw nothing from the global stream: a country rolls from `CCrudeRandom(pool[(id + 4696) % 1000])`, `GetInt64 % 1,000,000` per event whose trigger is met (`simscript/events.lua`).
+- Not made yet: the draws of fleet movement, orbits and orders that the fleet modules do not make, `DailyUpdateNewFleetsDetectedSerial`, the colonies' daily on_actions, combat. Over 60 combat-free days from 2210.02.01 the simulation ends 903 draws short of the game (about 8,000 before the draws above).

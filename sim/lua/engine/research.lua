@@ -907,8 +907,9 @@ local function area_day(host, country, status, area, day)
     research.update_alternatives(country, area, false)
 end
 
--- research.daily(host, date): every country's research for the day (in the countries' serial phase)
-function research.daily(host, date)
+-- research.begin_day(date): the day's setup, before the countries' serial update
+local the_day
+function research.begin_day(date)
     local day = date and date.day and (date.day - 1) or nil
     if day == nil then
         local days = math.floor((E.date() - 43800000) / 24)
@@ -917,19 +918,41 @@ function research.daily(host, date)
     if day == 1 then
         heads = nil
     end
+    the_day = day
     today = date and date.year and string.format("%d.%02d.%02d", date.year, date.month, date.day) or nil
+end
+
+-- research.country_daily(host, country): the country's research for the day
+-- (CTechnologyStatus::DailyResearch, in CCountry::DailyUpdateSerial 0x2354b7f, before the envoys)
+function research.country_daily(host, country)
+    local c = world.object("country", country)
+    slice.check("research country")
+    local status = c and world.field(c, "tech_status")
+    if type(status) == "table" then
+        for _, area in ipairs(research.AREAS) do
+            slice.check("research area")
+            area_day(host, country, status, area, the_day)
+        end
+    end
+end
+
+-- research.country_auto(country): the country's auto research (after the envoys, 0x2354c95)
+function research.country_auto(country)
+    local c = world.object("country", country)
+    local status = c and world.field(c, "tech_status")
+    if type(status) == "table" then
+        research.auto_research(country, status)
+    end
+end
+
+-- research.daily(host, date): every country's research for the day, country by country (the
+-- countries' serial phase runs begin_day, then country_daily and country_auto in its own loop)
+function research.daily(host, date)
+    research.begin_day(date)
     for _, country in ipairs(world.all("country")) do
         slice.tick("research.lua:885")
-        local c = world.object("country", country)
-        slice.check("research country")
-        local status = c and world.field(c, "tech_status")
-        if type(status) == "table" then
-            for _, area in ipairs(research.AREAS) do
-                slice.check("research area")
-                area_day(host, country, status, area, day)
-            end
-            research.auto_research(country, status)
-        end
+        research.country_daily(host, country)
+        research.country_auto(country)
     end
 end
 

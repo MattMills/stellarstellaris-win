@@ -1003,9 +1003,11 @@ local function ethic_serial(gid, g, size, safe, owner, date)
     if changed and changed > 0 then
         -- CPopGroup::OnEthicsDivergence (0x684640): two global draws (the event scope) and the
         -- on_action on_daily_pop_ethics_divergence (This = the group, From = the owner,
-        -- local_num_pops_changed): empty in vanilla; the draws are not made (the phase forbids them)
+        -- local_num_pops_changed): empty in vanilla; the draws are made at the start of the next
+        -- serial phase (the phase forbids them; engine.draws)
         s.pops_changed = s.pops_changed + changed
         s.draws_not_made = s.draws_not_made + 2
+        require("engine.draws").divergence(2)
         if #ethics.events < 200 then
             ethics.events[#ethics.events + 1] = { date = string.format("%d.%02d.%02d", date.year, date.month, date.day),
                 group = gid, n = changed, size = size }
