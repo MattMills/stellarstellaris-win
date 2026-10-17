@@ -229,6 +229,8 @@ end
 -- brought in. STELLAR_STORE_SYNC=all brings every object in every day (the first version).
 
 local live = require("engine.store.live")
+local STORE_WORLD = os.getenv("STELLAR_WORLD") == "store"
+
 local SYNC_ALL = os.getenv("STELLAR_STORE_SYNC") == "all"
 Bm.stats.stale, Bm.stats.stale_ids, Bm.stats.synced, Bm.stats.checked = {}, {}, 0, 0
 
@@ -294,6 +296,14 @@ local LIVE = {}   -- store name -> the number of live objects last published
 -- B.sync(): the mirror made current from the table world, and the object tables published
 function Bm.sync()
     local t0 = RUST.clock()
+    if STORE_WORLD then
+        -- the world is in the store (STELLAR_WORLD=store): exploration reads its blocks in place and
+        -- the workers write each country's own lists there; no mirror, nothing to sync or publish
+        -- (engine.store.objects finds an object through its store's own block)
+        live.take()
+        Bm.stats.sync = Bm.stats.sync + (RUST.clock() - t0)
+        return
+    end
     local dirty = live.take()
     for name in pairs(MIRROR) do
         MB[name] = MB[name] or {}
@@ -716,7 +726,8 @@ function Bm.merge(out)
         local o = out.countries[cid]
         local tc = world.object("country", cid)
         local sc = O.get("country", cid)
-        if tc and sc then
+        -- (the world in the store: the workers wrote the country's own lists in place)
+        if tc and sc and not STORE_WORLD then
             for bitv, key in pairs(LISTS) do
                 if bit.band(o.mask, bitv) ~= 0 then tset_list(tc, key, store_list(sc, key)) end
             end

@@ -421,6 +421,7 @@ function W.entry(obj, key)
 end
 
 function W.remove(kind, id)
+    W.version = (W.version or 0) + 1
     local name = W.KINDS[kind] or kind
     local store, ids = W.stores[name], W.ids[name]
     if store and store[id] then
@@ -443,6 +444,7 @@ function W.remove(kind, id)
 end
 
 function W.create(kind, id, block)
+    W.version = (W.version or 0) + 1
     local name = W.KINDS[kind] or kind
     local holder = W.store_blocks[name] and bid_of(W.store_blocks[name])
     if not holder then return nil end
@@ -637,6 +639,7 @@ end
 -- W.place(store, id, old, block[, gen]) -> the object's block: a freed slot `old = none` becomes the
 -- object (the save keeps its place), else the object goes at the end (W.create)
 function W.place(name, id, old, block, gen)
+    W.version = (W.version or 0) + 1
     name = W.KINDS[name] or name
     local holder = W.store_blocks[name] and bid_of(W.store_blocks[name])
     local i = old and holder and find(holder, sid(tostring(old)))
