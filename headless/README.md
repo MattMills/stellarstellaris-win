@@ -594,6 +594,7 @@ the renderer:
 | `timestep MS`, `timestep off` | lockstep: the camera's frame time fixed at MS and no frame run between commands; off: the frames' own times |
 | `tick N` (`frames N`), `wait SECONDS` | N frames run; SECONDS of frames (with a timestep, that many frames of it) |
 | `state [planet ID]` | JSON: date, view, window, the clock (paused, speed), the input (pointer, buttons and keys held, timestep, frames run, frames held for the input's delivery), the camera (orientation and its smoothing target, eye, look-at, up, FOV, aspect, near, far, the view and projection matrices), the system's zoom steps; with a planet its `CPlanet::CalcCurrentEntityScale`, `GetDisplaySize` and entity world transform |
+| `hover` | the galaxy view's hover state: the system ref cached at idler +0xaa4 (CInGameIdler::GetGalacticObjectUnderMouse, what a right click there orders to), the GUI's pointer for hit tests (CGuiGraphics +0x358), the view and the camera's rotating flag. Replies `ok hover cached REF (index I) ... scale X Y view V rotating R` |
 | `quit` | `_exit(0)` (no gamestate written) |
 
 **Input** (`headless.c`, "input"; the renderer's side is `sim/render/src/controls.rs`,
@@ -632,6 +633,15 @@ named as the renderer names them (X keysym names in lower case, aliases such as 
   FRAMES frames, then STEPS moves along the line each followed by FRAMES frames, released). Each
   reply names the frame (`frame N`).
 - An input command releases the camera that `camera` holds (the input moves it from there).
+- **The pointer's hit tests.** The GUI keeps the pointer of the mouse's events (CGuiGraphics
+  +0x350, SetCurrentMousePosition) and copies it to the one its hit tests read (+0x358,
+  GetMouseScreenPositionForCollisionObjects) only when it draws (Render2dObjectsToScreen,
+  RefreshCollisionObjects). The headless game draws far fewer frames than it updates, so after a
+  move that copy lags by 10 to 30 frames, and with it the galaxy's hover (FindGalacticObject-
+  UnderMouse, cached each frame at idler +0xaa4). A click right after a move would act on the old
+  place: in galaxy view a right click on a system did nothing. So `click X Y` away from the
+  pointer moves it, waits until the GUI has drawn it and one frame more (at most 600 frames), then
+  presses; its reply ends with `waited N` (frames). `hover` shows the state.
 
 How (all in `headless.c`, the layouts read from the Linux build's code):
 

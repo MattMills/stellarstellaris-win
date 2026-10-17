@@ -53,6 +53,7 @@ mod engine;
 mod events;
 mod flag;
 mod fleetwin;
+mod rightclick;
 mod math;
 mod models;
 mod particles;

@@ -918,6 +918,8 @@ impl App {
     pub fn select(&mut self, what: Option<Pickable>) {
         if self.selected != what {
             self.selected = what;
+            // the box selection's other fleets (rightclick.rs) no longer selected
+            self.fleet.group.clear();
             self.log.push(format!("selected: {what:?}"));
             self.scene = None;
         }
@@ -1639,6 +1641,8 @@ impl App {
 
     fn act(&mut self, path: &str, action: Option<&str>) -> Result<(), String> {
         self.log.push(format!("click: {path} -> {}", action.unwrap_or("no action")));
+        // a right click's order selector closed by a click elsewhere (rightclick.rs)
+        self.fleet_autoclose(action);
         // an action `LEFT||RIGHT`: a left click does LEFT (a right click RIGHT: gui_right_click)
         let action = action.map(|a| a.split_once("||").map_or(a, |(l, _)| l));
         match action {
@@ -2241,14 +2245,17 @@ impl App {
                 if self.gui_right_click(x, y)? {
                     return Ok(true);
                 }
-                // a map label orders as the place it is on (mapicons.rs order_at); another GUI
-                // element takes the right click itself (an alert dismissed, an outliner row's
-                // camera: mainbars.rs), never an order under it
+                // the selected fleets' action (rightclick.rs) on a map label's or an outliner
+                // row's object or what is under the cursor; another GUI element takes the right
+                // click itself (an alert dismissed, an outliner row's camera: mainbars.rs), never
+                // an order under it
+                let target = self.fleet_right_click_target(x, y)?;
                 let label = matches!(self.button_at(x, y)?, Some((p, _)) if p.starts_with("/label/"));
-                if !label && crate::mainbars::right_click(self, x, y)? {
+                if target.is_none() && self.fleet.armed.is_none() && !label && crate::mainbars::right_click(self, x, y)? {
+                    self.fleet_autoclose(None);
                     return Ok(true);
                 }
-                self.order_at(x, y)
+                self.fleet_right_click(x, y, target)
             }
             Effect::At(Action::BoxSelect, x, y) if self.screen == Screen::Map && self.pressed.is_none() => self.box_select(x, y),
             Effect::At(a, x, y) => {

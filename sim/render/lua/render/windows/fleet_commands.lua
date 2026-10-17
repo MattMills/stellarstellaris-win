@@ -392,6 +392,29 @@ function fc.target(fid, order, kind, id)
             orders().clear(fid)
             return issued(orders().research_anomaly(fid, id), "research " .. id)
         end
+        -- the right click's commands (render.windows.fleet_rightclick): the build orders (a
+        -- planet's station; the outpost on a system's or a planet's system's star) and the attack
+        -- (follow_order with attack_when_in_range)
+        local C = require("render.windows.fleet_rightclick").COMMANDS
+        local CLASS = { build_mining = 5, build_research = 6, build_observation = 9, build_starbase = 10 }
+        if CLASS[order] then
+            local st = require("engine.fleets.stations")
+            local pid = kind == "planet" and id or nil
+            if order == "build_starbase" then
+                local sid = kind == "system" and id or (pid and tonumber(world.path(world.object("planet", pid), "coordinate", "origin")))
+                pid = sid and st.star_of(sid)
+            end
+            if not pid then return "refused: " .. order .. " needs a planet" end
+            if not st.can_build_station(world.fleet_owner[fid], pid, CLASS[order]) then return "refused: " .. order .. " not possible on " .. pid end
+            return issued(C.build(fid, "replace", pid, CLASS[order]), order .. " " .. pid)
+        elseif order == "attack" then
+            if kind == "ship" then
+                local s = world.object("ships", id)
+                kind, id = "fleet", s and tonumber(world.field(s, "fleet"))
+            end
+            if kind ~= "fleet" or not id or id == fid then return "refused: attack needs another fleet" end
+            return issued(C.follow(fid, "replace", id, true), "attack " .. id)
+        end
         return "not done: the engine has no " .. tostring(order) .. " order"
     end)
 end
@@ -421,6 +444,38 @@ function fc.template(fid, did, delta)
             end
         end
         return "refused: no such row"
+    end)
+end
+
+---------------------------------------------------------------- tests
+
+-- a fleet's orders and place as one line (the script command `fleet_cmd .debug(FID)`): its
+-- coordinate, movement state and orbit, the current order with its sub-order and progress, the
+-- queue
+function fc.debug(fid)
+    return guarded("debug", function()
+        fid = tonumber(fid)
+        local f = world.object("fleet", fid)
+        if not f then return "no fleet" end
+        local mm = world.field(f, "movement_manager")
+        local c = world.field(mm or {}, "coordinate")
+        local function blk(b, depth)
+            if type(b) ~= "table" then return tostring(b and b.text or b) end
+            if depth > 2 then return "{...}" end
+            local out = {}
+            for _, e in ipairs(b) do
+                if e.op and e.key then
+                    out[#out + 1] = e.key.text .. "=" .. (type(e.value) == "table" and e.value.text == nil and blk(e.value, depth + 1) or tostring(e.value.text))
+                elseif e.text then
+                    out[#out + 1] = e.text
+                end
+            end
+            return "{ " .. table.concat(out, " ") .. " }"
+        end
+        local orb = world.path(f, "movement_manager", "orbit")
+        return string.format("fleet %d at %s state %s orbit %s current %s queue %s", fid, blk(c, 0),
+            tostring(mm and world.field(mm, "state")), blk(orb, 0), blk(world.field(f, "current_order"), 0),
+            blk(world.field(f, "order"), 1))
     end)
 end
 

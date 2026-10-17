@@ -863,6 +863,9 @@ impl Engine {
                 Ok(Reply::ok(format!("bench {r}")))
             }
             "state" => Ok(Reply::ok(self.state())),
+            // `fleet_cmd CALL`: a render.windows.fleet_commands call in the simulation (fleetwin.rs:
+            // `fleet_cmd .debug(1)`, `fleet_cmd ["stop"](3)`), its reply
+            "fleet_cmd" => self.app.fleet_command(rest).map(|r| Reply::ok(format!("fleet_cmd {r}"))),
             "quit" => Ok(Reply { line: "ok quit".into(), bytes: None, quit: true }),
             other => Err(format!("unknown command {other:?}")),
         }

@@ -479,7 +479,16 @@ function move_order.is_done(o, fid, f)
         end
         if ok and m.is_moving and m.is_moving(fid) then return false end
     end
-    return near(coord(world.field(mm_of(f), "coordinate")), t)
+    local here = coord(world.field(mm_of(f), "coordinate"))
+    if near(here, t) then
+        return true
+    end
+    -- a move from another system ends short of its point (the movement idle there 0.6 off a
+    -- survey's orbit slot: the order never done): the last leg again, in the system [I]
+    if m and m.move_to and t and here and here.origin == t.origin and not (m.is_moving and m.is_moving(fid)) then
+        m.move_to(fid, { x = t.x, y = t.y, origin = t.origin })
+    end
+    return false
 end
 function move_order.tick() end
 function move_order.finish() end
@@ -698,6 +707,9 @@ return_order.start = return_order.tick
 function return_order.finish(o)
     orders.clear_sub_order(o)
 end
+
+-- follow_order (CFollowFleetOrder): engine.fleets.follow (the right click on a fleet)
+TYPES.follow_order = require("engine.fleets.follow").order
 
 -- the orders the engine does not run yet (combat, colonization, archaeology): kept, never done
 local KEPT = { aggressive_stance_fleet_order = true, colonize_planet_order = true,
@@ -995,7 +1007,18 @@ function orders.survey_system(fid, system, opts)
     end
     local here = coord(world.field(mm_of(f), "coordinate"))
     local x, y = 0, 0
-    if here and here.origin == system then x, y = here.x, here.y end
+    if here and here.origin == system then
+        x, y = here.x, here.y
+    elseif here then
+        -- from outside: where the fleet will come in (CFTLJump::CalcFTLEnterSystemPoint,
+        -- engine.fleets.path.enter_point) [V: the game's queue from the galaxy view starts with
+        -- Toarus I, the body nearest the hyperlane's entry from Ithni Zerak, not the star]
+        local okp, path = pcall(require, "engine.fleets.path")
+        if okp and path.enter_point then
+            local ok, e = pcall(path.enter_point, path.coord(path.raw(here.x), path.raw(here.y), here.origin), system)
+            if ok and e then x, y = e.x / ONE, e.y / ONE end
+        end
+    end
     local n = 0
     while #left > 0 do
         local best, bd
