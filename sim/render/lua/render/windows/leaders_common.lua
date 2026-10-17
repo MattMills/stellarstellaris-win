@@ -2,7 +2,7 @@
 -- (docs/windows/empire.md section 3): a leader's data from the save, and its card from a paragon
 -- template of interface/paragon_ui_types.gui filled as CParagonPortraitContainer::Update fills
 -- it (the government view's ruler, the leaders view's rows and big card, the council's slots).
--- The portraits are 3D (CPortraitObject: the species' portrait mesh): not drawn.
+-- The portraits: render.portraits (the portrait entity in an inset, portraits.rs).
 
 local C = require("render.windows.empire_common")
 
@@ -85,8 +85,12 @@ function L.leader_data(id, country)
         gender = C.strip(w.field(l, "gender")),
         portrait = C.strip(w.field(l, "portrait")),
         traits = {},
+        species = tonumber(w.field(l, "species")),
         location = location(w.field(l, "location")),
     }
+    -- (a leader without a portrait of its own: its species')
+    local sp = d.species and w.object("species", d.species)
+    d.species_portrait = sp and C.strip(w.field(sp, "portrait")) or nil
     for _, t in ipairs(w.fields(l, "traits") or {}) do
         d.traits[#d.traits + 1] = C.strip(type(t) == "table" and t.text or t)
     end
@@ -380,7 +384,8 @@ function L.card(ctx, b, template, rect, d, opts)
     else
         hide.ethic_icon = true
     end
-    -- the portrait is 3D (not drawn); the pool's and the status's parts as the leader is owned
+    -- the portrait icon: an inset (render.portraits, below); the pool's and the status's parts as
+    -- the leader is owned
     hide.character_portrait = true
     hide.location_secondary_button = true
     hide.no_character_container = true
@@ -403,11 +408,15 @@ function L.card(ctx, b, template, rect, d, opts)
     for k, v in pairs(opts.text or {}) do
         text[k:match("([^/]+)$")] = v
     end
+    local n0 = #b.items
     local r = b:add_named(PARAGON, template, {
         prefix = opts.prefix, parent = { x = rect.x, y = rect.y, w = rect.w, h = rect.h },
         hide = hide, actions = opts.actions,
         named = { text = text, frames = frames, sprites = sprites, textures = textures, actions = opts.named_actions },
     })
+    -- the portrait (CPortraitObject): the leader's, else its species' (d.species_portrait)
+    require("render.portraits").card(ctx.game_dir, b.items, n0, r.rects, PARAGON, template,
+        { id = d.id, gender = d.gender, portrait = d.portrait or d.species_portrait })
     -- the traits in their overlapping box (CLeaderTraitListboxEntry: the trait's layered icon)
     local box
     for path, rr in pairs(r.rects) do

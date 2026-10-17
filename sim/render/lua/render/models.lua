@@ -82,8 +82,9 @@ local function state_particles(e)
     return out
 end
 
--- the files of gfx/models with an extension, recursively, no portraits
-local function files(game_dir, ext)
+-- the files of gfx/models with an extension, recursively: no portraits, or (portraits = true)
+-- only the portraits' (gfx/models/portraits: read when a portrait is first drawn)
+local function files(game_dir, ext, portraits)
     local out = {}
     local list
     if RUST and RUST.list_files then
@@ -92,7 +93,7 @@ local function files(game_dir, ext)
         list = {}
     end
     for _, rel in ipairs(list) do
-        if not rel:find("/portraits/", 1, true) then
+        if (rel:find("/portraits/", 1, true) ~= nil) == (portraits == true) then
             out[#out + 1] = rel
         end
     end
@@ -102,8 +103,16 @@ end
 -- models.load(game_dir) -> { meshes = { [name] = def }, entities = { [name] = def }, files, seconds }
 function models.load(game_dir)
     local t0 = RUST.clock()
-    local db = { meshes = {}, entities = {}, files = 0, errors = 0 }
-    for _, f in ipairs(files(game_dir, "gfx")) do
+    local db = { meshes = {}, entities = {}, files = 0, errors = 0, game_dir = game_dir }
+    models.scan(db, game_dir, false)
+    db.seconds = RUST.clock() - t0
+    return db
+end
+
+-- models.scan(db, game_dir, portraits): the meshes and entities of gfx/models' files into db (the
+-- portraits' alone with portraits = true)
+function models.scan(db, game_dir, portraits)
+    for _, f in ipairs(files(game_dir, "gfx", portraits)) do
         local tree = source.parse(game_dir, f)
         if tree then
             db.files = db.files + 1
@@ -122,7 +131,7 @@ function models.load(game_dir)
             db.errors = db.errors + 1
         end
     end
-    for _, f in ipairs(files(game_dir, "asset")) do
+    for _, f in ipairs(files(game_dir, "asset", portraits)) do
         local tree = source.parse(game_dir, f)
         if tree then
             db.files = db.files + 1
@@ -152,7 +161,14 @@ function models.load(game_dir)
             db.errors = db.errors + 1
         end
     end
-    db.seconds = RUST.clock() - t0
+end
+
+-- models.portraits(db): the portraits' meshes and entities added to db, once
+function models.portraits(db)
+    if not db.portraits_read and db.game_dir then
+        db.portraits_read = true
+        models.scan(db, db.game_dir, true)
+    end
     return db
 end
 
@@ -187,6 +203,9 @@ end
 -- a model by name: an entity (its pdxmesh's file, the entity's settings over the pdxmesh's) or a
 -- pdxmesh; nil, why if neither
 function models.describe(db, name)
+    if not db.entities[name] and not db.meshes[name] and name:find("portrait", 1, true) then
+        models.portraits(db)
+    end
     local e = db.entities[name]
     if e then
         e = resolve(db, e, 0)

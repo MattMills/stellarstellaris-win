@@ -1471,6 +1471,8 @@ impl App {
             if let (Screen::Map, Some(map)) = (self.screen, self.map.as_mut()) {
                 let cache = map.cache.clone();
                 crate::designer::fill_insets(&mut scene, &self.designer_models, &mut map.models, &map.runtime, &self.game_dir, &mut map.textures, &mut cache.borrow_mut());
+                // the leaders' portraits in the views (portraits.rs)
+                crate::portraits::fill_insets(&mut scene, &mut map.models, &map.runtime, &self.game_dir, &mut map.textures, &mut cache.borrow_mut());
             }
             // the Situation Log's trackers on the galaxy (events.rs)
             if let (Screen::Map, Some(map)) = (self.screen, self.map.as_mut()) {

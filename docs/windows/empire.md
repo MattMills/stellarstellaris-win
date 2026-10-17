@@ -106,8 +106,8 @@ windows in `species_mod.lua`.
   trait without an icon: `gfx/interface/icons/traits/<key>.dds` **[I]**.
 - `on_hover_*` containers (the council cards' names, ages ...) show while the mouse is over the
   card: not drawn **[I]**.
-- Not drawn: the 3D portraits (CPortraitObject: the species' portrait mesh, e.g.
-  molluscoid_17_portrait.mesh; there is no 2D still), the leader's background text, the
+- The leaders' portraits: docs/windows/portraits.md (the portrait entity, e.g.
+  molluscoid_17_portrait.mesh, in an inset). Not drawn: the leader's background text, the
   experience bar.
 
 ## 4. Empire view, "Colonies and Sectors" (`empire_view.gui`, CEmpireView)
@@ -194,7 +194,8 @@ windows in `species_mod.lua`.
   `empire_base`'s part), the edicts' costs (5 / 10), the diplomatic weight, the leader caps'
   modifiers. The sim's `engine.modifiers` computes country modifiers from the world and the
   game's definitions; the views' data runtime has the world only.
-- The 3D portraits (leaders, councillors, species) and the government's city background (a
+- The species' and pops' portraits (the leaders' and councillors' are drawn:
+  docs/windows/portraits.md) and the government's city background (a
   layered 2D picture: gfx/portraits/city_sets, environments by planet class).
 - A disabled button's grey (the game's disabled effect desaturates).
 - List clipping: a row the game's list cuts is left out (the recruitable leader under the owned
