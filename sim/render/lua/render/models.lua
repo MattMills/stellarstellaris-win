@@ -100,6 +100,20 @@ local function files(game_dir, ext, portraits)
     return out
 end
 
+-- a file's numbers: a value, or its scripted variable (`@humanscale = 0.81` at the file's top:
+-- the human portrait entities' `scale = @humanscale`)
+local function numbers(tree)
+    local vars = {}
+    for _, e in ipairs(type(tree) == "table" and tree or {}) do
+        if e.op and e.key and e.key.text:sub(1, 1) == "@" and e.value.text then
+            vars[e.key.text] = tonumber(e.value.text)
+        end
+    end
+    return function(v)
+        return tonumber(v) or (type(v) == "string" and vars[v]) or nil
+    end
+end
+
 -- models.load(game_dir) -> { meshes = { [name] = def }, entities = { [name] = def }, files, seconds }
 function models.load(game_dir)
     local t0 = RUST.clock()
@@ -114,6 +128,7 @@ end
 function models.scan(db, game_dir, portraits)
     for _, f in ipairs(files(game_dir, "gfx", portraits)) do
         local tree = source.parse(game_dir, f)
+        local num = numbers(tree)
         if tree then
             db.files = db.files + 1
             -- `pdxmesh` blocks wherever they are: in objectTypes, or at the top level after a brace
@@ -123,7 +138,7 @@ function models.scan(db, game_dir, portraits)
                 if name then
                     db.meshes[name] = {
                         name = name, file = (get(m, "file") or ""):gsub("\\", "/"),
-                        scale = tonumber(get(m, "scale")) or 1, settings = settings_of(m), source = f,
+                        scale = num(get(m, "scale")) or 1, settings = settings_of(m), source = f,
                     }
                 end
             end)
@@ -133,6 +148,7 @@ function models.scan(db, game_dir, portraits)
     end
     for _, f in ipairs(files(game_dir, "asset", portraits)) do
         local tree = source.parse(game_dir, f)
+        local num = numbers(tree)
         if tree then
             db.files = db.files + 1
             find(tree, "entity", function(e)
@@ -150,7 +166,7 @@ function models.scan(db, game_dir, portraits)
                     -- uv_animation_speed, ...)
                     local gd = get(e, "game_data")
                     db.entities[name] = {
-                        name = name, pdxmesh = get(e, "pdxmesh"), clone = get(e, "clone"), scale = tonumber(get(e, "scale")) or 1,
+                        name = name, pdxmesh = get(e, "pdxmesh"), clone = get(e, "clone"), scale = num(get(e, "scale")) or 1,
                         settings = settings_of(e), attach = attach, source = f, particles = state_particles(e),
                         bloom_factor = type(gd) == "table" and tonumber(get(gd, "bloom_factor")) or nil,
                         recolor_crunch = type(gd) == "table" and tonumber(get(gd, "emissive_recolor_crunch")) or nil,

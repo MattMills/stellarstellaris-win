@@ -15,6 +15,7 @@ local C = require("render.windows.empire_common")
 local gui = require("render.gui")
 local rules = require("render.creator_rules")
 local preview = require("render.empire_preview")
+local portraits = require("render.portraits")
 
 local editors = {}
 
@@ -73,7 +74,7 @@ end
 -- entries in a grid box's slots (gui.grid_slot); a grid inside a window of the editor is cut to
 -- that window (the portraits' container, the origins' window: the game's frames show the last row
 -- cut there), one placed in the editor itself is not (the authorities' grid, 50 high, shows two rows)
-local function grid_entries(b, file, window, r, path, n, prefix, opts_of, pre)
+local function grid_entries(b, file, window, r, path, n, prefix, opts_of, pre, post)
     local grid = r.grids and r.grids[path]
     if not grid then
         return
@@ -96,7 +97,13 @@ local function grid_entries(b, file, window, r, path, n, prefix, opts_of, pre)
         if pre then
             pre(i, x, y)
         end
-        b:add(file, window, o)
+        local n0 = #b.items
+        local rr = b:add(file, window, o)
+        -- (what the entry draws over its window's first item: post(i, its report, the index
+        -- before it, the grid's box))
+        if post then
+            post(i, rr, n0, box)
+        end
     end
     if box then
         clip(b, nil)
@@ -250,11 +257,18 @@ E.portrait = function(ctx, b, st, R, d, W, o)
     grid_entries(b, PICKER, "species_portrait_picker_entry", r, W .. "/portraits_container/portraits", #ps,
         "/portraits", function(i, E_)
             return {
-                hide = { [E_ .. "/selected"] = ps[i].portrait ~= d.species.portrait, portrait = true,
+                hide = { [E_ .. "/selected"] = ps[i].portrait ~= d.species.portrait, [E_ .. "/portrait/portrait"] = true,
                     not_eligible = true, portrait_overlay = true, portrait_substitution_indicator = true },
                 actions = { [E_] = not ps[i].locked and ("creator:portrait:" .. i) or nil },
                 disabled = { [E_] = ps[i].locked },
             }
+        end, nil, function(i, rr, n0, box)
+            -- the portrait (portrait/portrait: GFX_portrait_character_close_up, the species'
+            -- portrait), over the entry's background, cut to the grid
+            local p = "/portraits/" .. i
+            portraits.put(ctx.game_dir, b.items, portraits.species(ctx.game_dir, { species = { portrait = ps[i].portrait } }),
+                portraits.element(ctx.game_dir, PICKER, "species_portrait_picker_entry", { "portrait", "portrait" }),
+                rr.rects and rr.rects[p .. "/species_portrait_picker_entry/portrait"], math.min(n0 + 2, #b.items + 1), p, box)
         end)
 end
 

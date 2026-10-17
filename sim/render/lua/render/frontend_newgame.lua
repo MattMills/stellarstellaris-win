@@ -27,6 +27,7 @@ local fe = {}
 local SETUP_GUI = "interface/game_setup/setup.gui"
 local SELECT_GUI = "interface/select_empire_design.gui"
 local PREVIEW_GUI = "interface/new_game_setup.gui"
+local design_table -- (below: an entry's design as the creator's table)
 
 local function new_report()
     return { sprites = 0, texts = 0, missing_sprites = {}, skipped = {}, rects = {}, grids = {} }
@@ -250,6 +251,21 @@ local function build_setup(ctx, state)
             end
         end
     end
+    -- the species' portrait (species_container/portrait_window/portrait: GFX_portrait_character)
+    -- over its city background (portrait_bg)
+    local dd = e.kind ~= "random" and not e.random and design_table(e) or nil
+    if dd then
+        local portraits = require("render.portraits")
+        local at
+        for i, it in ipairs(items) do
+            if it.path == SP .. "/portrait_window/portrait_bg" then
+                at = i + 1
+            end
+        end
+        portraits.put(ctx.game_dir, items, portraits.species(ctx.game_dir, dd),
+            portraits.element(ctx.game_dir, SETUP_GUI, "gamesetup_setupview", { "species_container", "portrait_window", "portrait" }),
+            report.rects[SP .. "/portrait_window"], at, "/setup/species")
+    end
     merge(ctx.items, ctx.report, items, report)
 
     -- the AI empires' previews: one per AI empire, advanced and fallen ones after [I]
@@ -450,8 +466,18 @@ local function build_select(ctx, state)
             text = { [base .. "/name"] = t.name, [base .. "/government"] = t.government, [base .. "/species_class"] = t.species_class },
             actions = { [base] = "ng:design:" .. i },
         }
+        local n0 = #ctx.items
         local it, r = gui.layout(ctx.game_dir, ctx.db, SELECT_GUI, window, ctx.screen, eopts)
         merge(ctx.items, ctx.report, it, r)
+        -- the ruler's portrait (portrait_container/portrait: GFX_portrait_character_close_up),
+        -- cut to the list; over the entry's background, under its texts
+        local dd = d.kind ~= "random" and design_table(d) or nil
+        if dd then
+            local portraits = require("render.portraits")
+            portraits.put(ctx.game_dir, ctx.items, portraits.ruler(ctx.game_dir, dd),
+                portraits.element(ctx.game_dir, SELECT_GUI, window, { "portrait_container", "portrait" }),
+                r.rects[base .. "/portrait_container"], math.min(n0 + 2, #ctx.items + 1), p, list)
+        end
         local er = r.rects[base]
         local h = (er and er.h or eh) + 5
         y = y + h
@@ -463,6 +489,15 @@ local function build_select(ctx, state)
 end
 
 -- ---------------------------------------------------------------- the screens
+
+-- an entry's design as the creator's table (render.newgame_design.design_of), cached on the entry
+design_table = function(e)
+    if e.design_table == nil then
+        local ok, d = pcall(require("render.newgame_design").design_of, e)
+        e.design_table = ok and d or false
+    end
+    return e.design_table or nil
+end
 
 local function state_of(game_dir)
     if not RENDER_NEWGAME then

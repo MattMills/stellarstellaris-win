@@ -41,7 +41,7 @@ pub struct ShipModel {
     pub lighting: Option<ShipLighting>,
 }
 
-fn read_model(t: &Table) -> mlua::Result<ShipModel> {
+pub(crate) fn read_model(t: &Table) -> mlua::Result<ShipModel> {
     let mut sections = Vec::new();
     let mut turrets = Vec::new();
     for x in t.get::<Table>("sections")?.sequence_values::<Table>() {
@@ -344,7 +344,7 @@ pub fn fill_insets(scene: &mut Scene, models: &HashMap<String, ShipModel>, lib: 
 
 /// A ship's meshes at the origin (as system.rs draws a ship: the frame entity, its attachments,
 /// the sections at the frame's locators, their turrets), its radius and centre.
-fn ship_meshes(lib: &mut models::Library, rt: &Runtime, gd: &str, s: &ShipModel, tex: &mut Textures, cache: &mut Cache) -> (Vec<MeshDraw>, f32, V3) {
+pub(crate) fn ship_meshes(lib: &mut models::Library, rt: &Runtime, gd: &str, s: &ShipModel, tex: &mut Textures, cache: &mut Cache) -> (Vec<MeshDraw>, f32, V3) {
     let mut look = Look::default();
     if let Some(c) = s.colour {
         look.atmosphere = [c[0], c[1], c[2], 1.0];

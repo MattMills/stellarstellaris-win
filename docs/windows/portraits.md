@@ -37,8 +37,10 @@ files or code, **[I]** inferred.
   interface/paragon_ui_types.gui (its place in its `..._clipping_mask` container, the containers
   between added, its scale, its sprite's `close_up` / `mid_close_up`), and puts an `inset` item
   there: above the clipping container's backgrounds, under the card's texts and icons.
-- The framing: the plain layout; `close_up` the portrait's custom values, else scale 2 and
-  offset { -25 300 } (the values 01_portraits_mammalian.txt has commented out) **[I]**;
+- The framing: the plain layout; `close_up` the portrait's custom values, else scale 1.1 and
+  offset { 0 50 }, measured on the game's frame of the creator's portrait grid (the human heads)
+  **[I: the game's default_close_up_scale = 2 is not a plain factor here; the custom values, e.g.
+  psionic_06's 1.8 and { 30 200 }, are used as they are, as that frame shows]**;
   `mid_close_up` the custom values, else scale 1.5 and offset { 0 220 } (the human portraits'
   heads kept in the target) **[I]**. The offsets are in render target pixels, + y down.
 - `src/portraits.rs`: the inset filled with the entity's meshes (the portraits' models are read
@@ -56,10 +58,63 @@ Checked: the 2210.01.01 save (molluscoid, mol17: the research card, the council'
 leaders view's rows and big card) and a new game (humans: the leaders view, the council), in a
 real window too (Load Game, the research view, its portrait's click to the council).
 
+## The new game's screens
+
+`render/portraits.lua` also gives the portraits of an empire design (render.creator_rules' table)
+and finds a portrait icon anywhere in a .gui (`portraits.element`: the element by its name path
+in a window, its parent's clipping, its portraitType's `type` and framing; `portraits.put`: the
+inset in the parent's laid out rectangle, cut to a scrolled list's box too):
+
+- `portraits.ruler(design)`: the ruler's portrait (a group: its `game_setup` portraits for the
+  ruler's gender, the phenotype-th), its character texture, clothes and hair by the design's
+  `texture`, `clothes`, `attachment` indices (the selectors' distinct textures in their order, as
+  creator_rules counts the editor's options) **[I]**.
+- `portraits.species(design)`: the species' portrait (a group: its `species` section for the
+  species' gender, `not_set` as male: the game's frames show Human's men **[I]**).
+- The asset selectors (gfx/portraits/asset_selectors): the scope's section (game_setup, species,
+  leader, ruler), its first `"x.dds" = { trigger }` that holds (leader_class, gender, always and
+  AND / OR / NOT / NOR evaluated; any other trigger false **[I]**), its default, the selector's.
+  PixelPdxMeshPortrait's PortraitClothes / PortraitHair are the clothes' and hair's parts'
+  diffuses. The leaders' cards use the `leader` section by class (the ruler's: `ruler`).
+- Character textures may be `tied_texture = { texture }` blocks (the psionic portraits).
+- Room portraits (`type = room`, GFX_portrait_gamesetup_mask): the room's 952 x 340 target, the
+  character's target at its lower left (75, 0) **[V: 00_portraits_main.txt `room`]**; the
+  layout's `position = { 0 -20 }` read as 20 pixels below the target's bottom (the game's frame
+  of the empire selection's room) **[I]**.
+- Entity scales by scripted variable (`scale = @humanscale`, 0.81) are resolved
+  (render/models.lua): the human portraits were 1 / 0.81 too big.
+
+Drawn: the empire selection's list entries (portrait_container/portrait), its preview's ruler in
+the room (portrait_window), the species panel (species_window/portrait), the creator's Species &
+Portrait grid (species_portrait_picker_entry) and its preview (the Ruler Appearance editor shows
+the ruler there), Game Details' species (species_container/portrait_window).
+
+## The home world and the ship
+
+`portraits.rs` fills `.../model|...` insets too (empire_preview.lua makes them):
+
+- The home world (CSpeciesPreviewWindow::CreateHomeworldPreview 0x3250490 **[V]**: the planet
+  class's preview entity, else one of its entities at random): `<class entity>_01_entity`
+  **[I: the first variant]**, the class's look (system.rs look_of), in `home_world/3d_icon`
+  (200 x 200), lit by customization_view_planet's environment.
+- The ship (ShowDesign 0x324d54b: the fake country's GetLatestShipDesignOfClass(3, 2), its
+  entity from CreateEntityFromDesign **[V]**): the culture's science ship (`science` size with
+  DEFAULT_SCIENCESHIP_SECTION **[I: class 3 by the game's frame, humanoid_01's crescent]**),
+  the flag's colours as its PrimaryColor, in `ship_preview/render_target` (396 x 160, the
+  button's ship_design_entry_bg.dds stretched under it), seen from yaw 235, pitch 30, fitted to
+  the box's width **[I: by the frame]**, lit as the ship designer's view **[I: ship_details_view's
+  cubemap 1.7 and ambient wash our ship shading out; the game's is warmer]**. The bioship warning
+  only for a culture named bio **[I]**.
+
+Checked against the game's frames (/root/ngf/g/02_select.png, 03_setup.png,
+/root/ngc/g_portrait.png, g_ruler.png) and in a real window at 1600 x 900 and 1536 x 864 (New
+Game, the selection, Select to Game Details; Create New, Select to the creator).
+
 ## Not done
 
-- The clothes and hair textures (clothes_selector, attachment_selector): the parts keep their
-  meshes' own textures (a human man shows the default hair).
+- The creator's grid: the game shows other clothes there (a shared jumpsuit, likely the portrait
+  evolution's: not traced); its third row's hexagon backgrounds; the selectors' `random` lists
+  (their first entry) and triggers on the owner or the pop.
 - The portraits' animations (the entities' idle states; the meshes are drawn in their bind pose).
 - The sprites' masks (`masking_texture`: portrait_mask_fade) and the hologram effect
   (buttonstate_rendertarget_hologram.shader, the council's); the council's "gets flipped".
