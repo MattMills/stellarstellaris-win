@@ -103,6 +103,38 @@ Dynamically:
 (a target that doesn't exist, a condition that fails) as well as from the handler, so each one
 needs reading.
 
+## The state after the area packages (script-coverage f739116)
+
+Every keyword the game documents has a Lua implementation:
+
+| | documented | missing |
+|---|---:|---:|
+| triggers | 1,098 | 0 |
+| effects | 1,080 | 0 |
+| scope links | 99 | 0 |
+
+The checker now runs on two saves: the 2210.01.01 autosave, and a 2212 save the real game made with
+agreements, resolutions, wars, rivals and espionage. A keyword counts as done when either save
+shows it done. Both runs have no Lua errors.
+
+| dynamic | 2210 | 2212 |
+|---|---:|---:|
+| effects acted | 476 | 516 |
+| containers | 308 | 317 |
+| silent | 199 | 184 |
+| refused | 21 | 21 |
+| triggers evaluated | 1,022 | 1,046 |
+
+A silent or refused result is explained only with evidence: the effect run on a real target with
+`sim/tools/scriptprobe.lua` (and the area case files `scriptprobe_*.txt`), or the 4.5.2 binary for
+effects that keep no saved state (refresh_portraits, calculate_modifier). Every silent or refused
+effect has that evidence except two, which no save can test yet:
+`transfer_galactic_defense_force_fleets` (no Galactic Defense Force fleet) and
+`create_smaller_size_creature_in_fleet` (the game made no ship in three tests; a condition is unknown).
+
+`complex_trigger_modifier` reads a numeric trigger's value with its parameters, scaled, clamped and
+gated as `CComplexTriggerMTTHModifier` does; every trigger vanilla uses there has a value function.
+
 ## Not covered yet
 
 - **Scope validity:** whether each keyword is refused in the scopes the game doesn't support. The check runs each keyword only in its first documented scope.
