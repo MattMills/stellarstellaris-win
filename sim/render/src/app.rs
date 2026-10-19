@@ -1561,6 +1561,8 @@ impl App {
             // an element with a tooltip that takes no clicks (tooltip.rs), else the map's thing
             None if self.screen == Screen::Map => match crate::tooltip::element_at(self, x, y) {
                 Some(p) => Some(HoverTarget::Element(p)),
+                // (not with a fleet's order menu or popup open: they take the cursor)
+                None if self.fleet.menu.is_some() || self.fleet.popup.is_some() => None,
                 None => self.scene()?.pick_at(x, y, 6.0).map(HoverTarget::Map),
             },
             None => None,

@@ -106,8 +106,15 @@ impl App {
         let (kind, text, src) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or("").to_string());
         self.log.push(format!("right click {x},{y}: fleets {ids} on {target}: {kind} {text}"));
         match kind {
-            "menu" => self.fleet.menu = Some(((x, y), src)),
-            "popup" => self.fleet.popup = Some(src),
+            // (the open menu or popup takes the cursor: the map's tooltip under it dropped)
+            "menu" => {
+                self.fleet.menu = Some(((x, y), src));
+                self.hovered = None;
+            }
+            "popup" => {
+                self.fleet.popup = Some(src);
+                self.hovered = None;
+            }
             "done" => self.fleet_published(),
             _ => {}
         }
@@ -138,7 +145,25 @@ impl App {
             self.relayout_windows();
             return Ok(());
         };
-        self.fleet_run(&code)?;
+        let r = self.fleet_run(&code)?;
+        // Colonize Planet: the colonise view for that fleet (OpenColoniseView(planet, fleet)), the
+        // planet view's colonize window with the fleet as its filter (planet.rs)
+        // a command that asks first (Land Armies on a neutral planet): the Yes/No popup
+        if let Some(src) = r.strip_prefix("popup:") {
+            self.fleet.popup = Some(src.to_string());
+            self.relayout_windows();
+        }
+        if let Some(rest) = r.strip_prefix("open_colonize ") {
+            let mut it = rest.split(' ').map(|v| v.parse::<u32>().ok());
+            if let (Some(Some(pid)), Some(Some(fid))) = (it.next(), it.next()) {
+                self.select(Some(Pickable::Body(pid)));
+                self.planet_view.colonize = Some(pid);
+                self.planet_view.colonize_fleet = Some(fid);
+                self.planet_view.source = None;
+                self.planet_view.source_fleet = None;
+                self.relayout_windows();
+            }
+        }
         Ok(())
     }
 

@@ -377,6 +377,13 @@ impl Engine {
         let a = &words[1..];
         let rest = line.trim_start()[verb.len()..].trim();
         match verb {
+            // `console Effect WORDS...`: the game console's effect, as the headless game's `console
+            // Effect` (one command file for both): `effect`
+            "console" if a.first().copied() == Some("Effect") => {
+                let words = rest["Effect".len()..].trim();
+                let code = format!("return require('render.windows.console_effect').run({words:?})");
+                self.app.fleet_run(&code).map(|r| Reply::ok(format!("console {r}")))
+            }
             "console" => {
                 // the load screens' console (console.rs): `console on|off`
                 let on = match a.first().copied() {
@@ -870,6 +877,12 @@ impl Engine {
                 Ok(Reply::ok(format!("bench {r}")))
             }
             "state" => Ok(Reply::ok(self.state())),
+            // `effect WORDS...`: the console's effect in the simulation (render.windows.console_effect),
+            // as the headless game's `effect`: a test's setup made the same way on both sides
+            "effect" => {
+                let code = format!("return require('render.windows.console_effect').run({rest:?})");
+                self.app.fleet_run(&code).map(Reply::ok)
+            }
             // `fleet_cmd CALL`: a render.windows.fleet_commands call in the simulation (fleetwin.rs:
             // `fleet_cmd .debug(1)`, `fleet_cmd ["stop"](3)`), its reply
             "fleet_cmd" => self.app.fleet_command(rest).map(|r| Reply::ok(format!("fleet_cmd {r}"))),

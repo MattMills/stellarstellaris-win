@@ -299,10 +299,10 @@ In order [V unless marked]:
 | target | military | construction | science | others, groups |
 |---|---|---|---|---|
 | system (galaxy) or point (system view) | an orbit of the system's starbase or star (CalcMoveToOrbitable [I]), else a move | with intel: a menu Move Here + Build Mining / Research Stations, Build Starbase (Outpost) where a body could have one | a menu Move Here + Survey System when a body is unsurveyed | a move; a science group: Move Here + Survey System |
-| planet, moon, star | an orbit; a non-hostile colony: the bombardment Yes/No popup first | a menu: the body's station entries (surveyed bodies), Enter Orbit last | a menu: Survey + Survey System (unsurveyed), Research (an anomaly), Enter Orbit last | colony ship: Colonize Planet [not done here: the species picker] + Enter Orbit; transport: Land Armies [not done here] + Enter Orbit; a group: an orbit each, science: Survey System + Enter Orbit |
+| planet, moon, star | an orbit; a non-hostile colony: the bombardment Yes/No popup first | a menu: the body's station entries (surveyed bodies), Enter Orbit last | a menu: Survey + Survey System (unsurveyed), Research (an anomaly), Enter Orbit last | colony ship: Colonize Planet (section 7) + Enter Orbit; transport: Land Armies (section 8) + Enter Orbit; a group: an orbit each, science: Survey System + Enter Orbit |
 | own fleet | follow | follow | follow | follow |
 | another country's fleet | hostile (a war, the relation's `hostile`): follow and attack at once; neutral: the "Attack Target" Yes/No popup | follow | follow | follow |
-| a static starbase | a menu: Enter Orbit, Set "$PLANET$ Station" as home base, Upgrade Fleet to Latest Designs [not done here: the upgrade order] | the same | the same | the same |
+| a static starbase | a menu: Enter Orbit, Set "$PLANET$ Station" as home base, Upgrade Fleet to Latest Designs (section 9) | the same | the same | the same |
 | empty galaxy space | nothing | nothing | nothing | nothing |
 
 The menu entries:
@@ -407,7 +407,146 @@ than it updates: a right click right after the pointer's move found no system. `
 until the game has drawn the pointer (headless/README.md, "The pointer's hit tests"), and `hover`
 shows the state.
 
-## 7. Not done yet
+## 7. Colonize
+
+Engine: `sim/lua/engine/fleets/colonize.lua`. The RE notes (scratchpad re4) are summarised here.
+
+- **The way in.** A colony ship's right click on a planet offers "Colonize Planet". Its click opens
+  the colonise view for that ship (`CSurfaceView`, `colonize_planet_view.gui`; here the planet
+  view's colonize window), which lists that ship alone as an `expansion_source_fleet_entry`
+  (`OpenColoniseView(planet, fleet)`) [V]. Opened from the planet view, the window lists the idle
+  colony ships, then the species; a species entry orders a new colony ship (`planet.colonize`, as
+  before) [V]. Colonize with a ship selected posts `CFleetColonizePlanetCommand`: the fleet's
+  orders cleared, the colonize order given [V]. The colony name popup is not done.
+- **The entry's state** (`colonize.check`, the keys of `CPlanet::CanColonize`): owned
+  (`COLONIZABLE_HAS_OWNER`), a class never colonizable, an anomaly, unsurveyed, or outside the
+  country's borders (`COLONIZABLE_INSIDE_BORDERS`, `_OTHER_BORDERS`: the game's tooltip "Can only
+  colonize planets inside our borders.") cross it out [V keys and the game's frame].
+- **The order** `colonize_planet_order = { planet progress }`: the ship flies into the planet's
+  orbit (its orbit sub-order); in orbit and idle, progress goes up 1 a day; at 10 (hard-coded) it
+  lands. Landing: the planet's owner and controller become the country, the colony's
+  `colonizing_species` is the ship's `colonization_data.species`, the anomaly is removed,
+  `on_colonization_started` fires (from the ship), and the colony ship is killed [V].
+- **The colony.** It grows colonists monthly (`engine.pops`, `COLONY_MONTHLY_GROWTH` 3). At
+  `COLONY_POPS_REQUIRED` (100) it is placed: the capital buildings removed, the colony shelter
+  added, `colonizing_species` cleared, `colonize_date` set, `on_colonized` fired [V]. The shelter
+  is always the plain one here [I].
+- **Colony ships** carry `colonization_data = { species }`. The engine's `create.ship` now writes the
+  owner's founder species for a colonizer, as the game's `create_ship` does [V: the game's save
+  after `console Effect create_ship`].
+
+## 8. Land armies and ground combat
+
+Engine: `sim/lua/engine/fleets/armies.lua`.
+
+- **The menu.** A transport's right click on a planet gives "Land Armies" and Enter Orbit [V]. The
+  entry is possible when the planet has a colony not being colonized and a ship carries an army
+  (the keys of `ListLandableArmies`) [V keys]. On a neutral controller's planet the click asks
+  first (`FLEETORDER_LAND_ARMIES_TITLE` / `_DESC`, Yes/No) [V]; on a hostile or allied one it posts
+  at once.
+- **The order** `land_armies_order = { colony }`: the orbit sub-order, then in orbit every ship with
+  `army=` starts landing. Each lands after `LANDING_TIME_DAYS` (10): the army's `colony` is set, its
+  `ship` removed, the transport killed [V]. Landing on a hostile controller's planet starts or joins
+  its ground combat [V].
+- **Ground combat**, daily (store `ground_combat = { colony attackers defenders }`): every living army
+  of each side (attackers first) hits a random enemy for random damage (`[BASE_DAMAGE_MIN,
+  BASE_DAMAGE_MAX]` x the army type's `damage` x the morale factor 0.15 / 0.25 / 0.75 / 1) and
+  morale damage [V formula parts]. An army at 0 health dies. Attackers alone left: the planet's
+  controller becomes the attacker (occupation; the owner stays) [V]. Not done: the combat width,
+  the targeting weights, the disengage roll, collateral damage, experience, generals, retreat, the
+  messages.
+
+## 9. Upgrade
+
+Engine: `sim/lua/engine/fleets/upgrade.lua`.
+
+- **The way in**: the fleet window's and the Fleet Manager's Upgrade, and the starbase menu's
+  "Upgrade Fleet to Latest Designs". They give `upgrade_design_at_orbitable_fleet_order = {
+  orbitable status queue self_upgrading }` at the nearest shipyard: the fleet's system's own
+  starbase with a shipyard module, else the capital's [I].
+- **Which ships**: those whose `ship_design_implementation.upgrade` names a newer design (the game
+  marks it on them).
+- **Cost**: each ship's upgrade starts, in orbit, when its cost can be paid. The cost is the new
+  design's less `FLEET_UPGRADE_COMPONENT_COST_REFUND_MULT` (0.9) of the old one's, per resource
+  [I: the game's exact part-by-part sum not read].
+- **Time**: the new design's build time x (upgrade cost / full cost) x
+  `FLEET_UPGRADE_TIME_COST_MULT` (0.5) days [V parts, I order].
+- **Done**: the ship's design is the new one, `upgrade` none, its hit points the new design's, and
+  `on_ship_upgraded` fires [V].
+- In the game the upgrade is an item of the shipyard's construction queue; here the order counts
+  it itself [I].
+- The check refuses with the game's keys: `NO_UPGRADE_AVAILABLE`,
+  `FLEETORDER_UPGRADE_ALREADY_UPGRADING`, `NO_UPGRADE_REACHABLE`.
+
+## 10. Combat
+
+Engine: `sim/lua/engine/fleets/combat.lua`, run every micro tick (10 a day) from `engine.systems`'s
+`micro.update`. The RE notes (scratchpad re5) in brief, all [V] unless marked:
+
+- **Start.** For every fleet, the other countries' fleets in its system are checked:
+  - they must be hostile (`IsHostile` [I]: a war, the relation's `hostile` flag, or a country type
+    with `faction = { hostile = yes }`: space fauna, which have no relation with anyone), or the
+    target of its follow-and-attack order;
+  - one side must be able to deal damage;
+  - they must be within r = max of the two fleets' attack radii x `COMBAT_DETECT_RANGE_MULT`
+    (1.05), at least `COMBAT_DETECT_RANGE_MIN` (10), and once fighting are kept up to 2r;
+  - two military fleets already fighting are kept without the range test;
+  - the fleet's stance is not read.
+  The lists (`combat.in_combat_with`) are symmetric: two fleets fight when either finds the other
+  and both can fight; a fleet that cannot (in FTL, emptied, not valid for combat) leaves every list
+  [I]. A fleet's first combat draws a `targeting` value per ship and fires `on_entering_battle`.
+- **The random pool.** When any fleet fights, every tick takes one global draw per ship of the
+  store (UpdateShipParallel); otherwise these draws are skipped. The values seed the weapons'
+  private streams (`CCrudeRandom` chains: ship, section, weapon; the game's noise function).
+- **Weapons** (stats from `weapon_components.csv`): windup and cooldown count micro ticks, at most
+  one shot per tick. The target is the best-scored enemy in range (average damage x chance to hit
+  x weight; x1.1 for the current target; no draw).
+- **The shot** takes one roll: below evasion − tracking it is evaded, below accuracy it hits,
+  otherwise it misses. A hit makes a damage roll, then `CalcDamage`: shields absorb first, then
+  armour, then hull, with the penetrations and the hull/armour/shield multipliers. Evasion is the
+  size's `ship_evasion_add` plus the ship's modifiers, capped at 0.9.
+- **Outcome**:
+  - a ship with `disable_at_health` (starbases) is disabled at that threshold;
+  - a ship at 0 hull is destroyed: removed at the tick's end, its fleet with its last ship, and
+    taken out of the other fleets' lists;
+  - otherwise a disengage roll is made below the health threshold (evasive: on any damage, the
+    chance x the hull damage).
+- **End**: a fleet with no enemy left in its list ends its combat (`targeting` and `disengaged`
+  cleared).
+- **Checked against the game** (s2211, two `NAME_Small_Space_Organism_Blue` amoebas made with
+  `console Effect` next to the colony ship): both sides start the combat on the spawn day, and the
+  amoebas fire 12 shots at the colony ship in the first 6 days on both. The game hits 5 of them,
+  the renderer 9: with the colony ship's evasion (10) under the weapon's tracking (0.5) the
+  renderer's chance is the weapon's accuracy (0.75); the game's lower rate is not explained yet.
+  The game's colony ship then flees (`evade_hostiles_order`, the evasive stance) and the capital
+  starbase fights the amoebas when they wander into range (2211.12.24); the renderer's colony ship
+  stays and the amoebas do not move (the evasive stance's pathing and the monsters' roaming are not
+  done here).
+- **Not done**:
+  - combat movement: fleets stay where combat found them, and ranges are the fleets' distances
+    [I];
+  - the ships' main targets and their draws;
+  - missiles, strike craft, point defence;
+  - collateral and chain damage, `on_hit`;
+  - capture, admiral death;
+  - territory and weapon-tag modifiers;
+  - regeneration in combat;
+  - emergency FTL and MIA;
+  - bombardment, the inactivity disengage, debris, war exhaustion;
+  - the battle events' other scopes.
+
+  The game's random draws for these are not made, so the stream drifts from the game's once a
+  combat runs.
+
+## 11. Test setup: `console Effect`
+
+The headless game's `console Effect WORDS...` (master's `console NAME ARGS`) and the renderer's
+`console Effect WORDS...` (`render.windows.console_effect`; also `effect WORDS...`) run the same
+script effect in the player's country. A test's colony ship, transport or monster fleet is then
+made the same way on both sides. In the renderer's scripts, `fleet_cmd .debug(FID)` prints a
+fleet's place and orders.
+
+## 12. Not done yet
 
 - The leader's portrait and trait icons (shared with the leader windows); the ship view's 3D
   preview (a model drawn into the GUI).
@@ -418,6 +557,9 @@ shows the state.
 - The right click's other entries: Excavate Site, the special projects, Research Anomalies in
   system, the armadas, Assist Cloaking Detection, the bypasses, rifts, storms and gravity snares,
   megastructures, the scripted actions (common/scripted_actions), Settle (arkships), Explore
-  System (no intel), the jump drive's orders; the combat of an attack; the colonise view.
+  System (no intel), the jump drive's orders.
+- `console Effect create_amoeba_country = yes ...` makes a new country in the renderer; the game
+  gives the fleet to the existing "Spaceborne Organics" country.
+- The outpost's cost misses the country's modifiers (the game: alloys 90, here 100).
 - The renderer draws every text after every sprite: a text under a window (a map label) shows
   through it (scene.rs; not the fleet windows' own).

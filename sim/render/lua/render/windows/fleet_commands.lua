@@ -479,11 +479,27 @@ function fc.debug(fid)
     end)
 end
 
+-- the fleet window's and the Fleet Manager's Upgrade (CFleetActionUpgradeButton::OnClick:
+-- FindNearestShipyardQueue, then CFleetUpgradeDesignCommand: the orders cleared, the upgrade order
+-- given; engine.fleets.upgrade)
+function fc.upgrade(fid)
+    return guarded("upgrade", function()
+        local f, why = own_fleet(fid)
+        if not f then return "refused: " .. why end
+        fid = tonumber(fid)
+        local up = require("engine.fleets.upgrade")
+        local ok, key = up.check(fid)
+        if not ok then return "refused: " .. tostring(key) end
+        orders().clear(fid)
+        return issued(orders().issue(fid, up.order(fid, up.shipyard(fid))), "upgrade")
+    end)
+end
+
 ---------------------------------------------------------------- what the engine does not do yet
 
 local NOT_DONE = {
     auto_explore = "auto-explore (no automation)", auto_construct = "auto-build (no automation)",
-    repair = "the repair order", upgrade = "the upgrade order", reinforce = "reinforcement",
+    repair = "the repair order", reinforce = "reinforcement",
     mercenary = "mercenaries", transfer = "fleet transfer", follow = "the follow order",
     megastructure = "megastructure building", take_point = "take point", jump = "jump drives",
     retrofit = "retrofit", overwrite = "template overwrite", copy_template = "template copy",
