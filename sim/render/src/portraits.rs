@@ -23,7 +23,10 @@ const MARK: &str = "/portrait|";
 /// A model inset's marker: `.../model|planet|ENTITY` (a planet class's entity, as
 /// CSpeciesPreviewWindow::CreateHomeworldPreview's 3d_icon), `.../model|ship|CULTURE|SIZE` (a ship
 /// size's frame and section in a culture, as its ship_preview's render_target:
-/// `.../model|ship|CULTURE|SIZE|TEMPLATE|SLOT`) (render/portraits.lua).
+/// `.../model|ship|CULTURE|SIZE|TEMPLATE|SLOT`; TEMPLATE `*`: the size's default sections,
+/// render.system.default_sections), `...|SLOT|COLOURS|main|CX|CY|VW` a ship browser's main view
+/// (customize_species_shipsets' 3d_view: the designer's sky behind it, the ship centred at (CX, CY)
+/// of a view VW wide, the inset its visible part) (render/portraits.lua, creator_editors.lua).
 const MODEL: &str = "/model|";
 
 /// Fills the scene's portrait insets (those whose path has [`MARK`]) and model insets ([`MODEL`]).
@@ -101,6 +104,16 @@ fn fill_models(scene: &mut Scene, lib: &mut models::Library, rt: &Runtime, game_
         let Some(at) = inset.path.find(MODEL) else { continue };
         let parts: Vec<String> = inset.path[at + MODEL.len()..].split('|').map(str::to_string).collect();
         let (w, h) = ((inset.rect[2] - inset.rect[0]).max(1.0), (inset.rect[3] - inset.rect[1]).max(1.0));
+        // a ship browser's main view: its centre and width (screen pixels)
+        let main = if parts.first().map(String::as_str) == Some("ship") && parts.get(6).map(String::as_str) == Some("main") {
+            let num = |i: usize| parts.get(i).and_then(|s| s.parse::<f32>().ok());
+            match (num(7), num(8), num(9)) {
+                (Some(cx), Some(cy), Some(vw)) if vw > 0.0 => Some((cx, cy, vw)),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let (meshes, radius, centre, world, yaw, pitch, fill) = match parts.first().map(String::as_str) {
             Some("planet") if parts.len() >= 2 => {
                 let Ok(model) = lib.model(rt, game_dir, &parts[1]) else { continue };
@@ -114,6 +127,11 @@ fn fill_models(scene: &mut Scene, lib: &mut models::Library, rt: &Runtime, game_
             Some("ship") if parts.len() >= 3 => {
                 // (its section: `.../SIZE|TEMPLATE|SLOT`, the size's mid section's mesh)
                 let section = match (parts.get(3), parts.get(4)) {
+                    (Some(t), _) if t == "*" => format!(
+                        "require('render.system').default_sections({:?}, {:?})",
+                        game_dir.replace('\\', "/"),
+                        parts[2]
+                    ),
                     (Some(t), Some(s)) => format!("{{ {{ template = {t:?}, slot = {s:?}, components = {{}} }} }}"),
                     _ => "{}".to_string(),
                 };
@@ -164,7 +182,12 @@ fn fill_models(scene: &mut Scene, lib: &mut models::Library, rt: &Runtime, game_
                 // (lit as the ship designer's view: ship_details_view's cubemap and ambient wash our
                 // ship shading out [I]; the ship fitted to the box's width: a negative fill; the angle by
                 // the game's frame of the empire selection [I])
-                (draws, r, c, "ship_designer", 235f32, 30f32, -0.7f32)
+                // (a main view: broadside, as the designer's [I: by the game's frame])
+                if main.is_some() {
+                    (draws, r, c, "ship_designer", -75f32, 14f32, -0.7f32)
+                } else {
+                    (draws, r, c, "ship_designer", 235f32, 30f32, -0.7f32)
+                }
             }
             _ => continue,
         };
@@ -185,13 +208,27 @@ fn fill_models(scene: &mut Scene, lib: &mut models::Library, rt: &Runtime, game_
         let half = (cam.fov_y / 2.0).tan() * if fill < 0.0 { w / h } else { (w / h).min(1.0) };
         let fill = fill.abs();
         cam.distance = radius / fill / half.max(1e-3);
-        let view = cam.view_params(w as u32, h as u32);
+        let mut view = cam.view_params(w as u32, h as u32);
+        if let Some((cx, cy, vw)) = main {
+            // the ship 0.22 of the view's width (the game's frame: 275 of 1254 pixels), its centre
+            // at the view's: the target moved by the offset from the inset's centre
+            let d = 2.0 * radius * view.focal_px / (0.22 * vw);
+            let (dx, dy) = (cx - (inset.rect[0] + inset.rect[2]) * 0.5, cy - (inset.rect[1] + inset.rect[3]) * 0.5);
+            let s = d / view.focal_px.max(1e-3);
+            cam.distance = d;
+            cam.target = centre.sub(view.right.scale(dx * s)).add(view.up.scale(dy * s));
+            view = cam.view_params(w as u32, h as u32);
+        }
         let to_eye = view.eye.sub(cam.target).norm();
         let l = view.right.scale(-0.7).add(view.up.scale(0.45)).add(to_eye.scale(0.55)).norm();
         inset.light = [l.0, l.1, l.2, 0.0];
         if let Ok(wg) = crate::worldgfx::read(rt, game_dir, world) {
             inset.cam_lights = wg.ship_lights.map(|c| [c[0].max(0.0).powf(4.84), c[1].max(0.0).powf(4.84), c[2].max(0.0).powf(4.84), 1.0]);
             inset.env = wg.env(tex, cache, game_dir);
+            // (a main view: the designer's galaxy_background behind the ship)
+            if main.is_some() {
+                inset.sky = wg.sky(tex, cache, game_dir, 0.0);
+            }
         }
         inset.view = Some(view);
         inset.meshes = meshes;

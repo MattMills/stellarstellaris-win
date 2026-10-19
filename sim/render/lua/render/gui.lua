@@ -348,6 +348,15 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                         end
                     else
                         sp = db.sprites["GFX_text_" .. key] or db.sprites["GFX_resource_" .. key]
+                        -- a pop job's (£job_x£, [x.GetIcon]): GFX_job_x, else its icon file
+                        -- (gfx/interface/icons/jobs) [I]
+                        if not sp and key:sub(1, 4) == "job_" then
+                            sp = db.sprites["GFX_" .. key]
+                            local tex = "gfx/interface/icons/jobs/" .. key .. ".dds"
+                            if not sp and opts.texture_size and opts.texture_size(tex) then
+                                sp = { texture = tex, frames = 1, kind = "spriteType" }
+                            end
+                        end
                     end
                     if sp and sp.sheet and db.sprites[sp.sheet] then
                         sp = { texture = db.sprites[sp.sheet].texture, frames = db.sprites[sp.sheet].frames, frame = sp.default_frame }

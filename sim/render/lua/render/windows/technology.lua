@@ -169,6 +169,9 @@ function technology.extract(game_dir)
             end
         end
     end
+    -- the scripted localisations in the player's scope (the unlock lines' [GetMinerSwap...])
+    local oks, sl = pcall(require("render.scripted_loc").evaluate, game_dir, "country", cid)
+    d.scripted_loc = oks and sl or nil
     return d
 end
 
@@ -391,6 +394,10 @@ function technology.build(ctx, data, state)
     local defs = definitions(ctx.game_dir)
     -- (the data comes a snapshot after the view opens: every field guarded)
     data = data or {}
+    -- the texts' [Name]s: the player's scope's keys, else their defaults (render.scripted_loc)
+    local scripted_loc = require("render.scripted_loc")
+    scripted_loc.defaults(ctx.game_dir)
+    scripted_loc.use(data.scripted_loc)
     data.areas, data.researched = data.areas or {}, data.researched or {}
     state = state or {}
     local items = {}

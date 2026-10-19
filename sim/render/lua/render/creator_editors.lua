@@ -264,9 +264,11 @@ E.portrait = function(ctx, b, st, R, d, W, o)
             }
         end, nil, function(i, rr, n0, box)
             -- the portrait (portrait/portrait: GFX_portrait_character_close_up, the species'
-            -- portrait), over the entry's background, cut to the grid
+            -- portrait, with the ruler's clothes and hair indices: portraits.species), over the
+            -- entry's background, cut to the grid
             local p = "/portraits/" .. i
-            portraits.put(ctx.game_dir, b.items, portraits.species(ctx.game_dir, { species = { portrait = ps[i].portrait } }),
+            local look = { clothes = d.ruler and d.ruler.clothes or 0, attachment = d.ruler and d.ruler.attachment or 0 }
+            portraits.put(ctx.game_dir, b.items, portraits.species(ctx.game_dir, { species = { portrait = ps[i].portrait } }, look),
                 portraits.element(ctx.game_dir, PICKER, "species_portrait_picker_entry", { "portrait", "portrait" }),
                 rr.rects and rr.rects[p .. "/species_portrait_picker_entry/portrait"], math.min(n0 + 2, #b.items + 1), p, box)
         end)
@@ -551,8 +553,9 @@ end
 -- Homeworld (planet_class_editor): the names, the starting system, the planet classes
 E.homeworld = function(ctx, b, st, R, d, W, o)
     local D = W .. "/3d_icons"
-    -- the classes' buttons at their places (@planet_colN / @planet_rowN); the planets are 3D in
-    -- the game (not drawn: GFX_dummy_3d_home_world_new at the button's 100 x 100)
+    -- the classes' buttons at their places (@planet_colN / @planet_rowN), each with its class's
+    -- planet in 3D (GFX_dummy_3d_home_world_new's render target at the button's 100 x 100: the
+    -- class's entity, as the preview's home world, empire_preview.planet_entity)
     local PLACES = {
         pc_desert = { 286, 46 }, pc_ocean = { 411, 46 }, pc_arctic = { 537, 46 },
         pc_arid = { 286, 140 }, pc_continental = { 411, 140 }, pc_alpine = { 537, 140 },
@@ -591,6 +594,14 @@ E.homeworld = function(ctx, b, st, R, d, W, o)
     end
     -- the planet class's description in the details on the right [I: drawn as text]
     local r = b:add(FILE, "planet_class_editor", o)
+    for p in pairs(PLACES) do
+        local pr = r.rects[D .. "/" .. p]
+        local ent = pr and preview.planet_entity(ctx.game_dir, p)
+        if ent then
+            b.items[#b.items + 1] = { kind = "sprite", path = "/homeworld/" .. p .. "/model|planet|" .. ent, sprite = "",
+                texture = "", sprite_kind = "inset", frame = 1, frames = 1, x = pr.x, y = pr.y, w = pr.w, h = pr.h }
+        end
+    end
     edit_box(ctx, b, st, r.rects[W .. "/homeworld_box/name"], "planet_name", d.planet_name)
     edit_box(ctx, b, st, r.rects[W .. "/system_box/name"], "system_name", d.system_name)
     if st.view.initializer_open then
@@ -819,13 +830,45 @@ E.shipset = function(ctx, b, st, R, d, W, o)
     o.text[T .. "/spinner_container/ship_preview_label_text"] = loc(ctx, size)
     o.text[T .. "/shipset_description_text"] = loc(ctx, (d.graphical_culture or "") .. "_shipset_desc")
     o.text[T .. "/ship_type_label_text"] = loc(ctx, size)
-    o.text[T .. "/ship_type_description_text"] = loc(ctx, size .. "_desc")
+    -- (SHIP_SIZE_SELECTOR_LOC: "SHIP_GRAPHICS_$SIZE$_DESC")
+    o.text[T .. "/ship_type_description_text"] = loc(ctx, "SHIP_GRAPHICS_" .. size:upper() .. "_DESC")
     o.hide[W .. "/dlc_overlay"] = true
-    o.hide[W .. "/3d_view_window"] = true
+    -- (3d_view_window: its button's sprite is the render target, drawn below as an inset)
+    o.hide[W .. "/3d_view_window/3d_view"] = true
     o.hide[W .. "/ship_color_container/ship_colors_disabled_overlay"] = d.ship_color ~= nil
     o.actions[W .. "/ship_color_container/use_ship_color"] = "creator:toggle_ship_color"
     o.frames[W .. "/ship_color_container/use_ship_color"] = d.ship_color and 2 or 1
+    local n0 = #b.items
     local r = b:add(SHIPS, "ship_gfx_culture_browser_editor", o)
+    -- the ship in 3D (CShipBrowser's 3d_view: the set's ship of the spinner's size, its default
+    -- sections [I], the empire's ship colour, else its flag's colours, with the designer's sky): the
+    -- view at (2, -140) of 3d_view_window, ship_browser_3d_view_size's 1254 x 770, cut to the window
+    -- and the editor; under the editor's panels
+    local cols = d.ship_color and d.ship_color or table.concat((d.empire_flag or {}).colors or {}, ",")
+    local function ship_marker(culture)
+        culture = culture or "mammalian_01"
+        local ok, s = pcall(require("render.system").browser_size, ctx.game_dir, culture, size)
+        return "/model|ship|" .. culture .. "|" .. (ok and s or size) .. "|*|*|" .. cols
+    end
+    local vw, ed = r.rects[W .. "/3d_view_window"], r.rects[W]
+    if vw and ed then
+        local vx, vy, vww, vh = vw.x + 2, vw.y - 140, 1254, 770
+        local x0, y0 = math.max(vw.x, vx, ed.x), math.max(vw.y, vy, ed.y)
+        local x1 = math.min(vw.x + vw.w, vx + vww, ed.x + ed.w)
+        local y1 = math.min(vw.y + vw.h, vy + vh, ed.y + ed.h)
+        if x1 > x0 and y1 > y0 then
+            local at = #b.items + 1
+            for i = n0 + 1, #b.items do
+                if (b.items[i].path or ""):find("/shipset_browser_container", 1, true) then
+                    at = i
+                    break
+                end
+            end
+            table.insert(b.items, at, { kind = "sprite", path = "/shipsets/view" .. ship_marker(d.graphical_culture)
+                .. string.format("|main|%d|%d|%d", math.floor(vx + vww / 2), math.floor(vy + vh / 2), vww), sprite = "", texture = "",
+                sprite_kind = "inset", frame = 1, frames = 1, x = x0, y = y0, w = x1 - x0, h = y1 - y0 })
+        end
+    end
     spinner(ctx, b, r, "ship_gfx_culture_browser_editor", "ship_type_browser_container/spinner_container/ship_type_spinner",
         { left = "creator:ship_size:-1", right = "creator:ship_size:1" }, SHIPS)
     -- the list: a group's header (ship_browser_shipset_entry), its sets (ship_browser_culture_entry)
@@ -845,11 +888,26 @@ E.shipset = function(ctx, b, st, R, d, W, o)
                     end
                     local q = p .. "/" .. ci
                     local E_ = q .. "/ship_browser_culture_entry"
-                    b:add(SHIPS, "ship_browser_culture_entry", { prefix = q, parent = { x = lr.x, y = y, w = lr.w, h = 100 },
+                    local er = b:add(SHIPS, "ship_browser_culture_entry", { prefix = q, parent = { x = lr.x, y = y, w = lr.w, h = 100 },
                         text = { [E_ .. "/ship_category_entry_name"] = culture_name(ctx, R, c.key) },
                         hide = { [E_ .. "/selected"] = c.key ~= d.graphical_culture, [E_ .. "/missing_dlc_overlay"] = not c.locked },
                         actions = { [E_ .. "/choose_ship_culture_button"] = not c.locked and ("creator:shipset:" .. c.key) or nil },
                     })
+                    -- its ship in 3D on the button (GFX_dummy_3d_size_entry's render target over
+                    -- ship_design_entry_bg), under the entry's name; only an entry the list shows
+                    -- whole (the insets are not cut) [I: the set's ship of the spinner's size]
+                    local br = er and er.rects and er.rects[E_ .. "/choose_ship_culture_button"]
+                    if br and br.y + br.h <= lr.y + lr.h then
+                        local at = #b.items + 1
+                        for i = #b.items, 1, -1 do
+                            if b.items[i].path == E_ .. "/ship_category_entry_name" then
+                                at = i
+                                break
+                            end
+                        end
+                        table.insert(b.items, at, { kind = "sprite", path = q .. "/ship" .. ship_marker(c.key), sprite = "",
+                            texture = "", sprite_kind = "inset", frame = 1, frames = 1, x = br.x, y = br.y, w = br.w, h = br.h })
+                    end
                     y = y + 100
                 end
             end

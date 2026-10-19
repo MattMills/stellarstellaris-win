@@ -110,11 +110,22 @@ Checked against the game's frames (/root/ngf/g/02_select.png, 03_setup.png,
 /root/ngc/g_portrait.png, g_ruler.png) and in a real window at 1600 x 900 and 1536 x 864 (New
 Game, the selection, Select to Game Details; Create New, Select to the creator).
 
+### The creator's grid clothes
+
+The game's species grid (species_portrait_picker_entry) draws every portrait with the design's
+ruler `clothes` (and `attachment`) index, the index-th distinct texture of the portrait's
+selectors, not the selectors' `species` section: a new design's clothes 4 is new_human's
+human_male_clothes_general_01 and the legacy human's human_male_clothes_general (the green
+uniforms), mammalian_normal_outfit_admiral for humanoid_hp_07, mammalian_massive_outfit_admiral (the
+shared grey jumpsuit with the round chest light) for humanoid_hp_08 to _13 [V: g_portrait.png, the
+textures side by side]. portraits.species takes those indices (`look`); the creator's grid passes
+the design's.
+
 ## Not done
 
-- The creator's grid: the game shows other clothes there (a shared jumpsuit, likely the portrait
-  evolution's: not traced); its third row's hexagon backgrounds; the selectors' `random` lists
-  (their first entry) and triggers on the owner or the pop.
+- The creator's grid: its third row's hexagon backgrounds; the selectors' `random` lists (their
+  first entry) and triggers on the owner or the pop; humanoid_elf's and humanoid_hp_14's framing
+  (drawn smaller than the game's).
 - The portraits' animations (the entities' idle states; the meshes are drawn in their bind pose).
 - The sprites' masks (`masking_texture`: portrait_mask_fade) and the hologram effect
   (buttonstate_rendertarget_hologram.shader, the council's); the council's "gets flipped".
