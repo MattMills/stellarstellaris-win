@@ -8,7 +8,9 @@
 -- filter (MESSAGE_<KEY>_TITLE, or its message_setting_key): its notification, toast, popup and
 -- auto-pause checkboxes (their frame the state: 1 off, 2 on), defaults from the type's
 -- default_notification (yes), default_toast, default_popup, default_autopause (no); a type that
--- cannot be disabled (can_disable = no) has its popup fixed [I]. The settings are the renderer's
+-- cannot be disabled (can_disable = no) has its popup fixed (the game's frame: a click leaves it
+-- ticked). A type with hidden_in_message_settings is not listed (the events' other types,
+-- EMPIRE_FOCUS, ENCLAVE_DIPLOMACY ...: an event of one shows an empty list [I]). The settings are the renderer's
 -- (events.rs keeps them; the game's are the user's settings file): a fired event opens its window
 -- when its type's popup is on and pauses the game when its auto-pause is on.
 
@@ -34,7 +36,8 @@ local function unquote(s)
     return s and (tostring(s):gsub('^"(.*)"$', "%1")) or nil
 end
 
--- the message types, in file order: { key, setting, notification, toast, popup, pause, can_disable }
+-- the message types, in file order: { key, setting, name, notification, toast, popup, pause,
+-- can_disable, hidden }
 function M.types(game_dir)
     if types_cache then
         return types_cache
@@ -54,7 +57,8 @@ function M.types(game_dir)
                 local key = unquote(get(b, "key"))
                 if key then
                     out[#out + 1] = {
-                        key = key, setting = unquote(get(b, "message_setting_key")),
+                        key = key, setting = unquote(get(b, "message_setting_key")), name = unquote(get(b, "name")),
+                        hidden = yes("hidden_in_message_settings", false),
                         notification = yes("default_notification", true), toast = yes("default_toast", false),
                         popup = yes("default_popup", false), pause = yes("default_autopause", false),
                         can_disable = yes("can_disable", true),
@@ -69,7 +73,7 @@ end
 
 -- a type's title as the settings list shows it
 local function title(loc, t)
-    local k = t.setting or ("MESSAGE_" .. t.key .. "_TITLE")
+    local k = t.setting or t.name or ("MESSAGE_" .. t.key .. "_TITLE")
     if loc and loc.has(k) then
         return (loc.get(k))
     end
@@ -77,9 +81,10 @@ local function title(loc, t)
 end
 M.title = title
 
--- M.build(ctx, settings, filter) -> items, report: settings = { [KEY] = { notification, toast,
--- popup, pause } } (the renderer's, over the defaults), filter = the search text
-function M.build(ctx, settings, filter)
+-- M.build(ctx, settings, filter, applied) -> items, report: settings = { [KEY] = { notification,
+-- toast, popup, pause } } (the renderer's, over the defaults), filter = the search text, applied =
+-- the settings as the window opened with them
+function M.build(ctx, settings, filter, applied)
     local loc, db = ctx.loc, ctx.db
     local items, report = {}, { sprites = 0, texts = 0, missing_sprites = {}, skipped = {}, rects = {} }
     local root = "/settings_view"
@@ -87,13 +92,19 @@ function M.build(ctx, settings, filter)
         settings_AUDIO = true, settings_VIDEO = true, settings_GAMEPLAY = true, settings_ACCESSIBILITY = true,
         alert_col_headings = true, empty_results_text = true,
     }
+    local changed = next(applied or {}) ~= nil
     local wi, wr = gui.layout(ctx.game_dir, db, FILE, "settings_view", ctx.screen, {
         texture_size = ctx.texture_size, loc = loc, hide = hide,
-        -- the Messages tab's button active (frame 2), the messages sub tab's too [I]
+        -- the Messages tab's button active (frame 2; the file has the video tab's), the messages
+        -- sub tab's too
         frames = {
+            [root .. "/window/video_button"] = 1,
             [root .. "/window/message_tab_button"] = 2,
             [root .. "/window/settings_MESSAGES/messages_sub_tab"] = 2,
         },
+        -- Reset Default: greyed while the applied settings are the defaults (the game's frames: grey
+        -- before and after a change not applied yet [I])
+        disabled = { [root .. "/window/settings_MESSAGES/reset_message_settings_button"] = not changed or nil },
         actions = {
             [root] = "msgset:noop",
             -- Cancel, Apply & Close, Discard Changes (events.rs keeps the settings of the opening)
@@ -103,14 +114,26 @@ function M.build(ctx, settings, filter)
             [root .. "/window/settings_MESSAGES/reset_message_settings_button"] = "msgset:reset",
         },
     })
+    -- what the game's frame shows that the file leaves to the code: Popup Auto-Unpause ticked
+    -- (the game's default setting [I]), the filters' All radios selected (GFX_radio_button frame
+    -- 2), the category heading whole (a fixedSize box without maxWidth: the game does not cut it)
+    for _, it in ipairs(wi) do
+        local p = it.path or ""
+        if p:match("/auto_unpause_value$") or p:match("/filter_all_icon$") or p:match("/filter_any_edited_icon$") then
+            it.frame = 2
+        elseif p:match("/category_title$") then
+            it.w = math.max(it.w or 0, 250)
+        end
+    end
     gui.merge(items, report, wi, wr)
-    -- the search box's text (the filter), at the box's place [I: the edit box is not drawn]
+    -- the search box's text (the filter) in the edit box, after its borderSize (46) [I: the edit
+    -- box's background is not drawn]
     local sb = wr.rects[root .. "/window/settings_MESSAGES/search_box_container"]
     if sb and filter and filter ~= "" then
         items[#items + 1] = {
             kind = "text", path = root .. "/search_text", font = "cg_16b", text = filter,
             spans = { { text = filter, colour = db.textcolors.W or { 1, 1, 1 } } },
-            x = sb.x + 40, y = sb.y + 8, w = 300, h = 20, format = "left", valign = "top",
+            x = sb.x + 46, y = sb.y + 12, w = 300, h = 20, format = "left", valign = "top",
         }
         report.texts = report.texts + 1
     end
@@ -122,7 +145,10 @@ function M.build(ctx, settings, filter)
     local y, n = lr.y, 0
     for _, t in ipairs(M.types(ctx.game_dir)) do
         local name = title(loc, t)
-        if want == "" or name:lower():find(want, 1, true) then
+        -- (matched on the title without its scripted parts, [Scope.GetX], which the renderer does
+        -- not resolve: the game's resolved titles of the galactic council's types hold no "Event")
+        local plain = name:gsub("%b[]", "")
+        if not t.hidden and (want == "" or plain:lower():find(want, 1, true)) then
             n = n + 1
             if y + 36 > lr.y + lr.h then
                 break
@@ -146,7 +172,9 @@ function M.build(ctx, settings, filter)
             local ei, er = gui.layout(ctx.game_dir, db, FILE, "message_settings_entry", ctx.screen, {
                 texture_size = ctx.texture_size, loc = loc, prefix = p,
                 parent = { x = lr.x, y = y, w = 0, h = 0 },
-                hide = { edited_icon = next(s) == nil or nil },
+                -- the edited mark: a setting applied that differs (not while changed only: the
+                -- game's frame after a click)
+                hide = { edited_icon = next((applied or {})[t.key] or {}) == nil or nil },
                 text = { [path .. "/message_title"] = name },
                 frames = frames, actions = actions,
             })

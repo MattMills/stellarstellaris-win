@@ -455,7 +455,7 @@ function M.build(game_dir, db, screen, texture_size, loc, data, state)
                     filter = ms.title(loc, t)
                 end
             end
-            local mi, mr = ms.build(ctx, state.message_settings, filter)
+            local mi, mr = ms.build(ctx, state.message_settings, filter, state.message_settings_applied)
             gui.merge(items, report, mi, mr)
         end)
         if not ok then
