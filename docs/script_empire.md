@@ -18,6 +18,7 @@ policies and edicts, ethics, civics and the government, pop factions and pop gro
 | `sim/lua/simscript/handlers/empire_pops.lua` | Pop group sizes, ethics (pop groups and countries), pop factions. |
 | `sim/lua/simscript/handlers/empire_leaders.lua` | Leaders: age, skill, traits, flags, the pool, exiled and saved leaders, clones. |
 | `sim/lua/simscript/handlers/empire_species.lua` | Species, the founder / built / dominant species, modification and merging, the species rights. |
+| `sim/lua/simscript/handlers/empire_council.lua` | The galactic council and the federation's free migration. |
 
 The world is read and written through `engine.world`, the game's definitions through
 `engine.defs`. The save keys each keyword reads or writes are in its comment.
