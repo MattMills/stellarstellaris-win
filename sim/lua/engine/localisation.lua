@@ -9,8 +9,15 @@
 --
 -- The files (Paradox yml): a UTF-8 BOM, the header `l_english:`, then one ` KEY:0 "text"` per
 -- line (the number is a version and may be absent), `#` comments. The text runs from the first
--- `"` to the last one on the line; `\n` is a new line and `\"` a quote. Files load in name order,
--- the files of a `replace` folder after the others; a later key replaces an earlier one.
+-- `"` to the last one on the line; `\n` is a new line and `\"` a quote.
+--
+-- Which files, and which text wins (4.5.2: PdxLocalizeReadFolder, ReadLocalizationFolderHelper,
+-- LocalizeAddLocalization) [V]: every .yml under localisation/ and pdx_online_assets/localisation/,
+-- at every level, whose path has the language's tag (`l_english`), in name order. The files outside
+-- a `replace` folder load first, and a key they define twice keeps its first text ("Discarded
+-- duplicate key"); then the files with `/replace/` in their path, whose texts replace any before.
+-- With the shared file system (stellar.script.source over sim/src/vfs.rs) that is the game's file
+-- set with its mods; without it, localisation/<language>/ of the game directory, the same rules.
 --
 -- In a text:
 -- - `$KEY$` is another key's text (resolved by get; `$KEY|format$` too), unless KEY is not a
@@ -73,14 +80,12 @@ local function unescape(s)
     end))
 end
 
--- reads one file into texts; returns the number of keys
-local function read_file(path, texts)
-    local f = io.open(path, "rb")
-    if not f then
+-- reads one file's text into texts (replace: its texts replace those before; else a key keeps
+-- its first text); returns the number of keys
+local function read_text(data, texts, replace)
+    if not data then
         return 0
     end
-    local data = f:read("*a")
-    f:close()
     if data:sub(1, 3) == "\239\187\191" then
         data = data:sub(4)
     end
@@ -90,7 +95,7 @@ local function read_file(path, texts)
         local key, rest = line:match("^%s*([%w_%.%-@']+):%d*%s*(\".*)$")
         if key then
             local last = rest:match('^.*()"')
-            if last and last > 1 then
+            if last and last > 1 and (replace or texts[key] == nil) then
                 texts[key] = unescape(rest:sub(2, last - 1))
                 n = n + 1
             end
@@ -99,17 +104,57 @@ local function read_file(path, texts)
     return n
 end
 
+local function read_file(path, texts, replace)
+    local f = io.open(path, "rb")
+    if not f then
+        return 0
+    end
+    local data = f:read("*a")
+    f:close()
+    return read_text(data, texts, replace)
+end
+
+-- the game's file set for a language (relative paths), the replace folders' last, from the shared
+-- file system
+local function game_files(fs, language)
+    local tag = "l_" .. language
+    local normal, replace = {}, {}
+    for _, dir in ipairs({ "localisation", "pdx_online_assets/localisation" }) do
+        for _, rel in ipairs(fs.rust.vfs_list(fs.vfs, dir, "yml")) do
+            if rel:find(tag, 1, true) then
+                local into = rel:find("/replace/", 1, true) and replace or normal
+                into[#into + 1] = rel
+            end
+        end
+    end
+    return normal, replace
+end
+
 -- localisation.load(game_dir, language) -> number of keys
 function localisation.load(game_dir, language)
     language = language or "english"
     local t0 = os.clock()
     local texts = {}
-    local files = yml_files(game_dir .. "/localisation/" .. language)
-    local n = 0
-    for _, path in ipairs(files) do
-        n = n + read_file(path, texts)
+    local n, files = 0, {}
+    local ok, source = pcall(require, "stellar.script.source")
+    local fs = ok and source.filesystem_of(game_dir)
+    if fs and fs.vfs then
+        local normal, replace = game_files(fs, language)
+        for _, rel in ipairs(normal) do
+            n = n + read_text(fs:read(rel), texts, false)
+            files[#files + 1] = rel
+        end
+        for _, rel in ipairs(replace) do
+            n = n + read_text(fs:read(rel), texts, true)
+            files[#files + 1] = rel
+        end
+    else
+        files = yml_files(game_dir .. "/localisation/" .. language)
+        for _, path in ipairs(files) do
+            n = n + read_file(path, texts, path:find("/replace/", 1, true) ~= nil)
+        end
     end
-    localisation.texts, localisation.language = texts, language
+    localisation.texts, localisation.language, localisation.game_dir = texts, language, game_dir
     localisation.files = #files
     local keys = 0
     for _ in pairs(texts) do

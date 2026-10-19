@@ -9,7 +9,15 @@
 --   local defs, errors = source.definitions(fs, "common/scripted_triggers")
 --   defs[name] = { block, file, line, ... }: the top-level `name = { ... }` of every file of the
 --   directory, in load order (files sorted by name; a later definition replaces an earlier one).
--- Where a function takes `fs`, the game directory (a string) means the game without mods.
+-- Where a function takes `fs`, the game directory (a string) means that directory's file system:
+-- the game without mods, or with the launcher's mods when STELLAR_MODS_DIR names the documents
+-- folder (dlc_load.json); the same string always gives the same file system.
+--
+-- In the simulation and the renderer (a `RUST` with `vfs_open`: sim/src/vfs.rs) a file system is
+-- the process's shared one for its mounts: listings and lookups are cached in Rust, and every parse
+-- is cached here by (file, version) until the file changes (docs/script_loading.md). A parsed tree
+-- is then shared by everything that reads the file: readers must not change it (source.expand
+-- returns copies of what it expands and leaves the tree as it is).
 
 local pdxscript = require("pdxscript")
 
@@ -70,22 +78,53 @@ end
 local FS = {}
 FS.__index = FS
 
+-- source.stats: parses made and parses taken from the cache
+source.stats = { parses = 0, cached = 0 }
+
 function source.filesystem(game_dir, mods)
     local roots = { { path = game_dir, name = "vanilla" } }
     for _, mod in ipairs(mods or {}) do
         roots[#roots + 1] = mod
     end
-    return setmetatable({ game_dir = game_dir, roots = roots }, FS)
+    local fs = setmetatable({ game_dir = game_dir, roots = roots }, FS)
+    local rust = rawget(_G, "RUST")
+    if rust and rust.vfs_open then
+        fs.vfs = rust.vfs_open(game_dir, mods or {})
+        fs.rust = rust
+        fs.parsed = {}
+    end
+    return fs
 end
 
--- a game directory (a string) is the filesystem of the game without mods
+-- a game directory (a string): its file system, made once (the launcher's mods over it when
+-- STELLAR_MODS_DIR is set)
+local by_dir = {}
 local function filesystem_of(fs)
     if type(fs) == "string" then
-        return source.filesystem(fs)
+        local f = by_dir[fs]
+        if f == nil then
+            local docs = os.getenv("STELLAR_MODS_DIR")
+            if docs and docs ~= "" then
+                f = source.game_filesystem(fs, docs)
+            else
+                f = source.filesystem(fs)
+            end
+            by_dir[fs] = f
+        end
+        return f
     end
     return fs
 end
 source.filesystem_of = filesystem_of
+
+-- source.filesystems() -> the file systems of the game directories made so far (filesystem_of)
+function source.filesystems()
+    local out = {}
+    for _, f in pairs(by_dir) do
+        out[#out + 1] = f
+    end
+    return out
+end
 
 local function exists(path)
     local f = io.open(path, "rb")
@@ -102,6 +141,9 @@ end
 
 -- fs:path(relative) -> the file the game reads for this path, or nil
 function FS:path(relative)
+    if self.vfs then
+        return self.rust.vfs_path(self.vfs, relative)
+    end
     for i = #self.roots, 1, -1 do
         local root = self.roots[i]
         local path = root.path .. "/" .. relative
@@ -114,9 +156,15 @@ function FS:path(relative)
     end
 end
 
--- fs:files(subdir [, extension]) -> the relative paths of the subdir's files (not recursive) with
--- the extension, sorted by name (the game loads a directory in name order)
+-- fs:files(subdir [, extension]) -> the relative paths of the subdir's files with the extension,
+-- sorted by name (the game loads a directory in name order). With the shared file system, to the
+-- depth the game lists the folder at (sim/src/vfs.rs GAME_FOLDERS: common/inline_scripts,
+-- common/terraform, common/defines, ... at every level; most folders only their own files), a name
+-- once (exactly); without it, the folder's own files, a name once (without case).
 function FS:files(subdir, extension)
+    if self.vfs then
+        return self.rust.vfs_list(self.vfs, subdir, extension)
+    end
     local names, seen = {}, {}
     for _, root in ipairs(self.roots) do
         if root.replace and root.replace[subdir] then
@@ -150,7 +198,8 @@ function source.enabled_mods(documents_dir)
     local list = json:match('"enabled_mods"%s*:%s*%[(.-)%]')
     local mods = {}
     for descriptor in (list or ""):gmatch('"([^"]+)"') do
-        local tree, err = source.parse(documents_dir, descriptor)
+        -- the documents folder as it is (a string would take the mods over it: this function)
+        local tree, err = source.parse(source.filesystem(documents_dir), descriptor)
         if tree == nil then
             return nil, descriptor .. ": " .. tostring(err)
         end
@@ -202,17 +251,41 @@ local function read_file(path)
     return text
 end
 
--- source.parse(fs, relative) -> tree | nil, message: the file the game reads for this path
-function source.parse(fs, relative)
-    local path = filesystem_of(fs):path(relative)
+-- fs:read(relative) -> text | nil, message: the text of the file the game reads for this path
+function FS:read(relative)
+    if self.vfs then
+        return self.rust.vfs_read(self.vfs, relative)
+    end
+    local path = self:path(relative)
     if path == nil then
         return nil, relative .. ": no such file"
     end
-    local text, message = read_file(path)
-    if text == nil then
-        return nil, message
+    return read_file(path)
+end
+
+-- source.parse(fs, relative) -> tree | nil, message: the file the game reads for this path. With
+-- the shared file system, once per version of the file: the same tree for every reader.
+function source.parse(fs, relative)
+    fs = filesystem_of(fs)
+    local cache, version = fs.parsed, nil
+    if cache then
+        version = fs.rust.vfs_version(fs.vfs, relative)
+        local c = cache[relative]
+        if c and c.version == version then
+            source.stats.cached = source.stats.cached + 1
+            return c.tree, c.message
+        end
     end
-    return pdxscript.parse(text, relative)
+    local text, message = fs:read(relative)
+    local tree
+    if text ~= nil then
+        tree, message = pdxscript.parse(text, relative)
+    end
+    source.stats.parses = source.stats.parses + 1
+    if cache then
+        cache[relative] = { version = version, tree = tree, message = message }
+    end
+    return tree, message
 end
 
 -- Scripted triggers, effects and values are templates (CMetaScriptTemplate): the game reads the
@@ -415,14 +488,20 @@ end
 -- line of an inline_script statement from the definition's first line: line_base is the line
 -- before it (0 for a file). Errors (a missing script, a parse error) are collected in errors and
 -- the statement is dropped.
-function source.expand(fs, block, errors, depth, where, line_base)
+-- A block with nothing to expand is returned as it is; a block with something to expand is
+-- returned as a new block (its statements copied where their blocks changed), so the block given
+-- is never changed. used (a table, optional) gets the inline script files read, as keys
+-- (engine.reload: what to expand again when one changes).
+function source.expand(fs, block, errors, depth, where, line_base, used)
     fs = filesystem_of(fs)
     depth = depth or 0
     where = where or "?"
     line_base = line_base or 0
     local out = { line = block.line, type = block.type, name = block.name, warnings = block.warnings }
+    local changed = false
     for _, e in ipairs(block) do
         if e.op and e.key and e.key.text:lower() == "inline_script" and depth < 32 then
+            changed = true
             local script, params = nil, {}
             if e.value.text then
                 script = e.value.text
@@ -439,10 +518,12 @@ function source.expand(fs, block, errors, depth, where, line_base)
                 end
             end
             local file = "common/inline_scripts/" .. tostring(script) .. ".txt"
-            local path = fs:path(file)
+            if used then
+                used[file] = true
+            end
             local text, message
-            if path then
-                text, message = read_file(path)
+            if fs:path(file) then
+                text, message = fs:read(file)
             else
                 message = "no such file"
             end
@@ -463,7 +544,7 @@ function source.expand(fs, block, errors, depth, where, line_base)
                 -- the line of its '}'
                 local call_line = (e.value.text == nil and e.value.last or e.line) - line_base
                 local inner_where = string.format("%s:%d(inline_script) %s", where, call_line, file)
-                for _, inner in ipairs(source.expand(fs, tree, errors, depth + 1, inner_where)) do
+                for _, inner in ipairs(source.expand(fs, tree, errors, depth + 1, inner_where, nil, used)) do
                     -- where it came from (its line numbers are those of the inline script)
                     inner.inline = inner.inline or inner_where
                     out[#out + 1] = inner
@@ -471,10 +552,21 @@ function source.expand(fs, block, errors, depth, where, line_base)
             end
         else
             if e.op and e.value and e.value.text == nil then
-                e.value = source.expand(fs, e.value, errors, depth, where, line_base)
+                local x = source.expand(fs, e.value, errors, depth, where, line_base, used)
+                if x ~= e.value then
+                    local c = {}
+                    for k, v in pairs(e) do
+                        c[k] = v
+                    end
+                    c.value = x
+                    e, changed = c, true
+                end
             end
             out[#out + 1] = e
         end
+    end
+    if not changed then
+        return block
     end
     return out
 end
@@ -523,7 +615,7 @@ function source.definitions(fs, subdir)
         end
         if tree == nil and path then
             -- parameter blocks interleaved with braces: find the definitions with them blanked
-            local text = read_file(path)
+            local text = fs:read(short)
             tree = text and pdxscript.parse(blank_markers(text), short)
         end
         if tree == nil then
@@ -559,13 +651,21 @@ end
 local texts = setmetatable({}, { __mode = "v" })
 function source.instantiate(fs, def, args, errors, where)
     if def.template == nil then
+        local f = filesystem_of(fs)
+        -- the file's version with the shared file system (a changed file is read again)
+        local version = f.vfs and def.file and f.rust.vfs_version(f.vfs, def.file) or 0
         local lines = texts[def.path]
-        if lines == nil then
-            local text, message = read_file(def.path)
+        if lines == nil or lines.version ~= version then
+            local text, message
+            if f.vfs and def.file then
+                text, message = f:read(def.file)
+            else
+                text, message = read_file(def.path)
+            end
             if text == nil then
                 return nil, message
             end
-            lines = { text = text }
+            lines = { text = text, version = version }
             for line in (text .. "\n"):gmatch("([^\n]*)\n") do
                 lines[#lines + 1] = line
             end

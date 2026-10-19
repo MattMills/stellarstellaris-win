@@ -2776,7 +2776,7 @@ local function trigger(game_dir, block, kind, id, from_kind, from_id)
     if not db.scripted_triggers or next(db.scripted_triggers) == nil then
         local source = require("stellar.script.source")
         db.game_dir = game_dir
-        db.fs = db.fs or source.filesystem(game_dir)
+        db.fs = db.fs or source.filesystem_of(game_dir)
         db.scripted_triggers = source.definitions(db.fs, "common/scripted_triggers")
         db.script_values = source.definitions(db.fs, "common/script_values")
         db.scripted_effects = db.scripted_effects or {}
@@ -4160,7 +4160,7 @@ local function terraform_links(game_dir)
     end
     local okd, defs = pcall(require, "engine.defs")
     local source = require("stellar.script.source")
-    local fs = okd and defs.fs or (game_dir and source.filesystem(game_dir))
+    local fs = okd and defs.fs or (game_dir and source.filesystem_of(game_dir))
     local out = {}
     for _, short in ipairs(fs and source.files(fs, "common/terraform", "txt") or {}) do
         local tree = source.parse(fs, short)

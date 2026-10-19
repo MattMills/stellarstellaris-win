@@ -48,6 +48,12 @@ local OPTION_PARAMS = {
     is_exclusive_option = true, show_unlock_hint = true, title = true, desc = true,
 }
 
+-- M.reindex(): the index built again from db.event_list (engine.reload: an events file changed)
+function M.reindex()
+    for k in pairs(mtth_by_kind) do mtth_by_kind[k] = nil end
+    return M.index()
+end
+
 function M.index()
     for _, ev in ipairs(db.event_list) do
         if ev.mtth and not ev.triggered_only then

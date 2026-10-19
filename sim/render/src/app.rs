@@ -278,6 +278,8 @@ pub struct App {
     /// where the left button went down on the map (a box selection's corner: mapicons.rs)
     pub(crate) map_press: Option<(f32, f32)>,
     last_update: Option<Instant>,
+    /// the file systems' change count last applied (stellar_sim::vfs::change_count)
+    reload_seen: usize,
     /// the diplomacy windows (Contacts, a country's diplomacy, ...: diplomacy.rs)
     pub diplomacy: crate::diplomacy::State,
 }
@@ -326,6 +328,10 @@ impl App {
         let cache = Rc::new(RefCell::new(Cache::default()));
         let t0 = std::time::Instant::now();
         let (runtime, loc) = gui::frontend_runtime(game_dir, &cache, "english")?;
+        // the game's files watched: a change is read again without asking (STELLAR_WATCH=0: only F11)
+        if let Err(e) = runtime.lua.load("require('engine.reload').watch()").exec() {
+            eprintln!("file watcher: {e}");
+        }
         let version = game_version(game_dir);
         let log = vec![format!("localisation: {loc}"), format!("front end ready in {:.1} s", t0.elapsed().as_secs_f64())];
         Ok(App {
@@ -388,6 +394,7 @@ impl App {
             cursor: None,
             map_press: None,
             last_update: None,
+            reload_seen: stellar_sim::vfs::change_count(),
             diplomacy: Default::default(),
         })
     }
@@ -535,11 +542,17 @@ impl App {
 
     /// A frame in real time: [`App::advance`] by the time since the last one.
     pub fn update(&mut self) -> bool {
+        // game files changed (the watcher, or F11): read again in this thread's Lua states
+        let mut reloaded = false;
+        if stellar_sim::vfs::change_count() != self.reload_seen {
+            self.apply_reloads();
+            reloaded = true;
+        }
         let now = Instant::now();
         // the frame's time, at most 0.1 s (CGameIdler::Idle)
         let dt = self.last_update.map_or(0.0, |t| (now - t).as_secs_f32()).min(0.1);
         self.last_update = Some(now);
-        self.advance(dt)
+        self.advance(dt) | reloaded
     }
 
     /// The app's screen, the bindings' context.
@@ -2264,6 +2277,14 @@ impl App {
                 }
             }
         }
+        // F11: the game files changed on disk read again (engine.reload: the front end's Lua state
+        // scans, then the map's applies the same changes)
+        if let Input::Key { key, down: false, .. } = input {
+            if key == "f11" {
+                self.reload_game_files();
+                return Ok(true);
+            }
+        }
         // the bars' .gui shortcuts (F1..F10, F, L, Alt+B, Ctrl+Z ..., O: mainbars.rs), on release
         if self.screen == Screen::Map {
             if let Input::Key { key, down: false, .. } = input {
@@ -2285,6 +2306,46 @@ impl App {
             changed |= self.apply(e)?;
         }
         Ok(changed)
+    }
+
+    /// The game files changed on disk read again in every Lua state (F11; docs/script_loading.md):
+    /// the disk compared with what was read (the front end's state), then the changes applied.
+    pub fn reload_game_files(&mut self) {
+        let scan = "local r = require('engine.reload'); for _, fs in ipairs(r.filesystems()) do fs.rust.vfs_scan(fs.vfs) end";
+        if let Err(e) = self.runtime.lua.load(scan).exec() {
+            self.log.push(format!("reload: {e}"));
+        }
+        self.apply_reloads();
+    }
+
+    /// The changes logged since the last ones applied (the watcher's, F11's), applied in this
+    /// thread's Lua states (the front end's and the map's; the simulation's thread applies its own
+    /// between days); each state's summary goes to the log and the console, and the screen, the
+    /// windows and the scene are built again.
+    pub fn apply_reloads(&mut self) {
+        self.reload_seen = stellar_sim::vfs::change_count();
+        let mut lines = Vec::new();
+        let poll = "local r = require('engine.reload'); local x = r.poll(); return x and r.summary(x) or ''";
+        match self.runtime.lua.load(poll).eval::<String>() {
+            Ok(s) if s.is_empty() => {}
+            Ok(s) => lines.push(format!("front end {s}")),
+            Err(e) => lines.push(format!("front end reload: {e}")),
+        }
+        if let Some(map) = &self.map {
+            match map.runtime.lua.load(poll).eval::<String>() {
+                Ok(s) if s.is_empty() => {}
+                Ok(s) => lines.push(format!("map {s}")),
+                Err(e) => lines.push(format!("map reload: {e}")),
+            }
+        }
+        for l in lines {
+            eprintln!("{l}");
+            crate::console::push(&l);
+        }
+        // the screen, the windows and the scene built again with what was read
+        self.items = None;
+        self.overlay_key = None;
+        self.scene = None;
     }
 
     /// Whether a text field of the empire creator has the keyboard.

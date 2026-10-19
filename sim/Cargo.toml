@@ -11,6 +11,8 @@ publish = false
 mlua = { version = "0.11", features = ["luajit", "vendored"] }
 # reading save games (a .sav is a zip of `gamestate` and `meta`)
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# the game's files watched for changes (sim/src/vfs.rs: inotify, ReadDirectoryChangesW, FSEvents)
+notify = "8"
 
 # LuaJIT's sources with compiled code checking the hooks, so that a deadline stops it
 # (sim/vendor/README.md, sim/src/preempt.rs)

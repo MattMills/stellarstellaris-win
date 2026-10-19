@@ -19,6 +19,8 @@
 //! - [`modcheck`]: the modifier model against a capture of the game's modifier nodes
 //! - [`frametime`]: the simulation inside a rendered game's frames, timed (docs/frame_timing.md)
 //! - [`preempt`]: the Lua VM stopping a coroutine past a deadline (a count hook that yields)
+//! - [`vfs`]: the game's files with the mods over them, shared by every Lua state
+//!   (docs/script_loading.md)
 //! - [`cadence`]: the simulation's threads in 1 ms slices, every other millisecond unused
 
 pub mod cadence;
@@ -32,6 +34,7 @@ pub mod runtime;
 pub mod save;
 pub mod scheduler;
 pub mod store;
+pub mod vfs;
 pub mod workers;
 
 /// The Lua binding, for callers that pass tables to and from the runtime.

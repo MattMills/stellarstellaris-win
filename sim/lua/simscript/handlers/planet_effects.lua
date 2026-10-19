@@ -1023,16 +1023,29 @@ return function(eval, H)
         local source = require("stellar.script.source")
         local fs = defs.fs
         local out = {}
-        -- the file's own `@name = value` variables put in place (the costs and durations use them)
+        -- the file's own `@name = value` variables put in place (the costs and durations use them),
+        -- in a copy: the parsed tree is shared (stellar.script.source's parse cache)
+        local function copy(t)
+            local c = {}
+            for k, x in pairs(t) do c[k] = x end
+            return c
+        end
         local function subst(b, vars)
-            for _, y in ipairs(b) do
+            local out = copy(b)
+            for i, y in ipairs(b) do
                 local v = y.op and y.value
                 if v and v.text and v.text:sub(1, 1) == "@" and vars[v.text:sub(2)] then
-                    v.text = vars[v.text:sub(2)]
+                    local c, cv = copy(y), copy(v)
+                    cv.text = vars[v.text:sub(2)]
+                    c.value = cv
+                    out[i] = c
                 elseif type(v) == "table" and v.text == nil then
-                    subst(v, vars)
+                    local c = copy(y)
+                    c.value = subst(v, vars)
+                    out[i] = c
                 end
             end
+            return out
         end
         for _, short in ipairs(fs and source.files(fs, "common/terraform", "txt") or {}) do
             local tree = source.parse(fs, short) or {}
@@ -1046,7 +1059,7 @@ return function(eval, H)
                 if x.op == "=" and x.key and x.key.text == "terraform_link" and type(x.value) == "table" then
                     local ok, v = pcall(source.expand, fs, x.value, nil, 0, "file: " .. short)
                     v = ok and v or x.value
-                    subst(v, vars)
+                    v = subst(v, vars)
                     out[#out + 1] = v
                     link_file[v] = short
                 end

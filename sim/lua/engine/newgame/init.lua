@@ -185,7 +185,7 @@ function newgame.generate(fs, settings)
     -- InitializeUninitializedSystems (systems.initialize_rest)
     local progress = settings.progress or function() end
     if type(fs) == "string" then
-        fs = source.filesystem(fs)
+        fs = source.filesystem_of(fs)
     end
     local inputs = scenario.read(fs, settings)
     local global = rng.global()

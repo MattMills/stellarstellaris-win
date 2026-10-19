@@ -126,7 +126,7 @@ local function traits(game_dir)
             colours[name] = { n[1] / 255, n[2] / 255, n[3] / 255, (n[4] or 255) / 255 }
         end
     end
-    local fs = source.filesystem(game_dir)
+    local fs = source.filesystem_of(game_dir)
     local out = {}
     for name, d in pairs(source.definitions(game_dir, "common/traits")) do
         local b = source.expand(fs, d.block, {})
@@ -936,7 +936,7 @@ function fleet.components(game_dir)
     end
     -- weapon_components.csv: key;cost;power;min_damage;max_damage;...;min_windup;max_windup;cooldown;
     -- range;accuracy;tracking;...
-    local fs = source.filesystem(game_dir)
+    local fs = source.filesystem_of(game_dir)
     local path = fs:path("common/component_templates/weapon_components.csv")
     local f = path and io.open(path, "r")
     if f then
