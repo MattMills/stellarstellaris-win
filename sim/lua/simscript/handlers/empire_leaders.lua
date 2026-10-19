@@ -595,17 +595,23 @@ return function(eval, H)
         saved_put(exiled(), key, lid)
         wrote()
     end
-    -- set_leader = <key> (CSetLeaderEffect 0x37483e0) [V]: the exiled leader under the key: a
-    -- country's ruler (owned by it), a fleet's or army's leader (owned by its owner); the key cleared.
-    -- A leader target instead: the objects area's set_leader
+    -- set_leader = <key>|<key@scope>|<leader> (CSetLeaderEffect 0x37483e0) [V]: the exiled leader
+    -- under the key (or a leader target, as vanilla's `set_leader = last_created_leader` [I]): a
+    -- country's ruler (owned by it), a fleet's or army's leader (owned by its owner); the key
+    -- cleared. A fleet with a leader target: the objects area's set_leader
     local prev_set_leader = EFF["set_leader"]
     EFF["set_leader"] = function(e, ctx)
-        local key = e.value.text and unq(e.value.text)
-        local lid = key and saved_get(exiled(), key)
-        if not lid then
-            if prev_set_leader then return prev_set_leader(e, ctx) end
-            return
+        if not e.value.text then return end
+        local sc = target(e, ctx)
+        local lid, key
+        if sc and sc ~= NONE and sc.kind == "leader" then
+            lid = sc.id
+            if ctx.this.kind == "fleet" and prev_set_leader then return prev_set_leader(e, ctx) end
+        else
+            key = key_of(e, ctx)
+            lid = key and saved_get(exiled(), key)
         end
+        if not lid then return end
         local l = H.leader(lid)
         if not l then return end
         if ctx.this.kind == "country" then
@@ -622,7 +628,7 @@ return function(eval, H)
         else
             return
         end
-        saved_clear(exiled(), key)
+        if key then saved_clear(exiled(), key) end
         wrote()
     end
     -- return_leader_from_exile = <key> (CReturnLeaderFromExileEffect 0x3797ab0) [V]: owned by the
