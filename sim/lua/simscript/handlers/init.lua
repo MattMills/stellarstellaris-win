@@ -12,9 +12,24 @@
 --   objects    effects that make the game's objects (districts, buildings, pops, fleets, ships,
 --              leaders, countries, species, galaxy objects): a new game's start script
 --   fleet_actions  queue_actions, clear_fleet_actions, auto_move_to_planet, remove_auto_move_target
---   fleet      the fleets', ships', armies', designs' and combat's keywords (fleet_triggers, fleet_effects)
 
-local AREAS = { "runtime", "diplomacy", "creation", "objects", "fleet_actions", "fleet" }
+-- every area, the script coverage packages included (docs/script_coverage.md): a module that does not
+-- exist yet is skipped, so a package adds its own handlers/<area>.lua and never edits this list
+local AREAS = {
+    "runtime",
+    "diplomacy",
+    "creation",
+    "objects",
+    "fleet_actions",
+    "starbase",
+    "planet",
+    "empire",
+    "fleet",
+    "general",
+    "events",
+    "research",
+    "economy",
+}
 
 return function(eval)
     for _, area in ipairs(AREAS) do
