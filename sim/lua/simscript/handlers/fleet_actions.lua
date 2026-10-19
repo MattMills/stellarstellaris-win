@@ -67,10 +67,18 @@ return function(eval)
         require("engine.fleets.automove").to_planet(fid, sc.id, clear, destroy, effect)
     end
 
-    -- destroy_fleet = <fleet> (CDestroyFleetEffect 0x372dcc0: CFleet::SetToBeKilled; removed after
-    -- the phase: engine.fleets.create.kill)
+    -- destroy_fleet = <fleet> | { target kill_leader destroy_template } (CDestroyFleetEffect
+    -- 0x372dcc0: CFleet::SetToBeKilled; removed after the phase: engine.fleets.create.kill)
     EFF["destroy_fleet"] = function(e, ctx)
         local v = e.value and e.value.text or "this"
+        if e.value and e.value.text == nil then
+            -- the block form: its `target` (none: nothing) [I]
+            v = nil
+            for _, x in ipairs(e.value) do
+                if x.op and x.key and x.key.text:lower() == "target" then v = x.value.text end
+            end
+            if not v then return end
+        end
         local sc = ctx.this
         if v ~= "this" then
             local found, s = eval.resolve(v, ctx, e.value)

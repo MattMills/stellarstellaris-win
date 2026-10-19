@@ -143,8 +143,8 @@ return function(eval, F)
         local g = globals()
         for _, b in ipairs(world.blocks(g)) do
             if ref(world.field(b, "ship_design")) == did then
-                for i, x in ipairs(g) do
-                    if x == b or x.value == b then table.remove(g, i) break end
+                for _, x in ipairs(g) do
+                    if x == b or x.value == b then world.remove_entry(g, x) break end
                 end
                 F.effect_stats.applied = F.effect_stats.applied + 1
                 return

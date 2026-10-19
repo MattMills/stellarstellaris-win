@@ -758,10 +758,149 @@ return function(eval, H)
         end
         wrote()
     end
-    -- refresh_leader_pool (CRefreshLeaderPoolEffect 0x37b5f50 → UpdateLeaderPools(force)) [V]: every
-    -- class's pool made again [I: the pool's generation is not modelled; reported]
+    -- CCountry::GetRandomSpeciesForLeaderClass (0x235f450 → GetRandomSpecies 0x235f020) [V]: over the
+    -- country's colonies, each sapient pop group (not enslaved nor purged [I: by its category]) that
+    -- passes rule can_generate_leader_from_pop_group adds 1 to its species (first appearance order);
+    -- one global draw, weighted; none: nil
+    local function random_leader_species(cid)
+        local ids, w, idx = {}, {}, {}
+        for _, gid in ipairs(H.pop_groups(S("country", cid))) do
+            local sid = H.group_species(gid)
+            local s = sid and H.species(sid)
+            local cat = H.group_category(gid) or ""
+            if s and field(s, "sapient") ~= "no" and not cat:match("slave") and not cat:match("purge")
+                and H.group_size(gid) > 0 then
+                local b, file = def("common/game_rules", "can_generate_leader_from_pop_group")
+                local ok = true
+                if type(b) == "table" then
+                    local c2 = eval.new_ctx(S("pop_group", gid), nil, nil, file)
+                    c2.root = S("country", cid)
+                    ok = eval.trigger(b, c2) == true
+                end
+                if ok then
+                    if not idx[sid] then ids[#ids + 1] = sid idx[sid] = #ids w[#ids] = 0 end
+                    w[idx[sid]] = w[idx[sid]] + 1
+                end
+            end
+        end
+        if #ids == 0 then return nil end
+        local total = 0
+        for _, x in ipairs(w) do total = total + x end
+        local r = eval.rand() % total
+        for i, x in ipairs(w) do
+            if r < x then return ids[i] end
+            r = r - x
+        end
+        return ids[#ids]
+    end
+    -- CLeader::SetToBeKilled (0x1d03090) [V]: flag 0x20, two global draws, on_leader_death_notify and
+    -- on_leader_death (a fired one: on_leader_fired) (this the owner, from the leader); the leader
+    -- itself removed by the engine's kill_leader [I: the dead_leader record not written]
+    local function to_be_killed(lid)
+        local l = H.leader(lid)
+        if not l then return end
+        set_lflag(l, 0x20, true)
+        local cid = owner_of(l)
+        if cid then
+            local s = eval.rand()
+            eval.rand()
+            local events = require("simscript.events")
+            local from = eval.new_ctx(S("leader", lid))
+            if bit.band(lflags(l), 0x10) ~= 0 then
+                pcall(events.on_action, "on_leader_fired", S("country", cid), from, SR.new(s))
+            else
+                pcall(events.on_action, "on_leader_death_notify", S("country", cid), from, SR.new(s))
+                pcall(events.on_action, "on_leader_death", S("country", cid), from, SR.new(s))
+            end
+        end
+        kill(lid)
+    end
+    -- a new pool leader (CGameState::CreateNewLeader → CLeader::Initialize, flags 0x5): made through
+    -- the objects area's leaders.create, then moved from the owned leaders into the pool (date_added,
+    -- on_added_to_leader_pool) [I: the game's draw order in Initialize differs: background, ethic,
+    -- gender, name, skill, age]
+    local function new_pool_leader(owner, creator, class, sid, external)
+        require("engine.script.objects_leaders")
+        local leaders = require("engine.script.objects").leaders
+        if not leaders or not leaders.create then return nil end
+        local lid = leaders.create({ country = creator, class = class, species = sid })
+        local l = lid and H.leader(lid)
+        if not l then return nil end
+        remove_owned(creator, lid)
+        world.set(l, "creator", creator)
+        if external then set_lflag(l, 0x400, true) end
+        world.set(l, "country", owner)
+        world.set(l, "date_added", quoted(date_text(today())))
+        add_to_pool(owner, lid)
+        return lid
+    end
+    local function modifier(cid, name)
+        return E.modifier and tonumber(E.modifier("country", cid, name)) or 0
+    end
+    -- refresh_leader_pool (CRefreshLeaderPoolEffect 0x37b5f50 → UpdateLeaderPools(force) 0x1d35b50 →
+    -- UpdateLeaderPool(class, force) 0x1d38050 per class in database order) [V]: the class's pool
+    -- leaders that are gone, dying or hired out of the pool; every other one killed
+    -- (SetToBeKilled); a class without a pool [I: can_be_envoy] made no new ones; else
+    -- LEADER_POOL_SIZE + country_leader_pool_size of the owner's species (one weighted draw each),
+    -- then EXTERNAL_LEADER_POOL_SIZE + external_leader_pool_add from random countries passing rule
+    -- can_get_external_leader_pool_candidate (one draw each; one whose species list is empty taken
+    -- out) [I: the modifiers' names]
     EFF["refresh_leader_pool"] = function(e, ctx)
-        if ctx.this.kind ~= "country" or e.value.text == "no" then return end
-        I.miss("effect", "refresh_leader_pool (pool generation)", ctx, e)
+        local c = ctx.this.kind == "country" and obj("country", ctx.this.id)
+        if not c or e.value.text == "no" then return end
+        local cid = ctx.this.id
+        local owned = {}
+        for _, x in ipairs(world.list(field(c, "owned_leaders"))) do owned[tonumber(x)] = true end
+        for _, cl in ipairs(H.ordered("common/leader_classes")) do
+            local class = cl.name
+            local pool = pool_list(c)
+            for i = #pool, 1, -1 do
+                local lid = pool[i].text and tonumber(pool[i].text)
+                local l = lid and H.leader(lid)
+                if lid and (not l or unq(field(l, "class")) == class) then
+                    if not l or bit.band(lflags(l), 0x20) ~= 0 or owned[lid] then world.remove_at(pool, i) end
+                end
+            end
+            for i = #pool, 1, -1 do
+                local lid = pool[i].text and tonumber(pool[i].text)
+                local l = lid and H.leader(lid)
+                if l and unq(field(l, "class")) == class then
+                    to_be_killed(lid)
+                    world.remove_at(pool, i)
+                end
+            end
+            if dfield(cl.def.block, "can_be_envoy") ~= "yes" then
+                local target = math.max(0, define("NGameplay", "LEADER_POOL_SIZE", 3) + floor(modifier(cid, "country_leader_pool_size")))
+                for _ = 1, target do
+                    local sid = random_leader_species(cid)
+                    if not sid then break end
+                    new_pool_leader(cid, cid, class, sid, false)
+                end
+                local n = define("NGameplay", "EXTERNAL_LEADER_POOL_SIZE", 1) + floor(modifier(cid, "external_leader_pool_add"))
+                local cands = {}
+                local rb, rfile = def("common/game_rules", "can_get_external_leader_pool_candidate")
+                for _, oid in ipairs(world.all("country")) do
+                    if oid ~= cid and obj("country", oid) then
+                        local ok = type(rb) ~= "table"
+                            or eval.trigger(rb, eval.new_ctx(S("country", cid), S("country", oid), nil, rfile)) == true
+                        if ok then cands[#cands + 1] = oid end
+                    end
+                end
+                local made = 0
+                while made < n and #cands > 0 do
+                    local r = eval.rand() % #cands + 1
+                    local oc = cands[r]
+                    local sid = random_leader_species(oc)
+                    if not sid then
+                        cands[r] = cands[#cands]
+                        cands[#cands] = nil
+                    else
+                        new_pool_leader(cid, oc, class, sid, true)
+                        made = made + 1
+                    end
+                end
+            end
+        end
+        wrote()
     end
 end

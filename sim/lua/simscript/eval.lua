@@ -531,6 +531,8 @@ local function apply_ops_tree(b, ctx, acc, only_ops)
                 if trigger(e.value, ctx, VALUE_OPS) then
                     acc = apply_ops(e.value, ctx, acc, true)
                 end
+            elseif k == "complex_trigger_modifier" and e.value.text == nil then
+                acc = M.complex_trigger_modifier(e.value, ctx, acc, e)
             elseif k == "if" or k == "else_if" or k == "else" then
                 if k == "if" then taken = false end
                 if not taken and e.value.text == nil then
@@ -620,6 +622,8 @@ function M.weight(b, ctx, base)
                         end
                     end
                 end
+            elseif k == "complex_trigger_modifier" and e.value.text == nil then
+                acc = M.complex_trigger_modifier(e.value, ctx, acc, e)
             elseif k == "complex_trigger_modifier" or k == "opinion_modifier" or k == "modifier" then
                 miss("weight op", k, ctx, e)
             end
@@ -948,6 +952,80 @@ function M.count_value(key, block, ctx)
         return nil
     end
     return (M.count_items(lname, list, block, ctx))
+end
+
+-- M.trigger_value(name, params, ctx, e) -> a numeric trigger's value (the game's GetTriggerValue)
+-- with its parameter block, or nil when the Lua has none: a count_<list>'s count, else the
+-- handler modules' TRIGGER_VALUES / TVAL, called with a statement whose value is the parameters
+function M.trigger_value(name, params, ctx, e)
+    local key = name:lower()
+    local block = params or {}
+    local n = M.count_value(key, block, ctx)
+    if n then
+        return n
+    end
+    local se = { op = "=", key = { text = name }, value = block, line = e and e.line, file = e and e.file }
+    local f = M.TRIGGER_VALUES[key]
+    if f then
+        return f(ctx, se)
+    end
+    local tv = M.TVAL[name] or M.TVAL[key]
+    if tv then
+        return tv(ctx, se)
+    end
+    return nil
+end
+
+-- complex_trigger_modifier = { trigger = <numeric trigger> trigger_scope = <scope>
+-- parameters = { ... } mode = add|subtract|mult|factor|divide } in a value or a weight: the
+-- trigger's value in trigger_scope (default this), with its parameters, applied to acc by mode
+-- (default add) [I: the documented form; vanilla uses add, subtract, mult, factor, divide]. A
+-- trigger_scope that names no object leaves acc as it is.
+function M.complex_trigger_modifier(b, ctx, acc, e)
+    local name, scope, params, mode
+    for _, x in ipairs(b) do
+        if x.op and x.key then
+            local xk = x.key.text:lower()
+            if xk == "trigger" then name = x.value.text
+            elseif xk == "trigger_scope" then scope = x
+            elseif xk == "parameters" then params = x.value
+            elseif xk == "mode" then mode = x.value.text
+            end
+        end
+    end
+    if not name then
+        miss("value op", "complex_trigger_modifier", ctx, e)
+        return acc
+    end
+    local c = ctx
+    if scope and scope.value.text then
+        local found, sc = M.resolve(scope.value.text, ctx, scope)
+        if not found then
+            miss("value op", "complex_trigger_modifier trigger_scope", ctx, scope)
+            return acc
+        end
+        if not sc or sc == NONE then
+            return acc
+        end
+        c = push(ctx, sc)
+    end
+    if params and params.text then params = nil end
+    local v = M.trigger_value(name, params, c, e)
+    if v == nil then
+        miss("trigger value", name:lower(), ctx, e)
+        return acc
+    end
+    mode = (mode or "add"):lower()
+    if mode == "add" then return acc + v
+    elseif mode == "subtract" then return acc - v
+    elseif mode == "mult" or mode == "multiply" or mode == "factor" then return acc * v
+    elseif mode == "divide" then
+        if v ~= 0 then return acc / v end
+        return acc
+    elseif mode == "set" then return v
+    end
+    miss("complex_trigger_modifier mode", mode, ctx, e)
+    return acc
 end
 
 -- a block: AND of its statements (keys in skip are parameters, not triggers)

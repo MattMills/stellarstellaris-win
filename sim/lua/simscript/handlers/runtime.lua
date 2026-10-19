@@ -1251,16 +1251,29 @@ return function(eval)
     -- defaults 100 / 200 / 300); an unknown setting: -1
     local SETUP_FIELD = { mid_game_year = { "mid_game_start", 100 }, end_game_year = { "end_game_start", 200 },
         victory_year = { "victory_year", 300 } }
+    local function setup_value(r, setting)
+        local spec = SETUP_FIELD[setting]
+        local v = tonumber(r.galaxy_field(spec and spec[1] or setting))
+        if spec and (v == nil or v == -1) then v = spec[2] end
+        return v or -1
+    end
     TRIG["check_galaxy_setup_value"] = function(e, ctx)
         local r = rt()
         if not r or e.value.text then return false end
         local p = params(e)
         local setting, val = p.setting and p.setting.value.text, p.value
         if not setting or not val then return false end
-        local spec = SETUP_FIELD[setting]
-        local v = tonumber(r.galaxy_field(spec and spec[1] or setting))
-        if spec and (v == nil or v == -1) then v = spec[2] end
-        return compare(v or -1, val.op, eval.value(val.value, ctx, val))
+        return compare(setup_value(r, setting), val.op, eval.value(val.value, ctx, val))
+    end
+    -- its value (`complex_trigger_modifier = { trigger = check_galaxy_setup_value parameters = {
+    -- setting = x } }`): the setting's value
+    TVAL["check_galaxy_setup_value"] = function(_, e)
+        local r = rt()
+        if not r or not e or e.value.text then return 0 end
+        local p = params(e)
+        local setting = p.setting and p.setting.value.text
+        if not setting then return 0 end
+        return setup_value(r, setting)
     end
 
     -- countries

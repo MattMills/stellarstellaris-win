@@ -1640,4 +1640,190 @@ return function(eval)
     EFF["destroy_psionic_aura"] = function(e, ctx) aura_effect("destroy", e, ctx) end
     EFF["set_aura_intensity"] = function(e, ctx) aura_effect("set", e, ctx) end
     EFF["add_aura_intensity"] = function(e, ctx) aura_effect("add", e, ctx) end
+
+    -- -----------------------------------------------------------------------------------------
+    -- batch 3: the owner of a bypass, stations, nebulas, systems made or moved, debris
+
+    -- owner (a bypass): the owner of its holder, a megastructure's `owner`, else its system's owner
+    -- [I]; the other scopes: the link before this one (installed only over one: an owner resolved
+    -- elsewhere is not shadowed)
+    local prev_owner_link = LINKS["owner"]
+    if prev_owner_link then LINKS["owner"] = function(cur, ctx)
+        if cur ~= NONE and cur.kind == "bypass" then
+            local b = obj("bypass", cur.id)
+            local o = b and world.field(b, "owner")
+            local c
+            if type(o) == "table" and tonumber(world.field(o, "type")) == 6 then
+                local m = obj("megastructure", ref(world.field(o, "id")))
+                c = m and ref(world.field(m, "owner"))
+            end
+            if not c then
+                local r = rt()
+                local sid = bypass_system(cur.id)
+                c = r and sid and r.system_owner(sid)
+            end
+            return (c and obj("country", c)) and S("country", c) or nil
+        end
+        return prev_owner_link(cur, ctx)
+    end end
+
+    local function country_param(x, ctx)
+        local t = tgt_of(x, ctx)
+        return t and t.kind == "country" and t.id or nil
+    end
+    -- the planet a station goes to: a planet's (a colony's carrier), a system's star
+    local function station_planet(ctx)
+        local r = rt()
+        if not r or ctx.this == NONE then return nil end
+        sync()
+        if ctx.this.kind == "system" then return r.star_planet(ctx.this.id) end
+        local kind, id = r.carrier_of(ctx.this.kind, ctx.this.id)
+        return kind == "planet" and id or nil
+    end
+    -- create_starbase = { owner size design module building effect } (a planet, a system: its
+    -- star): the effect runs in the new starbase
+    EFF["create_starbase"] = function(e, ctx)
+        local p = params(e)
+        local c = country_param(p.owner, ctx)
+        local pid = station_planet(ctx)
+        if not c or not pid then return end
+        local h = E.new_handle()
+        engine({ type = "create_starbase", country = c, planet = pid, size = text_of(p.size), design = text_of(p.design),
+            module = text_of(p.module), building = text_of(p.building), handle = h })
+        local id = E.resolve(h)
+        if id and p.effect and p.effect.value.text == nil then eval.effect(p.effect.value, I.push(ctx, S("starbase", id))) end
+    end
+    -- create_mining_station = { owner } (a planet; an astral rift has no orbital station here)
+    EFF["create_mining_station"] = function(e, ctx)
+        if ctx.this == NONE or ctx.this.kind == "astral_rift" then return end
+        local c = country_param(params(e).owner, ctx)
+        local pid = station_planet(ctx)
+        if c and pid then engine({ type = "create_mining_station", country = c, planet = pid }) end
+    end
+    -- create_nebula = { name radius effect } (a system): the effect in every system of the nebula
+    EFF["create_nebula"] = function(e, ctx)
+        if not kind_is(ctx, "system") then return end
+        local p = params(e)
+        local radius = num_of(p.radius, ctx) or 100
+        local t = { type = "create_nebula", id = ctx.this.id, name = text_of(p.name), radius = radius }
+        engine(t)
+        if t.systems and p.effect and p.effect.value.text == nil then
+            for _, sid in ipairs(t.systems) do eval.effect(p.effect.value, I.push(ctx, S("system", sid))) end
+        end
+    end
+
+    -- the place of a moved or spawned system: a system min_jumps..max_jumps from the scope's (one
+    -- drawn), then min_distance..max_distance from it at a drawn angle [I]; no system (no_scope):
+    -- the galaxy's centre
+    local function place(p, ctx)
+        local r = rt()
+        local base = system_of(ctx.this)
+        local x, y = 0, 0
+        if base and r then
+            local lo, hi = num_of(p.min_jumps, ctx) or 0, num_of(p.max_jumps, ctx) or 0
+            local dist, queue, at = { [base] = 0 }, { base }, {}
+            local i = 1
+            while queue[i] do
+                local s = queue[i]
+                i = i + 1
+                if dist[s] >= lo and dist[s] <= hi then at[#at + 1] = s end
+                if dist[s] < hi then
+                    for _, n in ipairs(r.hyperlanes(s)) do
+                        if dist[n] == nil then
+                            dist[n] = dist[s] + 1
+                            queue[#queue + 1] = n
+                        end
+                    end
+                end
+            end
+            local pick = #at > 0 and at[math.min(#at, math.floor(eval.rand() * #at) + 1)] or base
+            x, y = coord(pick)
+        end
+        local dmin, dmax = num_of(p.min_distance, ctx) or 0, num_of(p.max_distance, ctx) or 0
+        local d = dmin + eval.rand() * math.max(0, dmax - dmin)
+        local a = eval.rand() * 2 * math.pi
+        return (x or 0) + d * math.cos(a), (y or 0) + d * math.sin(a)
+    end
+    -- move_system = { target min_jumps max_jumps min_distance max_distance hyperlane
+    -- reset_terra_incognita } (a system): placed relative to the target's system
+    EFF["move_system"] = function(e, ctx)
+        if not kind_is(ctx, "system") then return end
+        local p = params(e)
+        local t = tgt_of(p.target, ctx)
+        if not t then return end
+        sync()
+        local x, y = place(p, I.push(ctx, t))
+        engine({ type = "move_system", id = ctx.this.id, x = x, y = y, hyperlane = O.yes_of(p.hyperlane, false) })
+    end
+    -- spawn_system = { min_jumps max_jumps min_distance max_distance initializer hyperlane
+    -- is_discovered } (relative to the scope): the initializer's star class (`class`; random or
+    -- none: drawn by the star classes' spawn_odds [I]); last_created_system
+    I.CREATED_KIND.system = I.CREATED_KIND.system or "system"
+    EFF["spawn_system"] = function(e, ctx)
+        local p = params(e)
+        sync()
+        local x, y = place(p, ctx)
+        local defs = require("engine.defs")
+        local init = text_of(p.initializer)
+        local d = init and init ~= "random" and defs.get("common/solar_system_initializers", init)
+        local cls = d and unq(defs.field(d.block, "class"))
+        local name = d and defs.field(d.block, "name")
+        if not cls or cls == "random" or not defs.get("common/star_classes", cls) then
+            local pool, total = {}, 0
+            for k, sd in pairs(defs.folder("common/star_classes")) do
+                local w = tonumber(defs.field(sd.block, "spawn_odds")) or 0
+                if w > 0 then
+                    pool[#pool + 1] = { k, w }
+                    total = total + w
+                end
+            end
+            table.sort(pool, function(a, b) return a[1] < b[1] end)
+            local roll = eval.rand() * total
+            for _, v in ipairs(pool) do
+                roll = roll - v[2]
+                if roll <= 0 then cls = v[1] break end
+            end
+        end
+        local h = E.new_handle()
+        engine({ type = "spawn_system", x = x, y = y, star_class = cls, initializer = init,
+            name = type(name) == "string" and unq(name) or nil, hyperlane = O.yes_of(p.hyperlane, true), handle = h })
+        if E.resolve(h) then O.created(ctx, "system", h) end
+    end
+
+    -- spawn_custom_debris = { for should_add_ship_to_debris must_scavenge must_reanimate
+    -- must_research reset_killed_ship_designs reset_killed_ship_stockpile } (a fleet): a debris of
+    -- the fleet's ships the trigger holds for (all without one), for the country
+    EFF["spawn_custom_debris"] = function(e, ctx)
+        local r = rt()
+        if not r or not kind_is(ctx, "fleet") then return end
+        local p = params(e)
+        local c = country_param(p["for"], ctx)
+        if not c then return end
+        sync()
+        local ships = {}
+        for _, sid in ipairs(r.fleet_ships(ctx.this.id)) do
+            local cond = p.should_add_ship_to_debris
+            if not cond or cond.value.text ~= nil or eval.trigger(cond.value, I.push(ctx, S("ship", sid))) then
+                ships[#ships + 1] = sid
+            end
+        end
+        engine({ type = "spawn_debris", fleet = ctx.this.id, country = c, ships = ships,
+            must_scavenge = O.yes_of(p.must_scavenge, false), must_reanimate = O.yes_of(p.must_reanimate, false),
+            must_research = O.yes_of(p.must_research, false) })
+    end
+    -- destroy_and_spawn_debris_for = <country> (a ship or a fleet): its debris, then it is destroyed
+    EFF["destroy_and_spawn_debris_for"] = function(e, ctx)
+        local r = rt()
+        local t = target(e, ctx)
+        if not r or not t or t.kind ~= "country" or ctx.this == NONE then return end
+        sync()
+        if ctx.this.kind == "ship" then
+            local fid = r.ship_fleet(ctx.this.id)
+            if fid then
+                engine({ type = "spawn_debris", fleet = fid, ship = ctx.this.id, country = t.id, ships = { ctx.this.id }, destroy = true })
+            end
+        elseif ctx.this.kind == "fleet" then
+            engine({ type = "spawn_debris", fleet = ctx.this.id, country = t.id, ships = r.fleet_ships(ctx.this.id), destroy = true })
+        end
+    end
 end
