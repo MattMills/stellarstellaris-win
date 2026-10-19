@@ -288,14 +288,11 @@ return function(eval)
                 local id = owner_country(ctx.this)
                 if not id or not e or e.value.text or not Eng().resource then return nil end
                 local key = param_text(e.value, key_param)
-                    or (key_param == "type" and param_text(e.value, "resource")) or nil
                 if not key then return nil end
                 sync()
                 return Eng().resource(id, key)
             end
         end
-        -- has_resource takes its resource as `type` or `resource` (CHasResourceTrigger::ReadMember
-        -- 0x3b86310 reads both) [V]
         eval.TVAL["has_resource"] = stock_value("type")
         eval.TVAL["resource_stockpile_compare"] = stock_value("resource")
     end
@@ -592,14 +589,16 @@ return function(eval)
         end
         return nil
     end
-    -- CStarbase::IsWaystation [I: the station's ship size is one of 00_waystations.txt's,
-    -- starbase_waystation_*]
+    -- CStarbase::IsWaystation (0x2027970) [V]: a flag of the object at starbase +0x13b8, the
+    -- starbase's type (common/starbase_types `is_waystation = yes`; starbase_levels' documentation:
+    -- "the starbase type (NOT LEVEL) has is_waystation") [I: +0x13b8 is the type]. The game's run:
+    -- set_starbase_size = starbase_waystation_1 on a shipyard leaves type sshipyard, and the
+    -- station stores nothing
     local function is_waystation(sb)
         local o = sb and world.object("starbase", sb)
-        local st = o and ref(world.field(o, "station"))
-        local k = st and ship_size_key(st)
-        return (k ~= nil and k:find("waystation", 1, true) ~= nil)
-            or (o ~= nil and tostring(unq(world.field(o, "level")) or ""):find("waystation", 1, true) ~= nil)
+        local t = o and unq(world.field(o, "type"))
+        local d = t and defs().get("common/starbase_types", t)
+        return d ~= nil and defs().field(d.block, "is_waystation") == "yes"
     end
     local function mods(kind, id)
         local economy = package.loaded["engine.economy"] or require("engine.economy")
