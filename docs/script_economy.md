@@ -83,7 +83,10 @@ The ship fields are:
 - the ship size's `collects_stockpile_from`, `collects_stockpile_to_country` and `ship_stockpile_capacity`;
 - `ship_stockpile_capacity_add/_mult`, and for waystations `starbase_stockpile[_<r>]_capacity_add/_mult`.
 
-IsWaystation is inferred from the station's ship size (`starbase_waystation_*`). [I]
+IsWaystation is the starbase type's `is_waystation` (common/starbase_types). It reads the object at
+starbase +0x13b8 [V]; that this object is the type is [I], from the starbase_levels documentation. In
+the game, `set_starbase_size = starbase_waystation_1` on a shipyard leaves the type sshipyard, and its
+station stores nothing.
 
 ## Converters and trade conversions
 
@@ -152,3 +155,15 @@ The trigger values went through `export_trigger_value_to_variable`. These match 
 - **clear_resources = no:** empties the economy module (no `resources` block) and stored_techpoints.
 
 The current-month budget values (`resource_revenue_compare`, the ratio, `export_resource_income_to_variable`) differ by about 0.01. The game recomputes the month's budget after the load, and the sim reads the saved one.
+
+### The silent rows, with real targets
+
+Seven effects are silent on both autosave_2210 and rich_2212, because the docs mod's uses cannot act there.
+
+`/root/cecon/g3.txt` on 10.5.0.24 runs them with real targets in the headless game, from rich_2212 with the galactic market founded and an influence field at the player's capital. `/root/cecon/probe3.lua` runs them in the sim on the game's save, with these results:
+
+- **add_resource_from_debris:** game and sim match (minerals 762.95154 to 772.95154, alloys +20).
+- **enable_on_market:** sets index 12 (exotic gases) in both.
+- **recalculate_storm_influence_field:** the game's field block is unchanged.
+- **get_trade_data / make_special_trade:** no enclave's or player's stockpile changes in the game.
+- **add_resource_to_local_stockpile / transfer_resource_stockpile:** the game has no design for a size that can store (nomads_constructor, nomads_engineer_vessel). Arkships collect to the country, so they store nothing. In the sim, a ship switched to nomads_constructor (cap 2500) fills in resource order up to 2500 (alloys cut to 200), and the ×0.5 transfer reaches the owner and clears the ship.
