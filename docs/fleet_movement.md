@@ -312,7 +312,9 @@ ticks (the systems left and entered and the events they fire); the game's fleet 
   restricted systems) are ported in `engine/diplomacy.lua`, which fills `path.hooks.has_access`,
   `.restricted` and `movement.hooks.has_access` (docs/script_diplomacy.md, "Access and closed
   borders"; `STELLAR_ACCESS=off` opens every system again).
-- Combat movement (a fleet in combat is left where it is); orbits (the orders keep `orbit`).
+- Combat movement as the game does it (the ships each by their behavior, the formation's
+  `combat.formation_pos`): here an armed fleet in combat moves as one toward its nearest enemy
+  (`movement.combat_step`, from engine.fleets.combat) [I]; orbits (the orders keep `orbit`).
 - The ETA's speed factors (`CalcEstimatedDays`' ship and star speed reduction terms).
 - `OnFleetEntered`'s terra incognita, contact and ship entry (`movement.hooks.on_entered` for the
   exploration part), `on_crossing_border`'s fromfrom scope.

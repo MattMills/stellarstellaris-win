@@ -201,7 +201,7 @@ save written from it).
 |---|---|---|
 | close (X), Escape | Hide; ESCAPE closes the innermost popup first (each popup's close has the shortcut) | wired: a popup closes first, then the window |
 | fleet_manager_tab | the Fleet Manager's view | wired (`view:fleet_manager`, the designer closed) |
-| creature_designer_tab_inactive | the creature designer (disabled without artificial breeding) | not done (its window is not drawn) |
+| creature_designer_tab_inactive | the creature designer (disabled without artificial breeding) | its state: disabled unless the country has the game rule `can_use_artificial_breeding` (tech_alien_cloning); enabled, its click does nothing (the Space Fauna mode is not drawn) |
 | auto_design | ToggleAutoDesign: the country's auto-generation of designs | wired, in the simulation (`ship_design_collection.auto_gen_design`); the list's tag becomes "Auto" |
 | a design in the list | CShipDesignEntry::Click: LoadDesign | wired |
 | new_ship_design_entry | ShowShipSizeSelectDialog: the `selector` of sizes | wired: a selector_item per designable size the country can build, three a row |
@@ -219,9 +219,9 @@ save written from it).
 | save_button | Save -> ConfirmedSave (CCreateOrUpdateShipDesignCommand); an auto-generated design asks first (`rename_autogen`) | wired, in the simulation: the design added to the country (its base design leaves the list: the game replaces the design of the same name [I: fleet templates not retrofitted]); an auto-generated one through `rename_autogen` (Save; its randomize button; close: nothing saved) |
 | upgrade_ship_components | AutoUpgradeComponents: the design's flag | wired (saved with the design) |
 | bioship stage spinner | a growth stage | not drawn (bioships only) |
-| 3d_view | its click observer (the view turned [I]) | not done (the inset view does not turn) |
+| 3d_view | its click observer (the view turned [I]) | wired: a drag that starts on the view turns the ship (0.01 rad a pixel across, 0.005 down, the pitch held to -0.8..1.2) [I: the rates]; the turn stays for the next design |
 | right click on a slot | ClearSlot | wired: the slot's component removed |
-| painting | a component chosen in the selector stays on the cursor: a click on a slot puts it there, the slots it fits framed, the help text shown; a right click or Escape ends it | wired [I: a click per slot, no dragging] |
+| painting | a component chosen in the selector stays on the cursor: a click on a slot puts it there, the slots it fits framed, the help text shown; a right click or Escape ends it | wired: a click per slot, or a drag with the button held across the slots (each one passed over painted) |
 | the lists | smoothListBoxes: the wheel scrolls | wired: the designs list, the component selector's and the section selector's, 45 pixels a notch [I] |
 | disabled frames | complete and save disabled when the design cannot be saved (IsValidToSaveForCountry) | wired: save disabled unless every section slot and required component set is filled and the name is not empty; complete disabled unless the first section has slots; choose_role without roles; the creature designer's tab always [I: the checks] |
 
@@ -232,10 +232,12 @@ The combat view:
 | close (X), Escape | Hide | wired: the selection cleared (which shows it) |
 | focus_on | OnClickFocus: the camera to the combat | wired: the fleet's system entered, the fleet followed [I] |
 | a ship's inspect | CCombatViewShipEntry::OnClickInspect: the ship view; disabled before contact | wired (`fleet:ship:ID`, the fleet windows' ship view) when the ship's owner is in contact; disabled (its frame) before |
-| emergency_ftl | EmergencyFTL (the player's fleets) | disabled (the engine has no emergency FTL order) |
+| emergency_ftl | EmergencyFTL (the player's fleets): CEmergencyFTLCommand after COMBAT_BASE_DAYS_UNTIL_EMERGENCY_FTL days of combat | wired (`designer:combat_eftl:FLEET`): enabled after 14 days of the fleet's combat (x (1 + ship_emergency_ftl_min_days_mult)), its tooltip EMERGENCY_FTL_DESC or the days left (EMERGENCY_FTL_DAYS_LEFT); in the simulation (`engine.fleets.combat.emergency_ftl`): each ship lost at 5%, else damaged at 25% (its hull down by up to 75%), the fleet out of every combat list, at its capital system and ordered back to its starbase [I: the game sends it MIA for the travel] |
 | owner flag | (the country) | wired: the owner's flag when it is known (the world's country flag); the blank frame before contact |
 | the ship lists | smoothListBoxes: the wheel scrolls | wired: the wheel over a side scrolls it, the list clipped to its box |
-| Damage Output | the combat's damage by type (hull, armor, shields) and hit chance | wired from the engine's combat (`engine.fleets.combat.fleet_stats`, tallied per shot); 0 until the engine's combat fires (the 2210.01.01 save's amoeba combat is not resumed by the engine: no shots in 5 days) |
+| Damage Output | the combat's damage by type (hull, armor, shields) and hit chance | wired from the engine's combat (`engine.fleets.combat.fleet_stats`, tallied per shot); the 2210.01.01 save's amoebas close on the science ship (the engine's combat movement, docs/windows/fleet.md) and fire within the first 16 days: 164 hull, 199 armor, 100 shields, 70% by 2210.01.17 |
+| the rings | the hull, armor and shield rings, `rotation = 3.14159` | drawn turned half a turn (a GUI sprite's `flip`: its texture's corners swapped) |
+| orders_hero_ship | a hero ship's actions in combat (a ship size with `hero_ship`, a combat computer that unlocks it) | hidden: no hero ship in the saves here (Nomads and Biogenesis ship sizes) |
 | the fleet view | (the combat view instead while the fleet fights) | the selected fleet's fleet view is not drawn under the combat view |
 
 Checked in a real window (the windowed renderer under Xvfb on 10.5.0.24, clicks by xdotool, the
@@ -254,9 +256,9 @@ error in the designer stays in it: the other windows go on drawing (`windows: ..
 ## Not done
 
 - Stats: the country's modifiers (speed, evasion, damage, upkeep), the role's.
-- Painting by dragging, turning the 3D view, the creature designer (see The buttons).
-- The combat view's rings' rotation, the order buttons (hero ships), emergency FTL (an engine
-  order); the save's ongoing combats are not resumed by the engine, so their damage stays 0.
+- The creature designer's Space Fauna mode (mutations, growth stages, specimens; Grand Archive).
+- The combat view's hero ship orders (no hero ship to check them on); emergency FTL's MIA travel
+  (the fleet lands at once).
 - The combat stats window.
 - The windows cannot yet be opened by clicking in the game's frames (render-controls' input is
   merged after this: the designer opens from the fleet manager, which another session draws).

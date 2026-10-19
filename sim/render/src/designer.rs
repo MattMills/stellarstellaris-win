@@ -257,6 +257,7 @@ enum Action<'a> {
     FleetManager,
     Design(u32),
     CombatFocus(u32),
+    CombatEmergencyFtl(u32),
     Noop,
     Ui(&'a str),
 }
@@ -269,6 +270,7 @@ fn parse(action: &str) -> Result<Action<'_>, String> {
         Some("noop") => Ok(Action::Noop),
         Some(a) if a.starts_with("design:") => Ok(Action::Design(a[7..].parse().map_err(|_| format!("bad action {action}"))?)),
         Some(a) if a.starts_with("combat_focus:") => Ok(Action::CombatFocus(a[13..].parse().map_err(|_| format!("bad action {action}"))?)),
+        Some(a) if a.starts_with("combat_eftl:") => Ok(Action::CombatEmergencyFtl(a[12..].parse().map_err(|_| format!("bad action {action}"))?)),
         Some(a) if a.starts_with("ui:") => Ok(Action::Ui(action)),
         _ => Err(format!("bad action {action}")),
     }
@@ -298,6 +300,22 @@ pub fn act(app: &mut crate::app::App, action: &str) -> Result<(), String> {
             if let Some(i) = sys {
                 app.enter_system(i, Some(crate::scene::Pickable::Fleet(fleet)))?;
             }
+        }
+        Action::CombatEmergencyFtl(fleet) => {
+            // the combat view's emergency FTL (CCombatViewFleetEntry::EmergencyFTL ->
+            // CEmergencyFTLCommand): in the simulation (engine.fleets.combat.emergency_ftl)
+            let map = app.map.as_mut().ok_or("no map")?;
+            map.ready()?;
+            let clock = map.clock.as_ref().ok_or("no simulation")?;
+            let answer = clock
+                .query(&format!("local ok, why = require('engine.fleets.combat').emergency_ftl({fleet}) return tostring(ok) .. ' ' .. tostring(why)"))
+                .map_err(|e| format!("emergency FTL: {e}"))?;
+            if answer.starts_with("true") {
+                clock.publish(true);
+                map.sync();
+            }
+            app.log.push(format!("emergency FTL {fleet}: {answer}"));
+            app.relayout();
         }
         Action::Ui(a) => {
             let gd = app.game_dir.replace('\\', "/");
@@ -335,6 +353,23 @@ pub fn act(app: &mut crate::app::App, action: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The main 3D view's place on the screen (its last layout) and the turn the mouse gave it (yaw,
+/// pitch, radians): a drag over it turns the ship (its click observer [I: 0.01 rad a pixel]).
+static VIEW: std::sync::Mutex<([f32; 4], f32, f32)> = std::sync::Mutex::new(([0.0; 4], 0.0, 0.0));
+
+/// Whether (x, y) is on the main 3D view.
+pub fn on_view(x: f32, y: f32) -> bool {
+    let r = VIEW.lock().unwrap().0;
+    x >= r[0] && x < r[2] && y >= r[1] && y < r[3]
+}
+
+/// The main 3D view turned by a drag of (dx, dy) pixels.
+pub fn turn(dx: f32, dy: f32) {
+    let mut v = VIEW.lock().unwrap();
+    v.1 += dx * 0.01;
+    v.2 = (v.2 + dy * 0.005).clamp(-0.8, 1.2);
+}
+
 /// The designer's 3D views: each inset of the scene with a model gets the ship's meshes, a view
 /// of it and the ship designer world's lights (gfx/worldgfx/ship_designer.txt) [I: the camera,
 /// by the game's frame: the ship's side, its bow to the right, a little from above].
@@ -358,6 +393,12 @@ pub fn fill_insets(scene: &mut Scene, models: &HashMap<String, ShipModel>, lib: 
         cam.target = centre;
         cam.yaw = (-75f32).to_radians();
         cam.pitch = 14f32.to_radians();
+        if main {
+            let mut v = VIEW.lock().unwrap();
+            v.0 = inset.rect;
+            cam.yaw += v.1;
+            cam.pitch += v.2;
+        }
         cam.min_distance = 0.0;
         cam.min_pitch = -1.5;
         // the ship fills the view's width: its radius over the half width's tangent, with a margin
@@ -457,6 +498,7 @@ mod tests {
         assert_eq!(parse("designer:close"), Ok(Action::Close));
         assert_eq!(parse("designer:fleet_manager"), Ok(Action::FleetManager));
         assert_eq!(parse("designer:combat_focus:261"), Ok(Action::CombatFocus(261)));
+        assert_eq!(parse("designer:combat_eftl:261"), Ok(Action::CombatEmergencyFtl(261)));
         assert_eq!(parse("designer:ui:slot:1:SMALL_GUN_01"), Ok(Action::Ui("designer:ui:slot:1:SMALL_GUN_01")));
         assert!(parse("designer:design:x").is_err());
         assert!(parse("close").is_err());

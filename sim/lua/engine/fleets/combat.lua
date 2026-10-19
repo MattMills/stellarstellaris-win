@@ -26,8 +26,17 @@
 --   5. the target's damage (CShip::TakeDamage 0x2ab8670): a ship with disable_at_health disabled
 --      at it (starbases), else destroyed at 0 hull, else the disengage roll (a fleet that can FTL,
 --      below SHIP_DISENGAGE_HEALTH_THRESHOLD) [V]; destroyed ships removed at the tick's end.
--- Not done: combat movement (the fleets stay where combat found them; ranges are the fleets'
--- distances) [I], the ships' main targets and their draws (CShipTargeting), missiles, strike
+--   2b. combat movement [I]: an armed fleet in combat, idle, toward its nearest enemy fleet at a
+--      tenth of its speed a tick until at the median of its weapons' ranges (the default
+--      ship_behavior's preferred_attack_range); the save's combat.coordinate set to it
+--      (movement.combat_step)
+--   emergency FTL (combat.emergency_ftl, the combat view's button; CEmergencyFTLCommand [I]): after
+--      COMBAT_BASE_DAYS_UNTIL_EMERGENCY_FTL days of the fleet's combat (x (1 +
+--      ship_emergency_ftl_min_days_mult)); each ship lost at COMBAT_EMERGENCY_FTL_LOST_RISK, else
+--      damaged at COMBAT_EMERGENCY_FTL_DAMAGE_RISK (its hull down by up to
+--      COMBAT_EMERGENCY_FTL_DAMAGE_AMOUNT); the fleet out of the combat, at its capital system and
+--      ordered back to its starbase [I: the game sends it MIA for the travel]
+-- Not done: the ships' own combat movement (ranges are the fleets' distances) [I], the ships' main targets and their draws (CShipTargeting), missiles, strike
 -- craft, point defence, collateral and chain damage, on_hit effects, capture and admiral-death
 -- rolls, the weapon-tag and territory modifiers, regeneration in combat, emergency FTL, MIA,
 -- bombardment, the inactivity disengage, debris, war exhaustion, the battle events' scopes.
@@ -38,7 +47,7 @@ local world = require("engine.world")
 
 local combat = {
     stats = { ticks = 0, started = 0, ended = 0, shots = 0, hits = 0, evaded = 0, missed = 0,
-              destroyed = 0, disabled = 0, disengaged = 0 },
+              destroyed = 0, disabled = 0, disengaged = 0, moved = 0 },
     -- each fleet's combat so far (SFleetCombatStatsData, CFleet +0x988: its damage dealt and its
     -- shots' outcomes, what the combat view's Damage Output shows), anew when its combat starts;
     -- not written to the save [I]
@@ -114,6 +123,10 @@ local function defines()
         MAX_DAMAGE_SCALING = d("NShip", "MAX_DAMAGE_SCALING", 100),
         UNARMED_WEIGHT = d("NShip", "COMBAT_SHIP_UNARMED_TARGETING_WEIGHT", 0.005),
         CURRENT_TARGET = d("NShip", "SHIP_CURRENT_TARGET_MULTIPLIER", 1.1),
+        EFTL_DAYS = d("NShip", "COMBAT_BASE_DAYS_UNTIL_EMERGENCY_FTL", 14),
+        EFTL_LOST = d("NShip", "COMBAT_EMERGENCY_FTL_LOST_RISK", 0.05),
+        EFTL_DAMAGE_RISK = d("NShip", "COMBAT_EMERGENCY_FTL_DAMAGE_RISK", 0.25),
+        EFTL_DAMAGE = d("NShip", "COMBAT_EMERGENCY_FTL_DAMAGE_AMOUNT", 0.75),
     }
     return DEF
 end
@@ -247,7 +260,7 @@ local cache = {}   -- per tick: fleet -> { radius, armed }
 local function fleet_info(fid, f)
     local c = cache[fid]
     if c then return c end
-    local radius, armed = 0, false
+    local radius, armed, ranges = 0, false, {}
     for _, sid in ipairs(ship_ids(f)) do
         local s = world.object("ships", sid)
         if s then
@@ -255,11 +268,14 @@ local function fleet_info(fid, f)
             for _, w in ipairs(ship_weapons(s)) do
                 armed = true
                 local r = w.t.range * (1 + (M.ship_weapon_range_mult or 0))
+                ranges[#ranges + 1] = r
                 if r > radius then radius = r end
             end
         end
     end
-    c = { radius = math.max(radius, defines().AREA_MIN), armed = armed }
+    table.sort(ranges)
+    c = { radius = math.max(radius, defines().AREA_MIN), armed = armed,
+          median = ranges[math.max(1, math.ceil(#ranges / 2))] or 0 }
     cache[fid] = c
     return c
 end
@@ -620,6 +636,33 @@ function combat.tick(host, date)
             if #before[fid] > 0 and #keep == 0 then combat_ended(fid, f) end
         end
     end
+    -- 2b. combat movement [I]: toward the nearest enemy fleet, to the median weapon range
+    local movement = package.loaded["engine.fleets.movement"]
+    for _, fid in ipairs(order) do
+        local f = fleet(fid)
+        local enemies = f and in_combat_with(f) or {}
+        if movement and #enemies > 0 and can_fight(f) and fleet_info(fid, f).armed then
+            local me, best, bd = coord(f), nil, nil
+            for _, oid in ipairs(enemies) do
+                local o = fleet(oid)
+                local c = o and coord(o)
+                local d = c and dist2(me, c)
+                if d and d < math.huge and (not bd or d < bd) then best, bd = c, d end
+            end
+            if best then
+                local cb = combat_block(f)
+                local cc = world.field(cb, "coordinate")
+                if type(cc) == "table" then
+                    world.set(cc, "x", string.format("%.5f", best.x))
+                    world.set(cc, "y", string.format("%.5f", best.y))
+                end
+                -- (a little inside the range: the distance is the fleets')
+                if movement.combat_step(fid, best, fleet_info(fid, f).median * 0.95) then
+                    S.moved = (S.moved or 0) + 1
+                end
+            end
+        end
+    end
     -- the ship pool (UpdateShipParallel), in the ships store's order: drawn when a fleet fights
     local all = world.all("ships")
     local any = false
@@ -770,9 +813,86 @@ function combat.tick(host, date)
     end
 end
 
+---------------------------------------------------------------- emergency FTL
+
+-- the days left before a fleet may emergency FTL (0: it may), nil when it cannot at all (not in
+-- combat, a station, immobile, no ships)
+function combat.emergency_ftl_days(fid)
+    local f = fleet(fid)
+    if not f or not has_combat(f) or prop(f, "station") or world.path(f, "properties", "mobile") == "no"
+        or #ship_ids(f) == 0 then
+        return nil
+    end
+    local D = require("engine.diplomacy")
+    local start = D.date_days(unq(world.path(f, "combat", "start_date")))
+    local need = defines().EFTL_DAYS
+    local lowest
+    for _, sid in ipairs(ship_ids(f)) do
+        local m = modifiers("ship", sid).ship_emergency_ftl_min_days_mult or 0
+        lowest = lowest and math.min(lowest, m) or m
+    end
+    need = need * math.max(0, 1 + (lowest or 0))
+    if not start then return 0 end
+    return math.max(0, math.ceil(need - (D.today() - start)))
+end
+
+-- CEmergencyFTLCommand [I]: the rolls, out of the combat, home; true when it jumped
+function combat.emergency_ftl(fid)
+    if combat.emergency_ftl_days(fid) ~= 0 then return false, "not yet" end
+    local f = fleet(fid)
+    local destroy = require("engine.fleets.destroy")
+    local lost = {}
+    for _, sid in ipairs(ship_ids(f)) do
+        local s = world.object("ships", sid)
+        if s then
+            if global_fixed() < defines().EFTL_LOST then
+                lost[#lost + 1] = sid
+            elseif global_fixed() < defines().EFTL_DAMAGE_RISK then
+                local hp = num(world.field(s, "hitpoints")) or 0
+                local cut = hp * defines().EFTL_DAMAGE * global_fixed()
+                world.set(s, "hitpoints", string.format("%.5f", math.max(1, hp - cut)))
+            end
+        end
+    end
+    -- out of every list (RemoveFromEnemyCombatLists), its own emptied
+    for _, oid in ipairs(in_combat_with(f)) do
+        local o = fleet(oid)
+        if o then
+            local l = {}
+            for _, x in ipairs(in_combat_with(o)) do
+                if x ~= fid then l[#l + 1] = x end
+            end
+            set_list(o, l)
+            if #l == 0 then combat_ended(oid, o) end
+        end
+    end
+    set_list(f, {})
+    combat_ended(fid, f)
+    for _, sid in ipairs(lost) do
+        S.destroyed = S.destroyed + 1
+        destroy.ship(sid)
+    end
+    S.emergency_ftl = (S.emergency_ftl or 0) + 1
+    if not fleet(fid) then return true end
+    -- home: the capital's system, by its star, then back to its starbase
+    local co = world.object("country", owner(fid) or -1)
+    local col = co and num(world.field(co, "capital"))
+    local pid = col and (world.colony_planet and world.colony_planet[col] or col)
+    local p = pid and world.object("planet", pid)
+    local pc = p and world.field(p, "coordinate")
+    local sys = type(pc) == "table" and num(world.field(pc, "origin"))
+    local movement = require("engine.fleets.movement")
+    if sys then
+        movement.teleport(fid, { x = 0, y = 0, z = 0, origin = sys })
+        local ok, orders = pcall(require, "engine.fleets.orders")
+        if ok and orders.return_to_base then pcall(orders.return_to_base, fid) end
+    end
+    return true
+end
+
 function combat.report()
-    return string.format("combat: %d ticks, %d started, %d ended, %d shots (%d hits, %d evaded, %d missed), %d destroyed, %d disabled, %d disengaged",
-        S.ticks, S.started, S.ended, S.shots, S.hits, S.evaded, S.missed, S.destroyed, S.disabled, S.disengaged)
+    return string.format("combat: %d ticks, %d started, %d ended, %d shots (%d hits, %d evaded, %d missed), %d destroyed, %d disabled, %d disengaged, %d moves",
+        S.ticks, S.started, S.ended, S.shots, S.hits, S.evaded, S.missed, S.destroyed, S.disabled, S.disengaged, S.moved)
 end
 
 return combat

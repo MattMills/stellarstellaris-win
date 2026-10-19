@@ -25,6 +25,10 @@
 --   movement.system_of(fleet_id)       the system it is in (nil in FTL)
 --   movement.state(fleet_id)           the state's name; movement.path_of(fleet_id) -> nodes
 --   movement.speed(fleet_id)           the sublight speed a day (raw CFixedPoint)
+--   movement.teleport(fleet_id, coord)  CFleetMovementManager::TeleportFleetToCoordinate (coord as
+--                                      read_coord gives: raw x, y, origin), its move cancelled
+--   movement.combat_step(fleet_id, to, keep)  a fleet in combat a tick toward `to` ({ x, y }),
+--                                      stopping `keep` from it (engine.fleets.combat)
 --   movement.hooks                     access (closed borders), on_entered (terra incognita ...)
 --
 -- The target the movement follows stands for the executing order's (the game asks the order each
@@ -1086,7 +1090,7 @@ local function busy(st)
 end
 
 -- a fleet in combat (CFleet::HasCombat: combat.in_combat_with) moves by the combat's rules
--- (MoveTowards its combat coordinate): not ported, the fleet is left where it is
+-- (MoveTowards its combat coordinate): engine.fleets.combat moves it (movement.combat_step)
 local function in_combat(f)
     local c = world.field(f, "combat")
     local w = type(c) == "table" and world.field(c, "in_combat_with")
@@ -1327,6 +1331,52 @@ end
 
 -- ---------------------------------------------------------------------------------------------
 -- the API
+
+-- a fleet put at a coordinate (emergency FTL's arrival [I]): its move cancelled, then teleported
+function movement.teleport(fid, c)
+    local st = read_state(fid)
+    if not st then
+        return false
+    end
+    clear_path(st)
+    st.target, st.tcoord, st.state = nil, nil, IDLE
+    teleport(st, c, st.angle)
+    write_state(st)
+    update_ships(st)
+    return true
+end
+
+-- a fleet in combat toward its combat coordinate, a tenth of its speed a tick, until `keep` from
+-- it [I: the game moves the ships, each by its ship behavior (preferred_attack_range) and the
+-- formation (combat.formation_pos); here the fleet, as its sublight move]; false when it does not
+-- move (immobile, in FTL, close enough)
+function movement.combat_step(fid, to, keep)
+    local f = fleet_block(fid)
+    if not f or not mobile(f) then
+        return false
+    end
+    local st = read_state(fid)
+    -- (an order's move in the system waits: its target and path are kept for after the combat)
+    if not st or (st.state ~= IDLE and st.state ~= SYSTEM) or st.coord.origin == NO_ID then
+        return false
+    end
+    local tc = { x = raw(to.x), y = raw(to.y), z = st.coord.z, origin = st.coord.origin }
+    local dx, dy = (tc.x - st.coord.x) / FP, (tc.y - st.coord.y) / FP
+    local d = math.sqrt(dx * dx + dy * dy)
+    if d <= keep then
+        return false
+    end
+    local step = math.min(idiv(movement.speed(fid), 10), raw(d - keep))
+    if step <= 0 then
+        return false
+    end
+    st.coord = path.towards(st.coord, tc, step, false, false)
+    update_formation(st)
+    write_state(st)
+    update_ships(st)
+    S.moved = S.moved + 1
+    return true
+end
 
 local function star_of(sid)
     local g = world.object("system", sid)

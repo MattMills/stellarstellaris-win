@@ -1262,7 +1262,7 @@ pub fn add_gui(
             }
         }
         match item {
-            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action, tint, disabled, clip, .. } => {
+            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action, tint, disabled, clip, flip, .. } => {
                 // a disabled button's quads greyed (map.wgsl fs_quad mode 4)
                 let quad = |r: [f32; 4], uv: [f32; 4]| {
                     let mut q = screen_quad(r, uv, *tint);
@@ -1339,6 +1339,8 @@ pub fn add_gui(
                             }
                         }
                     }
+                    // (half a turn: the texture's corners swapped)
+                    _ if *flip => push(batches, layer, Blend::Alpha, t, quad([*x, *y, x + w, y + h], [u1, v1, u0, v0])),
                     _ => push(batches, layer, Blend::Alpha, t, quad([*x, *y, x + w, y + h], [u0, v0, u1, v1])),
                 }
                 if layer == Layer::Gui {

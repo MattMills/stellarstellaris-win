@@ -1083,11 +1083,16 @@ function designer.build(ctx, data, state)
         [P .. "/controls/controls_bottom/upgrade_ship_components"] = (design and design.upgrade) and 2 or 1,
     }
     -- the disabled ones (greyed, no click) [V UpdateControlsWindow 0x3194450, Update 0x3192150]:
-    -- the creature designer's tab without artificial breeding [I: never here]; choose_role
+    -- the creature designer's tab without artificial breeding (common/game_rules
+    -- can_use_artificial_breeding: has_technology tech_alien_cloning) [I: its mode not drawn, the
+    -- enabled tab takes the click and does nothing]; choose_role
     -- without roles; complete_button unless the stage has sections and the first has slots;
     -- save_button unless the design can be saved (IsValidToSaveForCountry [I: every section slot
     -- and required set filled, a name])
-    local disabled = { [P .. "/creature_designer_tab_inactive"] = true }
+    local disabled = {}
+    if not data.techs.tech_alien_cloning then
+        disabled[P .. "/creature_designer_tab_inactive"] = true
+    end
     if design then
         local size = F.sizes[design.size] or { slots = {}, required = {}, roles = {} }
         if #size.roles == 0 then
@@ -1116,6 +1121,7 @@ function designer.build(ctx, data, state)
         -- (the window's background takes the clicks: nothing under it on the map)
         [P] = "designer:noop",
         [P .. "/close"] = "designer:close", [P .. "/fleet_manager_tab"] = "designer:fleet_manager",
+        [P .. "/creature_designer_tab_inactive"] = "designer:noop",
         [P .. "/auto_design"] = "designer:ui:auto",
         [P .. "/controls/randomize_name"] = "designer:ui:randomize",
         [P .. "/controls/choose_role"] = "designer:ui:roles",
