@@ -83,7 +83,7 @@ function windows.specs(game_dir, db, screen, texture_size, loc, specs)
         local ok, i, r = pcall(gui.layout, game_dir, db, s.file, s.window, screen, {
             texture_size = texture_size, loc = loc, only = set(s.only), hide = set(s.hide), text = s.text,
             frames = s.frames, actions = s.actions, sizes = s.sizes, prefix = s.prefix, parent = s.parent,
-            positions = s.positions, sprites = s.sprites, tints = s.tints,
+            positions = s.positions, sprites = s.sprites, tints = s.tints, tooltips = s.tooltips,
         })
         if ok then
             merge(items, report, i, r)

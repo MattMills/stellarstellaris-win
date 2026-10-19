@@ -68,6 +68,7 @@ mod outliner;
 mod mapicons;
 mod mapnames;
 mod mainbars;
+mod tooltip;
 mod newgame;
 mod gui;
 mod render;

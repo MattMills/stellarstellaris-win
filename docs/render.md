@@ -1220,6 +1220,7 @@ freed when the device is polled).
   Names from the save are localised by render.names: the name block's key (or literal), its
   `$VAR$` variables, the engine's `%ADJECTIVE%` and `%ACRONYM%` (initials made up to three letters
   from the last word: "Uthabulan Order" UOR); a text wider than its box is cut with " ...".
+- **Tooltips** are drawn: docs/tooltips.md (the window, when and where, the texts, a window's own).
 - **Tooltips: the hook** (`app.rs`): `App::hovered` keeps what the cursor is over (a GUI element's
   path or a pickable thing on the map) and since when; `App::tooltip(rest)` asks a `Tooltips`
   implementation (`text(target, date)`) once the cursor has rested. The next phase implements it

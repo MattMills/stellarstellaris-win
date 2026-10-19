@@ -153,6 +153,8 @@ function M.extract(game_dir, ctx)
     end
     local gd = game_data(game_dir)
     view.countries = M.observer_countries(world, galaxy, gd, player)
+    -- the tooltips' data (render.tooltip_data: docs/tooltips.md)
+    view.tips = require("render.tooltip_data").extract(game_dir, ctx)
     if not pc then
         return view
     end
@@ -1350,6 +1352,7 @@ M.rows.civilian = function(row, rp, fmt, selected)
             [p .. "/type"] = row.sub or "",
         },
         actions = { [p .. "/background"] = "select:fleet:" .. tostring(row.id) },
+        tooltips = { [p .. "/background"] = M.row_tip(row) },
     }
 end
 
@@ -1389,6 +1392,7 @@ M.rows.military = function(row, rp, fmt, selected)
     return window, {
         only = only, frames = frames, text = text,
         actions = { [p .. "/background"] = "select:fleet:" .. tostring(row.id) },
+        tooltips = { [p .. "/background"] = M.row_tip(row) },
         extra = status_entries("fleet_status_entry", "status", st, 318 - 132, 41 - 21, 15, 3),
     }
 end
@@ -1410,6 +1414,7 @@ M.rows.starbase = function(row, rp, fmt, selected)
             [p .. "/military_power"] = power > 0 and ("\194\163military_power\194\163 " .. colour("Y", si1(power))) or "",
         },
         actions = { [p .. "/background"] = "select:fleet:" .. tostring(row.id) },
+        tooltips = { [p .. "/background"] = M.row_tip(row) },
     }
 end
 M.rows.shipyard = M.rows.starbase
@@ -1460,6 +1465,7 @@ M.rows.planet = function(row, rp, fmt, selected)
         only = only, frames = frames, sprites = sprites,
         text = { [p .. "/name"] = name, [p .. "/star"] = location(row, fmt, false), [p .. "/colony_type"] = second },
         actions = { [p .. "/background"] = "select:planet:" .. tostring(row.id) },
+        tooltips = { [p .. "/background"] = M.row_tip(row) },
         extra = status_entries("planet_or_starbase_status_entry", "status", row.status or {}, 23, 20, 15, 5),
     }
 end
@@ -1482,6 +1488,27 @@ M.rows.faction = function(row, rp, fmt)
             [p .. "/num_pops"] = si(row.pops or 0),
         },
     }
+end
+
+-- a row's tooltip (COutlinerMember::GetToolTip: the fleet's, the station ship's, the colony's,
+-- then the select hint; render.tooltip builds them from view.tips)
+function M.row_tip(row)
+    local ok, t = pcall(function()
+        local tip = require("render.tooltip")
+        local tips = (RENDER_OUTLINER and RENDER_OUTLINER.view or {}).tips or {}
+        if row.kind == "planet" then
+            return tip.colony_text(row.name, tips.player_name, (tips.colonies or {})[row.id])
+        end
+        local f = (tips.fleets or {})[row.id]
+        if not f then
+            return nil
+        end
+        if row.kind == "starbase" or row.kind == "shipyard" then
+            return tip.with_select_hint(tip.ship_text(f.lead))
+        end
+        return tip.with_select_hint(tip.fleet_text(f))
+    end)
+    return ok and t or nil
 end
 
 -- the observer's country rows (CObserveOutlineMemberCountry::UpdateEntry) [V]
