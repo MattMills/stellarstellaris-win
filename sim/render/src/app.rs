@@ -2179,6 +2179,20 @@ impl App {
                 }
             }
         }
+        // the starbase window's rename dialog takes the keyboard too (starbase.rs typed)
+        if self.screen == Screen::Map && self.starbase.dialog.as_deref().is_some_and(|d| d.starts_with("rename:")) {
+            if let Input::Key { key, down, .. } = input {
+                if !matches!(key.as_str(), "shift" | "ctrl" | "alt") {
+                    if !*down {
+                        return Ok(false);
+                    }
+                    if let Some(a) = creator_key(key, self.controls.mods().shift).and_then(|a| crate::starbase::typed(&self.starbase, &a)) {
+                        crate::starbase::act(self, &a)?;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
         // a text box of the open view (a rename dialog's: views::text_focus) has the keyboard: a key
         // typed goes to it (its press; its release taken too, so no shortcut fires), RETURN its OK;
         // ESCAPE goes on to the view's Escape (the dialog's Cancel)

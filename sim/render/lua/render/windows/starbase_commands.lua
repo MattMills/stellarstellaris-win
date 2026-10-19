@@ -367,6 +367,27 @@ function C.cloak(sbid)
     return "not done: cloaking (the engine does not model it)"
 end
 
+-- rename SB NAME: CShipRenameDialog's OK on the station (CAbstractStarbaseView::OnRename, when
+-- CStarbase::CanRename: its own): the station ship's name (name = { key = "..." })
+function C.rename(sbid, name)
+    local s, owner = own(sbid)
+    if not s then return "refused: " .. owner end
+    name = tostring(name or ""):gsub('"', "")
+    if name:match("^%s*$") then return "refused: an empty name" end
+    local ship = world.object("ships", tonumber(world.field(s, "station")))
+    if not ship then return "refused: no station" end
+    local nb = world.field(ship, "name")
+    if type(nb) == "table" then
+        world.replace(nb, {})
+        world.append(nb, "key", '"' .. name .. '"')
+    else
+        local blk = {}
+        world.append(blk, "key", '"' .. name .. '"')
+        world.set(ship, "name", blk)
+    end
+    return "ok renamed " .. name
+end
+
 -- M.run(VERB, ARG, ...) (starbase.rs): the command, what it did or why not
 function M.run(verb, ...)
     local f = C[verb]

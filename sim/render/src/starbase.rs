@@ -34,6 +34,8 @@ pub struct State {
     pub closed: Vec<String>,
     /// the confirmation dialog open: the command it confirms (`VERB:ARG...`)
     pub dialog: Option<String>,
+    /// the rename dialog's text as typed (None: the station's name, untouched)
+    pub text: Option<String>,
     /// the window's lists scrolled down (the wheel over them): by list (the side view's `side`, a
     /// list's path), in pixels
     pub scroll: std::collections::HashMap<String, f32>,
@@ -99,6 +101,7 @@ pub fn prepare(runtime: &Runtime, galaxy: &Galaxy, state: &State, selected: bool
         t.set("side", state.side.clone())?;
         t.set("closed", state.closed.join(","))?;
         t.set("dialog", state.dialog.clone())?;
+        t.set("text", state.text.clone())?;
         let scroll: Vec<String> = state.scroll.iter().map(|(k, v)| format!("{k}={v}")).collect();
         t.set("scroll", scroll.join(","))?;
         // the countries the player knows (communications; none: all), for the flags shown
@@ -183,6 +186,18 @@ fn run_command(app: &mut App, cmd: &str) -> Result<String, String> {
     Ok(r)
 }
 
+/// A key typed while the rename dialog is open: its action (`starbase:text:C`, `starbase:key:NAME`),
+/// from the empire creator's key names (app.rs creator_key); None when no dialog takes keys.
+pub fn typed(state: &State, creator_action: &str) -> Option<String> {
+    if !state.dialog.as_deref().is_some_and(|d| d.starts_with("rename:")) {
+        return None;
+    }
+    if let Some(c) = creator_action.strip_prefix("creator:text:") {
+        return Some(format!("starbase:text:{c}"));
+    }
+    creator_action.strip_prefix("creator:key:").map(|k| format!("starbase:key:{k}"))
+}
+
 /// The waystation network window on network `id` (the selection's window closes).
 fn open_network(app: &mut App, id: i64) -> Result<(), String> {
     let e: Vec<i64> = app.runtime.lua.load(format!("return require('render.windows.network').owner({id})")).eval().map_err(|e| format!("network: {e}"))?;
@@ -248,6 +263,7 @@ pub fn act(app: &mut App, action: &str) -> Result<(), String> {
     // waystation and megastructure windows')
     if let Some(cmd) = rest.strip_prefix("dialog:") {
         app.starbase.dialog = Some(cmd.to_string());
+        app.starbase.text = None;
         app.relayout();
         return Ok(());
     }
@@ -255,12 +271,55 @@ pub fn act(app: &mut App, action: &str) -> Result<(), String> {
         // (the dialog's background takes a click)
         if rest == "dialog_no" {
             app.starbase.dialog = None;
+            app.starbase.text = None;
             app.relayout();
         }
         return Ok(());
     }
+    // the rename dialog's typing: a character (`:` would split the command: left out), Backspace,
+    // Return (OK), Escape (Cancel)
+    if let Some(c) = rest.strip_prefix("text:") {
+        if c != ":" {
+            // (the box starts with the station's name: typing goes on from it)
+            if app.starbase.text.is_none() {
+                let name: Option<String> = app.runtime.lua.load("local d = RENDER_STARBASE_DIALOG_NAME return d").eval().ok().flatten();
+                app.starbase.text = name;
+            }
+            app.starbase.text.get_or_insert_with(String::new).push_str(c);
+            app.relayout();
+        }
+        return Ok(());
+    }
+    if let Some(k) = rest.strip_prefix("key:") {
+        match k {
+            "backspace" => {
+                // (the box starts with the station's name: the first Backspace edits it)
+                if app.starbase.text.is_none() {
+                    let name: Option<String> = app.runtime.lua.load("local d = RENDER_STARBASE_DIALOG_NAME return d").eval().ok().flatten();
+                    app.starbase.text = name;
+                }
+                if let Some(t) = app.starbase.text.as_mut() {
+                    t.pop();
+                }
+                app.relayout();
+            }
+            "return" => return act(app, "starbase:dialog_yes"),
+            "escape" => return act(app, "starbase:dialog_no"),
+            _ => {}
+        }
+        return Ok(());
+    }
     if rest == "dialog_yes" {
-        if let Some(cmd) = app.starbase.dialog.take() {
+        let text = app.starbase.text.take();
+        if let Some(mut cmd) = app.starbase.dialog.take() {
+            if cmd.starts_with("rename:") {
+                // OK with the name untouched: nothing to do
+                let Some(t) = text.filter(|t| !t.trim().is_empty()) else {
+                    app.relayout();
+                    return Ok(());
+                };
+                cmd = format!("{cmd}:{}", t.trim());
+            }
             let r = run_command(app, &cmd)?;
             app.log.push(format!("starbase: {r}"));
             if cmd.starts_with("dismantle_component") && r.starts_with("ok") {
