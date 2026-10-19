@@ -807,8 +807,7 @@ end
 local TRIG = {}
 M.TRIG = TRIG
 local ITER_PARAMS = { limit = true, count = true, list = true, order_by = true, position = true, max = true,
-    min = true, check_range_bounds = true, weight = true, weights = true, inverse = true, text = true,
-    fail_text = true }
+    min = true, check_range_bounds = true, weight = true, text = true, fail_text = true }
 
 local function scripted_call(def, name, e, kind)
     if e.value.text then
@@ -1699,19 +1698,14 @@ local function iterate_effect(kind, lname, e, ctx)
         miss("iterator", kind .. "_" .. lname, ctx, e)
         return
     end
-    local limit, order_by, position, max, inverse, weights = nil, nil, 0, 1, false, nil
+    local limit, order_by, position, max = nil, nil, 0, 1
     for _, x in ipairs(e.value) do
         if x.op then
             local xk = x.key.text:lower()
             if xk == "limit" then limit = x.value
             elseif xk == "order_by" then order_by = x.value
             elseif xk == "position" then position = M.value(x.value, ctx, x)
-            elseif xk == "max" then max = M.value(x.value, ctx, x)
-            -- ordered_*: `inverse = yes` puts the lowest first (the documentation)
-            elseif xk == "inverse" then inverse = x.value.text == "yes"
-            -- random_*: `weights = { base modifier = { add/factor triggers } }` weighs each
-            -- element's chance (the documentation; M.weight in the element's scope) [I the draw]
-            elseif xk == "weights" and x.value.text == nil then weights = x.value end
+            elseif xk == "max" then max = M.value(x.value, ctx, x) end
         end
     end
     local chosen = {}
@@ -1724,37 +1718,13 @@ local function iterate_effect(kind, lname, e, ctx)
     local loop = SR and SR.begin(ctx)
     if kind == "random" then
         if #chosen == 0 then return end
-        local draw = loop and SR.draw(loop) or rand()
-        if weights then
-            -- one draw over the elements' summed weights (an element at 0 is never picked)
-            local ws, total = {}, 0
-            for i, s2 in ipairs(chosen) do
-                ws[i] = math.max(0, M.weight(weights, push(ctx, s2), 1))
-                total = total + ws[i]
-            end
-            if total <= 0 then return end
-            local r = (draw % 1000000) / 1000000 * total
-            local pick = chosen[#chosen]
-            for i, s2 in ipairs(chosen) do
-                if r < ws[i] then pick = s2 break end
-                r = r - ws[i]
-            end
-            chosen = { pick }
-        else
-            chosen = { chosen[draw % #chosen + 1] }
-        end
+        chosen = { chosen[(loop and SR.draw(loop) or rand()) % #chosen + 1] }
     elseif kind == "ordered" then
         local keyed = {}
         for i, s2 in ipairs(chosen) do
             keyed[i] = { s2, order_by and M.value(order_by, push(ctx, s2), e) or 0, i }
         end
-        table.sort(keyed, function(a, b)
-            if a[2] ~= b[2] then
-                if inverse then return a[2] < b[2] end
-                return a[2] > b[2]
-            end
-            return a[3] < b[3]
-        end)
+        table.sort(keyed, function(a, b) if a[2] ~= b[2] then return a[2] > b[2] end return a[3] < b[3] end)
         chosen = {}
         for i = position + 1, math.min(#keyed, position + max) do
             chosen[#chosen + 1] = keyed[i][1]
