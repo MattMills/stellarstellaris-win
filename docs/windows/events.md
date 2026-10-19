@@ -90,6 +90,17 @@ none; the alert or the Situation Log leads to them). The save's own open event, 
   requirement ("Assign an Envoy to learn more about Kappa Menace"), days until the roll,
   difficulty and "Show First Contact" (its places are @findings_* variables of another window of
   the file, out of reach of render.gui's scoped variables: given in situation.lua).
+- A first contact's difficulty **[V]** (CSituationLogSubviewFirstContact::UpdateDifficulty):
+  CFirstContact::GetCurrentStageDifficulty (the save's `difficulty` + CalcTargetDiscoveryMalus:
+  the contact's country's intel_encryption_add x (1 + intel_encryption_mult)) less
+  CalcDiscoveryBonus (the owner's intel_decryption_add x (1 + _mult)), at least 0 (the modifier
+  types 0x17f..0x182 taken for these four **[I]**; the simulation's values: country 6's encryption
+  2, the player's decryption 0, so 5 + 2 = 7 as the game's frame). Its tier
+  (NGuiUtil::MapDifficultyToEnum: 0, 1, 2, more) gives the value's colour (GetDifficultyColor: G,
+  Y, H, R) and the icon (GFX_firstcontact_difficulty_easy, _normal, _hard, _hell).
+- The roll's bar: the days run of FIRST_CONTACT_DISCOVERY_DAYS (80) on
+  GFX_situation_log_progressbar_research (empty at 80 days left: the game's start cap not drawn
+  **[I]**); the days left, then £time£.
 - The header's buttons: `track` (the pin) and `goto`; with goto hidden the pin takes its place
   (CSituationLog::UpdateTrackButtonPosition): an event chain shows the pin alone, a first contact
   both **[I: the frames]**. The header reads "Findings" on that tab.
@@ -138,12 +149,12 @@ renderer under Xvfb with xdotool, 2210.01.01 from Load Game).
 | event focus button (Q) | NGuiUtil::FocusOnScope of the event's location: the system entered | wired: S, G (`state` view system 142 after the click, both) |
 | event close (X) | the window closed, the event stays open (no shortcut: Escape does not close it [V .gui]) | wired: S |
 | event window background | brought to the front (MoveToFront) | wired: S |
-| message settings button | the message settings on the event's message type (Setup's lambda 0x2d330b0: CMainMenuView::ShowMessageSearchFilter, the type's setting name): the Settings window's Messages tab filtered to it (message_settings.lua); its checkboxes, Reset, Discard, Apply & Close, Back and Escape; a fired event opens its window only when its type's popup is on and pauses the game when its auto-pause is (events.rs) | wired: S (the window filtered to "Event", Popup and Auto-Pause on; clones.14 fired paused the clock; Auto-Pause off, Apply & Close, the next one did not); not W: no event window opens in the window without the `event` command |
+| message settings button | the message settings on the event's message type (Setup's lambda 0x2d330b0: CMainMenuView::ShowMessageSearchFilter, the type's setting name): the Settings window's Messages tab filtered to it (message_settings.lua, below); its checkboxes, Reset Default, Discard Changes, Apply & Close, Cancel and Escape; a fired event opens its window only when its type's popup is on and pauses the game when its auto-pause is (events.rs) | wired: S, G (the window against the game's frames: below; a click on Popup leaves it ticked in both, on Auto-Pause unticks it), W (the test save `ev_test.sav`: clones.14 on 2210.01.05 opened and paused; its settings, Auto-Pause off, Apply & Close, the event answered; the next clones.14 opened with the game running, 2210.03.04 at normal speed). The game's side of a fired event is not checked: view mode never runs time, `step` skips the message system |
 | Situation Log tabs (Z, X) | Log, Findings | wired: S, W (Empire Focus and Victory: not laid out) |
 | a row | selects the entry | wired: S, W |
 | a category header | folds or unfolds a collapsible category (the arrow's frames 1 / 2) | wired: S, G (same frames), W |
 | a row's pin | the entry to "Priorities" and back (GFX_button_pin_pinned), kept by the simulation (`cmd:events_data:pin:KIND:KEY`, events_commands' `pinned`) | wired: S, G (1.7 / 2.3 / 2.0 against the game's frame), W (the test save's Energy Shortages to Priorities) |
-| track | the selected entry tracked (CTrackSituationLogEntryCommand: `cmd:events_data:track:KIND:KEY`, its dot in the list) and its tracker on the galaxy map: gfx/pingmap's project_tracker_galaxy_effect_particle (CPingMapInstance, orange hexagon and halo) over the entry's system (a first contact's location, a situation's planet or system), events.rs `draw_trackers` | wired: S (first contact 19 tracked: the marker at Gallamun), W: the window's scenes carry it (system 142) but it is not seen on the window's surface (Bgra8Unorm), and it is faint offscreen: too dim [I: the particle's colour and alpha curves]; the map's scene is built again when the tracked systems change (events.rs `take_trackers_changed`) |
+| track | the selected entry tracked (CTrackSituationLogEntryCommand: `cmd:events_data:track:KIND:KEY`, its dot in the list) and its tracker on the galaxy map (events.rs `draw_trackers`, below) | wired: S, G, W (first contact 19 tracked: the orange hexagon at Gallamun, the size of the game's at the distances 200, 600 and 3000) |
 | goto | the galaxy over the entry's system, at the distance the game leaves a system with (the camera's goal: with the window's smooth camera show_galaxy starts at distance 0.001) | wired: S, G (galaxy, target 97.44 162.96 in both), W |
 | close (Escape) | the view closed (no side windows: `escape_keys = {}`) | wired: S, W |
 | Show First Contact (RETURN in its subview) | the first contact view; the log closes | wired: S, G, W (the RETURN shortcut not wired) |
@@ -168,10 +179,50 @@ world; events_commands.lua):
 | `event stock RES` | the player's stockpile of RES |
 | `event approach SID KEY`, `event relic KEY` | as the buttons |
 | `event modifiers` | the player's timed modifiers (`KEY:DAYS ...`) |
+| `event modifier KIND:ID NAME` | a scope's modifier value in the simulation (`event modifier country:6 intel_encryption_add` -> 2) |
 
-The real-window test save (W, on .24 `/root/ev/saves/sit_test.sav`, listed by Load Game with
-`STELLAR_SAVE` there): 2210.01.01 with a `situation_energy_deficit` situation (100) for the
-player, r_khans_throne in its relics and 200 minor artifacts.
+The real-window test saves (W, on .24, listed by Load Game with `STELLAR_SAVE` pointing at one):
+`/root/ev/saves/sit_test.sav`, 2210.01.01 with a `situation_energy_deficit` situation (100) for
+the player, r_khans_throne in its relics and 200 minor artifacts; `/root/ev3/saves/ev_test.sav`,
+2210.01.01 with two delayed `clones.14` for the player (its standard_event_module's
+`delayed_event`, 3 and 20 days: the simulation loads them, engine.script.event_save), so events
+fire in the window once it runs.
+
+## The tracker on the map (gfx/pingmap, CPingMapManager)
+
+- A tracked entry (first_contact_tracker, situation_tracker ...: all with `galaxy_entity =
+  project_tracker_galaxy_effect_entity`) is the particle project_tracker_galaxy_effect_particle at
+  its system: `flare` (gfx/particles/hexagon.dds, the hexagon's corner brackets, 255 150 0,
+  additive, size 15) and `halo` (size 50 grown over its life by `grow`, faded by `fade_alpha`).
+- Its size follows the camera: the ping's `galaxy_normal_zoom = 400`, the entity's scale 1 at the
+  game's distance 400, so the same size on the screen at every zoom. The game's frames
+  (`headless/view.sh`, 1600 x 900, distances 200, 600, 3000): the flare's brackets about 60 x 55
+  px; the renderer's 67 x 60 at its 100, 300, 1500 (the map's units are half the game's).
+- The halo pulses in the game; the renderer draws particles as a steady state (each at a random
+  age: render/particles.rs), so one ring. The game showed the tracker only some 10 s after goto
+  **[I: its ping's start]**; the renderer at once.
+- Its file writes `life`, `size` and `size = 50.000,grow` as plain numbers, not blocks:
+  render/particles.lua read only blocks, so the tracker (and the other particle files' such
+  subsystems: 776 files write one) had no particles. It reads both now; the system views' star
+  effects use blocks (unchanged).
+
+## The message settings (interface/settings_view.gui `settings_view`, message_settings.lua)
+
+- The Settings window on its Messages & Alerts tab (`video_button`'s frame 2 in the file put back
+  to 1, `message_tab_button` 2), the Messages sub tab, the search text, a `message_settings_entry`
+  per matching type. Against the game's frame of event 53's settings button: the tabs' labels 1
+  px off (their `text_offset`: render.gui now applies it, centred in the sprite's frame unscaled
+  for a scaled button: settings_view's sub tabs at 0.75 with -30, -12 move 1 px right and 5 up, as
+  the game's **[I: only with a text_offset]**), the search text at its edit box's borderSize (46)
+  exact, the entry's checkboxes exact.
+- From the game's frames: Popup Auto-Unpause ticked (its default setting **[I]**), the filters'
+  All radios selected (GFX_radio_button frame 2), FILTER_CATEGORY_HEADING whole (a fixedSize box
+  without maxWidth), Reset Default greyed before and after a change not applied (greyed here while
+  the applied settings are the defaults **[I]**), no edited mark until applied.
+- Types with `hidden_in_message_settings` (EMPIRE_FOCUS, ENCLAVE_DIPLOMACY, the terraforming
+  candidates: the events' other message types) are not listed; a type's title is its
+  message_setting_key, its `name`, else MESSAGE_<KEY>_TITLE; the filter matches a title without its
+  scripted parts ([Scope.GetX], not resolved here: the galactic council's types).
 
 Script gotchas, the views' data: in lockstep (`timestep`) a view's data waits for the
 simulation's snapshot, which may come long after; without `timestep` the commands wait for it.
@@ -182,9 +233,9 @@ click; after `open_view` the view's data arrives with the next snapshot.
 
 ## Not done
 
-- The event picture's mask, the event chain and situation panels of the event window, the
-  difficulty's modifiers (the game shows 7 for the save's 5), the roll's time bar, the goto
-  button's sprite in the Log tab, the second stage icon's state and the unknown silhouette.
+- The event picture's mask, the event chain and situation panels of the event window, the second
+  stage icon's state and the unknown silhouette; the description's scrollbar; the roll bar's
+  start cap.
 - The popups (popup.gui `ok_popup_window`, `yes_no_popup_window`) are laid out by events.lua, but
   no game frame of one was taken (CPopupMessage's placement not read) **[I]**; these windows open
   none (above).
@@ -194,6 +245,8 @@ click; after `open_view` the view's data arrives with the next snapshot.
   pin and the approaches are laid out [I]; the stage icons, the details' effects and the outcomes
   are not. The month's change is not computed (the simulation does not advance situations).
 - The message settings: the settings are the renderer's, not kept between runs (the game's are
-  in its settings file); the search box is not editable; the notification and toast settings
-  change nothing (no notifications or toasts).
+  in its settings file); the search box is not editable and its background not drawn; the
+  filters' radios and Popup Auto-Unpause take no click; the notification and toast settings change
+  nothing (no notifications or toasts).
+- The tracker's halo pulse (the particles' time).
 - The Empire Focus and Victory tabs; the Discoveries' Collection, Vivarium and Astral Actions tabs.

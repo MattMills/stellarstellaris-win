@@ -280,14 +280,18 @@ impl EventsUi {
     }
 }
 
+/// gfx/pingmap/00_ping.txt's trackers' galaxy_normal_zoom.
+const GALAXY_NORMAL_ZOOM: f32 = 400.0;
+
 /// The trackers of the Situation Log's tracked entries on the galaxy (CPingMapManager: a
 /// CPingMapInstance per tracked entry, gfx/pingmap's first_contact_tracker, situation_tracker ...:
 /// `galaxy_entity = project_tracker_galaxy_effect_entity`, whose particle is
 /// project_tracker_galaxy_effect_particle, an orange hexagon and its growing halo), at each
-/// tracked entry's system, the entity's scale 1 in the game's galaxy world (2 x the map's units:
-/// half of it here) [I]. The systems: the windows' data (RENDER_EVENTS_DATA.trackers). Not in a
-/// system's view (its system_entity is not placed) [I].
-pub fn draw_trackers(scene: &mut crate::scene::Scene, ui_runtime: &Runtime, map: &mut crate::Map, view: crate::app::MapView, game_dir: &str) {
+/// tracked entry's system. Its size follows the camera (the ping's galaxy_normal_zoom 400: the
+/// entity's scale 1 at the game's camera distance 400, so the same size on the screen at every
+/// zoom, as the game's frames at 200, 600 and 3000). The systems: the windows' data
+/// (RENDER_EVENTS_DATA.trackers). Not in a system's view (its system_entity is not placed) [I].
+pub fn draw_trackers(scene: &mut crate::scene::Scene, ui_runtime: &Runtime, map: &mut crate::Map, view: crate::app::MapView, camera: Option<&crate::camera::OrbitCamera>, game_dir: &str) {
     if view != crate::app::MapView::Galaxy {
         return;
     }
@@ -302,11 +306,13 @@ pub fn draw_trackers(scene: &mut crate::scene::Scene, ui_runtime: &Runtime, map:
             return;
         }
     };
+    // the game's distance and sizes are twice the map's (its units): the map's distance / 400
+    let scale = camera.map_or(0.5, |c| c.distance / GALAXY_NORMAL_ZOOM);
     let cache = map.cache.clone();
     let mut cache = cache.borrow_mut();
     for sys in systems {
         let Some(s) = map.galaxy.systems.iter().find(|s| s.id as i64 == sys) else { continue };
-        let m = crate::math::M4::translation(crate::math::V3(s.x, 0.0, s.y)).mul(&crate::math::M4::scaling(0.5));
+        let m = crate::math::M4::translation(crate::math::V3(s.x, 0.0, s.y)).mul(&crate::math::M4::scaling(scale));
         for (layer, blend, t, q) in crate::particles::billboards(&effect, &m, sys as u32, &mut map.textures, &mut cache, game_dir) {
             crate::scene::push(&mut scene.batches, layer, blend, t, q);
         }
@@ -457,6 +463,7 @@ pub fn items(ui: &mut EventsUi, runtime: &Runtime, game_dir: &str, fonts: &mut H
         if let Some(t) = &ui.msg_type {
             state.set("message_type", t.as_str())?;
             state.set("message_settings", msg_table(lua, &ui.msg)?)?;
+            state.set("message_settings_applied", msg_table(lua, &ui.msg_before)?)?;
         }
         lua.globals().set("RENDER_EVENTS_STATE", state)?;
         let t: Table = lua
@@ -496,7 +503,7 @@ pub fn command(app: &mut App, arg: &str) -> Result<String, String> {
     // `event effect TEXT` (the game's console `effect`), `event start_situation TYPE`, `event stock
     // RESOURCE`, `event approach SITUATION KEY`, `event relic KEY`
     let (verb, rest) = arg.split_once(' ').unwrap_or((arg, ""));
-    if matches!(verb, "effect" | "start_situation" | "stock" | "approach" | "relic" | "modifiers") {
+    if matches!(verb, "effect" | "start_situation" | "stock" | "approach" | "relic" | "modifiers" | "modifier") {
         let args: Vec<&str> = if verb == "effect" { vec![verb, rest.trim()] } else { std::iter::once(verb).chain(rest.split_whitespace()).collect() };
         return world_do(app, "events_data", &args).map(|r| format!("event {r}"));
     }

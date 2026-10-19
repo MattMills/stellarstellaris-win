@@ -591,7 +591,22 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                 -- view's list headers: left, after the expand icon)
                 local bs = field("borderSize")
                 local bx = type(bs) == "table" and number(get(bs, "x"), vars) or 0
-                text_item(path .. "/text", field("buttonFont") or field("font"), text, x + bx, y, lw - 2 * bx, lh,
+                -- its text_offset: the text moved by it, centred in the sprite's frame unscaled (the
+                -- game's frames of settings_view's tabs: -4 moves the label 5 px up; its sub tabs at
+                -- scale 0.75 with -30, -12: 1 px right, 5 px up) [I: only with a text_offset]
+                local tx, ty = 0, 0
+                local to = field("text_offset")
+                if type(to) == "table" then
+                    tx, ty = number(get(to, "x"), vars) or 0, number(get(to, "y"), vars) or 0
+                    local fw, fh
+                    if sprite then
+                        fw, fh = frame_size(sprite)
+                    end
+                    if fw and scale ~= 1 then
+                        lw, lh = fw, fh
+                    end
+                end
+                text_item(path .. "/text", field("buttonFont") or field("font"), text, x + bx + tx, y + ty, lw - 2 * bx, lh,
                     (field("format") or "center"):lower(), "center", field("text_color_code"))
                 if is_disabled(path) then
                     for _, s in ipairs(items[#items].spans) do

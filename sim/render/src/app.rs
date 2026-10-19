@@ -1480,7 +1480,7 @@ impl App {
             }
             // the Situation Log's trackers on the galaxy (events.rs)
             if let (Screen::Map, Some(map)) = (self.screen, self.map.as_mut()) {
-                crate::events::draw_trackers(&mut scene, &self.runtime, map, self.view, &self.game_dir);
+                crate::events::draw_trackers(&mut scene, &self.runtime, map, self.view, self.camera.as_ref(), &self.game_dir);
             }
             self.scene = Some(std::sync::Arc::new(scene));
             // a new scene, whoever asked for it (a hit test builds it too)
