@@ -25,7 +25,9 @@ local FILE = "interface/species_mod_window.gui"
 local AFILE = "interface/species_mod_apply_window.gui"
 local W = "/species_mod_window/"
 local A = "/species_mod_apply_window/"
-SM.KEYS = { "sm", "sm_traits", "sm_pos", "sm_neg", "sm_apply", "sm_off" }
+SM.KEYS = { "sm", "sm_traits", "sm_pos", "sm_neg", "sm_apply", "sm_off", "sm_name", "sm_adjective", "sm_plural", "sm_focus" }
+-- the editor's name boxes (UpdateEditBoxes / ReadEditBoxes), in Tab order
+local BOXES = { "name", "adjective", "plural" }
 
 local function rules_of(ctx)
     local rules = require("render.creator_rules")
@@ -112,6 +114,12 @@ function SM.can_apply(ctx, d, s)
     if not ok then
         return false, why
     end
+    -- (a modification running in the research of the template: ALREADY_MODIFYING)
+    for _, p in ipairs(d.projects or {}) do
+        if SM.robotic(ctx, { class = p.class }) == SM.robotic(ctx, s) then
+            return false, "ALREADY_MODIFYING"
+        end
+    end
     for _, o in ipairs(d.species or {}) do
         if o.base == s.base and o.id ~= s.id and (o.pops or 0) > 0 then
             return true
@@ -120,15 +128,85 @@ function SM.can_apply(ctx, d, s)
     return false, "SPECIES_MODIFICATION_NO_APPLICABLE_POP_ON_OWNED_PLANET"
 end
 
-function SM.open_editor(s)
-    return "view_set:sm=" .. s.id .. ";sm_traits=" .. join(s.traits or {}) .. ";sm_pos=;sm_neg=;sm_apply=;sm_off="
+function SM.open_editor(ctx, s)
+    local R = require("render.windows.rename")
+    local names = ""
+    for _, k in ipairs(BOXES) do
+        names = names .. ";sm_" .. k .. "=" .. R.enc(s[k] and C.name(ctx, s[k]) or "")
+    end
+    return "view_set:sm=" .. s.id .. ";sm_traits=" .. join(s.traits or {}) .. ";sm_pos=;sm_neg=;sm_apply=;sm_off=;sm_focus=" .. names
+end
+
+-- views.rs (through the species view): a name box of the editor has the keyboard once clicked
+function SM.text_focus(state)
+    return state.sm ~= nil and state.sm_focus ~= nil and state.sm_focus ~= ""
+end
+
+-- a key typed into the focused box (32 characters at most, as the rename dialogs'); RETURN leaves
+-- the box, Tab goes to the next; ESCAPE goes on (the window closes)
+function SM.text_key(state, key)
+    if not SM.text_focus(state) then
+        return nil
+    end
+    local R = require("render.windows.rename")
+    local f = state.sm_focus
+    local cur = R.dec(state["sm_" .. f] or "")
+    local verb, arg = key:match("^(%a+):(.*)$")
+    if verb == "text" then
+        local n = 0
+        local out = {}
+        for ch in (cur .. arg):gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+            n = n + 1
+            if n <= 32 then
+                out[#out + 1] = ch
+            end
+        end
+        return { ["sm_" .. f] = R.enc(table.concat(out)) }
+    elseif verb == "key" then
+        if arg == "backspace" then
+            local chars = {}
+            for ch in cur:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+                chars[#chars + 1] = ch
+            end
+            chars[#chars] = nil
+            return { ["sm_" .. f] = R.enc(table.concat(chars)) }
+        elseif arg == "tab" then
+            for i, k in ipairs(BOXES) do
+                if k == f then
+                    return { sm_focus = BOXES[i % #BOXES + 1] }
+                end
+            end
+        elseif arg == "return" then
+            return { sm_focus = "" }
+        elseif arg == "escape" then
+            return nil
+        end
+    end
+    return {}
+end
+
+-- the names as the commands take them: each box's text, `-` when it is the species' own (the
+-- species' structured name kept)
+local function name_args(ctx, s, state)
+    local R = require("render.windows.rename")
+    local out = {}
+    for _, k in ipairs(BOXES) do
+        local own = s[k] and C.name(ctx, s[k]) or ""
+        local v = state["sm_" .. k]
+        if v == nil or R.dec(v) == own then
+            out[#out + 1] = "-"
+        else
+            out[#out + 1] = v == "" and "~" or v
+        end
+    end
+    return table.concat(out, ":")
 end
 
 function SM.open_apply(s)
     return "view_set:sm=;sm_traits=;sm_apply=" .. s.id .. ";sm_off="
 end
 
-local CLOSE = "view_set:sm=;sm_traits=;sm_pos=;sm_neg=;sm_apply=;sm_off="
+local CLOSE = "view_set:sm=;sm_traits=;sm_pos=;sm_neg=;sm_apply=;sm_off=;sm_name=;sm_adjective=;sm_plural=;sm_focus="
 SM.CLOSE = CLOSE
 
 local function trait_icon(ctx, b, key, x, y, size, path)
@@ -166,14 +244,21 @@ local function editor(ctx, b, d, state)
     local points = rules.trait_points_left(R, des)
     local picks = rules.trait_picks_left(R, des)
     -- the template differs from the species, and is valid (points and picks not overspent)
-    local changed = join(traits) ~= join(s.traits or {})
+    local names = name_args(ctx, s, state)
+    local changed = join(traits) ~= join(s.traits or {}) or names ~= "-:-:-"
     local valid = points >= 0 and picks >= 0
     local template_free = s.template and (s.pops or 0) == 0
     local function action(list, extra)
         return "cmd:species:" .. list .. "#" .. (extra or CLOSE:sub(10))
     end
+    -- (the planet preference: its trait in planet_class_traits_container, else the text that it has none)
+    local has_pref = false
+    for _, t in ipairs(traits) do
+        has_pref = has_pref or t:match("^trait_pc_.*_preference$") ~= nil
+    end
     local r = b:add(FILE, "species_mod_window", {
-        hide = { species_portrait = true, species_portrait_click_to_edit = true, randomize = true, generate_adjective = true },
+        hide = { species_portrait = true, species_portrait_click_to_edit = true, randomize = true, generate_adjective = true,
+            planet_traits_not_applicable = has_pref or nil, planet_class_traits_container = not has_pref or nil },
         text = {
             [W .. "title"] = "GENE_MODIFICATION",
             [W .. "points"] = C.raw(ctx, "POINTS_LEFT"):gsub("%$POINTS[^$]*%$", "§H" .. points .. "§!"),
@@ -187,18 +272,27 @@ local function editor(ctx, b, d, state)
         },
         actions = {
             [W .. "close"] = CLOSE,
-            [W .. "create_new_template"] = (changed and valid) and action("create_template:" .. s.id .. ":" .. join(traits) .. ":0") or nil,
-            [W .. "apply_new_template"] = (changed and valid) and action("create_template:" .. s.id .. ":" .. join(traits) .. ":1") or nil,
-            [W .. "update_template"] = (template_free and changed and valid) and action("update_template:" .. s.id .. ":" .. join(traits)) or nil,
+            [W .. "create_new_template"] = (changed and valid) and action("create_template:" .. s.id .. ":" .. join(traits) .. ":0:" .. names) or nil,
+            [W .. "apply_new_template"] = (changed and valid) and action("create_template:" .. s.id .. ":" .. join(traits) .. ":1:" .. names) or nil,
+            [W .. "update_template"] = (template_free and changed and valid) and action("update_template:" .. s.id .. ":" .. join(traits) .. ":" .. names) or nil,
             [W .. "delete_template"] = template_free and action("delete_template:" .. s.id) or nil,
         },
     })
     -- the names (the edit boxes: the species' own [I: not editable here])
-    for box, v in pairs({ name = s.name, adjective = s.adjective, plural = s.plural }) do
+    -- (the boxes: the state's texts, the species' own names at first; a click gives one the
+    -- keyboard, its caret shown)
+    local RN = require("render.windows.rename")
+    for _, box in ipairs(BOXES) do
         local rect = r.rects[W .. box]
-        if rect and v then
+        if rect then
+            local v = state["sm_" .. box]
+            local shown = v and RN.dec(v) or (s[box] and C.name(ctx, s[box]) or "")
+            if state.sm_focus == box then
+                shown = shown .. "|"
+            end
             b:texture(W .. box .. "/bg", "gfx/interface/tiles/small_tiles_dialog.dds", rect.x, rect.y, rect.w, rect.h)
-            text_item(b, W .. box .. "/text", C.name(ctx, v), rect)
+            text_item(b, W .. box .. "/text", shown, rect)
+            hit(ctx, b, W .. box, rect.x, rect.y, rect.w, rect.h, "view_set:sm_focus=" .. box)
         end
     end
     -- the planet preference (its own row) and the other traits (a click takes one off)
@@ -272,36 +366,64 @@ local function editor(ctx, b, d, state)
     list("negative_traits_container", neg, "sm_neg")
 end
 
--- the cost of the modification (CCreateSpeciesModSpecialProjectCommand::CalcCost [I: NSpecies'
--- TRAIT_MODIFICATION_BASE_COST + per pop (TRAIT_MODIFICATION_COST_MULT x the traits' cost change +
--- MODIFICATION_COST_MULT), a pop being POP_BULK_UNIT_SIZE of a group's size; robots' own defines])
-function SM.cost(ctx, d, template, chosen)
-    local _, R = rules_of(ctx)
-    local cls = R.class[template.class or ""]
-    local robot = cls and (cls.archetype == "ROBOT" or cls.archetype == "MACHINE")
-    local def = function(k, v)
-        return tonumber(C.define(ctx, "NSpecies", k)) or v
-    end
-    local base = robot and def("ROBOT_TRAIT_MODIFICATION_BASE_COST", 750) or def("TRAIT_MODIFICATION_BASE_COST", 1500)
-    local mult = robot and def("ROBOT_TRAIT_MODIFICATION_COST_MULT", 20) or def("TRAIT_MODIFICATION_COST_MULT", 10)
-    local each = robot and def("ROBOT_MODIFICATION_COST_MULT", 10) or def("MODIFICATION_COST_MULT", 5)
-    local function tcost(list)
-        local n = 0
-        for _, t in ipairs(list or {}) do
-            n = n + (R.trait[t] and R.trait[t].cost or 0)
-        end
-        return n
-    end
-    local cost, pops = base, 0
-    for _, s in ipairs(chosen) do
-        local p = (s.pops or 0) / 100
-        pops = pops + (s.pops or 0)
-        cost = cost + p * (mult * math.abs(tcost(template.traits) - tcost(s.traits)) + each)
-    end
-    return math.floor(cost + 0.5), pops
+-- the lookups engine.species_mod's cost takes, from the views' definitions (the trait costs as
+-- numbers; the player's country: a human's, its modifiers not read here [I])
+local function lookup(ctx)
+    return {
+        trait_cost = function(k)
+            local def = C.defs(ctx, "common/traits")[k]
+            return tonumber(def and C.field(def, "cost")) or 0
+        end,
+        archetype = function(class)
+            local def = C.defs(ctx, "common/species_classes")[class or ""]
+            return def and C.strip(C.field(def, "archetype")) or "BIOLOGICAL"
+        end,
+        robotic = function(a)
+            local def = C.defs(ctx, "common/species_archetypes")[a or ""]
+            return def ~= nil and C.field(def, "robotic") == "yes"
+        end,
+        define = function(k, dflt)
+            return tonumber(C.define(ctx, "NSpecies", k)) or tonumber(C.define(ctx, "NPop", k)) or dflt
+        end,
+        modifiers = function()
+            return {}
+        end,
+        human = function()
+            return true
+        end,
+    }
 end
 
--- the apply window
+-- whether a template's species are robots (its project's research: engineering, else society)
+function SM.robotic(ctx, s)
+    local L = lookup(ctx)
+    return L.robotic(L.archetype(s.class))
+end
+
+-- the cost of applying a template to the chosen { species, colony } (engine.species_mod's
+-- NSpeciesModification::CalcCost: per pair its pops on the colony and the traits' difference)
+function SM.cost(ctx, d, template, chosen)
+    local sm = require("engine.species_mod")
+    local L = lookup(ctx)
+    local entries = {}
+    for _, c in ipairs(chosen) do
+        local n = c.colony.pops or 0
+        if n > 0 then
+            local d2 = sm.trait_delta(template.id, c.species.id, nil, function(id)
+                return id == template.id and (template.traits or {}) or (c.species.traits or {})
+            end, L)
+            entries[#entries + 1] = { n = n, d = d2 }
+        end
+    end
+    return sm.formula(SM.robotic(ctx, template), entries, nil, L)
+end
+
+-- the apply window: the template, the species of its base on the owned colonies (by name) and
+-- under each its colonies, each checked (a species' box checks or clears its colonies; sm_off lists
+-- the SPECIES/COLONY pairs left out), the pops chosen, the cost in research; Research Project
+-- (CCreateSpeciesModSpecialProjectCommand: the simulation's cmd:species:apply_template) enabled
+-- when CanApplyTemplateToColonies holds: no modification running in its research (ALREADY_MODIFYING),
+-- pops chosen (MUST_SELECT_PLANETS)
 local function apply(ctx, b, d, state)
     local t = find(d, state.sm_apply)
     if not t then
@@ -311,8 +433,6 @@ local function apply(ctx, b, d, state)
     for _, k in ipairs(split(state.sm_off)) do
         off[k] = true
     end
-    -- ListPotentialSpecies: the owned colonies' species of the template's base, not the template,
-    -- by name
     local list = {}
     for _, s in ipairs(d.species or {}) do
         if s.base == t.base and s.id ~= t.id and (s.pops or 0) > 0 and SM.can_modify(ctx, d, s) then
@@ -322,21 +442,28 @@ local function apply(ctx, b, d, state)
     table.sort(list, function(a, b2)
         return C.name(ctx, a.name) < C.name(ctx, b2.name)
     end)
-    local chosen = {}
+    local chosen, every = {}, {}
     for _, s in ipairs(list) do
-        if not off[tostring(s.id)] then
-            chosen[#chosen + 1] = s
+        for _, col in ipairs(s.colonies or {}) do
+            local key = s.id .. "/" .. col.id
+            every[#every + 1] = key
+            if not off[key] then
+                chosen[#chosen + 1] = { species = s, colony = col, key = key }
+            end
         end
     end
     local cost, pops = SM.cost(ctx, d, t, chosen)
-    local ids = {}
-    for _, s in ipairs(chosen) do
-        ids[#ids + 1] = tostring(s.id)
+    local robo = SM.robotic(ctx, t)
+    local busy = false
+    for _, p in ipairs(d.projects or {}) do
+        busy = busy or SM.robotic(ctx, { class = p.class }) == robo
     end
-    local all_off = {}
-    for _, s in ipairs(list) do
-        all_off[#all_off + 1] = tostring(s.id)
+    local ok = pops > 0 and not busy
+    local keys = {}
+    for _, c in ipairs(chosen) do
+        keys[#keys + 1] = c.key
     end
+    local res = robo and "£engineering£" or "£society£"
     local r = b:add(AFILE, "species_mod_apply_window", {
         hide = { [A .. "template/species"] = true },
         text = {
@@ -346,14 +473,14 @@ local function apply(ctx, b, d, state)
             [A .. "template/planets"] = tostring(#(t.colonies or {})),
             [A .. "template/population"] = C.short(t.pops or 0),
             [A .. "affected_pops"] = C.raw(ctx, "SPECIES_MOD_NUM_POPS"):gsub("%$COUNT[^$]*%$", "§Y" .. C.short(pops) .. "§!"),
-            [A .. "cost"] = C.loc(ctx, "TECH_COST") .. " £society£ " .. cost,
+            [A .. "cost"] = C.loc(ctx, "TECH_COST") .. " " .. (#chosen > 0 and (res .. " §Y" .. C.short(cost) .. "§!") or "§Y0§!"),
         },
-        frames = { [A .. "list_headers/all_selected"] = #chosen == #list and #list > 0 and 2 or 1 },
-        disabled = #chosen == 0 and { [A .. "apply_template"] = true } or nil,
+        frames = { [A .. "list_headers/all_selected"] = #chosen == #every and #every > 0 and 2 or 1 },
+        disabled = not ok and { [A .. "apply_template"] = true } or nil,
         actions = {
             [A .. "close"] = CLOSE,
-            [A .. "list_headers/all_selected"] = "view_set:sm_off=" .. (#chosen == #list and join(all_off) or "-"),
-            [A .. "apply_template"] = #chosen > 0 and ("cmd:species:apply_template:" .. t.id .. ":" .. join(ids) .. "#" .. CLOSE:sub(10)) or nil,
+            [A .. "list_headers/all_selected"] = "view_set:sm_off=" .. (#chosen == #every and join(every) or "-"),
+            [A .. "apply_template"] = ok and ("cmd:species:apply_template:" .. t.id .. ":" .. join(keys) .. "#" .. CLOSE:sub(10)) or nil,
         },
     })
     local tr = r.rects[A .. "template/traits"]
@@ -362,7 +489,25 @@ local function apply(ctx, b, d, state)
             trait_icon(ctx, b, t.traits[i], x, y + 5, 29, "/species_apply/template/" .. i)
         end)
     end
-    -- the rows: a species (its checkbox toggles it), then its colonies
+    -- the state's sm_off with keys taken out (on) or put in (off)
+    local function toggled(keys2, on)
+        local out, drop = {}, {}
+        for _, k in ipairs(keys2) do
+            drop[k] = true
+        end
+        for k in pairs(off) do
+            if not drop[k] then
+                out[#out + 1] = k
+            end
+        end
+        if not on then
+            for _, k in ipairs(keys2) do
+                out[#out + 1] = k
+            end
+        end
+        table.sort(out)
+        return "view_set:sm_off=" .. join(out)
+    end
     local lr = r.rects[A .. "list_container/list"]
     if lr then
         local y = lr.y
@@ -372,38 +517,42 @@ local function apply(ctx, b, d, state)
             end
             local prefix = "/species_apply/" .. i
             local P = prefix .. "/species_mod_apply_species_item/"
-            local on = not off[tostring(s.id)]
-            local toggled = {}
-            for k in pairs(off) do
-                if k ~= tostring(s.id) then
-                    toggled[#toggled + 1] = k
-                end
+            local mine, any = {}, false
+            for _, col in ipairs(s.colonies or {}) do
+                mine[#mine + 1] = s.id .. "/" .. col.id
+                any = any or not off[s.id .. "/" .. col.id]
             end
-            if on then
-                toggled[#toggled + 1] = tostring(s.id)
-            end
-            b:add(AFILE, "species_mod_apply_species_item", {
+            local rr = b:add(AFILE, "species_mod_apply_species_item", {
                 prefix = prefix, parent = { x = lr.x, y = y, w = 620, h = 52 },
                 hide = { [P .. "species"] = true },
                 text = {
                     [P .. "name"] = C.name(ctx, s.name), [P .. "type"] = s.class or "",
                     [P .. "planets"] = tostring(#(s.colonies or {})), [P .. "population"] = C.short(s.pops or 0),
                 },
-                frames = { [P .. "selected"] = on and 2 or 1 },
-                actions = { [P .. "selected"] = "view_set:sm_off=" .. join(toggled) },
+                frames = { [P .. "selected"] = any and 2 or 1 },
+                actions = { [P .. "selected"] = toggled(mine, not any) },
             })
+            -- (its traits in traits_icons)
+            local ti = rr.rects[P .. "traits_icons"]
+            if ti then
+                C.overlap(b, ti, #(s.traits or {}), 24, 2, function(j, x, y2)
+                    trait_icon(ctx, b, s.traits[j], x, y2 + math.max(0, (ti.h - 24) / 2), 24, prefix .. "/traits/" .. j)
+                end)
+            end
             y = y + 52
             for k, col in ipairs(s.colonies or {}) do
                 if y + 52 > lr.y + lr.h then
                     break
                 end
+                local key = s.id .. "/" .. col.id
                 local cp = prefix .. "/colonies/" .. k
                 local Q = cp .. "/species_mod_apply_species_planet_item/"
                 b:add(AFILE, "species_mod_apply_species_planet_item", {
                     prefix = cp, parent = { x = lr.x, y = y, w = 620, h = 52 },
                     text = { [Q .. "name"] = C.name(ctx, col.name), [Q .. "type"] = col.class or "", [Q .. "population"] = C.short(col.pops or 0) },
-                    frames = { [Q .. "selected"] = on and 2 or 1 },
+                    frames = { [Q .. "selected"] = off[key] and 1 or 2 },
                     hide = { [Q .. "planet_designation_icon"] = true },
+                    actions = { [Q .. "selected"] = toggled({ key }, off[key] == true) },
                 })
                 y = y + 52
             end
