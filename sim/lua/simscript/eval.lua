@@ -805,8 +805,8 @@ end
 local TRIG = {}
 M.TRIG = TRIG
 local ITER_PARAMS = { limit = true, count = true, list = true, order_by = true, position = true, max = true,
-    min = true, check_range_bounds = true, weight = true, weights = true, inverse = true, text = true,
-    fail_text = true }
+    min = true, check_range_bounds = true, weight = true, text = true, fail_text = true,
+    weights = true, inverse = true }
 
 local function scripted_call(def, name, e, kind)
     if e.value.text then
@@ -1699,8 +1699,10 @@ local function iterate_effect(kind, lname, e, ctx)
             elseif xk == "order_by" then order_by = x.value
             elseif xk == "position" then position = M.value(x.value, ctx, x)
             elseif xk == "max" then max = M.value(x.value, ctx, x)
+            -- random_x: `weights = { base = f modifier = { add/factor = f <triggers> } }`, each
+            -- candidate's chance (effects.log); ordered_x: `inverse = yes`, position 0 the lowest
             elseif xk == "weights" and x.value.text == nil then weights = x.value
-            elseif xk == "inverse" then inverse = x.value.text == "yes" end
+            elseif xk == "inverse" then inverse = yes(x) end
         end
     end
     local chosen = {}
@@ -1713,31 +1715,33 @@ local function iterate_effect(kind, lname, e, ctx)
     local loop = SR and SR.begin(ctx)
     if kind == "random" then
         if #chosen == 0 then return end
-        local r = loop and SR.draw(loop) or rand()
         if weights then
-            -- `weights = { base modifier ... }`: each element's weight in its own scope, one drawn in
-            -- proportion (in thousandths, as random_list) [I]; none with a weight above 0: nothing
+            -- each candidate weighted in its own scope (base 1), picked as random_list picks:
+            -- weights in thousandths, one draw modulo their total [I: random_list's rule]
             local ws, total = {}, 0
             for i, s2 in ipairs(chosen) do
-                local w = floor(math.max(0, M.weight(weights, push(ctx, s2), 1)) * 1000)
+                local w = math.floor(math.max(0, M.weight(weights, push(ctx, s2), 1)) * 1000)
                 ws[i] = w
                 total = total + w
             end
             if total <= 0 then return end
-            r = r % total
-            for i, w in ipairs(ws) do
-                if r < w then chosen = { chosen[i] } break end
-                r = r - w
+            local r = (loop and SR.draw(loop) or rand()) % total
+            for i, s2 in ipairs(chosen) do
+                if r < ws[i] then
+                    chosen = { s2 }
+                    break
+                end
+                r = r - ws[i]
             end
         else
-            chosen = { chosen[r % #chosen + 1] }
+            chosen = { chosen[(loop and SR.draw(loop) or rand()) % #chosen + 1] }
         end
     elseif kind == "ordered" then
         local keyed = {}
         for i, s2 in ipairs(chosen) do
             keyed[i] = { s2, order_by and M.value(order_by, push(ctx, s2), e) or 0, i }
         end
-        -- position 0 is the highest; `inverse = yes` the lowest
+        -- highest first; `inverse = yes` lowest first (ties in list order)
         table.sort(keyed, function(a, b)
             if a[2] ~= b[2] then
                 if inverse then return a[2] < b[2] end
@@ -1974,6 +1978,11 @@ EFF["fire_on_action"] = function(e, ctx)
     end
     if name then M.on_action(name, ctx.this, ctx) end
 end
+
+-- optimize_memory: not in the game's documentation, but vanilla runs it (97 uses in on_actions
+-- and events): a memory hint for the game, no change to the world (simscript.scriptcheck
+-- lists it as accepted, not invented)
+EFF["optimize_memory"] = function() end
 
 -- engine effects with a model in the Rust engine
 EFF["add_resource"] = function(e, ctx)
