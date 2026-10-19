@@ -288,6 +288,20 @@ local function is_container(name)
         or name:match("^ordered_") ~= nil
 end
 
+-- the save's (first) human player's country: `player = { { name country } }`
+local function player_country(world)
+    local ok, blocks = pcall(world.blocks, world.meta and world.meta.player)
+    for _, b in ipairs(ok and blocks or {}) do
+        local c = tonumber(world.field(b, "country"))
+        if c and world.object("country", c) then
+            return c
+        end
+    end
+end
+
+-- the object a keyword's use runs in: the player's country; for a planet scope the player's
+-- capital (a colony: most planet keywords need one), else the first colonised planet; else the
+-- first object of the store
 local function first_of(world, kind, store)
     if store then
         for _, id in ipairs(world.all(store)) do
@@ -298,9 +312,22 @@ local function first_of(world, kind, store)
         return nil
     end
     if kind == "country" then
-        local p = tonumber(world.meta and world.meta.player)
-        if p and world.object("country", p) then
+        local p = player_country(world)
+        if p then
             return p
+        end
+    end
+    if kind == "planet" then
+        local p = player_country(world)
+        local cap = p and tonumber(world.field(world.object("country", p), "capital"))
+        local pid = cap and world.colony_planet and world.colony_planet[cap]
+        if pid and world.object("planet", pid) then
+            return pid
+        end
+        for _, id in ipairs(world.all("planet")) do
+            if world.planet_colony and world.planet_colony[id] and world.object("planet", id) then
+                return id
+            end
         end
     end
     for _, id in ipairs(world.all(kind)) do
@@ -420,7 +447,9 @@ function X.dynamic(mod_dir)
                 if E and E.stats and E.stats.unapplied then
                     for k, c in pairs(E.stats.unapplied) do un0[k] = c end
                 end
-                local ctx = eval.new_ctx(eval.S(sk, id), nil, nil, file)
+                -- `from` is the player's country: many effects take their actor from it
+                local pc = player_country(world)
+                local ctx = eval.new_ctx(eval.S(sk, id), pc and eval.S("country", pc) or nil, nil, file)
                 -- the use's own block decides (a link's use is `link = { always = yes }` in a trigger)
                 local is_trigger = nctx == "trigger" or (nctx == nil and kind == "trigger")
                 local ok, err = pcall(function()
