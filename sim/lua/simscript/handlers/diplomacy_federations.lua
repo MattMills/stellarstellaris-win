@@ -544,7 +544,8 @@ return function(eval, H)
     -- CGalacticCommunity::PassResolutionType: the open resolution of the type (else a new one of the
     -- scope's country) passed: out of the queue, its pass_date, in `passed`, `last`; the category's
     -- timer (`category_timers`, unless no_cooldown); its `effect` runs in its country's scope (the
-    -- game's save after pass_resolution: the proposer's flag and modifier only)
+    -- game's save after pass_resolution: the proposer's flag and modifier only), a targeted one's in
+    -- the target's
     local function pass(t, us, target, no_cooldown)
         local g = gc()
         local d = H.def("common/resolutions", t)
@@ -565,8 +566,15 @@ return function(eval, H)
                 world.token_entry(ct, cat).value.quoted = true
             end
         end
+        -- the effect: in the proposer's scope, or with a target in the target's with the proposer
+        -- as from (common/resolutions/99_README_RESOLUTIONS.txt)
         local owner = D.ref(world.field(r, "country")) or us
-        H.run(H.def_field(d, "effect"), S("country", owner), target and S("country", target) or nil)
+        local t = D.ref(world.field(r, "target")) or target
+        if t then
+            H.run(H.def_field(d, "effect"), S("country", t), owner and S("country", owner) or nil)
+        else
+            H.run(H.def_field(d, "effect"), S("country", owner), nil)
+        end
         return true
     end
     -- pass_resolution / pass_resolution_no_cooldown = <type> (0x37ffb00 / 0x37ffc20), and

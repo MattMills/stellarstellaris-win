@@ -904,6 +904,19 @@ return function(eval, H)
         return r
     end
 
+    -- run_ai_strategic_war_data = yes (CRunAIStrategicWarDataEffect 0x37857f0 [V]: the country's AI
+    -- (+0x1ad8) gets CCountryAI::SetNeedAIStrategicWarData, a request for its strategic war data to
+    -- be computed again; not saved): the request kept in the script state
+    -- (eval.state.ai_war_data_requests[country]) for engine.ai
+    EFF["run_ai_strategic_war_data"] = function(e, ctx)
+        local us = this_country(ctx)
+        if not us or e.value.text ~= "yes" then return end
+        local r = eval.state.ai_war_data_requests or {}
+        eval.state.ai_war_data_requests = r
+        r[us] = true
+        H.script_write()
+    end
+
     -- force_show_diplomacy / force_show_espionage = <country> (CForceShowDiplomacyEffectBase
     -- 0x37f3c30): for the local human only, CInGameIdler::ShowDiplomacyView on the target (the
     -- diplomacy or espionage tab); the request is left in the script state (eval.state.ui_request)
