@@ -248,6 +248,8 @@ pub struct App {
     last_system: Option<usize>,
     /// what the cursor is over, since when (the tooltips' hook: [`Tooltips`])
     pub hovered: Option<(HoverTarget, Instant)>,
+    /// the tooltip drawn (tooltip.rs)
+    pub tip: crate::tooltip::Tip,
     /// the tooltips' text (a later phase: cached through the modifier graph); none yet
     pub tooltips: Option<Box<dyn Tooltips>>,
     hover: Option<String>,
@@ -369,6 +371,7 @@ impl App {
             saved_system_cameras: HashMap::new(),
             last_system: None,
             hovered: None,
+            tip: Default::default(),
             tooltips: None,
             hover: None,
             pressed: None,
@@ -556,6 +559,11 @@ impl App {
         let mut changed = false;
         // a system's camera fitted to a stand-in (its data not come yet) fitted again (mapicons.rs)
         changed |= self.refit_system_camera();
+        // a tooltip due or gone (tooltip.rs): the scene built again
+        if self.screen == Screen::Map && crate::tooltip::due(self) {
+            self.scene = None;
+            changed = true;
+        }
         // the clock's commands of the last frame's input
         for c in std::mem::take(&mut self.commands) {
             let r = match c {
@@ -1442,7 +1450,12 @@ impl App {
                     self.overlay_key = key;
                 }
             }
-            let overlay = scene::Overlay { selected: self.selected, items: self.overlay_items.clone(), labels: self.overlay_labels.clone() };
+            // the tooltip over the windows (tooltip.rs)
+            let mut items = self.overlay_items.clone();
+            if self.screen == Screen::Map {
+                items.extend(crate::tooltip::items(self));
+            }
+            let overlay = scene::Overlay { selected: self.selected, items: items, labels: self.overlay_labels.clone() };
             let scene = match self.screen {
                 Screen::Map if self.view == MapView::Model => {
                     let cam = self.system_camera.ok_or("no camera")?;
@@ -1537,11 +1550,19 @@ impl App {
         if self.screen == Screen::Map && crate::mainbars::hover(self, x, y) {
             self.relayout();
         }
-        let hover = self.button_at(x, y)?.map(|b| b.0);
+        let hit = self.button_at(x, y)?;
+        // a map label (its button selects its thing) has its thing's tooltip (tooltip.rs)
+        let label = hit.as_ref().filter(|(p, _)| p.starts_with("/label/")).and_then(|(_, a)| a.as_deref().and_then(crate::mainbars::pickable));
+        let hover = hit.map(|b| b.0);
         // the tooltips' hook: the element or the thing on the map under the cursor
         let target = match &hover {
+            Some(_) if label.is_some() => label.map(HoverTarget::Map),
             Some(path) => Some(HoverTarget::Element(path.clone())),
-            None if self.screen == Screen::Map => self.scene()?.pick_at(x, y, 6.0).map(HoverTarget::Map),
+            // an element with a tooltip that takes no clicks (tooltip.rs), else the map's thing
+            None if self.screen == Screen::Map => match crate::tooltip::element_at(self, x, y) {
+                Some(p) => Some(HoverTarget::Element(p)),
+                None => self.scene()?.pick_at(x, y, 6.0).map(HoverTarget::Map),
+            },
             None => None,
         };
         if self.hovered.as_ref().map(|h| &h.0) != target.as_ref() {

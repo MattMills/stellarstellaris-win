@@ -192,6 +192,8 @@ end
 --   opts.progress: element path -> 0..1 (a progressbarType's state: progress.shader draws its
 --                 textureFile1 where u <= the state, its textureFile2 after; an item's `clip` is
 --                 the { u0, u1 } of its frame drawn, its rectangle cut the same)
+--   opts.tooltips: element path -> its tooltip (a text or a localisation key; else the .gui's
+--                  pdx_tooltip, tooltip or tooltipText): render.tooltip shows it (docs/tooltips.md)
 --   opts.parent: the rectangle the window is laid out in (else the screen)
 --   opts.prefix: a path prefix for the window's elements (else "")
 --   opts.texture_size(path) -> w, h (the renderer's: the texture's pixels)
@@ -612,6 +614,17 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                     end
                 end
                 local item = sprite_item(path, sprite, frame, x, y, dw, dh, button)
+                -- its tooltip: the window's own (opts.tooltips), else the .gui's key (pdx_tooltip,
+                -- tooltip, tooltipText), localised when shown (render.tooltip)
+                if item then
+                    item.tooltip = opts.tooltips and opts.tooltips[path] or field("pdx_tooltip") or field("tooltip")
+                        or field("tooltipText")
+                    -- a button with a shortcut adds its key (CTooltipManager: "Hotkey: X"), after a \2
+                    local sc = kind ~= "icontype" and (field("shortcut") or field("shortCut"))
+                    if sc and sc ~= "" then
+                        item.tooltip = (item.tooltip or "") .. "\2" .. sc
+                    end
+                end
                 -- a checkbox's frame is its state: no hover or pressed frames (the game's frame:
                 -- an unticked box stays unticked under the pointer)
                 if item and kind == "checkboxtype" then
