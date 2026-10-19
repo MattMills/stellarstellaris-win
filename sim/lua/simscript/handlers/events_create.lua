@@ -316,39 +316,63 @@ return function(eval, M)
         world.append(a, "research_special_project", b)
         world.push(q, a)
     end
-    -- the country's relation with a patron (the save's top-level patron_relations = { { country
-    -- patron contact_state } } [I])
+    -- the country's relation with a patron: the save's patron_relations = { id = { owner patron
+    -- position contact special_project ... patron_relation_start_date } } (CPatronRelation::
+    -- WriteMembers [V]), its id in the country's modules = { standard_shroud_module = {
+    -- patron_relations = { ids } } } (CShroudCountryModule::WriteMembers [V]); the store and fields
+    -- handlers/general_systems.lua's patron effects use
     local function patron_relation(cid, patron, create)
-        local pr = M.meta("patron_relations")
-        if type(pr) ~= "table" then
-            if not create then return nil end
-            pr = world.child(world.tree, "patron_relations")
-            world.meta.patron_relations = pr
-        end
-        for _, x in ipairs(pr) do
-            local v = x.op and x.value or x
-            if type(v) == "table" and tonumber(world.field(v, "country")) == cid and unq(world.field(v, "patron")) == patron then
-                return v
+        for _, rid in ipairs(world.all("patron_relations")) do
+            local r = world.object("patron_relations", rid)
+            if r and tonumber(world.field(r, "owner")) == cid and unq(world.field(r, "patron")) == patron then
+                return r, rid
             end
         end
         if not create then return nil end
+        local c = world.object("country", cid)
+        if not c or not defs.get("common/patrons", patron) then return nil end
+        -- CShroudCountryModule::CreatePatronRelation [V call]: owner, patron, its type's position,
+        -- contact none, the start date [I: the fields' values]
         local b = {}
-        world.append(b, "country", cid)
+        world.append(b, "owner", cid)
         world.append(b, "patron", patron, true)
-        world.append(b, "contact_state", "none")
-        world.push(pr, b)
-        return b
+        local d = defs.get("common/patrons", patron)
+        local pos = d and defs.field(d.block, "position")
+        if type(pos) == "table" then
+            local p = {}
+            world.append(p, "x", tonumber(defs.field(pos, "x")) or 0)
+            world.append(p, "y", tonumber(defs.field(pos, "y")) or 0)
+            world.append(b, "position", p)
+        end
+        world.append(b, "contact", "none")
+        world.append(b, "patron_relation_start_date", M.date_text(eval.today()), true)
+        world.ensure_store("patron_relations")
+        local rid = world.next_index("patron_relations")
+        world.create("patron_relations", rid, b)
+        local m = M.module_of(c, "standard_shroud_module", true)
+        local l = world.field(m, "patron_relations")
+        if type(l) ~= "table" then l = world.child(m, "patron_relations") end
+        world.append_value(l, rid)
+        return b, rid
     end
     M.patron_relation = patron_relation
+    -- create_patron_relation = <patron> (CCreatePatronRelationEffect: CShroudCountryModule::
+    -- CreatePatronRelation [V]): the relation, when the country has none with the patron
+    EFF["create_patron_relation"] = function(e, ctx)
+        local cid = country_of(ctx.this)
+        local patron = unq(e.value.text)
+        if not cid or not patron then return end
+        patron_relation(cid, patron, true)
+    end
     -- set_patron_first_contact_state = { patron state = none/in_progress/completed } (the relation
-    -- made when needed; completed by default)
+    -- made when needed; its `contact`, completed by default)
     EFF["set_patron_first_contact_state"] = function(e, ctx)
         local cid = country_of(ctx.this)
         if not cid or e.value.text then return end
         local patron = param_text(e.value, "patron")
         if not patron then return end
         local r = patron_relation(cid, patron, true)
-        world.set(r, "contact_state", param_text(e.value, "state") or "completed")
+        if r then world.set(r, "contact", param_text(e.value, "state") or "completed") end
     end
     -- enable_patron_first_contact_project = { name patron owner location } (CEnablePatronFirstContact
     -- ProjectEffect: EnableSpecialProject, then CShroudCountryModule::RegisterPatronFirstContactProject
@@ -365,8 +389,108 @@ return function(eval, M)
             scope = event_save.ctx_block(ctx), location = loc and loc ~= NONE and loc or nil })
         if not id or not patron then return end
         local r = patron_relation(owner.id, patron, true)
-        if world.field(r, "contact_state") == "none" then world.set(r, "contact_state", "in_progress") end
-        world.set(r, "first_contact_project", id)
+        if not r then return end
+        if world.field(r, "contact") == "none" then world.set(r, "contact", "in_progress") end
+        world.set(r, "special_project", id)
+    end
+
+    -- ------------------------------------------------------------------------------------------
+    -- pre-FTL awareness: set_awareness / add_awareness = x (CSetAwarenessEffect / CAddAwarenessEffect
+    -- [V]): only for a pre-FTL country (CCountry +0x1ab9; here its type primitive [I]), else nothing
+    -- (an error logged); CCountry::SetAwareness clamps to [AWARENESS_MIN, AWARENESS_MAX], then
+    -- CheckAwarenessOnActions with the stage it had: on_awareness_level_increase / _decrease when the
+    -- stage moved (the stages' bounds NGameplay AWARENESS_*_LIMIT) [V]; the save's `awareness`
+    local function define(key, default)
+        local g = defs.get("common/defines", "NGameplay")
+        return g and tonumber(defs.field(g.block, key)) or default
+    end
+    local function awareness_stage(a)
+        if a < define("AWARENESS_UNAWARE_LIMIT", 1) then return 1 end
+        if a < define("AWARENESS_LOW_LIMIT", 30) then return 2 end
+        if a < define("AWARENESS_PARTIAL_LIMIT", 60) then return 3 end
+        if a < define("AWARENESS_HIGH_LIMIT", 100) then return 4 end
+        return 5
+    end
+    local function set_awareness(cid, c, v)
+        local old = tonumber(world.field(c, "awareness")) or 0
+        v = math.max(define("AWARENESS_MIN", 0), math.min(define("AWARENESS_MAX", 100), v))
+        world.set(c, "awareness", v)
+        local a, b = awareness_stage(old), awareness_stage(v)
+        if b > a then on_action("on_awareness_level_increase", S("country", cid))
+        elseif b < a then on_action("on_awareness_level_decrease", S("country", cid)) end
+    end
+    local function pre_ftl(ctx)
+        local cid, c = country_of(ctx.this)
+        if not c or unq(world.field(c, "type")) ~= "primitive" then return nil end
+        return cid, c
+    end
+    EFF["set_awareness"] = function(e, ctx)
+        local cid, c = pre_ftl(ctx)
+        if not cid then return end
+        set_awareness(cid, c, num(e.value, ctx, e))
+    end
+    EFF["add_awareness"] = function(e, ctx)
+        local cid, c = pre_ftl(ctx)
+        if not cid then return end
+        set_awareness(cid, c, (tonumber(world.field(c, "awareness")) or 0) + num(e.value, ctx, e))
+    end
+
+    -- ------------------------------------------------------------------------------------------
+    -- give_culling_rewards = { design = <key/scope> mult = 1 } (CGiveCullingRewardsEffect: a country
+    -- with a grand archive; the design's space fauna culling_value (its ship size's
+    -- space_fauna_values = { culling_value = { category produces = { <resource> = n } } }) times mult,
+    -- CGrandArchiveCountryModule::GiveCullingRewards [V calls]): the resources added to the country's
+    -- stockpile and the archive's culling_value [I: the rarity draw (WILD_CRITTERS_RARITY_TABLE) not
+    -- modelled]
+    local function design_size(dv, ctx, e)
+        local sc = target(dv, ctx, e)
+        if sc and sc.kind == "fleet" then
+            local f = world.object("fleet", sc.id)
+            local ships = f and world.field(f, "ships")
+            local first = type(ships) == "table" and ships[1] and tonumber(ships[1].text)
+            sc = first and S("ship", first) or nil
+        end
+        if sc and sc.kind == "ship" then
+            local s = world.object("ship", sc.id)
+            local did = s and tonumber(world.path(s, "ship_design_implementation", "design"))
+            local d = did and world.object("ship_design", did)
+            local st = d and world.blocks(world.field(d, "growth_stages"))[1]
+            return st and unq(world.field(st, "ship_size")) or nil
+        end
+        local key = unq(dv)
+        if key and defs.get("common/ship_sizes", key) then return key end
+        -- a global design by name (common/global_ship_designs: ship_design = { name ship_size })
+        for _, d in pairs(defs.folder("common/global_ship_designs")) do
+            if type(d) == "table" and d.block and unq(defs.field(d.block, "name")) == key then
+                return unq(defs.field(d.block, "ship_size"))
+            end
+        end
+        return nil
+    end
+    EFF["give_culling_rewards"] = function(e, ctx)
+        local _, c = country_of(ctx.this)
+        if not c or e.value.text or not M.archive(c, false) then return end
+        local dx = param(e.value, "design")
+        local size = dx and design_size(dx.value.text, ctx, dx)
+        local d = size and defs.get("common/ship_sizes", size)
+        local cv = d and world.path and defs.field(defs.field(d.block, "space_fauna_values") or {}, "culling_value")
+        local produces = type(cv) == "table" and defs.field(cv, "produces")
+        if type(produces) ~= "table" then return end
+        local mx = param(e.value, "mult")
+        local mult = mx and num(mx.value, ctx, mx) or 1
+        local r = world.path(c, "modules", "standard_economy_module", "resources")
+        if type(r) ~= "table" then return end
+        local fctx = eval.new_ctx(ctx.this, nil, nil, d.file)
+        local total = 0
+        for _, x in ipairs(produces) do
+            if x.op and x.key then
+                local v = (tonumber(eval.value(x.value, fctx, x)) or 0) * mult
+                world.set(r, x.key.text, (tonumber(world.field(r, x.key.text)) or 0) + v)
+                total = total + v
+            end
+        end
+        local ga = M.archive(c, true)
+        world.set(ga, "culling_value", (tonumber(world.field(ga, "culling_value")) or 0) + total)
     end
 
     -- ------------------------------------------------------------------------------------------

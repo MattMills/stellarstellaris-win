@@ -88,6 +88,13 @@ A galactic object's storm is its `storm` (an id, 4294967295 for none); the save'
 - **Anomalies:** `spawn_random_anomaly` picks a category by its spawn_chance on the planet (one draw [I]) and writes it as add_anomaly does.
 - **Events:** `bypass_event` and `pop_faction_event` fire as `country_event` does.
 - **Relics:** `add_relic` / `remove_relic` fire on_relic_received / on_relic_lost [I].
+- **Patrons** (moved from the diplomacy package):
+  - `create_patron_relation`, `set_patron_first_contact_state` and `enable_patron_first_contact_project` use the store and fields of handlers/general_systems.lua's patron effects (`remove_patron`, `replace_patron`, `roll_ai_preferred_patron`): a `patron_relations = { id = { owner patron position contact special_project patron_relation_start_date } }` object, and its id in the country's `standard_shroud_module = { patron_relations = { ids } }` (CPatronRelation / CShroudCountryModule::WriteMembers [V]).
+  - The relation's `contact` is set by the first contact state, and `special_project` by the patron project.
+- **Pre-FTL awareness:** `set_awareness` / `add_awareness` act only on a pre-FTL country (the game checks CCountry +0x1ab9 and logs otherwise; here its type `primitive` [I]).
+  - CCountry::SetAwareness clamps to [AWARENESS_MIN, AWARENESS_MAX].
+  - When the stage changes it fires on_awareness_level_increase / _decrease (CheckAwarenessOnActions; the stage bounds are AWARENESS_*_LIMIT) [V].
+- **Culling rewards:** `give_culling_rewards = { design mult }` acts only for a country with a grand archive. The design (a ship or fleet's design, a ship size, or a global design's name) leads to its ship size's `space_fauna_values = { culling_value = { produces } }`, multiplied by mult. That is added to the stockpile and to the archive's `culling_value` [I: the rarity draw is not modelled].
 
 ## The checker's examples that cannot act
 
