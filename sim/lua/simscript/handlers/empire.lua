@@ -134,6 +134,16 @@ return function(eval)
     local function country_of(sc)
         if not sc or sc == NONE then return nil end
         if sc.kind == "country" then return sc.id end
+        -- (a leader's country, a pop group's planet's owner)
+        if sc.kind == "leader" then
+            local l = world.object("leader", sc.id)
+            local c = l and tonumber(world.field(l, "country"))
+            if c then return c end
+        elseif sc.kind == "pop_group" then
+            local g = world.object("pop_groups", sc.id)
+            local p = g and tonumber(world.field(g, "planet"))
+            if p and E.owner_of then return E.owner_of("planet", p) end
+        end
         if E and E.owner_of then
             local o = E.owner_of(sc.kind, sc.id)
             if o then return o end

@@ -705,4 +705,65 @@ return function(eval, H)
     end
     EFF["set_council_position_title_male"] = council_title("male")
     EFF["set_council_position_title_female"] = council_title("female")
+
+    -- ------------------------------------------------------------------------------------------
+    -- kill_leader (replaces eval.lua's, which read only a leader scope)
+
+    local function push_engine(t)
+        stats.engine = stats.engine + 1
+        E.push(t)
+    end
+    -- kill_leader = yes | { class ability show_notification fire } (CKillLeaderEffect): the scoped
+    -- leader; the scoped object's leader (a planet's governor, a fleet's, an army's); a country's
+    -- leaders of the classes or with the abilities named (none named: its ruler [I]). The death
+    -- itself is the engine's (systems.effects.kill_leader)
+    EFF["kill_leader"] = function(e, ctx)
+        local sc = ctx.this
+        if sc == NONE then return end
+        if sc.kind == "leader" then
+            push_engine({ type = "kill_leader", kind = "leader", id = sc.id })
+            sync()
+            return
+        end
+        if sc.kind == "country" then
+            local c = obj("country", sc.id)
+            if not c then return end
+            local classes, abilities = {}, {}
+            if e.value.text == nil then
+                for _, x in ipairs(e.value) do
+                    if x.op and x.key and x.value.text then
+                        local k = x.key.text:lower()
+                        if k == "class" then classes[unq(x.value.text)] = true
+                        elseif k == "ability" then abilities[unq(x.value.text)] = true end
+                    end
+                end
+            end
+            local victims = {}
+            if next(classes) == nil and next(abilities) == nil then
+                local r = tonumber(field(c, "ruler"))
+                if r then victims[1] = r end
+            else
+                for _, id in ipairs(H.owned_leaders(c)) do
+                    local l = H.leader(id)
+                    local class = l and unq(field(l, "class"))
+                    local hit = class and classes[class]
+                    if not hit and next(abilities) then
+                        local cb = def("common/leader_classes", class)
+                        for a in pairs(abilities) do
+                            if cb and dfield(cb, a) == "yes" then hit = true end
+                        end
+                    end
+                    if hit then victims[#victims + 1] = id end
+                end
+            end
+            for _, id in ipairs(victims) do push_engine({ type = "kill_leader", kind = "leader", id = id }) end
+            if #victims > 0 then sync() end
+            return
+        end
+        local lid = E.leader_of and E.leader_of(sc.kind, sc.id)
+        if lid then
+            push_engine({ type = "kill_leader", kind = "leader", id = lid })
+            sync()
+        end
+    end
 end
