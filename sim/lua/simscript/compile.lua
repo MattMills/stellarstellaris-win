@@ -1217,6 +1217,8 @@ function C.install(M)
                         if cond(ctx) then return body(ctx, acc) end
                         return acc
                     end
+                elseif k == "complex_trigger_modifier" and v.text == nil then
+                    op = function(ctx, acc) return M.complex_trigger_modifier(v, ctx, acc, e) end
                 elseif k == "if" or k == "else_if" or k == "else" then
                     local body, lim
                     if v.text == nil then
@@ -1341,6 +1343,8 @@ function C.install(M)
                         end
                         return acc
                     end
+                elseif k == "complex_trigger_modifier" and v.text == nil then
+                    op = function(ctx, acc) return M.complex_trigger_modifier(v, ctx, acc, e) end
                 elseif k == "complex_trigger_modifier" or k == "opinion_modifier" or k == "modifier" then
                     op = function(ctx, acc)
                         miss("weight op", k, ctx, e)

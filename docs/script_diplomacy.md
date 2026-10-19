@@ -14,7 +14,13 @@ Everything was read in the GOG 4.5.2 build with its PDB; the addresses are GOG R
 | file | what it holds |
 |---|---|
 | `sim/lua/engine/diplomacy.lua` | The world-reading functions: relations and their flags, pacts, counters, rivals, wars, truces, attitudes, subjects, federations, the galactic community, and access. It only reads; nothing draws. |
-| `sim/lua/simscript/handlers/diplomacy.lua` | The triggers, values, scope links and iterators. They are added to `eval.TRIG` and `eval.LISTS`, and their values to `eval.TRIGGER_VALUES`. |
+| `sim/lua/simscript/handlers/diplomacy.lua` | The triggers, values, scope links and iterators. They are added to `eval.TRIG` and `eval.LISTS`, and their values to `eval.TRIGGER_VALUES`. It loads the parts below. |
+| `sim/lua/simscript/handlers/diplomacy_common.lua` | The parts' shared helpers: parameters, values, dates, the writers (relations made when missing, id lists, `key = yes`), the stores of the scopes `engine.world.KINDS` does not name. |
+| `sim/lua/simscript/handlers/diplomacy_relations.lua` | Communications, contact, trust, threat, relation flags, truces, rivals, guarantees, claims, casus belli, intel and intel reports, envoys, power and weight, the AI's attitude behaviours. |
+| `sim/lua/simscript/handlers/diplomacy_wars.lua` | Declaring, joining and leaving wars, war goals, war exhaustion, proxy wars, a new war's participants. |
+| `sim/lua/simscript/handlers/diplomacy_federations.lua` | Federations (members, associates, progression, laws, settings, leaving, dissolving), federation fleets, the galactic community (members, resolutions, votes). |
+| `sim/lua/simscript/handlers/diplomacy_agreements.lua` | Subject agreements: making a subject, presets, terms and rules, loyalty, the specialist conversion. |
+| `sim/lua/simscript/handlers/diplomacy_espionage.lua` | Spy networks, espionage operations and assets. |
 
 `engine.diplomacy` is the one implementation, and these use it:
 
@@ -365,13 +371,61 @@ The surface probe:
 | before | 238 of 1,097 | 23 of 99 |
 | after | 336 of 1,097 | 26 of 99 |
 
+## Script coverage (2026-10-19, the diplomacy package)
+
+The package (`code_working/tmp_scriptdocs/packages/diplomacy.tsv`, 174 rows) is every documented
+diplomacy keyword that had no handler. The keywords were read in the Linux 4.5.2 build on .24
+(`/opt/stellaris-headless/re`): each `C<Name>Effect::ExecuteActual` / `C<Name>Trigger` and the
+functions it calls **[V]**; the save's fields are the `WriteMembers` keys (the token table).
+Each handler's comment names its class and address and marks what is inferred **[I]**.
+
+**The save's forms** **[V]**:
+- An **agreement**: `agreements = { agreements = { <id> = { owner target active_status date_added date_changed term_data subject_specialization } } }`. Its `term_data` has the rules (`can_subject_be_integrated`, `can_subject_do_diplomacy`, `can_subject_vote`, `has_access`, `has_sensors`, `joins_overlord_wars`, `calls_overlord_to_war`, `subject_expansion_type`), `agreement_preset` and `discrete_terms` / `resource_terms` (`{ key value }`). The subject has `overlord`, `subject_date` and `loyalty`; the overlord has `subjects`; both relations have `subject = yes` (the game's save after `set_subject_of`).
+- A **spy network**: `{ owner target power stored_assets active_operations ... leader }`. An **operation**: `espionage_operations = { operations = { <id> = { target spy_network type index last_roll days_left difficulty info assigned_assets timed_stage_modifiers locked ... } } }`. An **asset**: `{ type species_ref }`.
+- A **resolution**: the `resolution` store's `{ type country target supporters opponents voting pass_date }`. The community's `proposed`, `passed`, `failed`, `voting`, `last` and `category_timers`. A passed resolution's `effect` runs in its country's scope (the game's save after `pass_resolution`: the flag and modifier on the proposer only).
+- **Intel**: `intel_manager = { intel = { { <country> = { intel reports stale_intel } } } }`, a report `{ category level end_date }`.
+- An **envoy**: a leader of class envoy, `location = { type assignment id }` (`empire` with `improve_relations` / `harm_relations`, `spy_network`, `federation`, `galactic_community`).
+- **Casus belli**: the diplomacy module's `casus_belli = { { type owner country } }`.
+- A **federation**: also an `associates` list, the associate's `associated_federation`. A federation fleet's first ship's design has `ship_owner_type = federation` (CFleet::IsFederationFleet 0x2931170).
+
+**Checked on a world** (probes `/root/cd/probe_rel.lua` and `probe_more.lua` on .24): each effect with a real second country on `rich_2212.sav`, then the trigger that reads it. `rich_2212.sav` is war_gc_2212 with a subject (agreement 0: 0 over 16777219), a proposed and a passed resolution. The real game made it with `console Effect` and saved it. Its own save after the same effects gave the agreement's and the resolutions' forms above.
+
+**The checker** (`scriptcheck`, the 2210.01.01 save; the package's 174 rows):
+
+| | static lua / iterator | static missing | dynamic acted / evaluated / container |
+|---|---:|---:|---:|
+| before (script-coverage 54323fe) | 3 (+2 flag) | 169 | 0 / 0 / 0 |
+| after | 166 | 8 | 17 / 52 / 6 |
+
+- **The 8 left belong to other areas:** `add_random_non_blocker_deposit`, `can_add_random_non_blocker_deposit`, `clear_blocker` and `is_blocker` (deposits); `add_awareness` and `set_awareness` (pre-FTL); `create_patron_relation` (the Shroud's patrons); `give_culling_rewards` (the Grand Archive).
+- **The 32 silent effects** are mostly uses with `who = from` or `target = from`. The checker's `from` is the player's own country, which the game refuses for these (an error such as "trying to add trust on oneself"), as do the handlers. With another country they act, as the probes show.
+- **Without an object:**
+  - The agreement, espionage operation and asset scopes have no `SCOPE_STORE` entry in the checker (`agreements`, `operations`, `espionage_assets`).
+  - The federation uses run after `dissolve_federation` has removed the save's federations; the checker's last-effects list does not have it.
+  - The war uses need a save with a war (the 2210 save has none).
+
+**The review after PR 80** (the checker's `from` now a country the player has communications with):
+- In the 2210 save the player has communications with no country, so `from` is still the player and the 34 rows stay self-targets there.
+- On `rich_2212.sav`, 21 of the 34 act.
+- One was a bug: a targeted resolution's `effect` ran in the proposer's scope. The game runs it in the target's, with the proposer as `from` (99_README_RESOLUTIONS.txt), so `pass_targeted_resolution = { resolution = resolution_declare_crisis target = from }` had expelled the player.
+- `run_ai_strategic_war_data` now records its request (CCountryAI::SetNeedAIStrategicWarData [V]) in the script state.
+- The 13 left are the uses' no-ops: a country where a colony, war or operation is required; nothing to end or join; the scope in no federation or not at war with the enemy; a modifier not held. Run with real targets, each acts (`/root/cd/probe_review.lua`, its output `/root/cd/review_evidence.txt` on .24).
+
+**Approximated** **[I]**, besides what the comments mark:
+- Values the game recomputes from modifiers and are not in the save: `diplomacy_weight`, `federation_cohesion_growth`, `is_counter_espionage`, `relative_encryption_decryption`, a spy network's maximum level.
+- `used_favors_on_last_resolution` and a casus belli's days are kept in the script state.
+- A federation ends at once where the game waits for the next day's tick.
+- A new war calls the defender's defensive pacts, federation, guarantors and overlord, and the attacker's subjects that join its wars (`CWarParticipants::NewWar`'s rules as read).
+- A new federation from `join_alliance` is a default_federation.
+- `can_declare_war` checks communications, war, truce, federation, overlord and the war goal's `potential`.
+
 ## Left
 
 **Not done, needing engine state the simulation does not model:**
 
-- Ending wars, peace deals, making war goals (`has_war_goal`), war leaders (`is_war_leader`).
+- Ending wars by the simulation itself (the peace deals are the render windows' `diplomacy_peace.lua`).
 - The war exhaustion's changes, truces made by peace, the AI's diplomatic actions (proposals, accepting pacts, closing borders, rivalries).
-- No save of ours has a war, so the war keywords are implemented from the code and the writers but untested on data.
+- The war keywords are checked on `rich_2212.sav` (a war of the game's own making); battles and occupation are not.
 
 **Approximated** (marked **[I]** above):
 
@@ -385,10 +439,6 @@ The surface probe:
 
 **Not implemented in this area:**
 
-- `relative_power` (`CRelativePowerTrigger`: the AI's fleet, economy and technology power ratings and their level names; 6 hits in the 180-day run, in the ethics);
-- `can_declare_war`, `would_join_war`;
-- `intel`, `has_intel*` (the intel manager's reports);
-- the espionage keywords;
 - `can_access_system` / `has_access_fleet` (`CFleetMovementManager::CalcCanMoveTo`: a path search);
-- `agreement_preset`, `any_agreement`, `vassals`, the specialist triggers.
+- the script coverage package's rows of other areas (above).
 - `trigger:years_passed` (156 hits) now only needs a `TRIGGER_VALUES` entry, but it is not in this area.
