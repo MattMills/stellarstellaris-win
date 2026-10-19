@@ -57,6 +57,13 @@ Each country's `budget = { current_month last_month }` has `income`, `expenses` 
 | export_resource_maximum_to_variable | GetMaximumForCountry: the resource's `max` with its dynamic capacity and the max modifiers (engine.economy.capacity) | [V] |
 | export_resource_stockpile_to_variable | the stockpile | [V] |
 
+### Trigger values
+
+`complex_trigger_modifier` uses numeric triggers as values (`eval.TVAL`). Each value function returns the number the trigger compares, and its parameters block is the trigger's:
+
+- market_resource_price, resource_revenue_compare, resource_income_to_expenditure_balance_ratio, ship_size_cost_resource_percent, income, trade_action_value and the stockpile triggers below are defined with their triggers.
+- has_monthly_income, resource_income_compare, resource_expenses_compare, has_resource and resource_stockpile_compare are implemented in eval.lua. Their values here use the same readers (E.budget_sum, E.resource): last month's balance, this month's balance, this month's expenses, and the stockpile of the scope's country.
+
 ## Stockpiles
 
 | keyword | what it does | source |
