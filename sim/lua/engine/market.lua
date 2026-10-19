@@ -158,6 +158,15 @@ local function set_list(block, i, value, fill)
 end
 market.set_list = set_list
 
+-- `key = "text"` set (the first token entry), or added
+function market.set_quoted(obj, key, text)
+    world.set(obj, key, text)
+    local e = world.token_entry(obj, key)
+    if e then
+        e.value.quoted = true
+    end
+end
+
 -- the galactic market founded (CMarket +0x128, saved `enabled = yes`)
 function market.enabled()
     return world.field(market.block(), "enabled") == "yes"
@@ -285,6 +294,99 @@ function market.capacity(country, key)
     return cap
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- resource converters (common/resource_converters; a country's
+-- `modules.standard_economy_module.resource_conversions = "<key>"`, CEconomyCountryModule +0x20)
+
+local function economy_module(country, create)
+    local c = world.object("country", country)
+    if not c then
+        return nil
+    end
+    if create then
+        return world.child(world.child(c, "modules"), "standard_economy_module")
+    end
+    local m = world.path(c, "modules", "standard_economy_module")
+    return type(m) == "table" and m or nil
+end
+market.economy_module = economy_module
+
+-- the country's converter: its key and its definition's block
+function market.converter(country)
+    local m = country and economy_module(country, false)
+    local key = m and unq(world.field(m, "resource_conversions"))
+    local d = key and defs().get("common/resource_converters", key)
+    if not d then
+        return nil
+    end
+    return key, d.block
+end
+-- the converter's entry of a resource (resource_conversions = { <resource> = { ... } })
+local function conversion(country, key)
+    local _, block = market.converter(country)
+    local rc = block and defs().field(block, "resource_conversions")
+    local e = type(rc) == "table" and defs().field(rc, key)
+    return type(e) == "table" and e or nil
+end
+local function conv_flag(country, key, flag, default)
+    local e = conversion(country, key)
+    local v = e and defs().field(e, flag)
+    if v == nil then
+        return default
+    end
+    return v == "yes"
+end
+-- CEconomyCountryModule::CanBuyResource / CanSellResource [I: a resource the converter does not
+-- list, or a flag not written: yes]; OverridesTradeRestriction; IsResourceCapped's should_cap
+function market.can_buy(country, key) return conv_flag(country, key, "can_buy", true) end
+function market.can_sell(country, key) return conv_flag(country, key, "can_sell", true) end
+function market.overrides_restriction(country, key) return conv_flag(country, key, "override_trade_restriction", false) end
+function market.should_cap(country, key) return conv_flag(country, key, "should_cap", true) end
+
+-- CEconomyCountryModule::SetResourceConverter (0x24ed9a0) [V]: the key written (nil: the entry
+-- taken out); then the country's monthly trades the converter cannot make (a buy it cannot buy, a
+-- sell it cannot sell) removed (CMarket::RemoveMonthlyTrade)
+function market.set_converter(country, key)
+    local m = economy_module(country, true)
+    if not m then
+        return false
+    end
+    if key then
+        market.set_quoted(m, "resource_conversions", key)
+    else
+        local e = world.entry(m, "resource_conversions")
+        if e then
+            world.remove_entry(m, e)
+        end
+    end
+    if not key then
+        return true
+    end
+    local list = world.field(market.block(), "monthly_trades")
+    if type(list) ~= "table" then
+        return true
+    end
+    local keep, removed = {}, false
+    for _, e in ipairs(list) do
+        local td = type(e) == "table" and e.text == nil and not e.op and world.field(e, "trade_data")
+        local drop = false
+        if td and tonumber(world.field(td, "country")) == country then
+            local r = unq(world.field(td, "resource"))
+            local buy = unq(world.field(td, "trade_type")) == "market_buy"
+            drop = buy and not market.can_buy(country, r) or (not buy and not market.can_sell(country, r))
+        end
+        if drop then
+            removed = true
+        else
+            keep[#keep + 1] = e
+        end
+    end
+    if removed then
+        world.replace(list, keep)
+    end
+    return true
+end
+
 -- the stockpile of a resource (R.stockpile: research from tech_status.stored_techpoints)
 function market.stockpile(country, key)
     return require("engine.script.runtime").stockpile(country, key)
@@ -301,7 +403,7 @@ function market.set_stockpile(country, key, value)
     end
     local function clamp(k, v)
         v = math.max(v, 0)
-        local cap = market.capacity(country, k)
+        local cap = market.should_cap(country, k) and market.capacity(country, k)
         if cap and v >= cap then
             v = cap
         end
@@ -326,6 +428,30 @@ function market.set_stockpile(country, key, value)
         end
     end
     return true
+end
+
+-- CCountry::AddResources (option 0): each resource of the table added to the stockpile, kept
+-- within [0, its max] [I: the converter's payment path (bottomless resources paid with another)
+-- not modelled; the clamp as SetResource's]
+function market.add_stockpile(country, tbl)
+    if not world.object("country", country) then
+        return false
+    end
+    local _, by = market.resources()
+    local changed = false
+    for _, r in ipairs((market.resources())) do
+        local v = tbl[r.key]
+        if v and v ~= 0 then
+            market.set_stockpile(country, r.key, market.stockpile(country, r.key) + v)
+            changed = true
+        end
+    end
+    for k, v in pairs(tbl) do
+        if not by[k] and v ~= 0 then
+            changed = true
+        end
+    end
+    return changed
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -440,11 +566,12 @@ end
 
 -- ---------------------------------------------------------------------------------------------
 -- CMarket::IsValidResource (0x1d4b880) [V]: tradable (tradable, a market amount and price, its
--- tradable_in_market trigger); no country: on the galactic market; the converter's restrictions
--- (none modelled: no country has a converter here); with access: on the galactic market; else
--- (the internal market) the country's current-month income of it above 0, or for a resource of
--- the two flagged kinds its expenses [I: the flag not read: expenses checked for all]
-function market.valid_resource(country, key, trigger_ok)
+-- tradable_in_market trigger); no country: on the galactic market; the converter (ttype 0 buy:
+-- it can buy, 1 sell: it can sell, 2: either; its override_trade_restriction: valid); with access:
+-- on the galactic market; else (the internal market) the country's current-month income of it
+-- above 0, or for a resource of the two flagged kinds its expenses [I: the flag not read: expenses
+-- checked for all]
+function market.valid_resource(country, key, trigger_ok, ttype)
     local r = market.resource(key)
     if not r or not (r.tradable and r.market_amount > 0 and r.market_price > 0) then
         return false
@@ -454,6 +581,14 @@ function market.valid_resource(country, key, trigger_ok)
     end
     if not country or not world.object("country", country) then
         return market.resource_enabled(key)
+    end
+    ttype = ttype or 0
+    local b, s = market.can_buy(country, r.key), market.can_sell(country, r.key)
+    if (ttype == 0 and not b) or (ttype == 1 and not s) or (ttype == 2 and not (b or s)) then
+        return false
+    end
+    if market.overrides_restriction(country, r.key) then
+        return true
     end
     if market.has_access(country) then
         return market.resource_enabled(key)
