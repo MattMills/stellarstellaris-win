@@ -226,4 +226,11 @@ function C.run()
     return table.concat(out, "\n")
 end
 
+
+-- the census of the last run: kind ("trigger" / "effect") -> keyword -> { count, first, ... }
+-- (simscript.scriptcheck joins it with the game's documentation)
+function C.census()
+    return census
+end
+
 return C
