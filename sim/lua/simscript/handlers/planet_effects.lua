@@ -247,8 +247,8 @@ return function(eval, H)
             if any then done(c) end
         end
     end
-    -- downgrade_buildings_of_type = <type> (CDowngradeBuildingsOfTypeEffect; the docs write
-    -- `= yes`): every building of the type becomes its predecessor [I the type's form]
+    -- downgrade_buildings_of_type = <type> (CDowngradeBuildingsOfTypeEffect: only the buildings
+    -- of the given type [V]; the docs' `= yes` names no type, so nothing)
     EFF["downgrade_buildings_of_type"] = function(e, ctx)
         local want = e.value.text
         if not want then return end
@@ -257,7 +257,7 @@ return function(eval, H)
             for _, b in ipairs(buildings(c)) do
                 local t = unq(world.field(b.block, "type"))
                 local prev = predecessor(t)
-                if prev and (t == want or want == "yes") and not is_capital_building(t) then
+                if prev and t == want and not is_capital_building(t) then
                     downgrade(c, b, prev)
                     any = true
                 end
@@ -963,16 +963,38 @@ return function(eval, H)
     -- the terraform links (common/terraform: every `terraform_link`, all of one name, in file
     -- order; render.windows.planet's reader, which the simulation does not load)
     local link_cache
+    local link_file = setmetatable({}, { __mode = "k" })
     local function terraform_links()
         if link_cache then return link_cache end
         local source = require("stellar.script.source")
         local fs = defs.fs
         local out = {}
+        -- the file's own `@name = value` variables put in place (the costs and durations use them)
+        local function subst(b, vars)
+            for _, y in ipairs(b) do
+                local v = y.op and y.value
+                if v and v.text and v.text:sub(1, 1) == "@" and vars[v.text:sub(2)] then
+                    v.text = vars[v.text:sub(2)]
+                elseif type(v) == "table" and v.text == nil then
+                    subst(v, vars)
+                end
+            end
+        end
         for _, short in ipairs(fs and source.files(fs, "common/terraform", "txt") or {}) do
-            for _, x in ipairs(source.parse(fs, short) or {}) do
+            local tree = source.parse(fs, short) or {}
+            local vars = {}
+            for _, x in ipairs(tree) do
+                if x.op and x.key and x.key.text:sub(1, 1) == "@" and x.value and x.value.text then
+                    vars[x.key.text:sub(2)] = x.value.text
+                end
+            end
+            for _, x in ipairs(tree) do
                 if x.op == "=" and x.key and x.key.text == "terraform_link" and type(x.value) == "table" then
                     local ok, v = pcall(source.expand, fs, x.value, nil, 0, "file: " .. short)
-                    out[#out + 1] = ok and v or x.value
+                    v = ok and v or x.value
+                    subst(v, vars)
+                    out[#out + 1] = v
+                    link_file[v] = short
                 end
             end
         end
@@ -1021,7 +1043,7 @@ return function(eval, H)
         local cost = {}
         local ok, econ = pcall(require, "engine.economy")
         local rb = defs.field(link, "resources")
-        local t = ok and rb and econ.init and (econ.init() or true) and econ.template(rb, "")
+        local t = ok and rb and econ.init and (econ.init() or true) and econ.template(rb, link_file[link] or "")
         if who and t then
             local cctx = eval.new_ctx(S("planet", pid), S("country", who))
             for _, b in ipairs(t.cost or {}) do
