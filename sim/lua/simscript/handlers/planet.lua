@@ -156,7 +156,6 @@ return function(eval)
         end
         return out
     end
-    LISTS.pop_group = LISTS.owned_pop_group
     -- owned_pop_job: the colonies' pop jobs (a colony's `pop_jobs`)
     LISTS.owned_pop_job = function(sc)
         sync()
