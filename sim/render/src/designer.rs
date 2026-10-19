@@ -61,14 +61,27 @@ pub(crate) fn read_model(t: &Table) -> mlua::Result<ShipModel> {
     })
 }
 
-/// Whether a fleet is in combat (render.windows.combat: its save block's combat.in_combat_with).
-pub fn in_combat(map_rt: &Runtime, fleet: u32) -> bool {
-    map_rt.lua.load(format!("return require('render.windows.combat').in_combat({fleet})")).eval::<bool>().unwrap_or(false)
+/// The fleet whose combat view shows (-1: none), set as the windows are laid out: the fleet view
+/// gives way to it (CInGameIdler::ShowFleetView: the combat view instead, fleetwin.rs).
+static COMBAT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
+
+pub fn set_combat(fleet: Option<u32>) {
+    COMBAT.store(fleet.map_or(-1, i64::from), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn combat_fleet() -> Option<u32> {
+    u32::try_from(COMBAT.load(std::sync::atomic::Ordering::Relaxed)).ok()
+}
+
+/// Whether a fleet is in combat (render.windows.combat: its block's combat.in_combat_with), where
+/// the world is (the simulation's when it runs).
+pub fn in_combat(map: &crate::Map, fleet: u32) -> bool {
+    world_eval(map, &format!("return tostring(require('render.windows.combat').in_combat({fleet}))")).is_ok_and(|v| v == "true")
 }
 
 /// The first fleet in combat, by id (`open_designer combat`).
-pub fn first_in_combat(map_rt: &Runtime) -> Option<u32> {
-    map_rt.lua.load("return require('render.windows.combat').first_in_combat()").eval::<Option<u32>>().ok().flatten()
+pub fn first_in_combat(map: &crate::Map) -> Option<u32> {
+    world_eval(map, "return tostring(require('render.windows.combat').first_in_combat() or '')").ok().and_then(|v| v.parse().ok())
 }
 
 /// The window's data read from the world (designer.lua `extract`, serialized: the models of the
@@ -101,6 +114,10 @@ pub fn layout(
     let gd = game_dir.replace('\\', "/");
     let mut items = Vec::new();
     let ctx = format!("{{ game_dir = {gd:?}, db = RENDER_GFX, screen = {{ width = {width}, height = {height} }}, texture_size = RENDER_TEXTURE_SIZE, loc = RENDER_LOC }}");
+    if combat.is_none() {
+        // (its lists take no wheel while it is not shown)
+        let _ = gui_rt.lua.load("require('render.windows.combat').hide()").exec();
+    }
     if let Some(fleet) = combat {
         let data = world_eval(map, &format!("local d = require('render.windows.combat').extract({gd:?}, {fleet}) return d and require('render.windows.designer').serialize(d) or ''"))
             .map_err(|e| format!("render.windows.combat: {e}"))?;
@@ -186,24 +203,43 @@ pub fn layout(
     Ok((items, models))
 }
 
-/// The wheel at (x, y) over the designer: one of its lists scrolled (designer.lua `wheel`); whether
-/// it took it.
+/// The wheel at (x, y) over the designer or the combat view: one of their lists scrolled
+/// (designer.lua and combat.lua `wheel`); whether it took it.
 pub fn wheel(app: &mut crate::app::App, notches: f32, at: Option<(f32, f32)>) -> bool {
     let Some((x, y)) = at else { return false };
-    let took = app
-        .runtime
-        .lua
-        .load(format!("return require('render.windows.designer').wheel({notches}, {x}, {y})"))
-        .eval::<bool>()
-        .unwrap_or(false);
+    let designer = if app.designer.open { "require('render.windows.designer').wheel(N, X, Y)" } else { "false" };
+    let code = format!("local N, X, Y = {notches}, {x}, {y} return {designer} or require('render.windows.combat').wheel(N, X, Y)");
+    let took = app.runtime.lua.load(code).eval::<bool>().unwrap_or(false);
     if took {
         app.relayout();
     }
     took
 }
 
-/// Escape while the designer is open: its popup closed, else the window (the close buttons'
-/// ESCAPE shortcut, the innermost first).
+/// The design entry under the mouse (its delete button shows: CShipDesignEntry::PerFrameUpdate):
+/// the hovered element's path; whether it changed (the window laid out again).
+pub fn hover(app: &crate::app::App, path: Option<&str>) -> bool {
+    let id: Option<u32> = path.and_then(|p| p.strip_prefix("/designer/list/")).and_then(|r| r.split('/').next()).and_then(|v| v.parse().ok());
+    let code = format!(
+        "local ui = require('render.windows.designer').ui local id = {} if ui.hover == id then return false end ui.hover = id return true",
+        id.map_or("nil".to_string(), |i| i.to_string())
+    );
+    app.runtime.lua.load(code).eval::<bool>().unwrap_or(false)
+}
+
+/// Whether the designer's rename box has the keyboard (its edit box focused).
+pub fn editing(app: &crate::app::App) -> bool {
+    app.runtime.lua.load("return require('render.windows.designer').ui.edit ~= nil").eval::<bool>().unwrap_or(false)
+}
+
+/// A key's token (the creator's: `creator:text:C`, `creator:key:K`) as the rename box's action.
+pub fn typed(app: &crate::app::App, token: &str) -> Option<String> {
+    app.runtime.lua.globals().set("RENDER_DESIGNER_ARG", token).ok()?;
+    app.runtime.lua.load("return require('render.windows.designer').typed(RENDER_DESIGNER_ARG)").eval::<Option<String>>().ok().flatten()
+}
+
+/// Escape while the designer is open: the rename box's text dropped, its popup closed, the
+/// painting stopped, else the window (the close buttons' ESCAPE shortcut, the innermost first).
 pub fn escape(app: &mut crate::app::App) {
     let popup = app.runtime.lua.load("return require('render.windows.designer').escape()").eval::<bool>().unwrap_or(false);
     if popup {
@@ -221,6 +257,7 @@ enum Action<'a> {
     FleetManager,
     Design(u32),
     CombatFocus(u32),
+    Noop,
     Ui(&'a str),
 }
 
@@ -228,6 +265,8 @@ fn parse(action: &str) -> Result<Action<'_>, String> {
     match action.strip_prefix("designer:") {
         Some("close") => Ok(Action::Close),
         Some("fleet_manager") => Ok(Action::FleetManager),
+        // a window's or popup's background: the click is its (nothing under it on the map)
+        Some("noop") => Ok(Action::Noop),
         Some(a) if a.starts_with("design:") => Ok(Action::Design(a[7..].parse().map_err(|_| format!("bad action {action}"))?)),
         Some(a) if a.starts_with("combat_focus:") => Ok(Action::CombatFocus(a[13..].parse().map_err(|_| format!("bad action {action}"))?)),
         Some(a) if a.starts_with("ui:") => Ok(Action::Ui(action)),
@@ -248,6 +287,7 @@ pub fn act(app: &mut crate::app::App, action: &str) -> Result<(), String> {
             app.toggle_view("fleet_manager");
         }
         Action::Design(id) => app.set_designer(Designer { open: true, design: Some(id) }),
+        Action::Noop => {}
         Action::CombatFocus(fleet) => {
             // the combat view's focus (CCombatView::OnClickFocus): the camera to the combat, the
             // fleet's system entered and the fleet followed [I]

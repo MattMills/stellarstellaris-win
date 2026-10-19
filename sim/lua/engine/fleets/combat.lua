@@ -39,6 +39,10 @@ local world = require("engine.world")
 local combat = {
     stats = { ticks = 0, started = 0, ended = 0, shots = 0, hits = 0, evaded = 0, missed = 0,
               destroyed = 0, disabled = 0, disengaged = 0 },
+    -- each fleet's combat so far (SFleetCombatStatsData, CFleet +0x988: its damage dealt and its
+    -- shots' outcomes, what the combat view's Damage Output shows), anew when its combat starts;
+    -- not written to the save [I]
+    fleet_stats = {},
 }
 local S = combat.stats
 
@@ -391,6 +395,7 @@ end
 -- global draw per ship [V]
 local function combat_started(fid, f, other, date)
     S.started = S.started + 1
+    combat.fleet_stats[fid] = { hull = 0, armor = 0, shields = 0, hits = 0, missed = 0, evaded = 0 }
     local c = combat_block(f)
     local today = date and date.year and string.format("%d.%02d.%02d", date.year, date.month or 1, date.day or 1) or nil
     if today then world.set(c, "start_date", today, true) end
@@ -713,13 +718,26 @@ function combat.tick(host, date)
                             S.shots = S.shots + 1
                             local acc, trk = accuracy(w.t, M), tracking(w.t, M)
                             local r = (global_int() % ONE) / ONE
+                            local fs = combat.fleet_stats[sh.fid]
+                            if not fs then
+                                fs = { hull = 0, armor = 0, shields = 0, hits = 0, missed = 0, evaded = 0 }
+                                combat.fleet_stats[sh.fid] = fs
+                            end
                             if r < target.D.evasion - trk then
                                 S.evaded = S.evaded + 1
+                                fs.evaded = fs.evaded + 1
                             elseif r < acc then
                                 S.hits = S.hits + 1
-                                take_damage(target, calc_damage(target.D, w.t, global_int()), sh.fid, killed)
+                                fs.hits = fs.hits + 1
+                                local res = calc_damage(target.D, w.t, global_int())
+                                -- (what the shot takes off: at most what the target has [I])
+                                fs.shields = fs.shields + math.min(res.shield, math.max(0, target.D.shield))
+                                fs.armor = fs.armor + math.min(res.armor, math.max(0, target.D.armor))
+                                fs.hull = fs.hull + math.min(res.hull, math.max(0, target.D.hull))
+                                take_damage(target, res, sh.fid, killed)
                             else
                                 S.missed = S.missed + 1
+                                fs.missed = fs.missed + 1
                             end
                         end
                     end

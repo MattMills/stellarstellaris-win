@@ -206,23 +206,24 @@ save written from it).
 | a design in the list | CShipDesignEntry::Click: LoadDesign | wired |
 | new_ship_design_entry | ShowShipSizeSelectDialog: the `selector` of sizes | wired: a selector_item per designable size the country can build, three a row |
 | a size | CSelectorItemShipSize::OnClick (0x31a40a0): a design of the size with empty growth stages | wired: no sections ("No Section!", "Select a Section"), the best required components and a name from the name list, from the simulation [I] |
-| delete (an entry's) | Delete -> confirmation -> ConfirmedDelete (CRemoveShipDesignCommand) | wired in the simulation (the design out of the country's list); shown on the design shown, not under the mouse [I]; no confirmation dialog |
+| delete (an entry's) | Delete -> confirmation -> ConfirmedDelete (CRemoveShipDesignCommand) | wired in the simulation (the design out of the country's list): shown on the entry under the mouse, its click opens `delete_cancel_popup_window` (Agree deletes; Cancel, close or Escape keep it) |
 | change_section | ShowSectionSelectDialog: section_select_window | wired: the sections of the size that fit the slot and the country has researched, two a row, their slots by size; a click puts it on the slot (CSectionSelector::ItemClicked: the components of the slots it shares kept [I]) |
 | a component slot | ShowComponentSelectDialog: component_select_window | wired: over the designs list [I: its place], the components the simulation says the country can build on the size (one per component set, the newest [I]), the slot size filter and the obsolete filter (check boxes), the slot's component highlighted; a click puts it on the slot |
 | apply_on_empty (Fill Empty) | ApplySelectedElementOnAllEmptySlots | wired: the component chosen on every empty slot it fits |
 | a required component (show_templates_button) | its entry's list of the set's components | wired: leftward of the entry, a click sets it (SetRequiredComponent) |
 | randomize_name | RandomizeName | wired: a name of the size from the country's name list (the simulation's `class_name`) |
-| rename_box (typing) | the design's name | not done (no text input in the windows yet) |
+| rename_box (typing) | the design's name | wired: a click edits it (a caret, the keys the empire creator's text fields take, backspace), Return or a click elsewhere keeps it, Escape drops it; saved as a literal name (`name = { key = ... literal = yes }`) |
 | choose_role | CShipRoleSelectionView: the size's roles | wired: `select_ship_role` with a ship_role_entry each (the design's selected); a role makes the design anew for it (GenerateDesignOfRole: the AI designer's design of the role) |
 | clear_button | ClearDesignComponents | wired: the sections' components cleared [I: the sections and required components kept] |
 | complete_button (auto-best) | Finish | wired: every empty section and slot filled with the AI designer's choice for the size and role [I] |
 | save_button | Save -> ConfirmedSave (CCreateOrUpdateShipDesignCommand); an auto-generated design asks first (`rename_autogen`) | wired, in the simulation: the design added to the country (its base design leaves the list: the game replaces the design of the same name [I: fleet templates not retrofitted]); an auto-generated one through `rename_autogen` (Save; its randomize button; close: nothing saved) |
 | upgrade_ship_components | AutoUpgradeComponents: the design's flag | wired (saved with the design) |
 | bioship stage spinner | a growth stage | not drawn (bioships only) |
-| 3d_view | its click observer (the view turned [I]) | not done |
-| right click on a slot, dragging a component | ClearSlot, painting | not done |
+| 3d_view | its click observer (the view turned [I]) | not done (the inset view does not turn) |
+| right click on a slot | ClearSlot | wired: the slot's component removed |
+| painting | a component chosen in the selector stays on the cursor: a click on a slot puts it there, the slots it fits framed, the help text shown; a right click or Escape ends it | wired [I: a click per slot, no dragging] |
 | the lists | smoothListBoxes: the wheel scrolls | wired: the designs list, the component selector's and the section selector's, 45 pixels a notch [I] |
-| disabled frames | complete and save disabled when the design cannot be saved (IsValidToSaveForCountry) | not done: always enabled |
+| disabled frames | complete and save disabled when the design cannot be saved (IsValidToSaveForCountry) | wired: save disabled unless every section slot and required component set is filled and the name is not empty; complete disabled unless the first section has slots; choose_role without roles; the creature designer's tab always [I: the checks] |
 
 The combat view:
 
@@ -230,9 +231,12 @@ The combat view:
 |---|---|---|
 | close (X), Escape | Hide | wired: the selection cleared (which shows it) |
 | focus_on | OnClickFocus: the camera to the combat | wired: the fleet's system entered, the fleet followed [I] |
-| a ship's inspect | CCombatViewShipEntry::OnClickInspect: the ship view; disabled before contact | wired (`fleet:ship:ID`, the fleet windows' ship view) when the ship's owner is in contact; inert before (the game greys it with its shader: not done) |
-| emergency_ftl | EmergencyFTL (the player's fleets) | not done (the engine has no emergency FTL order) |
-| owner flag | (the country) | not done |
+| a ship's inspect | CCombatViewShipEntry::OnClickInspect: the ship view; disabled before contact | wired (`fleet:ship:ID`, the fleet windows' ship view) when the ship's owner is in contact; disabled (its frame) before |
+| emergency_ftl | EmergencyFTL (the player's fleets) | disabled (the engine has no emergency FTL order) |
+| owner flag | (the country) | wired: the owner's flag when it is known (the world's country flag); the blank frame before contact |
+| the ship lists | smoothListBoxes: the wheel scrolls | wired: the wheel over a side scrolls it, the list clipped to its box |
+| Damage Output | the combat's damage by type (hull, armor, shields) and hit chance | wired from the engine's combat (`engine.fleets.combat.fleet_stats`, tallied per shot); 0 until the engine's combat fires (the 2210.01.01 save's amoeba combat is not resumed by the engine: no shots in 5 days) |
+| the fleet view | (the combat view instead while the fleet fights) | the selected fleet's fleet view is not drawn under the combat view |
 
 Checked in a real window (the windowed renderer under Xvfb on 10.5.0.24, clicks by xdotool, the
 2210.01.01 save loaded from Load Game): the left bar's Fleet Manager, its Ship Designer tab, a
@@ -250,10 +254,9 @@ error in the designer stays in it: the other windows go on drawing (`windows: ..
 ## Not done
 
 - Stats: the country's modifiers (speed, evasion, damage, upkeep), the role's.
-- Painting components (dragging), renaming by typing, the delete confirmation, the disabled
-  frames, the creature designer (see The buttons).
-- The combat view's scrollbar, the owner's flag (the country's), the rings' rotation, the order
-  buttons (hero ships), the damage numbers of a running combat (the simulation's combat stats).
+- Painting by dragging, turning the 3D view, the creature designer (see The buttons).
+- The combat view's rings' rotation, the order buttons (hero ships), emergency FTL (an engine
+  order); the save's ongoing combats are not resumed by the engine, so their damage stays 0.
 - The combat stats window.
 - The windows cannot yet be opened by clicking in the game's frames (render-controls' input is
   merged after this: the designer opens from the fleet manager, which another session draws).

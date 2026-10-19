@@ -9,7 +9,7 @@
 --                                              Auto-Complete, a role's design, a new design's
 --                                              required components; the world is not changed
 --   dc.name(country, size, r)                  a name for a design of the size (randomize_name)
---   dc.save(country, base, stage, name, role, upgrade)
+--   dc.save(country, base, stage, name, role, upgrade, literal)
 --                                              the design added to the country (its base design,
 --                                              the one it was made from, replaced in the list)
 --   dc.delete(country, id)                     the design out of the country's list
@@ -111,7 +111,7 @@ local function copy(v)
     return out
 end
 
-function dc.save(country, base, stage_src, name_key, role, upgrade)
+function dc.save(country, base, stage_src, name_key, role, upgrade, literal)
     local c = collection(country)
     if not c then
         return "refused: no country " .. tostring(country)
@@ -148,6 +148,14 @@ function dc.save(country, base, stage_src, name_key, role, upgrade)
                         end
                     end
                 end
+            end
+        end
+        -- a name typed in the rename box: the text itself (`literal = yes`, as a save writes a
+        -- renamed design)
+        if (literal == true or literal == "yes") and name_key and name_key ~= "" then
+            local nb = world.field(d, "name")
+            if type(nb) == "table" then
+                world.set(nb, "literal", "yes")
             end
         end
         if upgrade == false or upgrade == "no" then

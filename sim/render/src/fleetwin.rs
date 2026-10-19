@@ -240,6 +240,10 @@ impl App {
     /// The selected fleet whose fleet_view shows (a fleet that is not a station).
     pub fn fleet_view_id(&self) -> Option<u32> {
         let Some(Pickable::Fleet(id)) = self.selected else { return None };
+        // (a fleet in combat shows the combat view instead: designer.rs)
+        if crate::designer::combat_fleet() == Some(id) {
+            return None;
+        }
         let m = self.map.as_ref()?;
         m.galaxy.fleets.iter().find(|f| f.id == id && !f.station).map(|f| f.id)
     }

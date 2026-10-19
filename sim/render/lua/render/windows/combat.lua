@@ -203,6 +203,21 @@ function combat.extract(game_dir, fleet_id)
         local known = comms[owner] == true
         local oc = world.object("country", owner)
         local entry = { id = fid, owner = owner, known = known, own = owner == player, ships = {} }
+        -- the owner's flag for a country in contact (ApplyCountryToButton): its flag's parts
+        if known and oc then
+            local fl = world.field(oc, "flag")
+            if type(fl) == "table" then
+                local function part(k)
+                    local p = world.field(fl, k)
+                    return type(p) == "table" and { category = str(world.field(p, "category")), file = str(world.field(p, "file")) } or nil
+                end
+                local cols = {}
+                for _, c in ipairs(world.list(world.field(fl, "colors") or {}) or {}) do
+                    cols[#cols + 1] = str(c)
+                end
+                entry.flag = { icon = part("icon"), background = part("background"), colors = cols }
+            end
+        end
         -- the name (CFleet::GetLocalNamePersistent 0x292a6d0) [V]
         if known then
             entry.name = require("render.galaxy").name_block(world.field(f, "name"))
@@ -254,7 +269,25 @@ function combat.extract(game_dir, fleet_id)
     end
     -- the damage dealt (the fleets' combat stats: none kept in a save's fleet_stats [I]) and the hit
     -- ratio: "0%" with no shots
-    data.stats = { { hull = 0, armor = 0, shields = 0, hit = "0%" }, { hull = 0, armor = 0, shields = 0, hit = "0%" } }
+    -- each side's sums over its fleets (GetShortDescriptionForDamageOutput: hull, armor, shields as
+    -- whole numbers; GetShortDescriptionForHitRatio: hits / (hits + misses + evaded), "0%" with no
+    -- shots) [V 0x340af80, 0x34087e0], from the simulation's combat (engine.fleets.combat
+    -- fleet_stats); a loaded save keeps none: 0
+    local ok, engine = pcall(require, "engine.fleets.combat")
+    local tally = ok and type(engine) == "table" and engine.fleet_stats or {}
+    data.stats = {}
+    for k = 1, 2 do
+        local s = { hull = 0, armor = 0, shields = 0, hits = 0, shots = 0 }
+        for _, f in ipairs(data.sides[k]) do
+            local t = tally[f.id]
+            if t then
+                s.hull, s.armor, s.shields = s.hull + t.hull, s.armor + t.armor, s.shields + t.shields
+                s.hits, s.shots = s.hits + t.hits, s.shots + t.hits + t.missed + t.evaded
+            end
+        end
+        s.hit = s.shots > 0 and (string.format("%d", math.floor(100 * s.hits / s.shots)) .. "%") or "0%"
+        data.stats[k] = s
+    end
     return data
 end
 
@@ -283,6 +316,25 @@ local function format_name(ctx, n)
         return names.format(ctx.loc, n.vars[1].value) .. " " .. names.format(ctx.loc, n.vars[2].value)
     end
     return require("render.names").format(ctx.loc, n)
+end
+
+-- the lists' scrolling (the wheel over a list: 45 pixels a notch [I]), their places at the last
+-- build; nothing while the view is not shown (combat.hide)
+combat.scroll, combat.rects, combat.extent = { left = 0, right = 0 }, {}, {}
+
+function combat.hide()
+    combat.rects = {}
+end
+
+-- combat.wheel(notches, x, y) -> whether a list under the pointer scrolled
+function combat.wheel(notches, x, y)
+    for side, r in pairs(combat.rects) do
+        if x >= r.x and x < r.x + r.w and y >= r.y and y < r.y + r.h then
+            combat.scroll[side] = math.max(0, math.min(combat.extent[side] or 0, (combat.scroll[side] or 0) - notches * 45))
+            return true
+        end
+    end
+    return false
 end
 
 -- combat.build(ctx, data) -> items, report; ctx = { game_dir, db, screen, texture_size, loc }
@@ -316,7 +368,7 @@ function combat.build(ctx, data)
         -- close (CCombatView::Hide: here the selection cleared, which shows it); focus_on
         -- (OnClickFocus: the camera to the combat [I: the selected fleet's system entered, the
         -- fleet followed]: designer.rs); the bar and the stats take no clicks
-        actions = { ["/combat_view/close"] = "close", ["/combat_view/focus_on"] = data.selected and ("designer:combat_focus:" .. data.selected) or nil },
+        actions = { ["/combat_view"] = "designer:noop", ["/combat_view/close"] = "close", ["/combat_view/focus_on"] = data.selected and ("designer:combat_focus:" .. data.selected) or nil },
         text = stat_text,
     })
     -- the bar, a progressbarType: its first texture to the progress, its second past it (the
@@ -354,13 +406,29 @@ function combat.build(ctx, data)
     for k, side in ipairs({ "left", "right" }) do
         local list = wr.rects["/combat_view/" .. side .. "/list"]
         if list then
-            local y = list.y
+            combat.rects[side] = list
+            local total = 0
+            for _, f in ipairs(data.sides[k]) do
+                total = total + 140 + 50 * #f.ships + 6
+            end
+            combat.extent[side] = math.max(0, total - list.h)
+            combat.scroll[side] = math.min(combat.scroll[side] or 0, combat.extent[side])
+            local y = list.y - (combat.scroll[side] or 0)
             local bottom = list.y + list.h
             local function add(i, rr)
                 -- the list clips its entries [I: what reaches below it is dropped, a crossing
                 -- background is cut]
                 for _, it in ipairs(i) do
-                    if it.y < bottom then
+                    -- (scrolled: what starts above the list's top dropped, a background crossing
+                    -- it cut)
+                    if it.y < list.y then
+                        if it.kind == "sprite" and it.border and it.y + it.h > list.y then
+                            it.h, it.y = it.y + it.h - list.y, list.y
+                        else
+                            it = nil
+                        end
+                    end
+                    if it and it.y < bottom then
                         if it.y + it.h > bottom then
                             if it.kind == "sprite" and it.border then
                                 it.h = bottom - it.y
@@ -381,18 +449,31 @@ function combat.build(ctx, data)
                 if y >= bottom then
                     break
                 end
+                if y + 140 + 50 * #f.ships < list.y then
+                    goto next_fleet
+                end
+                do
                 local prefix = "/combat/" .. side .. "/" .. fi
                 local fp = prefix .. "/combat_view_fleet_entry"
-                -- (the owner's flag: an unknown empire's, the sprite's own frame [I: by the frame])
+                -- the owner's flag: a country in contact its own (ApplyCountryToButton), else the
+                -- sprite's own frame [I: the game's frame shows a "?"]
                 local hide = { orders_hero_ship = true }
                 if not f.own then
                     hide.emergency_ftl = true
+                end
+                local textures = nil
+                local spec = f.flag and require("render.empire_preview").flag_texture(ctx, "GFX_empire_flag_32", f.flag)
+                if spec then
+                    textures = { [fp .. "/owner"] = spec }
                 end
                 local h = 140 + 50 * #f.ships
                 local fi_items, fr = lay("combat_view_fleet_entry", {
                     prefix = prefix, parent = { x = list.x, y = y, w = 0, h = 0 },
                     sizes = { [fp] = { 256, h } },
-                    hide = hide,
+                    hide = hide, textures = textures,
+                    -- emergency_ftl, the player's fleets' (CCombatViewFleetEntry::EmergencyFTL),
+                    -- enabled iff CanEmergencyFTL: the engine has no emergency FTL, greyed [I]
+                    disabled = { [fp .. "/emergency_ftl"] = true },
                     text = { [fp .. "/name"] = format_name(ctx, f.name) },
                 })
                 add(fi_items, fr)
@@ -415,8 +496,8 @@ function combat.build(ctx, data)
                     -- the rings: rotation 3.14159 about their position (41, -37): drawn over
                     -- (41 - w, 37 - h) .. (41, 37) [I: by the frame; not turned here]
                     local ring_at = { 41 - ring_w, 37 - ring_h }
-                    -- inspect: enabled iff CShip::CanInspectShip (contact) [V 0x2bfbefa]; the game
-                    -- greys a disabled one with its shader (buttonstate_onlydisable): not done here
+                    -- inspect: enabled iff CShip::CanInspectShip (contact) [V 0x2bfbefa], greyed
+                    -- otherwise (buttonstate_onlydisable)
                     local si_items, sr = lay("combat_view_ship_entry", {
                         prefix = sp, parent = { x = list.x, y = y + 140 + 50 * (si - 1), w = 0, h = 0 },
                         hide = shide,
@@ -428,9 +509,9 @@ function combat.build(ctx, data)
                         },
                         positions = { [path .. "/hitpoints"] = ring_at, [path .. "/armor"] = ring_at, [path .. "/shields"] = ring_at },
                         -- inspect (CCombatViewShipEntry::OnClickInspect 0x2bfb700: the ship view),
-                        -- only after contact; emergency_ftl (the player's fleets: EmergencyFTL) not
-                        -- done here
+                        -- only after contact
                         actions = (s.known and s.id) and { [path .. "/inspect"] = "fleet:ship:" .. s.id } or nil,
+                        disabled = not (s.known and s.id) and { [path .. "/inspect"] = true } or nil,
                         text = {
                             [path .. "/name"] = format_name(ctx, s.name),
                             [path .. "/size"] = s.class and ctx.loc and (ctx.loc.get("SHIP_CLASS"):gsub("%$CLASS%$", (format_name(ctx, s.class):gsub("%%", "%%%%")))) or "",
@@ -438,7 +519,9 @@ function combat.build(ctx, data)
                     })
                     add(si_items, sr)
                 end
-                y = y + h + 6
+                end
+                ::next_fleet::
+                y = y + 140 + 50 * #f.ships + 6
             end
         end
     end

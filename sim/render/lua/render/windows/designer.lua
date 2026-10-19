@@ -510,7 +510,8 @@ end
 -- auto-generated design), the component selector's choice and filters, a request to the
 -- simulation waiting for its answer.
 local function fresh_ui()
-    return { works = {}, key = nil, current = nil, popup = nil, picked = nil, filter_size = true, hide_obsolete = true, pending = nil, buildable = {}, scroll = {}, rects = {}, extent = {} }
+    return { works = {}, key = nil, current = nil, popup = nil, picked = nil, filter_size = true, hide_obsolete = true, pending = nil, buildable = {}, scroll = {}, rects = {}, extent = {},
+        edit = nil, paint = nil, hover = nil }
 end
 designer.ui = fresh_ui()
 
@@ -635,6 +636,48 @@ local function dc_call(name, ...)
     return "return require('render.windows.designer_commands')." .. name .. "(" .. table.concat(args, ", ") .. ")"
 end
 
+-- a component fits a slot: its kind and size, buildable (the `allowed` mark's frame 2) [I]
+function designer.allowed(F, data, sl, key, size)
+    for _, c in ipairs(fitting(F, data, sl, true, false, size)) do
+        if c.key == key then
+            return true
+        end
+    end
+    -- (an obsolete one is still allowed: fitting keeps a set's newest only)
+    local c = F.components[key]
+    local kinds = { weapon = "weapon_component_template", utility = "utility_component_template", strike_craft = "strike_craft_component_template" }
+    local can = designer.ui.buildable[size]
+    return c ~= nil and c.kind == kinds[sl.kind] and c.size == sl.size and (can == nil or can[key] == true)
+end
+
+-- the name typed in the rename box made the design's (RenameDesign)
+function designer.commit_edit(data)
+    local ui = designer.ui
+    local text = ui.edit
+    ui.edit = nil
+    if not text or text == "" or text == ui.name_text then
+        return
+    end
+    local w = work(data)
+    if w then
+        w.name, w.name_key, w.name_literal, w.dirty = { key = text, literal = true, vars = {} }, text, true, true
+    end
+end
+
+-- designer.typed(token) -> the designer's action for a key the rename box takes (the creator's
+-- tokens: creator:text:C, creator:key:K), or nil when it has no focus
+function designer.typed(token)
+    if not designer.ui.edit then
+        return nil
+    end
+    local c = token:match("^creator:text:(.*)$")
+    if c then
+        return "designer:ui:type:" .. c
+    end
+    local k = token:match("^creator:key:(.*)$")
+    return k and ("designer:ui:typekey:" .. k) or nil
+end
+
 -- designer.act(action, data, game_dir) -> "" (the window laid out again), "sim:CODE" (CODE run in
 -- the simulation's runtime; its answer given to designer.done), "design:ID" / "design:none" (the
 -- design to show)
@@ -648,8 +691,33 @@ function designer.act(action, data, game_dir)
     end
     local verb = parts[1] or ""
     local d = shown(data)
+    -- the rename box loses the keyboard on any other click: the name typed is the design's
+    -- (RenameBoxFocus(false) -> RenameDesign) [I: the name kept as typed, literal]
+    if ui.edit and verb ~= "type" and verb ~= "typekey" and verb ~= "edit" then
+        designer.commit_edit(data)
+    end
     if verb == "popup_close" then
         ui.popup = nil
+    elseif verb == "edit" and d then
+        -- rename_box clicked: it takes the keyboard (the edit box's focus), its text the name's
+        ui.edit = ui.name_text or ""
+    elseif verb == "type" and ui.edit then
+        -- a character typed (CEditBox): appended, at most 32 [I: as the rename dialogs]
+        local c = a:match("^type:(.*)$") or ""
+        if #ui.edit < 32 then
+            ui.edit = ui.edit .. c
+        end
+    elseif verb == "typekey" and ui.edit then
+        if parts[2] == "backspace" then
+            -- (the last UTF-8 character)
+            ui.edit = ui.edit:gsub("[%z\1-\127\194-\244][\128-\191]*$", "")
+        elseif parts[2] == "return" then
+            designer.commit_edit(data)
+        end
+    elseif verb == "hover" then
+        -- the entry under the mouse shows its delete button (CShipDesignEntry::PerFrameUpdate:
+        -- `button` IsOrWasMouseOver) [V 0x319d020]
+        ui.hover = tonumber(parts[2])
     elseif verb == "new" then
         -- new_ship_design_entry: ShowShipSizeSelectDialog, the `selector` of sizes [V 0x31989c0]
         ui.popup = { kind = "size" }
@@ -662,9 +730,14 @@ function designer.act(action, data, game_dir)
         ui.pending = { kind = "new", size = parts[2] }
         return sim(dc_call("generate", data.country, parts[2], "", 0))
     elseif verb == "delete" and tonumber(parts[2]) then
-        -- the entry's delete: CShipDesignerBase::Delete -> ConfirmedDelete
-        -- (CRemoveShipDesignCommand) [V names; the confirmation dialog not drawn here]
-        local id = tonumber(parts[2])
+        -- the entry's delete: CShipDesignerBase::Delete (0x3198d50) asks first, a
+        -- CPopupMessageDeleteCancel (`delete_cancel_popup_window`: POPUP_DELETE_DESIGN_TITLE,
+        -- CAN_REMOVE_SHIP_DESIGN_COUNTRY) [V]
+        ui.popup = { kind = "delete", id = tonumber(parts[2]) }
+    elseif verb == "delete_yes" and ui.popup and ui.popup.kind == "delete" then
+        -- its Delete: ConfirmedDeleteCallback -> ConfirmedDelete (CRemoveShipDesignCommand)
+        local id = ui.popup.id
+        ui.popup = nil
         ui.works[id] = nil
         ui.pending = { kind = "delete", id = id }
         return sim(dc_call("delete", data.country, id))
@@ -738,6 +811,34 @@ function designer.act(action, data, game_dir)
         else
             ui.hide_obsolete = not ui.hide_obsolete
         end
+    elseif verb == "paint_cancel" then
+        -- a right click while painting (component_paint_help_text: "right click to cancel")
+        ui.paint = nil
+    elseif verb == "clear_slot" and tonumber(parts[2]) and parts[3] then
+        -- a right click on a slot: ClearSlot (its component taken off)
+        local w = work(data)
+        local size = F.sizes[w.size]
+        local s = size and section_of(w, size.slots[tonumber(parts[2])] or "")
+        if s and s.components[parts[3]] then
+            s.components[parts[3]] = nil
+            w.dirty = true
+        end
+    elseif verb == "paint" and tonumber(parts[2]) and parts[3] and ui.paint then
+        -- a slot clicked while a component is chosen (HasValidSelectedElement): it is put there
+        -- when it fits (IsCurrentlySelectedComponentAllowedOnSlot; the slot's `allowed` mark)
+        local w = work(data)
+        local size = F.sizes[w.size]
+        local s = size and section_of(w, size.slots[tonumber(parts[2])] or "")
+        local sl
+        for _, x in ipairs(s and (F.sections[s.template] or { slots = {} }).slots or {}) do
+            if x.name == parts[3] then
+                sl = x
+            end
+        end
+        if sl and designer.allowed(F, data, sl, ui.paint, w.size) then
+            s.components[sl.name] = ui.paint
+            w.dirty = true
+        end
     elseif verb == "slot" and tonumber(parts[2]) and parts[3] then
         -- a slot: ShowComponentSelectDialog (the component selector for the slot); the components
         -- the country can build on the size asked of the simulation once
@@ -758,6 +859,8 @@ function designer.act(action, data, game_dir)
             w.dirty = true
         end
         ui.picked = parts[2]
+        -- the component chosen is painted on the slots clicked next (SetSelectedComponentSet)
+        ui.paint = parts[2]
     elseif verb == "fill" and ui.picked then
         -- apply_on_empty: ApplySelectedElementOnAllEmptySlots (every empty slot it fits)
         local w = work(data)
@@ -812,7 +915,7 @@ function designer.act(action, data, game_dir)
         ui.popup = nil
         local stage = { size = d.size, sections = d.sections, required = d.required }
         ui.pending = { kind = "save", key = ui.current }
-        return sim(dc_call("save", data.country, d.new and 0 or (d.id or 0), designer.serialize(stage), d.name_key or "", d.role or "", d.upgrade and "yes" or "no"))
+        return sim(dc_call("save", data.country, d.new and 0 or (d.id or 0), designer.serialize(stage), d.name_key or "", d.role or "", d.upgrade and "yes" or "no", d.name_literal and "yes" or "no"))
     end
     return ""
 end
@@ -925,7 +1028,7 @@ function designer.build(ctx, data, state)
     -- ID`, the ship view's Open Designer), or the one made here (a new design), as modified
     local ui = designer.ui
     if state.design ~= ui.key then
-        ui.key, ui.current, ui.popup = state.design, state.design, nil
+        ui.key, ui.current, ui.popup, ui.edit = state.design, state.design, nil, nil
     end
     data.designs = data.designs or {}
     data.techs = data.techs or {}
@@ -936,7 +1039,7 @@ function designer.build(ctx, data, state)
     -- the frame: Setup's tabs, the 3D view (the ship's), the help texts and controls by the design
     local hide = {
         ship_designer_tab_inactive = true, creature_designer_tab_active = true,
-        ["3d_view_creature_designer"] = true, blocker = true, component_paint_help_text = true,
+        ["3d_view_creature_designer"] = true, blocker = true,
         -- the info box at info_mecship_pos with info_background_mecship_size (below)
         cloaking_values = true,
     }
@@ -966,7 +1069,12 @@ function designer.build(ctx, data, state)
         end
         text[P .. "/controls/choose_role"] = design.role or ""
         hide.bioship_stage, hide.stage_spinner = true, true
+        -- component_paint_help_text: while a component is chosen (HasValidSelectedElement) [V]
+        if not ui.paint then
+            hide.component_paint_help_text = true
+        end
     else
+        hide.component_paint_help_text = true
         hide.weapons_help_text, hide.utilities_help_text, hide.controls, hide.content = true, true, true, true
     end
     local frames = {
@@ -974,24 +1082,59 @@ function designer.build(ctx, data, state)
         [P .. "/auto_design"] = data.auto_generate and 2 or 1,
         [P .. "/controls/controls_bottom/upgrade_ship_components"] = (design and design.upgrade) and 2 or 1,
     }
+    -- the disabled ones (greyed, no click) [V UpdateControlsWindow 0x3194450, Update 0x3192150]:
+    -- the creature designer's tab without artificial breeding [I: never here]; choose_role
+    -- without roles; complete_button unless the stage has sections and the first has slots;
+    -- save_button unless the design can be saved (IsValidToSaveForCountry [I: every section slot
+    -- and required set filled, a name])
+    local disabled = { [P .. "/creature_designer_tab_inactive"] = true }
+    if design then
+        local size = F.sizes[design.size] or { slots = {}, required = {}, roles = {} }
+        if #size.roles == 0 then
+            disabled[P .. "/controls/choose_role"] = true
+        end
+        local first = design.sections[1] and F.sections[design.sections[1].template]
+        if not (first and #first.slots > 0) then
+            disabled[P .. "/controls/controls_bottom/complete_button"] = true
+        end
+        local ok = (fmt_name(ctx, design.name) ~= "")
+        for _, slot in ipairs(size.slots) do
+            ok = ok and section_of(design, slot) ~= nil
+        end
+        for _, set in ipairs(size.required) do
+            local has = false
+            for _, t in ipairs(design.required) do
+                has = has or (F.components[t] or {}).set == set
+            end
+            ok = ok and has
+        end
+        if not ok then
+            disabled[P .. "/controls/controls_bottom/save_button"] = true
+        end
+    end
+    local actions = {
+        -- (the window's background takes the clicks: nothing under it on the map)
+        [P] = "designer:noop",
+        [P .. "/close"] = "designer:close", [P .. "/fleet_manager_tab"] = "designer:fleet_manager",
+        [P .. "/auto_design"] = "designer:ui:auto",
+        [P .. "/controls/randomize_name"] = "designer:ui:randomize",
+        [P .. "/controls/choose_role"] = "designer:ui:roles",
+        [P .. "/controls/controls_bottom/clear_button"] = "designer:ui:clear",
+        [P .. "/controls/controls_bottom/complete_button"] = "designer:ui:complete",
+        [P .. "/controls/controls_bottom/save_button"] = "designer:ui:save",
+        [P .. "/controls/controls_bottom/upgrade_ship_components"] = "designer:ui:upgrade",
+    }
+    for path in pairs(disabled) do
+        actions[path] = nil
+    end
     local r = lay("ship_designer", {
-        hide = hide, text = text, frames = frames, drop = { [P .. "/3d_view"] = true },
+        hide = hide, text = text, frames = frames, drop = { [P .. "/3d_view"] = true }, disabled = disabled,
         -- the info box with a design (UpdateControlsWindow: SetInfoPosAndSize "mecship",
         -- info_mecship_pos and info_background_mecship_size) [V]; else where the .gui has it
         positions = design and { [P .. "/info"] = { 1098 - 1272, 40 } } or nil,
         sizes = design and { [P .. "/info/info_bg_box"] = { 244, 485 } } or nil,
-        -- the buttons (CShipDesignerBase::Setup's observers [V 0x318e2e0]); the creature
-        -- designer's tab is disabled without artificial breeding (its own window not done)
-        actions = {
-            [P .. "/close"] = "designer:close", [P .. "/fleet_manager_tab"] = "designer:fleet_manager",
-            [P .. "/auto_design"] = "designer:ui:auto",
-            [P .. "/controls/randomize_name"] = "designer:ui:randomize",
-            [P .. "/controls/choose_role"] = "designer:ui:roles",
-            [P .. "/controls/controls_bottom/clear_button"] = "designer:ui:clear",
-            [P .. "/controls/controls_bottom/complete_button"] = "designer:ui:complete",
-            [P .. "/controls/controls_bottom/save_button"] = "designer:ui:save",
-            [P .. "/controls/controls_bottom/upgrade_ship_components"] = "designer:ui:upgrade",
-        },
+        -- the buttons (CShipDesignerBase::Setup's observers [V 0x318e2e0])
+        actions = actions,
     })
     local win = r.rects[P]
     -- the 3D view: 3d_view at its place, ship_designer_3d_view_size (740 x 584) [V 0x318e370]
@@ -1000,15 +1143,31 @@ function designer.build(ctx, data, state)
     if v then
         local id = design and ((design.dirty or design.new) and -1 or (data.models[design.id] and design.id)) or 0
         local path = "/designer/3d_view/" .. id
-        items[#items + 1] = inset(path, { x = v.x, y = v.y, w = 740, h = 584 })
+        -- (under the window's texts over it: the help texts, drawn after it in the .gui)
+        local at = #items + 1
+        for k, it in ipairs(items) do
+            local p = it.path or ""
+            if at > k and (p:find("_help_text", 1, true) or p:find(P .. "/ship_label", 1, true)) then
+                at = k
+            end
+        end
+        table.insert(items, at, inset(path, { x = v.x, y = v.y, w = 740, h = 584 }))
         insets[path] = id
     end
     -- the rename box (an edit box: its text, CShipDesign+0x38) [V 0x31907f8]
     local controls = r.rects[P .. "/controls"]
     if design and controls then
+        ui.name_text = fmt_name(ctx, design.name)
+        local shown_text = ui.edit and (ui.edit .. "|") or ui.name_text
+        -- (the box's frame takes the click: the edit box's focus)
+        for _, it in ipairs(items) do
+            if it.path == P .. "/controls/ship_designer_rename_box" then
+                it.button = { name = "rename_box", action = "designer:ui:edit" }
+            end
+        end
         items[#items + 1] = {
-            kind = "text", path = P .. "/controls/rename_box", font = "cg_16b", text = fmt_name(ctx, design.name),
-            spans = { { text = fmt_name(ctx, design.name), colour = ctx.db.textcolors[""] or { 1, 1, 1 } } },
+            kind = "text", path = P .. "/controls/rename_box", font = "cg_16b", text = shown_text,
+            spans = { { text = shown_text, colour = ctx.db.textcolors[""] or { 1, 1, 1 } } },
             x = controls.x + 800, y = controls.y - 615, w = 160, h = 20, format = "left", valign = "top",
         }
         report.texts = report.texts + 1
@@ -1072,10 +1231,13 @@ function designer.build(ctx, data, state)
             local ep = "/designer/list/" .. d.id
             local e = ep .. "/ship_design_entry"
             if y >= list.y then
-            -- delete: the game shows it under the mouse (PerFrameUpdate); here on the design shown [I]
+            -- delete: under the mouse only (PerFrameUpdate: `button` IsOrWasMouseOver) [V]
             local ehide = { icons = true }
             if not (design and design.id == d.id) then
-                ehide.selected, ehide.delete = true, true
+                ehide.selected = true
+            end
+            if ui.hover ~= d.id then
+                ehide.delete = true
             end
             if not d.auto_gen then
                 ehide.auto_gen = true
@@ -1237,10 +1399,20 @@ function designer.build(ctx, data, state)
                     -- the slot clicked: the component selector for it; the slot selected shows
                     -- its `deselect` mark [I]
                     if sl then
-                        opts.actions[c .. "/component_slot_button"] = "designer:ui:slot:" .. i .. ":" .. sl.name
+                        -- a click: the component selector, or the component painted; a right click
+                        -- (`LEFT||RIGHT`): the painting cancelled, else the slot cleared (ClearSlot)
+                        local left = ui.paint and ("designer:ui:paint:" .. i .. ":" .. sl.name) or ("designer:ui:slot:" .. i .. ":" .. sl.name)
+                        local right = ui.paint and "designer:ui:paint_cancel" or ("designer:ui:clear_slot:" .. i .. ":" .. sl.name)
+                        opts.actions[c .. "/component_slot_button"] = left .. "||" .. right
                         local pp = ui.popup
                         if pp and pp.kind == "component" and pp.index == i and pp.slot == sl.name then
                             opts.hide.deselect = nil
+                        end
+                        -- `allowed` while painting: frame 2 where the component fits, 1 where not
+                        -- (CComponentSlotEntry::Update 0x3182560) [V]
+                        if ui.paint then
+                            opts.hide.allowed = nil
+                            opts.frames[c .. "/allowed"] = designer.allowed(F, data, sl, ui.paint, design.size) and 2 or 1
                         end
                     end
                     -- the cell's own position (22, -5) is the box's; the grid places it [I]
@@ -1337,7 +1509,7 @@ function designer.popups(ctx, data, design, lay, items, report, insets, r)
         -- can build (NUtil::CanBuildShipOfSize: a designable size, its prerequisites [I]), three a row
         local wr = lay("selector", {
             text = { ["/selector/title"] = "NEW_DESIGN" },
-            actions = { ["/selector/close"] = "designer:ui:popup_close" },
+            actions = { ["/selector"] = "designer:noop", ["/selector/close"] = "designer:ui:popup_close" },
         })
         local grid = wr.rects["/selector/ship_grid_window/ship_sizes_grid"]
         if grid then
@@ -1361,10 +1533,10 @@ function designer.popups(ctx, data, design, lay, items, report, insets, r)
         end
         return
     end
-    if not design then
+    if not design and pp.kind ~= "delete" then
         return
     end
-    local size = F.sizes[design.size]
+    local size = design and F.sizes[design.size]
     if pp.kind == "role" and size then
         -- select_ship_role (CShipRoleSelectionView): a ship_role_entry per role of the size, four a
         -- row (158 x 256, 24 apart), the window as wide as they are; the role chosen selected
@@ -1375,7 +1547,7 @@ function designer.popups(ctx, data, design, lay, items, report, insets, r)
         local wr = lay("select_ship_role", {
             sizes = { ["/select_ship_role"] = { w, h } },
             positions = { ["/select_ship_role/close_button"] = { w - 41, 9 } },
-            actions = { ["/select_ship_role/close_button"] = "designer:ui:popup_close" },
+            actions = { ["/select_ship_role"] = "designer:noop", ["/select_ship_role/close_button"] = "designer:ui:popup_close" },
             file = "interface/ship_designer_role_selection.gui",
         })
         local box = wr.rects["/select_ship_role/ship_roles_container"]
@@ -1400,7 +1572,7 @@ function designer.popups(ctx, data, design, lay, items, report, insets, r)
         -- name and its weapon and utility slots by size (section_component_slot_entry); a click
         -- puts it on the slot (ItemClicked)
         local slot = size.slots[pp.index]
-        local wr = lay("section_select_window", { actions = { ["/section_select_window/close"] = "designer:ui:popup_close" } })
+        local wr = lay("section_select_window", { actions = { ["/section_select_window"] = "designer:noop", ["/section_select_window/close"] = "designer:ui:popup_close" } })
         local list = wr.rects["/section_select_window/list"]
         local secs = {}
         for _, sec in pairs(F.sections) do
@@ -1480,6 +1652,7 @@ function designer.popups(ctx, data, design, lay, items, report, insets, r)
                 [W .. "/current_filter_slot_size"] = SLOT_ICON[sl.size] or 2,
             },
             actions = {
+                [W] = "designer:noop",
                 [W .. "/close"] = "designer:ui:popup_close", [W .. "/apply_on_empty"] = "designer:ui:fill",
                 [W .. "/filter_slot_size"] = "designer:ui:filter_size", [W .. "/filter_obsolete"] = "designer:ui:filter_obsolete",
             },
@@ -1545,11 +1718,26 @@ function designer.popups(ctx, data, design, lay, items, report, insets, r)
                 actions = { [e .. "/select_this_button"] = "designer:ui:set_req:" .. pp.index .. ":" .. c.key },
             })
         end
+    elseif pp.kind == "delete" then
+        -- delete_cancel_popup_window (CPopupMessageDeleteCancel): Delete (RETURN) or Cancel (ESCAPE)
+        lay("delete_cancel_popup_window", {
+            file = "interface/popup.gui",
+            text = {
+                ["/delete_cancel_popup_window/title"] = "POPUP_DELETE_DESIGN_TITLE",
+                ["/delete_cancel_popup_window/description"] = "CAN_REMOVE_SHIP_DESIGN_COUNTRY",
+            },
+            actions = {
+                ["/delete_cancel_popup_window"] = "designer:noop",
+                ["/delete_cancel_popup_window/AgreeButton"] = "designer:ui:delete_yes",
+                ["/delete_cancel_popup_window/DeclineButton"] = "designer:ui:popup_close",
+            },
+        })
     elseif pp.kind == "autogen" then
         -- rename_autogen: an auto-generated design saved under a name (it is no longer
         -- auto-generated); Save, or the close button (nothing saved)
         local wr = lay("rename_autogen", {
             actions = {
+                ["/rename_autogen"] = "designer:noop",
                 ["/rename_autogen/save_and_close"] = "designer:ui:save_confirm", ["/rename_autogen/close"] = "designer:ui:popup_close",
                 ["/rename_autogen/rename_container/randomize_name"] = "designer:ui:randomize",
             },
@@ -1581,8 +1769,18 @@ end
 -- designer.escape() -> whether Escape closed a popup (its close button's ESCAPE shortcut: the
 -- innermost window first); else the window closes
 function designer.escape()
-    if designer.ui.popup then
-        designer.ui.popup = nil
+    local ui = designer.ui
+    if ui.edit then
+        -- the edit box's Escape: the text typed dropped
+        ui.edit = nil
+        return true
+    end
+    if ui.popup then
+        ui.popup = nil
+        return true
+    end
+    if ui.paint then
+        ui.paint = nil
         return true
     end
     return false
