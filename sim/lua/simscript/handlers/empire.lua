@@ -396,7 +396,10 @@ return function(eval)
         end
         return out
     end
-    -- the species on a planet / in a country's or fleet's pops: exact (each sub-species) or by base
+    -- the species of a scope's pops (CCountry::_ListSpecies @23c35b0, CColony::ListSpecies
+    -- @28a50a0 [V]): exact (each sub-species) or one per base species, the first sub-species met
+    -- standing for it; a country's: every pop group of its planets, a size 0 one and pre-sapients
+    -- too; a planet's: the species with pops there
     local function scope_species(sc, by_base)
         local out, seen = {}, {}
         local groups
@@ -405,13 +408,14 @@ return function(eval)
         else
             groups = pop_groups(sc)
         end
+        local every = sc.kind == "country"
         for _, g in ipairs(groups) do
             local s = group_species(g)
-            if s and group_size(g) > 0 then
+            if s and species(s) and (every or group_size(g) > 0) then
                 local k = by_base and base_of(s) or s
                 if k and not seen[k] then
                     seen[k] = true
-                    out[#out + 1] = S("species", k)
+                    out[#out + 1] = S("species", s)
                 end
             end
         end
