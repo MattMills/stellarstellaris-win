@@ -751,4 +751,12 @@ return function(eval)
         local y, m = floor(d / 360), floor((d % 360) / 30)
         set_quoted(c, "last_date_at_war", string.format("%d.%02d.%02d", y, m + 1, d % 30 + 1))
     end
+
+    -- the systems of the later DLCs and the relations' keywords (handlers/general_systems.lua)
+    require("simscript.handlers.general_systems")(eval, {
+        this_country = this_country, param = param, param_text = param_text, target_scope = target_scope,
+        target_country = target_country, compare_value = compare_value, fixed = fixed,
+        country_value = country_value, set_quoted = set_quoted, set_meta = set_meta, meta_block = meta_block,
+        defines = defines, def_of = def_of, unq = unq, script_write = script_write, name_block = name_block,
+    })
 end

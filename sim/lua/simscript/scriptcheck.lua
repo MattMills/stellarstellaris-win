@@ -275,15 +275,16 @@ local SCOPE_STORE = {
     ambient_object = "ambient_object", bypass = "bypasses", job = "pop_jobs",
 }
 
--- keywords that only hold other statements, only show text or only touch the interface (a sound, a
--- tab, telemetry): when their documented use changes nothing, that is the use (its body), not the
+-- keywords that only hold other statements, only show text, only touch the interface (a sound, a
+-- tab, telemetry, a placing mode) or only recompute what the game caches: when their documented use changes nothing, that is the use (its body), not the
 -- keyword
 local CONTAINER = {}
 for _, k in ipairs({ "if", "else", "else_if", "while", "switch", "inverted_switch", "random", "random_list",
     "locked_random_list", "hidden_effect", "custom_tooltip", "custom_tooltip_fail", "tooltip", "log", "log_error",
     "break", "debug_break", "custom_tooltip_with_params", "country_list_tooltip", "owned_planet_list_tooltip",
     "owned_pop_faction_list_tooltip", "owned_leader_list_tooltip", "owned_fleet_list_tooltip", "play_sound",
-    "open_shroud_tab", "complete_tutorial_step", "endgame_telemetry" }) do
+    "open_shroud_tab", "complete_tutorial_step", "endgame_telemetry", "start_storm_area_placing",
+    "refresh_psionic_aura_type", "run_ai_strategic_data" }) do
     CONTAINER[k] = true
 end
 local function is_container(name)

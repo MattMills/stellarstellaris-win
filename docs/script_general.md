@@ -1,6 +1,6 @@
 # Script keywords of no single window
 
-`sim/lua/simscript/handlers/general.lua` holds the triggers, effects and scope links that belong to
+`sim/lua/simscript/handlers/general.lua` and `general_systems.lua` hold the triggers, effects and scope links that belong to
 no single window:
 - the links of every scope;
 - control flow and tooltip wrappers;
@@ -114,6 +114,93 @@ In `scriptcheck.lua`:
 - A scope link's use inside `trigger = { }` (the docs mod's links file) is run as a trigger. Before this, all of them ran as effects and missed on `always`.
 - The interface-only effects above count as containers.
 
-## Not done yet
+## Relations, resolutions, trade deals
 
-The rest of this package: the shroud patrons (attunement, covenants, accords, deeds, auras), contracts, the vivarium and DNA, focus cards, pre-FTL ages, favors, loyalty, sensor links, resolutions in breach, cosmic storms, clusters, messages, country backups and destruction, carriers, `effect_on_blob`, special offers, `set_hostile`, `set_player`, `clear_uncharted_space` and the fog machine.
+`handlers/general_systems.lua` holds part 2 of the package.
+
+| keyword | how |
+|---|---|
+| `add_favors`, `remove_favors`, `num_favors` | The relation's `num_favors`, capped at FAVOR_CAP. `remove_favors` only acts when the relation holds at least that many [V]. The game also fires its favor on_actions on add; that is not done here. |
+| `has_secret_fealty_with`, `remove_secret_fealty` | `secret_fealty`, either way [V] |
+| `set_hostile` | `hostile` in both relations [V calls, I both ways] |
+| `end_all_treaties_with` | The agreement flags of both relations (CRelation::ClearAgreements) [I: the list] |
+| `num_support_independence` | Relations with `support_independence` |
+| `can_control_access_for` | A country with borders controls itself and its subjects [I] |
+| `has_loyalty` | A subject's `loyalty` [V]. `has_monthly_loyalty` reads the subject_loyalty modifiers [I]. |
+| `is_action_active`, `has_sensor_link_from` | The trade deals between the two (`trade_deal`: first, second) [V the deals, I the item keys] |
+| `can_afford_special_offer`, `is_offer_terms_actual` | Only in the AI's trade-facility script (`ctx.special_offer`); false elsewhere |
+| `in_breach_of` | The resolution's `breach = { }` triggers [V call] |
+| `is_in_breach_of_any` | The code flag `is_in_breach_of_any` (+0x2a40 bit 0x10) [V] |
+
+## The Shroud's patrons
+
+The save holds them in two places:
+- the shroud module: `attunement = { x y }`, `covenant`, `covenant_excluded_patrons`, `patron_relations`;
+- the `patron_relations` store [V names].
+
+**The model:**
+- The attunement is a point on the wheel. A patron's position is its relation's `position`, else its type's.
+- **Towards a patron**, the attunement is 1 minus the distance from the point (divided by MAX_ATTUNEMENT_VALUE) to that position, clamped to 0..1 (or -1..1) [V: GetAttunement].
+- **The game's extra scaling** of cardinal patrons is not done.
+- **Adding attunement** moves the point along the patron's direction (towards the centre for the End of the Cycle) and caps its length [I].
+- **`set_attunement`** puts the point where the attunement towards the patron is the given value [I].
+- **`has_most_attunement`:** the centre patrons are nearest when the point is small, so they win then [I].
+
+| keyword | how |
+|---|---|
+| `attunement` | The point's distance from the centre [I] |
+| `get_attunement_points_for` | The attunement times MAX_ATTUNEMENT_VALUE |
+| `is_cardinal_patron` | A position on an axis |
+| `has_patron_aura` | The top-level `psionic_auras` [I fields] |
+| `accept_covenant` | `covenant = { patron level }`, then on_covenant_formed [V] |
+| `refuse_covenant` | `covenant_excluded_patrons`; vanilla's `{ patron reset_attunement }` form included |
+| `complete_deed` | The deed's `attunement` to its patron |
+| `add_patron_objective_counter`, `has_patron_counter` | The deeds' counters; at their `max` a deed completes. The counts are in the script state [I] |
+| `refresh_accords` | `unlocked_passive_accords_count` [I] |
+| `revert_accords` | The accords' `on_revert` |
+| `remove_patron`, `replace_patron` | The relations |
+| `set_ai_preferred_patron`, `roll_ai_preferred_patron` | `is_preferred_patron` |
+
+## Contracts, the Grand Archive, focus, pre-FTL ages
+
+- **Contracts** are the nomads' missions (`common/missions/missions`).
+  - `issue_contract` adds one to the script state [I: the mission objects' save form was not read].
+  - The `owned_contract` list (issued by the country or worked on by it) and the counts read it, as do `has_contract` and `has_contract_of_category`.
+- **DNA** is `standard_grand_archive_module.rarity = { <ship category> = <rarity> }`, with rarities common < rare < epic < exceptional.
+  - `give_dna` writes it, never lowering a rarity.
+  - `has_dna` reads it, at the given rarity or above.
+- **The vivarium** is the module's `vivarium_critters` plus the top-level store.
+  - `add_to_vivarium` adds critters: given a rarity, or drawn from WILD_CRITTERS_RARITY_TABLE.
+  - `num_vivarium_slots` counts them.
+  - `release_vivarium_fauna` and `release_vivarium_fauna_count` remove them (rarest first for the count). The wild fleets they become are recorded as unmodelled.
+- **Focus:**
+  - `add_focus_progress` adds to `focus.reward.rewards`' category progress. At the reward's `cost`, its `on_success` runs and the next reward becomes current [I].
+  - `has_completed_focus` reads `focus.completed`, or an active card with status 1.
+- **Pre-FTL ages:** `preftl_age` and the ages' `next_age`: `has_next_pre_ftl_age`, `go_to_next_pre_ftl_age`, `set_pre_ftl_age` [V].
+
+## The country's other state, the galaxy
+
+- **Country flags and blocks:**
+  - `add_notification_modifier` and `remove_notification_modifier` write `notification_modifiers`;
+  - `activate_fog_machine` and `deactivate_fog_machine` write `fog_machine.cloud_type`;
+  - `destroy_country` sets the `killed` flag (CCountry::SetToBeKilled);
+  - `set_player` moves the save's `player` entry.
+- **Backups:** `store_country_backup_data` and `restore_country_backup_data` copy the flag, room, name, ethos and government into and out of `backup_data`.
+- **Script state:** `copy_flags_and_variables_from` copies the target's flags and variables.
+- **Values read from the country:**
+  - `triumph_days_left` is the days of the timed `relic_activation_cooldown` [V];
+  - `enclave_capacity_left` comes from the enclave modifiers and defines [I];
+  - `has_surveyed_class` reads `surveyed_deposit_holders`' planets;
+  - `is_in_sensor_range` is true for a system within the borders, or one that holds a fleet of the country [I: the sensor radii].
+- **The galaxy:**
+  - `create_cluster` adds a cluster to `clusters`;
+  - `create_message` adds a message to `message`;
+  - `storm_apply_aftermath_modifier` picks a severity by chance and adds its modifier and effect;
+  - `effect_on_blob` runs its effect on the nearest systems until the share of matching colonies is covered.
+- **Interface and recompute only:** `start_storm_area_placing`, `refresh_psionic_aura_type`, `run_ai_strategic_data`. The checker counts them as containers.
+- **Recorded as unmodelled:**
+  - `spawn_random_storm`;
+  - `transfer_carrier` (nomad carriers);
+  - `clear_uncharted_space` (the `terra_incognita` cells);
+  - `change_country_flag = random`;
+  - the fleets of released fauna.
