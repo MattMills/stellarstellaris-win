@@ -405,6 +405,9 @@ P["daily.ships_fleets_armies"] = function(host, date)
     -- first the pop groups' serial update's draws (CPopGroup::OnEthicsDivergence, counted in the
     -- parallel pop group phase: engine.draws)
     require("engine.draws").flush()
+    -- CFleet::DailyUpdateSelfDontReadOthers before it: the idle fleets in orbit keep their planet as
+    -- their auto-move target (engine.fleets.automove; no draws)
+    call_optional("engine.fleets.automove", "save_orbit_targets")
     call_optional("engine.fleets.orders", "daily", host, date)
 end
 -- CGameState::MicroUpdate, every tick: first the fleet phase's movement (engine.fleets.movement:
@@ -415,6 +418,8 @@ end
 -- whose fleet is in combat (headless/README.md, "The random pools, traced"): with no combat
 -- modelled, the draws are skipped, not made.
 P["micro.update"] = function(host, date)
+    -- CFleet::MicroUpdateSerial's scripted actions, before the movement (engine.fleets.actions)
+    call_optional("engine.fleets.actions", "tick", host)
     call_optional("engine.fleets.movement", "tick", host, date)
     RUST.skip(#world.all("ship"))
 end
@@ -478,6 +483,9 @@ function systems.phase(kind, name, host, date)
     end
     systems.ran[key] = (systems.ran[key] or 0) + 1
     f(host, date)
+    -- the fleets killed in the phase removed (engine.fleets.create)
+    local create = package.loaded["engine.fleets.create"]
+    if create and create.flush_kills then create.flush_kills() end
     return true
 end
 

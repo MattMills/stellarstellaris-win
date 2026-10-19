@@ -491,6 +491,11 @@ end
 function move_order.start(o, fid, f)
     local m = movement()
     local t = move_order.target(o)
+    -- CFleetMovementManager::OnMoveOrderChanged (0x298db90): a fleet in orbit given a move
+    -- elsewhere leaves the orbit at once (CPlanet::LeaveOrbit: its two draws, on_fleet_leave_orbit)
+    if t and orbitable_of(f) and not arrived_at(coord(world.field(mm_of(f), "coordinate")), t) then
+        orders.leave_orbit(fid, f)
+    end
     if m and m.move_to and t then
         m.move_to(fid, { x = t.x, y = t.y, origin = t.origin })
     end
@@ -887,6 +892,11 @@ function orders.daily(host, date)
                 handle_orders(fid, f, host)
             end
         end
+        -- CFleet::HandleAutoMovement, after the fleet's orders (engine.fleets.automove)
+        if f and world.field(f, "auto_movement") then
+            local am = package.loaded["engine.fleets.automove"] or require("engine.fleets.automove")
+            am.handle(fid, host)
+        end
     end
 end
 
@@ -908,6 +918,11 @@ function orders.issue(fid, order, opts)
     if n >= 100 then
         S.refused = S.refused + 1
         return false
+    end
+    -- CFleet::AddOrder: an auto-move set with clear_on_new_orders reset (engine.fleets.automove)
+    if world.field(f, "auto_movement") then
+        local am = package.loaded["engine.fleets.automove"] or require("engine.fleets.automove")
+        am.on_order(fid)
     end
     local id = tonumber(world.field(f, "order_id")) or 0
     if id < 0 or id == NO_ID then id = 0 end
