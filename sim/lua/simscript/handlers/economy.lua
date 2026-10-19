@@ -977,7 +977,8 @@ return function(eval)
     local function pop_owner(gid)
         local g = world.object("pop_group", gid)
         local col = g and ref(world.field(g, "planet"))
-        local kind, id = col and rt().carrier_of("colony", col)
+        local kind, id
+        if col then kind, id = rt().carrier_of("colony", col) end
         local o = kind and world.object(kind, id)
         return o and ref(world.field(o, "owner"))
     end

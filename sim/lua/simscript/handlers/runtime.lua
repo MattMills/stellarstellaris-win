@@ -2331,7 +2331,8 @@ return function(eval)
         sync()
         local s = r.obj("sector", cur.id)
         local col = s and r.ref(wfield(s, "local_capital"))
-        local kind, id = col and r.carrier_of("colony", col)
+        local kind, id
+        if col then kind, id = r.carrier_of("colony", col) end
         return kind and S(kind, id) or nil
     end
     LINKS["ship"] = function(cur)
@@ -2514,7 +2515,8 @@ return function(eval)
     -- (planet size, the defines, the country's and colony's max-district modifiers)
     local function district_info(sc, r)
         local col = r.colony_of(sc.kind, sc.id)
-        local kind, pid = col and r.carrier_of("colony", col)
+        local kind, pid
+        if col then kind, pid = r.carrier_of("colony", col) end
         if kind ~= "planet" then return nil end
         local ok, slots = pcall(require, "engine.ai.economy.slots")
         if not ok then return nil end

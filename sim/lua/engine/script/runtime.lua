@@ -533,7 +533,8 @@ end
 function R.capital_system(country)
     local c = obj("country", country)
     local col = c and ref(world.field(c, "capital"))
-    local kind, id = col and R.carrier_of("colony", col)
+    local kind, id
+    if col then kind, id = R.carrier_of("colony", col) end
     if not kind then return nil end
     return R.system_of(kind, id)
 end

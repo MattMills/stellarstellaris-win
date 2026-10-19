@@ -770,7 +770,8 @@ return function(eval, F)
         sync()
         local sys = system_of(ctx.this)
         if not sys and ctx.this ~= NONE and ctx.this.kind == "country" then sys = R.capital_system(ctx.this.id) end
-        local x, y = sys and galactic(sys)
+        local x, y
+        if sys then x, y = galactic(sys) end
         if not x then return false end
         if not RIM then
             RIM = 0
