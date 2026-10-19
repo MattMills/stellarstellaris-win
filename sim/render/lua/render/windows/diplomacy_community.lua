@@ -117,7 +117,8 @@ function M.build(ctx, state)
         if data.player_names[greet] then
             text[PG .. "/flag_personality"] = "§M" .. ctx.fmt("PLAYED_BY", { PLAYER = data.player_names[greet] }) .. "§!"
         else
-            text[PG .. "/flag_personality"] = gcn.personality or ""
+            -- the personality's name (personality_<key>, as Contacts shows it: "Federation Builders")
+            text[PG .. "/flag_personality"] = gcn.personality and ("personality_" .. gcn.personality) or ""
         end
         ctx.flags[PG .. "/portrait_flag"] = greet
         if not gcn.federation then

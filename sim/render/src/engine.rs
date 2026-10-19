@@ -572,7 +572,11 @@ impl Engine {
                     ["confirm"] => "diplo:action_confirm".to_string(),
                     // a war's selected peace option sent (Send Offer)
                     ["peace_send"] => "diplo:peace_send".to_string(),
-                    _ => return Err("open_diplomacy contacts|country ID|community|federation ID|war ID|close (or select ID, tab NAME, sort NAME, action KEY, confirm, filter NAME, zoom ID, peace OPTION, peace_send, member VERB)".into()),
+                    // a leave's yes/no popup answered
+                    [ans @ ("confirm_yes" | "confirm_no")] => format!("diplo:{ans}"),
+                    // an object of the world as the save writes it (the tests' comparisons)
+                    ["inspect", kind, id] => format!("diplo:inspect:{kind}:{id}"),
+                    _ => return Err("open_diplomacy contacts|country ID|community|federation ID|war ID|close (or select ID, tab NAME, sort NAME, action KEY, confirm, filter NAME, zoom ID, peace OPTION, peace_send, member VERB, confirm_yes, confirm_no, inspect KIND ID)".into()),
                 };
                 // (the left bar's button toggles Contacts; the command opens it)
                 if action == "view:contacts" && self.app.diplomacy.open == Some(crate::diplomacy::Open::Contacts) {

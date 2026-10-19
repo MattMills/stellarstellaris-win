@@ -114,6 +114,7 @@ function M.build(ctx, state)
     end
     local selected = state.action
     local send_valid = false
+    local valid = {}
     for _, opt in ipairs(P.OPTIONS) do
         local o = P.offer(ctx.game_dir, data, w, player, opt)
         local B = O .. "/" .. opt
@@ -140,6 +141,7 @@ function M.build(ctx, state)
         if opt == selected and o.valid then
             send_valid = true
         end
+        valid[opt] = o.valid
     end
     text[O .. "/description"] = (selected and send_valid) and (LABEL[selected] .. "_DESC")
         or "WAROVERVIEW_OFFER_PEACE_SELECT_OPTION"
@@ -152,7 +154,11 @@ function M.build(ctx, state)
 
     local actions = { [V] = "diplo:none", [V .. "/close"] = "diplo:close" }
     for _, opt in ipairs(P.OPTIONS) do
-        actions[O .. "/" .. opt .. "/background"] = "diplo:peace:" .. opt
+        -- (the option's window takes the clicks: its background is the window's; an invalid
+        -- option's is disabled)
+        if valid[opt] then
+            actions[O .. "/" .. opt] = "diplo:peace:" .. opt
+        end
     end
     if send_valid then
         actions[O .. "/send"] = "diplo:peace_send"

@@ -800,12 +800,15 @@ function A.apply(game_dir, key, actor, recipient)
             if okev then
                 local okr, err = pcall(events.on_action, SIGN[formed], eval.S("country", recipient),
                     eval.new_ctx(eval.S("country", actor), eval.S("country", recipient)))
+                if eval.sync then pcall(eval.sync) end
                 run[#run + 1] = SIGN[formed] .. (okr and "" or (" failed: " .. tostring(err)))
             end
         end
         local oa = def and field(def.block, "on_accept")
         if type(oa) == "table" then
             local okr, err = pcall(eval.effect, oa, eval.new_ctx(eval.S("country", actor), eval.S("country", recipient)))
+            -- its queued engine effects applied now (simscript.eval.sync), as the game applies them at once
+            if eval.sync then pcall(eval.sync) end
             run[#run + 1] = "on_accept" .. (okr and "" or (" failed: " .. tostring(err)))
         end
         if #run > 0 then

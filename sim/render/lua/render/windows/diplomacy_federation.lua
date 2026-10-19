@@ -83,13 +83,14 @@ end
 -- the federation's defines (NGameplay FEDERATION_COHESION_TO_XP [V 00_defines.txt])
 local COHESION_TO_XP, COHESION_RANGE = 0.1, 100
 
--- the members' sort (SortAllianceMembers' sorters, by the sort buttons): name, economy, fleet,
--- technology, opinion [I: the others by name]
+-- the members' sort keys (SortAllianceMembers' sorters, by the sort buttons): name, economy,
+-- fleet, technology, opinion [I: diplomacy, envoys and ethics by name]
 local SORT = {
     name = function(m) return m.name end,
-    economy_power = function(m) return -(m.c.economy_power or 0) end,
-    fleet_power = function(m) return -(m.c.military_power or 0) end,
-    technology_power = function(m) return -(m.c.tech_power or 0) end,
+    economy_power = function(m) return m.c.economy_power or 0 end,
+    fleet_power = function(m) return m.c.military_power or 0 end,
+    technology_power = function(m) return m.c.tech_power or 0 end,
+    opinion = function(m) return m.op or -math.huge end,
 }
 
 function M.build(ctx, state)
@@ -102,6 +103,11 @@ function M.build(ctx, state)
         return
     end
     local tab = state.tab or "levels"
+    -- the Members tab's sort (`fed_<method>[:asc]`, apart from Contacts' own): by default the
+    -- economy, descending [I: the game's first frame lists 493 before 482]
+    local sort_method, sort_dir = (state.sort or ""):match("^fed_([^:]+):?(.*)$")
+    sort_method = sort_method or "economy_power"
+    local sort_asc = sort_dir == "asc"
     local hide, text, frames, progress, sprites, textures, disabled = {}, {}, {}, {}, {}, {}, {}
     for _, t in ipairs(TABS) do
         -- UpdateTabVisibility; SwitchToTab: Levels shows levels_window, the others the cohesion
@@ -170,8 +176,10 @@ function M.build(ctx, state)
         actions[V .. "/leave_federation_button"] = "diplo:member:leave_federation"
     end
     local MW = V .. "/members_window/sort_buttons"
+    -- OnSetSortType: another button sorts by it, descending first; the same button again
+    -- reverses (the game's frames: Name once Sacred..Calctoran, twice Calctoran..Sacred)
     for _, s in ipairs({ "name", "economy_power", "fleet_power", "technology_power", "opinion", "diplomacy", "envoys", "ethics" }) do
-        actions[MW .. "/" .. s .. "_button"] = "diplo:sort:" .. s
+        actions[MW .. "/" .. s .. "_button"] = "diplo:sort:fed_" .. s .. ((s == sort_method and not sort_asc) and ":asc" or "")
     end
     local r = ctx.layout(FILE, "federation_view", {
         hide = hide, text = text, frames = frames, progress = progress, sprites = sprites, textures = textures,
@@ -182,7 +190,8 @@ function M.build(ctx, state)
     for _, m in ipairs(f.members or {}) do
         local c = data.countries[m]
         if c then
-            members[#members + 1] = { id = m, c = c, name = ctx.name(c.name) }
+            local o = data.opinion and data.opinion[m]
+            members[#members + 1] = { id = m, c = c, name = ctx.name(c.name), op = type(o) == "table" and o.of_us or nil }
         end
     end
     -- the small members list (CSmallFederationMemberItem): by economy [I], a row each (38 high,
@@ -228,9 +237,13 @@ function M.build(ctx, state)
                 if k <= 3 then
                     local pp = p .. "/perk/" .. k
                     local PE = pp .. "/perk_item"
+                    -- the icon at its texture's size (42 x 42; the gui's quad sprite is 29), 21
+                    -- right of and 3 under the grid's slot [I: measured in the game's frame of
+                    -- fed_2212.sav]; a locked level's greyed
                     ctx.layout(FILE, "perk_item", {
-                        prefix = pp, parent = { x = PG.x + (k - 1) * 45, y = PG.y, w = 0, h = 0 },
+                        prefix = pp, parent = { x = PG.x + 21 + (k - 1) * 45, y = PG.y + 3, w = 0, h = 0 },
                         textures = { [PE .. "/perk_icon"] = "gfx/interface/icons/federation/federation_perks/" .. perk .. ".dds" },
+                        sizes = { [PE .. "/perk_icon"] = { 42, 42 } },
                         disabled = locked and { [PE] = true } or nil,
                     })
                 end
@@ -239,24 +252,34 @@ function M.build(ctx, state)
     elseif tab == "members" then
         -- UpdateMembersTab: a federation_member_entry per member, by the sort (the same button
         -- again reverses it)
-        local key = SORT[state.sort or "name"] or SORT.name
+        local key = SORT[sort_method] or SORT.name
         table.sort(members, function(a, b)
             local ka, kb = key(a), key(b)
-            if ka ~= kb then return ka < kb end
+            if ka ~= kb then
+                if sort_asc then return ka < kb end
+                return ka > kb
+            end
             return a.id < b.id
         end)
         local ML = r.rects[V .. "/members_window/members_list_window/members"]
         for k, m in ipairs(ML and members or {}) do
             local p = "/fed_member/" .. k
             local E = p .. "/federation_member_entry"
-            local op = data.opinion and data.opinion[m.id]
-            ctx.layout(FILE, "federation_member_entry", {
+            -- the opinion column: their opinion of us (+20 for 16777218 in the game's frame of
+            -- fed_2212.sav, the data's `of_us`)
+            local o = data.opinion and data.opinion[m.id]
+            local op = type(o) == "table" and o.of_us or nil
+            -- the country type (NCountryUtil::GetCountryTypeString): the player's "Player Empire",
+            -- an AI's personality (as the game's frame) [I: other country types]
+            local ctype = m.id == data.player and "PLAYER_EMPIRE_SP" or (m.c.personality and ("personality_" .. m.c.personality) or "")
+            local er = ctx.layout(FILE, "federation_member_entry", {
                 prefix = p, parent = { x = ML.x, y = ML.y + (k - 1) * 52, w = 0, h = 0 },
                 text = {
-                    [E .. "/name"] = m.name, [E .. "/empire_type"] = m.c.government or "",
-                    [E .. "/economy_power_amount"] = ctx.fmt("FEDERATION_ECONOMY_VALUE", { VALUE = math.floor((m.c.economy_power or 0) + 0.5) }),
-                    [E .. "/fleet_power_amount"] = ctx.fmt("FEDERATION_FLEET_VALUE", { VALUE = math.floor((m.c.military_power or 0) + 0.5) }),
-                    [E .. "/technology_power_amount"] = ctx.fmt("FEDERATION_TECH_VALUE", { VALUE = math.floor((m.c.tech_power or 0) + 0.5) }),
+                    [E .. "/name"] = m.name, [E .. "/empire_type"] = ctype,
+                    -- "$VALUE|0W$": C's %.0f (252.5 shows 252, as the game)
+                    [E .. "/economy_power_amount"] = ctx.fmt("FEDERATION_ECONOMY_VALUE", { VALUE = m.c.economy_power or 0 }),
+                    [E .. "/fleet_power_amount"] = ctx.fmt("FEDERATION_FLEET_VALUE", { VALUE = m.c.military_power or 0 }),
+                    [E .. "/technology_power_amount"] = ctx.fmt("FEDERATION_TECH_VALUE", { VALUE = m.c.tech_power or 0 }),
                     [E .. "/their_opinion"] = m.id == data.player and "DASH" or (op and ctx.fmt("ALLIANCE_AND_FEDERATION_VIEW_THEIR_OPINION", { VAL = op }) or "UNKNOWN_OPINION"),
                     -- the diplomatic weight and the envoys [I: not computed]
                     [E .. "/diplomacy_weight"] = "", [E .. "/envoys_count"] = "",
@@ -265,6 +288,18 @@ function M.build(ctx, state)
                 actions = { [E .. "/flag"] = "diplo:country:" .. m.id },
             })
             ctx.flags[E .. "/flag"] = m.id
+            -- the ethics: an icon each (gfx/interface/icons/ethics/<ethic>.dds, as Contacts), in
+            -- the entry's ethics box from the left [I: the opposing ethics' marks not drawn]
+            local sp = {}
+            for _, e in ipairs(m.c.ethics or {}) do
+                sp[#sp + 1] = ctx.texture("gfx/interface/icons/ethics/" .. e .. ".dds")
+            end
+            -- (the box's gui size is written `size = { x = 120 y = 32 }`: its width given here)
+            local box = er.rects[E .. "/ethics"]
+            if box then
+                box = { x = box.x, y = box.y, w = math.max(box.w, 120), h = math.max(box.h, 32) }
+            end
+            ctx.icons(E .. "/ethics", box, sp, "left")
         end
     end
 end
