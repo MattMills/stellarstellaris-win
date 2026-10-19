@@ -954,11 +954,14 @@ return function(eval, H)
         if not c then return end
         local pr = params(e)
         local name = pr.name and unq(pr.name.value.text)
-        local d = name and def("common/decisions", name)
+        local dd = name and defs.get("common/decisions", name)
+        local d = dd and dd.block
         if not d then return end
-        local pot = defs.field(d, "potential")
-        if type(pot) == "table" and not eval.trigger(pot, eval.new_ctx(S("planet", pid))) then return end
+        -- (the decision's file: its own @variables)
         local owner = ref(world.field(world.object("planet", pid), "owner"))
+        local function dctx() return eval.new_ctx(S("planet", pid), owner and S("country", owner) or nil, nil, dd.file) end
+        local pot = defs.field(d, "potential")
+        if type(pot) == "table" and not eval.trigger(pot, dctx()) then return end
         local time = tonumber(defs.field(d, "enactment_time")) or 0
         local queue = ref(world.field(world.object("planet", pid), "build_queue"))
         if time > 0 and queue then
@@ -967,7 +970,7 @@ return function(eval, H)
                 fields = { { "decision", name, true }, { "planet", cid } }, cost = {}, cost_order = {}, build_time = time })
         else
             local eff = defs.field(d, "effect")
-            if type(eff) == "table" then eval.effect(eff, eval.new_ctx(S("planet", pid), owner and S("country", owner) or nil)) end
+            if type(eff) == "table" then eval.effect(eff, dctx()) end
         end
         written()
     end
