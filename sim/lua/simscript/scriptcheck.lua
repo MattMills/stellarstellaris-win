@@ -422,11 +422,31 @@ function X.dynamic(mod_dir)
     local trees = {}
     local writes, restore = count_writes(world)
     local out = {}
+    -- the order the uses run in: every effect changes the one world the next ones run in, so the
+    -- triggers and links (which change nothing) run first, then the effects, and last the effects
+    -- that take objects away (a colony destroyed, a planet given to rebels, a leader killed: the
+    -- capital and the links to it would be gone for everything after them)
+    local DESTROYS = { "destroy", "kill", "remove", "create_rebels", "set_owner", "set_controller", "abandon",
+        "delete", "clear", "ruin", "end_", "cancel", "disband", "despawn", "dismantle", "depopulate", "purge" }
+    local function phase(kind, name)
+        if kind ~= "effect" then return 1 end
+        local n = name:lower()
+        for _, w in ipairs(DESTROYS) do
+            if n:find(w, 1, true) then return 3 end
+        end
+        return 2
+    end
+    local rows = {}
     for i = 2, #manifest do
         local f = {}
         for v in (manifest[i] .. "\t"):gmatch("([^\t]*)\t") do
             f[#f + 1] = v
         end
+        rows[#rows + 1] = { f = f, ph = phase(f[1] or "", f[2] or ""), i = i }
+    end
+    table.sort(rows, function(a, b) if a.ph ~= b.ph then return a.ph < b.ph end return a.i < b.i end)
+    for _, row in ipairs(rows) do
+        local f = row.f
         local kind, name, file, line, scope, placed = f[1], f[2], f[3], tonumber(f[4]), f[5], f[6]
         if (kind == "trigger" or kind == "effect" or kind == "link") and placed == "placed" and line then
             local tree = trees[file]
