@@ -13,7 +13,7 @@
 --              leaders, countries, species, galaxy objects): a new game's start script
 --   fleet_actions  queue_actions, clear_fleet_actions, auto_move_to_planet, remove_auto_move_target
 
-local AREAS = { "runtime", "diplomacy", "creation", "objects", "fleet_actions" }
+local AREAS = { "runtime", "diplomacy", "creation", "objects", "fleet_actions", "empire" }
 
 return function(eval)
     for _, area in ipairs(AREAS) do
