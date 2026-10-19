@@ -531,4 +531,6 @@ return function(eval)
     require("simscript.handlers.empire_triggers")(eval, H)
     require("simscript.handlers.empire_effects")(eval, H)
     require("simscript.handlers.empire_pops")(eval, H)
+    require("simscript.handlers.empire_leaders")(eval, H)
+    require("simscript.handlers.empire_species")(eval, H)
 end
