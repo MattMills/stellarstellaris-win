@@ -487,8 +487,18 @@ local function handle(cid, col, from, to)
             world.set(armies[i], "species", to)
         end
     end
-    -- CColony::HandleSpeciesModification: the groups of the species, last first, into the group of
-    -- the template with the same category (made when the colony has none)
+    M.replace_groups(col, from, to)
+    -- the founder species
+    if tonumber(world.field(c, "founder_species_ref")) == from then
+        world.set(c, "founder_species_ref", to)
+    end
+end
+M.handle = handle
+
+-- CColony::HandleSpeciesModification (ReplaceAllPopGroupSpecies): the colony's groups of the
+-- species, last first, into its group of the new species with the same category (made when the
+-- colony has none)
+function M.replace_groups(col, from, to)
     local colony = require("engine.script.objects_colony")
     local pops = require("engine.pops")
     local cobj = world.object("colony", col)
@@ -512,10 +522,6 @@ local function handle(cid, col, from, to)
                 M.stats.pops_moved = M.stats.pops_moved + size
             end
         end
-    end
-    -- the founder species
-    if tonumber(world.field(c, "founder_species_ref")) == from then
-        world.set(c, "founder_species_ref", to)
     end
 end
 

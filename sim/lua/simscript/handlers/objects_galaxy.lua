@@ -256,7 +256,8 @@ return function(eval, O)
         if p.ethos then
             if p.ethos.value.text == "random" then t.ethos = "random"
             else
-                local found, sc = p.ethos.value.text and eval.resolve(p.ethos.value.text, ctx, p.ethos)
+                local found, sc
+                if p.ethos.value.text then found, sc = eval.resolve(p.ethos.value.text, ctx, p.ethos) end
                 if found and sc and sc.kind == "country" then
                     sync()
                     t.ethos = {}

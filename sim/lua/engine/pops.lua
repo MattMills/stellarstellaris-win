@@ -1059,7 +1059,8 @@ end
 -- the colonies whose caches change this month
 local touched = {}
 
--- CPopGroup::AddSize (0x67d720): the size, the colony's caches, the ethics, the detail
+-- CPopGroup::AddSize (0x67d720): the size, the colony's caches, the ethics, the detail (pops.add_size: the
+-- script effects' too, simscript/handlers/empire_pops.lua)
 local function add_size(gid, cid, n, detail)
     local g = world.object("pop_groups", gid)
     local size = int(world.field(g, "size"))
@@ -1072,6 +1073,7 @@ local function add_size(gid, cid, n, detail)
     touched[cid] = true
     return n
 end
+pops.add_size = add_size
 
 -- ---------------------------------------------------------------------------------------------
 -- where new pops go (NPlanetJobs::UpdatePopJobs, not modelled: a stand-in)
@@ -1738,6 +1740,9 @@ local function reset_caches()
     founder_cache, scale_cache = {}, {}
 end
 pops.remove_killed = remove_killed
+-- pops.add_size(gid, cid, n, detail): a pop group's size changed by n (its ethos with it, the
+-- month's detail): the script's kill_pop_group / sacrifice_pop_group (handlers/planet_effects.lua)
+pops.add_size = add_size
 
 -- pops.monthly(host, date): NColonyUpdate::MonthlyUpdate's pops
 local monthly

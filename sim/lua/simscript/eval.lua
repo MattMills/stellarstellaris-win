@@ -531,6 +531,8 @@ local function apply_ops_tree(b, ctx, acc, only_ops)
                 if trigger(e.value, ctx, VALUE_OPS) then
                     acc = apply_ops(e.value, ctx, acc, true)
                 end
+            elseif k == "complex_trigger_modifier" and e.value.text == nil then
+                acc = M.complex_trigger_modifier(e.value, ctx, acc, e)
             elseif k == "if" or k == "else_if" or k == "else" then
                 if k == "if" then taken = false end
                 if not taken and e.value.text == nil then
@@ -620,6 +622,8 @@ function M.weight(b, ctx, base)
                         end
                     end
                 end
+            elseif k == "complex_trigger_modifier" and e.value.text == nil then
+                acc = M.complex_trigger_modifier(e.value, ctx, acc, e)
             elseif k == "complex_trigger_modifier" or k == "opinion_modifier" or k == "modifier" then
                 miss("weight op", k, ctx, e)
             end
@@ -689,12 +693,10 @@ local LISTS = {
     owned_planet = function(sc) if sc.kind ~= "country" then return {} end sync() return map_scopes("planet", E.colonies(sc.id)) end,
     country = function() sync() return map_scopes("country", E.countries()) end,
     owned_pop_group = pop_groups_of,
-    pop_group = pop_groups_of,
     owned_leader = function(sc) if sc.kind ~= "country" then return {} end sync() return map_scopes("leader", E.leaders(sc.id)) end,
 }
 LISTS.owned_colony = LISTS.owned_planet
 LISTS.playable_country = LISTS.country
-LISTS.leader = LISTS.owned_leader
 LISTS.neighbor_country = function(sc)
     if sc.kind ~= "country" or not E.neighbors then return {} end
     sync()
@@ -807,7 +809,8 @@ end
 local TRIG = {}
 M.TRIG = TRIG
 local ITER_PARAMS = { limit = true, count = true, list = true, order_by = true, position = true, max = true,
-    min = true, check_range_bounds = true, weight = true, text = true, fail_text = true }
+    min = true, check_range_bounds = true, weight = true, text = true, fail_text = true,
+    weights = true, inverse = true }
 
 local function scripted_call(def, name, e, kind)
     if e.value.text then
@@ -949,6 +952,93 @@ function M.count_value(key, block, ctx)
         return nil
     end
     return (M.count_items(lname, list, block, ctx))
+end
+
+-- M.trigger_value(name, params, ctx, e) -> a numeric trigger's value (the game's GetTriggerValue)
+-- with its parameter block, or nil when the Lua has none: a count_<list>'s count, else the
+-- handler modules' TRIGGER_VALUES / TVAL, called with a statement whose value is the parameters
+function M.trigger_value(name, params, ctx, e)
+    local key = name:lower()
+    local block = params or {}
+    local n = M.count_value(key, block, ctx)
+    if n then
+        return n
+    end
+    local se = { op = "=", key = { text = name }, value = block, line = e and e.line, file = e and e.file }
+    local f = M.TRIGGER_VALUES[key]
+    if f then
+        return f(ctx, se)
+    end
+    local tv = M.TVAL[name] or M.TVAL[key]
+    if tv then
+        return tv(ctx, se)
+    end
+    return nil
+end
+
+-- complex_trigger_modifier = { trigger = <numeric trigger> trigger_scope = <scope>
+-- parameters = { ... } potential = { ... } mult = n min_value = n max_value = n
+-- mode = add|subtract|mult|factor|divide desc = <key> } in a value or a weight
+-- (CComplexTriggerMTTHModifier::ReadMember 0x1d56be0 for the keys, ModifyNumber 0x1d57a50) [V]:
+-- when potential holds in the current scope, the trigger's value in trigger_scope (default this),
+-- with its parameters, times mult (`multiplier` is the same field; default 1), clamped to
+-- min_value / max_value when given, is applied to acc by mode [I: the default mode, add]. A
+-- trigger_scope that names no object leaves acc as it is.
+function M.complex_trigger_modifier(b, ctx, acc, e)
+    local name, scope, params, mode, potential, mult, lo, hi
+    for _, x in ipairs(b) do
+        if x.op and x.key then
+            local xk = x.key.text:lower()
+            if xk == "trigger" then name = x.value.text
+            elseif xk == "trigger_scope" then scope = x
+            elseif xk == "parameters" then params = x.value
+            elseif xk == "mode" then mode = x.value.text
+            elseif xk == "potential" then potential = x.value
+            elseif xk == "mult" or xk == "multiplier" then mult = x
+            elseif xk == "min_value" then lo = x
+            elseif xk == "max_value" then hi = x
+            end
+        end
+    end
+    if not name then
+        miss("value op", "complex_trigger_modifier", ctx, e)
+        return acc
+    end
+    if potential and potential.text == nil and not trigger(potential, ctx) then
+        return acc
+    end
+    local c = ctx
+    if scope and scope.value.text then
+        local found, sc = M.resolve(scope.value.text, ctx, scope)
+        if not found then
+            miss("value op", "complex_trigger_modifier trigger_scope", ctx, scope)
+            return acc
+        end
+        if not sc or sc == NONE then
+            return acc
+        end
+        c = push(ctx, sc)
+    end
+    if params and params.text then params = nil end
+    local v = M.trigger_value(name, params, c, e)
+    if v == nil then
+        miss("trigger value", name:lower(), ctx, e)
+        return acc
+    end
+    if mult then v = v * M.value(mult.value, ctx, mult) end
+    if lo then v = math.max(v, M.value(lo.value, ctx, lo)) end
+    if hi then v = math.min(v, M.value(hi.value, ctx, hi)) end
+    mode = (mode or "add"):lower()
+    if mode == "add" then return acc + v
+    elseif mode == "subtract" then return acc - v
+    elseif mode == "mult" or mode == "multiply" or mode == "factor" then return acc * v
+    elseif mode == "divide" then
+        if v ~= 0 then return acc / v end
+        return acc
+    elseif mode == "set" then return v
+    end
+    miss("complex_trigger_modifier mode", mode, ctx, e)
+    return acc
 end
 
 -- a block: AND of its statements (keys in skip are parameters, not triggers)
@@ -1114,12 +1204,14 @@ TRIG["has_technology"] = function(e, ctx)
     sync()
     return E.has("country", c.id, "tech", e.value.text or "")
 end
+-- has_resource = { type|resource = <resource> amount <op> n }: CHasResourceTrigger::ReadMember
+-- (0x3b86310) reads the resource as `type` or `resource` [V]
 TRIG["has_resource"] = function(e, ctx)
     local res, op, amount = nil, ">=", 0
     for _, x in ipairs(e.value) do
         if x.op then
             local xk = x.key.text:lower()
-            if xk == "type" then res = x.value.text
+            if xk == "type" or xk == "resource" then res = x.value.text
             elseif xk == "amount" then op = x.op; amount = M.value(x.value, ctx, x) end
         end
     end
@@ -1146,8 +1238,8 @@ TRIG["resource_stockpile_compare"] = function(e, ctx)
     if have == nil then return false end
     return compare(have, op, amount)
 end
--- has_dlc: the save's DLCs (E.has_dlc reads its required_dlcs; yes without a world)
-TRIG["has_dlc"] = function(e)
+-- host_has_dlc: the save's DLCs (E.has_dlc reads its required_dlcs; yes without a world)
+TRIG["host_has_dlc"] = function(e)
     if E.has_dlc and e.value.text then return E.has_dlc(e.value.text) end
     return true
 end
@@ -1159,7 +1251,6 @@ end
 TRIG["end_game_years_passed"] = function(e, ctx)
     return compare(floor(M.today() / 360) - 2400, e.op, M.value(e.value, ctx, e))
 end
-TRIG["host_has_dlc"] = TRIG["has_dlc"]
 TRIG["is_multiplayer"] = function(e) return not yes(e) end
 TRIG["is_ironman"] = function(e) return not yes(e) end
 
@@ -1540,9 +1631,6 @@ end
 -- numeric engine reads: key -> scope kind, field
 local NUMS = {
     num_owned_planets = { "country", "num_colonies" },
-    num_colonies = { "country", "num_colonies" },
-    num_pops = { nil, "num_pops" },
-    num_leaders = { "country", "num_leaders" },
     has_base_skill = { "leader", "has_base_skill" },
 }
 for k, spec in pairs(NUMS) do
@@ -1551,9 +1639,7 @@ for k, spec in pairs(NUMS) do
         local kind = spec[1] or sc.kind
         if kind ~= sc.kind then return false end
         sync()
-        local field = spec[2]
-        if sc.kind == "planet" and field == "num_pops" then field = "pops" end
-        local v = E.get(sc.kind, sc.id, field)
+        local v = E.get(sc.kind, sc.id, spec[2])
         return compare(tonumber(v) or 0, e.op, M.value(e.value, ctx, e))
     end
 end
@@ -1698,14 +1784,18 @@ local function iterate_effect(kind, lname, e, ctx)
         miss("iterator", kind .. "_" .. lname, ctx, e)
         return
     end
-    local limit, order_by, position, max = nil, nil, 0, 1
+    local limit, order_by, position, max, weights, inverse = nil, nil, 0, 1, nil, false
     for _, x in ipairs(e.value) do
         if x.op then
             local xk = x.key.text:lower()
             if xk == "limit" then limit = x.value
             elseif xk == "order_by" then order_by = x.value
             elseif xk == "position" then position = M.value(x.value, ctx, x)
-            elseif xk == "max" then max = M.value(x.value, ctx, x) end
+            elseif xk == "max" then max = M.value(x.value, ctx, x)
+            -- random_x: `weights = { base = f modifier = { add/factor = f <triggers> } }`, each
+            -- candidate's chance (effects.log); ordered_x: `inverse = yes`, position 0 the lowest
+            elseif xk == "weights" and x.value.text == nil then weights = x.value
+            elseif xk == "inverse" then inverse = yes(x) end
         end
     end
     local chosen = {}
@@ -1718,13 +1808,40 @@ local function iterate_effect(kind, lname, e, ctx)
     local loop = SR and SR.begin(ctx)
     if kind == "random" then
         if #chosen == 0 then return end
-        chosen = { chosen[(loop and SR.draw(loop) or rand()) % #chosen + 1] }
+        if weights then
+            -- each candidate weighted in its own scope (base 1), picked as random_list picks:
+            -- weights in thousandths, one draw modulo their total [I: random_list's rule]
+            local ws, total = {}, 0
+            for i, s2 in ipairs(chosen) do
+                local w = math.floor(math.max(0, M.weight(weights, push(ctx, s2), 1)) * 1000)
+                ws[i] = w
+                total = total + w
+            end
+            if total <= 0 then return end
+            local r = (loop and SR.draw(loop) or rand()) % total
+            for i, s2 in ipairs(chosen) do
+                if r < ws[i] then
+                    chosen = { s2 }
+                    break
+                end
+                r = r - ws[i]
+            end
+        else
+            chosen = { chosen[(loop and SR.draw(loop) or rand()) % #chosen + 1] }
+        end
     elseif kind == "ordered" then
         local keyed = {}
         for i, s2 in ipairs(chosen) do
             keyed[i] = { s2, order_by and M.value(order_by, push(ctx, s2), e) or 0, i }
         end
-        table.sort(keyed, function(a, b) if a[2] ~= b[2] then return a[2] > b[2] end return a[3] < b[3] end)
+        -- highest first; `inverse = yes` lowest first (ties in list order)
+        table.sort(keyed, function(a, b)
+            if a[2] ~= b[2] then
+                if inverse then return a[2] < b[2] end
+                return a[2] > b[2]
+            end
+            return a[3] < b[3]
+        end)
         chosen = {}
         for i = position + 1, math.min(#keyed, position + max) do
             chosen[#chosen + 1] = keyed[i][1]
@@ -1809,6 +1926,18 @@ local function effect1(e, ctx)
     miss("effect", lk, ctx, e)
 end
 
+-- `break = yes` (simscript/handlers/general.lua): the scope's break flag (CEventScope +0x168), set
+-- on the scope itself (a scripted effect's context is the same scope); the statements after it in
+-- that scope are skipped, in every block that holds it (CEffect::ExecuteActual 0x24f7bf0). A scope
+-- made from it (push) starts without it
+local function scope_of(ctx)
+    while ctx.same do ctx = ctx.same end
+    return ctx
+end
+function M.set_broke(ctx) scope_of(ctx).broke = true end
+local function broke(ctx) return scope_of(ctx).broke == true end
+M.broke = broke
+
 effect = function(b, ctx, skip)
     tick("effect")
     local taken = false
@@ -1831,6 +1960,7 @@ effect = function(b, ctx, skip)
                 else
                     effect1(e, ctx)
                 end
+                if broke(ctx) then return end
             end
         end
     end
@@ -1844,8 +1974,6 @@ EFF["custom_tooltip"] = noop
 EFF["tooltip"] = noop
 EFF["log"] = noop
 EFF["log_error"] = noop
-EFF["set_update_modifiers_batch"] = noop
-EFF["optimize_memory"] = noop
 EFF["while"] = function(e, ctx)
     local n, limit = nil, nil
     for _, x in ipairs(e.value) do
@@ -1922,48 +2050,18 @@ local function var_effect(op)
         elseif op == "round" then cur = floor(cur + 0.5)
         elseif op == "floor" then cur = floor(cur)
         elseif op == "ceiling" then cur = math.ceil(cur)
-        elseif op == "abs" then cur = math.abs(cur)
         elseif op == "clear" then cur = nil end
         setvar(ctx.this, which, cur)
     end
 end
-for _, op in ipairs({ "set", "change", "subtract", "multiply", "divide", "modulo", "round", "floor", "ceiling", "abs" }) do
+for _, op in ipairs({ "set", "change", "subtract", "multiply", "divide", "modulo", "round", "floor", "ceiling" }) do
     EFF[op .. "_variable"] = var_effect(op)
 end
 EFF["clear_variable"] = var_effect("clear")
-EFF["remove_variable"] = var_effect("clear")
-EFF["clamp_variable"] = function(e, ctx)
-    local which, lo, hi
-    for _, x in ipairs(e.value) do
-        if x.op then
-            local xk = x.key.text:lower()
-            if xk == "which" then which = x.value.text
-            elseif xk == "min" then lo = M.value(x.value, ctx, x)
-            elseif xk == "max" then hi = M.value(x.value, ctx, x) end
-        end
-    end
-    if not which then return end
-    count_script()
-    local v = getvar(ctx.this, which) or 0
-    if lo and v < lo then v = lo end
-    if hi and v > hi then v = hi end
-    setvar(ctx.this, which, v)
-end
 EFF["save_event_target_as"] = function(e, ctx) count_script(); ctx.targets[e.value.text] = ctx.this end
 EFF["save_global_event_target_as"] = function(e, ctx) count_script(); state.global_targets[e.value.text] = ctx.this end
 EFF["clear_global_event_target"] = function(e) count_script(); state.global_targets[e.value.text] = nil end
 EFF["clear_global_event_targets"] = function() count_script(); state.global_targets = {} end
-EFF["add_to_temp_list"] = function(e, ctx)
-    count_script()
-    local l = ctx.lists[e.value.text]
-    if not l then l = {}; ctx.lists[e.value.text] = l end
-    l[#l + 1] = ctx.this
-end
-EFF["remove_from_temp_list"] = function(e, ctx)
-    count_script()
-    local l = ctx.lists[e.value.text] or {}
-    for i = #l, 1, -1 do if l[i] == ctx.this then table.remove(l, i) end end
-end
 EFF["fire_on_action"] = function(e, ctx)
     local name
     if e.value.text then name = e.value.text else
@@ -1973,6 +2071,11 @@ EFF["fire_on_action"] = function(e, ctx)
     end
     if name then M.on_action(name, ctx.this, ctx) end
 end
+
+-- optimize_memory: not in the game's documentation, but vanilla runs it (97 uses in on_actions
+-- and events): a memory hint for the game, no change to the world (simscript.scriptcheck
+-- lists it as accepted, not invented)
+EFF["optimize_memory"] = function() end
 
 -- engine effects with a model in the Rust engine
 EFF["add_resource"] = function(e, ctx)

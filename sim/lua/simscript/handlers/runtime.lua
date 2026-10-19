@@ -1060,7 +1060,6 @@ return function(eval)
         sync()
         return scopes("system", r.all("system"))
     end
-    LISTS["galaxy_system"] = LISTS["galaxy_system"] or LISTS["system"]
     -- archaeological_site (CArchaeologicalSiteListBuilder 0x1812560): every site
     LISTS["archaeological_site"] = function()
         local r = rt()
@@ -1252,16 +1251,29 @@ return function(eval)
     -- defaults 100 / 200 / 300); an unknown setting: -1
     local SETUP_FIELD = { mid_game_year = { "mid_game_start", 100 }, end_game_year = { "end_game_start", 200 },
         victory_year = { "victory_year", 300 } }
+    local function setup_value(r, setting)
+        local spec = SETUP_FIELD[setting]
+        local v = tonumber(r.galaxy_field(spec and spec[1] or setting))
+        if spec and (v == nil or v == -1) then v = spec[2] end
+        return v or -1
+    end
     TRIG["check_galaxy_setup_value"] = function(e, ctx)
         local r = rt()
         if not r or e.value.text then return false end
         local p = params(e)
         local setting, val = p.setting and p.setting.value.text, p.value
         if not setting or not val then return false end
-        local spec = SETUP_FIELD[setting]
-        local v = tonumber(r.galaxy_field(spec and spec[1] or setting))
-        if spec and (v == nil or v == -1) then v = spec[2] end
-        return compare(v or -1, val.op, eval.value(val.value, ctx, val))
+        return compare(setup_value(r, setting), val.op, eval.value(val.value, ctx, val))
+    end
+    -- its value (`complex_trigger_modifier = { trigger = check_galaxy_setup_value parameters = {
+    -- setting = x } }`): the setting's value
+    TVAL["check_galaxy_setup_value"] = function(_, e)
+        local r = rt()
+        if not r or not e or e.value.text then return 0 end
+        local p = params(e)
+        local setting = p.setting and p.setting.value.text
+        if not setting then return 0 end
+        return setup_value(r, setting)
     end
 
     -- countries
@@ -2319,7 +2331,8 @@ return function(eval)
         sync()
         local s = r.obj("sector", cur.id)
         local col = s and r.ref(wfield(s, "local_capital"))
-        local kind, id = col and r.carrier_of("colony", col)
+        local kind, id
+        if col then kind, id = r.carrier_of("colony", col) end
         return kind and S(kind, id) or nil
     end
     LINKS["ship"] = function(cur)
@@ -2502,7 +2515,8 @@ return function(eval)
     -- (planet size, the defines, the country's and colony's max-district modifiers)
     local function district_info(sc, r)
         local col = r.colony_of(sc.kind, sc.id)
-        local kind, pid = col and r.carrier_of("colony", col)
+        local kind, pid
+        if col then kind, pid = r.carrier_of("colony", col) end
         if kind ~= "planet" then return nil end
         local ok, slots = pcall(require, "engine.ai.economy.slots")
         if not ok then return nil end

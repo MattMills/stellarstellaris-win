@@ -1,0 +1,64 @@
+# the events package's silent and refused rows, each run on a real target made just before
+# situations
+E country player start_situation = { type = situation_energy_deficit }
+E situation $new:situation set_situation_approach = deficit_approach_cut_science_investment
+S situation $new:situation approach
+E situation $new:situation abort_situation = this
+S situation $new:situation to_be_killed
+E country player start_situation = { type = situation_energy_deficit }
+E situation $new:situation destroy_situation = this
+S situation $new:situation to_be_killed
+# event chains
+E country player begin_event_chain = { event_chain = cs_stormfever_chain target = this }
+E country player add_event_chain_counter = { event_chain = cs_stormfever_chain counter = fleets_defeated_in_storm amount = 1 }
+E country player reset_event_chain_counter = { event_chain = cs_stormfever_chain counter = fleets_defeated_in_storm }
+E country player end_event_chain = cs_stormfever_chain
+T country player has_event_chain = cs_stormfever_chain
+# special projects
+E country player enable_special_project = { name = GAS_GIANT_BODIES_PROJECT location = capital_scope owner = this }
+E country player abort_special_project = { type = GAS_GIANT_BODIES_PROJECT }
+E country player enable_special_project = { name = GAS_GIANT_BODIES_PROJECT location = capital_scope owner = this }
+E country player complete_special_project = { type = GAS_GIANT_BODIES_PROJECT }
+S country player last_completed_special_project
+E country player random_owned_fleet = { fleet_action_research_special_project = { special_project = GAS_GIANT_BODIES_PROJECT target = root.capital_scope } }
+# anomalies
+E country player capital_scope = { spawn_random_anomaly = { target = root } }
+E country player capital_scope = { add_anomaly = { category = TROP_BIOLOGY_CAT target = root } }
+# pre-FTL awareness
+E country player random_country = { limit = { is_country_type = primitive } add_awareness = 10 }
+E country player random_country = { limit = { is_country_type = primitive } set_awareness = 50 }
+# missions and observation posts
+E country player enable_mission = { name = MISSION_CS_STORM_FEVER_CHALLENGE_3 }
+E country player add_mission_counter = { mission = MISSION_CS_STORM_FEVER_CHALLENGE_3 counter = days_storm_rider_spend_in_storm amount = 10 }
+E country player set_mission_counter = { mission = MISSION_CS_STORM_FEVER_CHALLENGE_3 counter = days_storm_rider_spend_in_storm amount = 20 }
+E country player random_owned_fleet = { set_mission = passive_observation }
+E country player random_owned_fleet = { limit = { has_mission = passive_observation } add_mission_progress = 0.5 }
+E country player random_owned_fleet = { set_event_locked = yes save_global_event_target_as = locked_fleet }
+E country player event_target:locked_fleet = { set_event_locked = no }
+# cosmic storms
+E country player capital_scope = { solar_system = { create_cosmic_storm = { type = electric_storm cosmic_storm_start_position = this } } }
+E country player capital_scope = { solar_system = { set_cosmic_storm = { cosmic_storm = last_created_cosmic_storm } } }
+E country player capital_scope = { create_cosmic_storm_influence_field = { radius = 40 } }
+E country player capital_scope = { destroy_cosmic_storm_influence_field = { center = this } }
+# arc sites, astral rifts
+E country player capital_scope = { create_archaeological_site = site_tiyanki_graveyard }
+E archaeological_site $new:archaeological_site destroy_archaeological_site = this
+E country player capital_scope = { solar_system = { spawn_astral_rift = { id = corridors } } }
+E astral_rift $new:astral_rift destroy_astral_rift = this
+# relics
+E country player add_relic = r_galatron
+E country player remove_relic = r_galatron
+# patrons
+E country player create_patron_relation = the_eater_of_worlds
+E country player create_patron_relation = end_of_the_cycle
+E country player roll_ai_preferred_patron = yes
+S country player is_preferred_patron
+E country player remove_patron = end_of_the_cycle
+# the grand archive
+E country player unlock_exhibit = xeno_geology
+E country player give_specimen = { key = acidic_spores }
+E country player remove_specimen = acidic_spores
+E country player give_culling_rewards = { design = crystal_ship_small_blue mult = 1 }
+E country player random_country = { limit = { is_country_type = default NOT = { is_same_value = root } } unlock_exhibit = xeno_geology give_specimen = { key = acidic_spores } save_global_event_target_as = victim }
+E country player steal_specimens = { who = event_target:victim category = all count = 1 }
+T country player has_specimen = acidic_spores

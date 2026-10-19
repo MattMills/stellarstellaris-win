@@ -1,0 +1,87 @@
+# The general package's silent and modelled rows with real targets (tools/scriptprobe.lua; docs/script_general.md).
+# Targets: the player's capital system (home), the last country (them) and its capital system (their_home).
+E country player capital_scope = { solar_system = { save_global_event_target_as = home } }
+E country $country save_global_event_target_as = them
+E country $country capital_scope = { solar_system = { save_global_event_target_as = their_home } }
+E country player random_country = { limit = { has_next_pre_ftl_age = yes } save_global_event_target_as = preftl }
+L country player event_target:preftl
+#
+# the galactic community: custodian, its term, the defense force
+E country player set_galactic_custodian = yes
+T country player galactic_custodian = { is_country = root }
+E country player add_custodian_term_days = 100
+E country player set_custodian_term_days = -1
+E country player set_galactic_defense_force = yes
+T country player galactic_defense_force_exists = yes
+#
+# copy_flags_and_variables_from: the other country's flag and variable on the player
+E country $country set_country_flag = probe_copied_flag
+E country $country set_variable = { which = probe_copied_var value = 7 }
+E country player copy_flags_and_variables_from = event_target:them
+T country player has_country_flag = probe_copied_flag
+T country player check_variable = { which = probe_copied_var value = 7 }
+#
+# create_cluster, effect_on_blob around the capital
+E country player create_cluster = { id = probe_cluster center = event_target:home radius = 60 }
+E country player effect_on_blob = { center = event_target:home owned_planets_percentage = 1 planet_limit = { always = yes } effect = { set_star_flag = probe_blob } }
+T country player capital_scope = { solar_system = { has_star_flag = probe_blob } }
+#
+# fire_on_action with its from scopes
+E country player fire_on_action = { on_action = on_game_start_country scopes = { from = event_target:them } }
+#
+# pre-FTL ages on a pre-FTL country
+E country player event_target:preftl = { go_to_next_pre_ftl_age = yes }
+T country player event_target:preftl = { has_next_pre_ftl_age = yes }
+E country player event_target:preftl = { set_pre_ftl_age = atomic_age }
+T country player event_target:preftl = { has_pre_ftl_age = atomic_age }
+#
+# contracts
+E country player issue_contract = { contract = contract_megastructure_support location = event_target:home }
+T country player count_issued_contracts = 1
+T country player any_owned_contract = { always = yes }
+#
+# the vivarium: two critters, one released
+E country player add_to_vivarium = { design = NAME_Cutholoids rarity = epic amount = 2 }
+T country player num_vivarium_slots = 2
+E country player release_vivarium_fauna_count = { count = 1 }
+T country player num_vivarium_slots = 1
+#
+# backups: the flag stored, randomized (change_country_flag = random), restored
+S country player flag
+E country player store_country_backup_data = { flag = yes name = yes }
+E country player change_country_flag = random
+S country player flag
+E country player restore_country_backup_data = yes
+S country player flag
+#
+# set_visited, clear_uncharted_space on the other country's capital system
+E country player set_visited = event_target:their_home
+S country player visited_objects
+E country player clear_uncharted_space = event_target:their_home
+S country player terra_incognita.systems
+#
+# spawn_random_storm
+T country player num_cosmic_storms = 0
+E country player spawn_random_storm = yes
+T country player num_cosmic_storms = 1
+L country player last_created_cosmic_storm
+#
+# transfer_carrier: the capital's colony moved onto a ship of the player's
+E country player random_owned_fleet = { random_owned_ship = { save_global_event_target_as = carrier_ship } }
+E country player transfer_carrier = { source = capital_scope target = event_target:carrier_ship }
+#
+# values: get_attunement_points_for after add_attunement, is_difficulty
+E country player add_attunement = { the_eater_of_worlds = 300 }
+V country player get_attunement_points_for p = { patron = the_eater_of_worlds }
+V country player is_difficulty
+#
+# the recompute and interface effects: nothing of the state changes
+E country player refresh_psionic_aura_type = yes
+E country player run_ai_strategic_data = yes
+E country player start_storm_area_placing = { radius = 30 }
+#
+# remove_modifier with a static modifier vanilla has
+E country player add_modifier = { modifier = relic_activation_cooldown days = 30 }
+S country player timed_modifier
+E country player remove_modifier = relic_activation_cooldown
+S country player timed_modifier

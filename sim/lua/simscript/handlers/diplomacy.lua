@@ -866,6 +866,39 @@ return function(eval)
     -- ------------------------------------------------------------------------------------------
     -- values from triggers (`trigger:<name>`), when eval has the table
 
+    -- values with parameters (`complex_trigger_modifier = { trigger = <name> parameters = { ... } }`,
+    -- eval.TVAL: e.value is the parameter block): num_claims_on_system (`target`), as its trigger
+    -- reads it; opinion (`who`): the scope country's opinion of who (engine.ai.opinion, the opinion
+    -- trigger's)
+    if eval.TVAL then
+        eval.TVAL["num_claims_on_system"] = function(ctx, e)
+            local us = this_country(ctx)
+            local t = type(e.value) == "table" and param_scope(e.value, "target", ctx)
+            local s = t and system_of(t)
+            if not us or not s then return nil end
+            sync()
+            return claims_on(s, us)
+        end
+        -- num_favors (`target`): the favors we hold on the target, our relation's `num_favors`
+        -- (CNumFavorsTrigger 0x3be6110, the relation's +0x108 [V]; the trigger is
+        -- handlers/general_systems.lua's)
+        eval.TVAL["num_favors"] = eval.TVAL["num_favors"] or function(ctx, e)
+            local us = this_country(ctx)
+            local t = type(e.value) == "table" and param_scope(e.value, "target", ctx)
+            if not us or not t or t.kind ~= "country" then return nil end
+            sync()
+            local r = D.relation(us, t.id)
+            return tonumber(r and world.field(r, "num_favors")) or 0
+        end
+        eval.TVAL["opinion"] = function(ctx, e)
+            local us = this_country(ctx)
+            local w = type(e.value) == "table" and param_scope(e.value, "who", ctx)
+            if not us or not w or w.kind ~= "country" or not D.alive(w.id) then return nil end
+            sync()
+            return require("engine.ai.opinion").of(us, w.id)
+        end
+    end
+
     if eval.TRIGGER_VALUES then
         for k, f in pairs(VALUE) do
             eval.TRIGGER_VALUES[k] = function(ctx)
@@ -875,6 +908,20 @@ return function(eval)
         end
     end
     eval.diplomacy_values = VALUE
+
+    -- the script coverage parts (docs/script_diplomacy.md): relations, intel and envoys; wars;
+    -- federations and the galactic community; agreements and subjects; espionage. They share
+    -- handlers/diplomacy_common.lua's helpers.
+    local H = require("simscript.handlers.diplomacy_common")(eval)
+    for _, part in ipairs({ "diplomacy_relations", "diplomacy_wars", "diplomacy_federations",
+        "diplomacy_agreements", "diplomacy_espionage" }) do
+        local ok, mod = pcall(require, "simscript.handlers." .. part)
+        if ok then
+            mod(eval, H)
+        elseif not tostring(mod):find("module 'simscript.handlers." .. part .. "' not found", 1, true) then
+            error(mod, 0)
+        end
+    end
 
     -- the fleets' access (engine.diplomacy fills the pathfinder's and the movement's hooks)
     D.install_access_hooks()

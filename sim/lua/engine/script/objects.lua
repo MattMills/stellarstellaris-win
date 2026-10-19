@@ -183,7 +183,7 @@ objects.touching = touching
 
 -- the domains (they require this module: it is registered first)
 package.loaded["engine.script.objects"] = objects
-for _, name in ipairs({ "colony", "fleets", "leaders", "countries", "galaxy" }) do
+for _, name in ipairs({ "colony", "fleets", "leaders", "countries", "galaxy", "starbase" }) do
     local mod = "engine.script.objects_" .. name
     local ok, err = pcall(require, mod)
     if not ok and not tostring(err):find("module '" .. mod .. "' not found", 1, true) then
