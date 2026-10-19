@@ -523,8 +523,11 @@ Engine: `sim/lua/engine/fleets/combat.lua`, run every micro tick (10 a day) from
   stays and the amoebas do not move (the evasive stance's pathing and the monsters' roaming are not
   done here).
 - **Not done**:
-  - combat movement: fleets stay where combat found them, and ranges are the fleets' distances
-    [I];
+  - the ships' own combat movement: an armed fleet in combat moves as one toward its nearest
+    enemy fleet, at a tenth of its speed a tick, until that enemy is at the median of its weapons'
+    ranges (the default ship_behavior's `preferred_attack_range`), and ranges are the fleets'
+    distances [I] (`combat.lua` 2b, `movement.combat_step`). The 2210.01.01 save's amoebas close
+    the 85 units to the science ship they fight in about 10 days (23 shots by 2210.01.16);
   - the ships' main targets and their draws;
   - missiles, strike craft, point defence;
   - collateral and chain damage, `on_hit`;

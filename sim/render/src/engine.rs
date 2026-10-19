@@ -360,7 +360,14 @@ impl Engine {
                     self.app.select(None);
                 }
             }
-            other => return Err(format!("open_designer {other:?}: [design ID | combat [FLEET] | close]")),
+            // a designer or combat view button's action (designer:...), as its click does it
+            (Some("action"), Some(act)) if act.starts_with("designer:") => {
+                let act = act.to_string();
+                self.app.action(&act)?;
+                let lines = self.flush_log();
+                return Ok(Reply::ok(format!("open_designer action {act} ({})", lines.join("; "))));
+            }
+            other => return Err(format!("open_designer {other:?}: [design ID | combat [FLEET] | action designer:... | close]")),
         }
         self.flush_log();
         Ok(Reply::ok(format!("open_designer {}", a.join(" "))))

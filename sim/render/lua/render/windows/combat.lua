@@ -203,6 +203,12 @@ function combat.extract(game_dir, fleet_id)
         local known = comms[owner] == true
         local oc = world.object("country", owner)
         local entry = { id = fid, owner = owner, known = known, own = owner == player, ships = {} }
+        -- the days before its emergency FTL (0: now; nil: not at all), the player's fleets'
+        if entry.own then
+            local okc, ec = pcall(require, "engine.fleets.combat")
+            local okd, days = pcall(function() return okc and ec.emergency_ftl_days and ec.emergency_ftl_days(fid) end)
+            entry.eftl = okd and days or nil
+        end
         -- the owner's flag for a country in contact (ApplyCountryToButton): its flag's parts
         if known and oc then
             local fl = world.field(oc, "flag")
@@ -472,8 +478,12 @@ function combat.build(ctx, data)
                     sizes = { [fp] = { 256, h } },
                     hide = hide, textures = textures,
                     -- emergency_ftl, the player's fleets' (CCombatViewFleetEntry::EmergencyFTL),
-                    -- enabled iff CanEmergencyFTL: the engine has no emergency FTL, greyed [I]
-                    disabled = { [fp .. "/emergency_ftl"] = true },
+                    -- enabled iff CanEmergencyFTL (engine.fleets.combat.emergency_ftl_days: 0)
+                    disabled = f.eftl ~= 0 and { [fp .. "/emergency_ftl"] = true } or nil,
+                    actions = f.eftl == 0 and { [fp .. "/emergency_ftl"] = "designer:combat_eftl:" .. f.id } or nil,
+                    -- (its tooltip: EMERGENCY_FTL_DESC, else the days left)
+                    tooltips = f.own and f.eftl and { [fp .. "/emergency_ftl"] = f.eftl == 0 and "EMERGENCY_FTL_DESC"
+                        or (ctx.loc and ctx.loc.get("EMERGENCY_FTL_DAYS_LEFT"):gsub("%$DAYS|?Y?%$", tostring(f.eftl))) } or nil,
                     text = { [fp .. "/name"] = format_name(ctx, f.name) },
                 })
                 add(fi_items, fr)
@@ -494,7 +504,7 @@ function combat.build(ctx, data)
                         shide.destroyed, shide.ship_class, shide.hitpoints, shide.armor, shide.shields = nil, true, true, true, true
                     end
                     -- the rings: rotation 3.14159 about their position (41, -37): drawn over
-                    -- (41 - w, 37 - h) .. (41, 37) [I: by the frame; not turned here]
+                    -- (41 - w, 37 - h) .. (41, 37), turned half a turn (item.flip) [I: by the frame]
                     local ring_at = { 41 - ring_w, 37 - ring_h }
                     -- inspect: enabled iff CShip::CanInspectShip (contact) [V 0x2bfbefa], greyed
                     -- otherwise (buttonstate_onlydisable)
@@ -517,6 +527,12 @@ function combat.build(ctx, data)
                             [path .. "/size"] = s.class and ctx.loc and (ctx.loc.get("SHIP_CLASS"):gsub("%$CLASS%$", (format_name(ctx, s.class):gsub("%%", "%%%%")))) or "",
                         },
                     })
+                    for _, it in ipairs(si_items) do
+                        local p = it.path or ""
+                        if p == path .. "/hitpoints" or p == path .. "/armor" or p == path .. "/shields" then
+                            it.flip = true
+                        end
+                    end
                     add(si_items, sr)
                 end
                 end

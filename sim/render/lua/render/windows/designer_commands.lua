@@ -12,6 +12,7 @@
 --   dc.save(country, base, stage, name, role, upgrade, literal)
 --                                              the design added to the country (its base design,
 --                                              the one it was made from, replaced in the list)
+--   dc.save_many(country, list, size, ...)     a creature design's variants, each as dc.save
 --   dc.delete(country, id)                     the design out of the country's list
 --   dc.auto_generate(country, on)              the country's auto-generation of designs
 --
@@ -168,6 +169,24 @@ function dc.save(country, base, stage_src, name_key, role, upgrade, literal)
         dc.delete(country, base)
     end
     return "changed " .. tostring(id)
+end
+
+-- a creature design's variants (BuildAllCreatureDesignsVariants): each saved as dc.save does, the
+-- answer the one of the size shown
+function dc.save_many(country, list_src, size, name_key, role, upgrade, literal)
+    local list = type(list_src) == "string" and load("return " .. list_src)() or list_src
+    local shown_id
+    for _, v in ipairs(list or {}) do
+        local r = dc.save(country, v.base or 0, v.stage, name_key, role, upgrade, literal)
+        local id = tonumber(r:match("^changed (%d+)"))
+        if not id then
+            return r
+        end
+        if v.stage.size == size then
+            shown_id = id
+        end
+    end
+    return "changed " .. tostring(shown_id or "")
 end
 
 function dc.delete(country, id)

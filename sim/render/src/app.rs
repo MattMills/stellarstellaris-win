@@ -277,6 +277,12 @@ pub struct App {
     pub cursor: Option<(f32, f32)>,
     /// where the left button went down on the map (a box selection's corner: mapicons.rs)
     pub(crate) map_press: Option<(f32, f32)>,
+    /// the left button held: where the pointer was last, and whether the press turns the ship
+    /// designer's 3D view (designer.rs)
+    left_held: Option<(f32, f32, bool)>,
+    /// the press's slot while painting (its path and its click's action): painted too when a drag
+    /// leaves it for another slot
+    paint_press: Option<(String, String)>,
     last_update: Option<Instant>,
     /// the file systems' change count last applied (stellar_sim::vfs::change_count)
     reload_seen: usize,
@@ -393,6 +399,8 @@ impl App {
             commands: Vec::new(),
             cursor: None,
             map_press: None,
+            left_held: None,
+            paint_press: None,
             last_update: None,
             reload_seen: stellar_sim::vfs::change_count(),
             diplomacy: Default::default(),
@@ -1560,6 +1568,14 @@ impl App {
     /// The mouse moved: the button under it shows its hover frame. Whether the frame changed.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> Result<bool, String> {
         self.cursor = Some((x, y));
+        // a drag in the ship designer: its 3D view turned, or the component painted on the slots
+        // passed over (designer.rs)
+        if let Some((x0, y0, turning)) = self.left_held {
+            self.left_held = Some((x, y, turning));
+            if self.designer.open && self.designer_drag(x - x0, y - y0, x, y, turning)? {
+                return Ok(true);
+            }
+        }
         // the left bar opens under the cursor (mainbars.rs)
         if self.screen == Screen::Map && crate::mainbars::hover(self, x, y) {
             self.relayout();
@@ -1605,6 +1621,13 @@ impl App {
 
     pub fn mouse_down(&mut self, x: f32, y: f32) -> Result<bool, String> {
         self.map_press = Some((x, y));
+        self.left_held = Some((x, y, self.designer.open && crate::designer::on_view(x, y) && self.button_at(x, y)?.is_none_or(|b| b.0 == "/designer" || b.0 == "/ship_designer/background")));
+        self.paint_press = match self.button_at(x, y)? {
+            Some((path, Some(a))) if a.starts_with("designer:ui:paint:") || a.starts_with("designer:ui:mpaint:") => {
+                Some((path, a.split_once("||").map_or(a.as_str(), |(l, _)| l).to_string()))
+            }
+            _ => None,
+        };
         let pressed = self.button_at(x, y)?.map(|b| b.0);
         if pressed != self.pressed {
             self.pressed = pressed;
@@ -1618,6 +1641,8 @@ impl App {
     /// elsewhere, a click selects what is under it (a system, a fleet, a planet, a ship), or
     /// nothing.
     pub fn mouse_up(&mut self, x: f32, y: f32) -> Result<bool, String> {
+        self.left_held = None;
+        self.paint_press = None;
         let under = self.button_at(x, y)?;
         let pressed = self.pressed.take();
         if pressed.is_some() {
@@ -1637,6 +1662,31 @@ impl App {
             }
             self.select(hit);
             return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// A drag in the ship designer, by (dx, dy) to (x, y): the 3D view turned (the press on it),
+    /// else, while a component is painted, each slot passed over painted (its click's action, the
+    /// press moved to it); whether it did something.
+    fn designer_drag(&mut self, dx: f32, dy: f32, x: f32, y: f32, turning: bool) -> Result<bool, String> {
+        if turning {
+            crate::designer::turn(dx, dy);
+            self.scene = None;
+            return Ok(true);
+        }
+        if let Some((path, Some(a))) = self.button_at(x, y)? {
+            if (a.starts_with("designer:ui:paint:") || a.starts_with("designer:ui:mpaint:")) && self.pressed.as_deref() != Some(path.as_str()) {
+                let left = a.split_once("||").map_or(a.as_str(), |(l, _)| l).to_string();
+                // (the slot the drag started on first)
+                if let Some((pp, pa)) = self.paint_press.take() {
+                    self.act(&pp, Some(&pa))?;
+                }
+                self.act(&path, Some(&left))?;
+                self.pressed = Some(path);
+                self.scene = None;
+                return Ok(true);
+            }
         }
         Ok(false)
     }

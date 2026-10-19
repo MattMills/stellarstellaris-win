@@ -81,6 +81,20 @@ function designer.extract(game_dir, country)
         return data
     end
     local coll = world.field(c, "ship_design_collection")
+    -- the grand archive module's culled_dna_list = { <ship category> = <rarity> } (the categories
+    -- the creature designer offers: GetRarityByShipCategory not 4) [V WriteMembers 0x1c59ec0], in
+    -- whichever block of the country holds it
+    data.dna = {}
+    for _, v in world.statements(c) do
+        if type(v) == "table" then
+            local l = world.field(v, "culled_dna_list")
+            if type(l) == "table" then
+                for key, v in world.statements(l) do
+                    data.dna[str(key)] = tonumber(str(v)) or 0
+                end
+            end
+        end
+    end
     data.auto_generate = world.field(coll or {}, "auto_gen_design") ~= "no"
     -- tech_status = { technology = "x" level = 1 technology = "y" ... } as the save writes it
     -- (world.statements: the world as tables or in its store)
@@ -226,6 +240,11 @@ local function files(game_dir)
             build_time = value(get(b, "base_buildtime"), vars) or 0,
             size = value(get(b, "size_multiplier"), vars) or 1,
             designable = get(b, "is_designable") ~= "no",
+            -- the creature designer's: is_space_fauna_ship (CShipSize +0xc8 bit 14), the size of the
+            -- mutations' components (mutation_components_size), its ship category
+            fauna = get(b, "is_space_fauna_ship") == "yes",
+            mut_size = str(get(b, "mutation_components_size")),
+            category = str(get(b, "ship_category")),
             modifier = modifier(get(b, "modifier"), vars),
             upkeep = resources(b, "upkeep", vars),
             cost = resources(b, "cost", vars),
@@ -326,7 +345,15 @@ local function files(game_dir)
         }
     end)
     -- the weapons' numbers (common/component_templates/weapon_components.csv)
-    for _, csv in ipairs({ "common/component_templates/weapon_components.csv" }) do
+    -- (every csv of the folder: the mutations' weapons have their own)
+    local csvs = {}
+    for _, f in ipairs(source.files(game_dir, "common/component_templates", "csv")) do
+        csvs[#csvs + 1] = f
+    end
+    if #csvs == 0 then
+        csvs[1] = "common/component_templates/weapon_components.csv"
+    end
+    for _, csv in ipairs(csvs) do
         local fh = io.open(game_dir .. "/" .. csv, "r")
         if fh then
             local cols
@@ -355,9 +382,11 @@ local function files(game_dir)
             fh:close()
         end
     end
+    require("render.windows.creature").files(F, game_dir, each_definition, globals, { get = get, str = str, value = value })
     files_cache = F
     return F
 end
+designer.files = function(game_dir) return files(game_dir) end
 
 -- ------------------------------------------------------------------------------ the stats
 
@@ -511,7 +540,10 @@ end
 -- simulation waiting for its answer.
 local function fresh_ui()
     return { works = {}, key = nil, current = nil, popup = nil, picked = nil, filter_size = true, hide_obsolete = true, pending = nil, buildable = {}, scroll = {}, rects = {}, extent = {},
-        edit = nil, paint = nil, hover = nil }
+        edit = nil, paint = nil, hover = nil,
+        -- the window's type: "ship" (CShipDesignerBase type 0) or "creature" (CCreatureDesigner,
+        -- type 1); the mutation picker's groups shown (CMutationSelector: all at first)
+        mode = "ship", groups = { offensive = true, defensive = true, aux = true } }
 end
 designer.ui = fresh_ui()
 
@@ -696,6 +728,22 @@ function designer.act(action, data, game_dir)
     if ui.edit and verb ~= "type" and verb ~= "typekey" and verb ~= "edit" then
         designer.commit_edit(data)
     end
+    -- the tabs: the other window (Setup's $_1 0x31a67b0 / $_2 0x31a68a0: this one hidden, the
+    -- other shown with the same owner) [I: one window, its mode switched, nothing loaded]
+    if verb == "mode" and (parts[2] == "ship" or parts[2] == "creature") then
+        if ui.mode ~= parts[2] then
+            ui.mode, ui.current, ui.popup, ui.paint, ui.paint_mut = parts[2], nil, nil, nil, nil
+            return "design:none"
+        end
+        return ""
+    end
+    if ui.mode == "creature" then
+        local c = { F = F, data = data, ui = ui, shown = function() return shown(data) end, work = function() return work(data) end, copy = deep }
+        local r = require("render.windows.creature").act(c, verb, parts)
+        if r then
+            return r
+        end
+    end
     if verb == "popup_close" then
         ui.popup = nil
     elseif verb == "edit" and d then
@@ -813,7 +861,7 @@ function designer.act(action, data, game_dir)
         end
     elseif verb == "paint_cancel" then
         -- a right click while painting (component_paint_help_text: "right click to cancel")
-        ui.paint = nil
+        ui.paint, ui.paint_mut = nil, nil
     elseif verb == "clear_slot" and tonumber(parts[2]) and parts[3] then
         -- a right click on a slot: ClearSlot (its component taken off)
         local w = work(data)
@@ -913,6 +961,14 @@ function designer.act(action, data, game_dir)
             return ""
         end
         ui.popup = nil
+        if ui.mode == "creature" then
+            -- ConfirmedSave, type 1: BuildAllCreatureDesignsVariants (a design of each size of the
+            -- growth family, the same name and mutations), a CCreateOrUpdateShipDesignCommand each
+            local vs = require("render.windows.creature").variants(F, data, d)
+            ui.pending = { kind = "save", key = ui.current }
+            return sim(dc_call("save_many", data.country, designer.serialize(vs), d.size, d.name_key or (d.name and d.name.key) or "", d.role or "",
+                d.upgrade and "yes" or "no", d.name_literal and "yes" or "no"))
+        end
         local stage = { size = d.size, sections = d.sections, required = d.required }
         ui.pending = { kind = "save", key = ui.current }
         return sim(dc_call("save", data.country, d.new and 0 or (d.id or 0), designer.serialize(stage), d.name_key or "", d.role or "", d.upgrade and "yes" or "no", d.name_literal and "yes" or "no"))
@@ -1029,6 +1085,12 @@ function designer.build(ctx, data, state)
     local ui = designer.ui
     if state.design ~= ui.key then
         ui.key, ui.current, ui.popup, ui.edit = state.design, state.design, nil, nil
+        -- a design given (a click in the list, the ship view's edit button: OpenDesigner 0x319c3e0
+        -- by GetDesignerType, its size's is_space_fauna_ship): the window of its kind
+        local sd = saved(data, state.design)
+        if sd and F.sizes[sd.size] then
+            ui.mode = F.sizes[sd.size].fauna and "creature" or "ship"
+        end
     end
     data.designs = data.designs or {}
     data.techs = data.techs or {}
@@ -1037,14 +1099,18 @@ function designer.build(ctx, data, state)
     local P = "/ship_designer"
 
     -- the frame: Setup's tabs, the 3D view (the ship's), the help texts and controls by the design
+    local creature_mode = ui.mode == "creature"
     local hide = {
-        ship_designer_tab_inactive = true, creature_designer_tab_active = true,
-        ["3d_view_creature_designer"] = true, blocker = true,
+        ship_designer_tab_inactive = not creature_mode or nil, ship_designer_tab_active = creature_mode or nil,
+        creature_designer_tab_active = not creature_mode or nil, creature_designer_tab_inactive = creature_mode or nil,
+        ["3d_view_creature_designer"] = not creature_mode or nil, ["3d_view"] = creature_mode or nil, blocker = true,
         -- the info box at info_mecship_pos with info_background_mecship_size (below)
         cloaking_values = true,
     }
     local text = {
-        [P .. "/design_name"] = "SHIP_DESIGNER_COUNTRY",
+        -- the title: GetShipDesignerTypeKey 0x3191120 (CREATURE_DESIGNER for type 1)
+        [P .. "/design_name"] = creature_mode and "CREATURE_DESIGNER" or "SHIP_DESIGNER_COUNTRY",
+        [P .. "/component_paint_help_text"] = creature_mode and "CREATURE_DESIGN_RIGHT_CLICK_TO_CANCEL_MUTATION_PAINT" or nil,
         [P .. "/ship_label"] = "SHIP_NAME_STATS",
     }
     local st
@@ -1070,7 +1136,7 @@ function designer.build(ctx, data, state)
         text[P .. "/controls/choose_role"] = design.role or ""
         hide.bioship_stage, hide.stage_spinner = true, true
         -- component_paint_help_text: while a component is chosen (HasValidSelectedElement) [V]
-        if not ui.paint then
+        if not (ui.paint or ui.paint_mut) then
             hide.component_paint_help_text = true
         end
     else
@@ -1083,11 +1149,16 @@ function designer.build(ctx, data, state)
         [P .. "/controls/controls_bottom/upgrade_ship_components"] = (design and design.upgrade) and 2 or 1,
     }
     -- the disabled ones (greyed, no click) [V UpdateControlsWindow 0x3194450, Update 0x3192150]:
-    -- the creature designer's tab without artificial breeding [I: never here]; choose_role
+    -- the creature designer's tab without artificial breeding (common/game_rules
+    -- can_use_artificial_breeding: has_technology tech_alien_cloning) [I: its mode not drawn, the
+    -- enabled tab takes the click and does nothing]; choose_role
     -- without roles; complete_button unless the stage has sections and the first has slots;
     -- save_button unless the design can be saved (IsValidToSaveForCountry [I: every section slot
     -- and required set filled, a name])
-    local disabled = { [P .. "/creature_designer_tab_inactive"] = true }
+    local disabled = {}
+    if not data.techs.tech_alien_cloning then
+        disabled[P .. "/creature_designer_tab_inactive"] = true
+    end
     if design then
         local size = F.sizes[design.size] or { slots = {}, required = {}, roles = {} }
         if #size.roles == 0 then
@@ -1116,6 +1187,8 @@ function designer.build(ctx, data, state)
         -- (the window's background takes the clicks: nothing under it on the map)
         [P] = "designer:noop",
         [P .. "/close"] = "designer:close", [P .. "/fleet_manager_tab"] = "designer:fleet_manager",
+        [P .. "/creature_designer_tab_inactive"] = "designer:ui:mode:creature",
+        [P .. "/ship_designer_tab_inactive"] = "designer:ui:mode:ship",
         [P .. "/auto_design"] = "designer:ui:auto",
         [P .. "/controls/randomize_name"] = "designer:ui:randomize",
         [P .. "/controls/choose_role"] = "designer:ui:roles",
@@ -1128,7 +1201,7 @@ function designer.build(ctx, data, state)
         actions[path] = nil
     end
     local r = lay("ship_designer", {
-        hide = hide, text = text, frames = frames, drop = { [P .. "/3d_view"] = true }, disabled = disabled,
+        hide = hide, text = text, frames = frames, drop = { [P .. "/3d_view"] = true, [P .. "/3d_view_creature_designer"] = true }, disabled = disabled,
         -- the info box with a design (UpdateControlsWindow: SetInfoPosAndSize "mecship",
         -- info_mecship_pos and info_background_mecship_size) [V]; else where the .gui has it
         positions = design and { [P .. "/info"] = { 1098 - 1272, 40 } } or nil,
@@ -1139,7 +1212,7 @@ function designer.build(ctx, data, state)
     local win = r.rects[P]
     -- the 3D view: 3d_view at its place, ship_designer_3d_view_size (740 x 584) [V 0x318e370]
     -- (with no design the viewer still draws its background)
-    local v = r.rects[P .. "/3d_view"]
+    local v = r.rects[P .. (creature_mode and "/3d_view_creature_designer" or "/3d_view")]
     if v then
         local id = design and ((design.dirty or design.new) and -1 or (data.models[design.id] and design.id)) or 0
         local path = "/designer/3d_view/" .. id
@@ -1193,8 +1266,12 @@ function designer.build(ctx, data, state)
         local shown = {}
         for _, d in ipairs(data.designs) do
             local s = F.sizes[d.size]
-            local ok = s and s.designable
-            for _, t in ipairs(s and s.prerequisites or {}) do
+            local ok = s and s.designable and (s.fauna == true) == creature_mode
+            -- (a creature's: CanCountryBuildPotential, its DNA; [I] no prerequisites)
+            if creature_mode and s and s.category and not (data.dna and data.dna[s.category]) then
+                ok = false
+            end
+            for _, t in ipairs(s and not creature_mode and s.prerequisites or {}) do
                 ok = ok and data.techs[t] == true
             end
             if ok then
@@ -1326,7 +1403,14 @@ function designer.build(ctx, data, state)
     -- (spacing 10, centred) [V 0x317fad0]
     local box = r.rects[P .. "/sections"]
     local size = F.sizes[design.size]
-    if box and size then
+    if creature_mode and size then
+        require("render.windows.creature").build({ ctx = ctx, F = F, data = data, design = design, lay = lay, items = items, report = report, r = r, ui = ui,
+            slot_frame = function(sl)
+                local size_i = SLOT_SIZE[sl.size] or 0
+                local frame = sl.kind == "weapon" and size_i + 4 or (size_i == 9 and 13 or size_i)
+                return sl.size == "point_defence" and 3 or frame
+            end })
+    elseif box and size then
         local n = #size.slots
         local total = n * 192 + math.max(0, n - 1) * 10
         local x0 = box.x + (box.w - total) / 2
@@ -1503,6 +1587,11 @@ function designer.popups(ctx, data, design, lay, items, report, insets, r)
             x = x, y = y, w = w, h = h, format = format or "left", valign = "center",
         }
         report.texts = report.texts + 1
+    end
+    if pp.kind == "creature" or pp.kind == "csize" or pp.kind == "mutation" then
+        require("render.windows.creature").popups({ ctx = ctx, F = F, data = data, design = design, lay = lay, items = items, report = report, r = r, ui = ui,
+            size_name = size_name, resource_string = resource_string })
+        return
     end
     if pp.kind == "size" then
         -- the `selector` (CShipSelector::Update 0x31a00a0): a selector_item per ship size the country
@@ -1779,8 +1868,8 @@ function designer.escape()
         ui.popup = nil
         return true
     end
-    if ui.paint then
-        ui.paint = nil
+    if ui.paint or ui.paint_mut then
+        ui.paint, ui.paint_mut = nil, nil
         return true
     end
     return false

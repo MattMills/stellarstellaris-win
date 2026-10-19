@@ -40,6 +40,9 @@ pub enum GuiItem {
         /// the same), the texture's v0..v1 and a shift of its u (progress_startend's rows and
         /// end cap): { u0, u1, v0, v1, shift }
         clip: [f32; 5],
+        /// turned half a turn (a .gui sprite's `rotation = 3.14159`: the combat view's rings),
+        /// its rectangle as placed
+        flip: bool,
         /// its tooltip: a text or a localisation key (render.gui: a window's `tooltips`, else the
         /// .gui's pdx_tooltip; tooltip.rs shows it)
         tooltip: Option<String>,
@@ -206,6 +209,7 @@ pub(crate) fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
                     ],
                     None => [0.0, 1.0, 0.0, 1.0, 0.0],
                 },
+                flip: it.get::<Option<bool>>("flip")?.unwrap_or(false),
                 tooltip: it.get::<Option<String>>("tooltip")?,
             });
         } else {

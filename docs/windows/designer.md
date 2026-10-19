@@ -131,6 +131,111 @@ with its own view uniform, its sky (an LDR sky pipeline, gamma-encoded for a tar
 sRGB: sky.wgsl `flags.z`) and its meshes, depth tested in the GUI pass's own depth (the GUI's
 quads write none).
 
+## The creature designer (the Space Fauna tab) **[V]** / **[I]**
+
+The RE notes are in `/root/re452/cd/NOTES.md` on 10.5.0.6. The game install on 10.5.0.24 has no
+Grand Archive DLC, so the real game cannot show this mode there. Everything below comes from the
+binary and the files, not from the game's frames.
+
+**The window.** The game builds a second instance of `ship_designer.gui`: `CCreatureDesigner`,
+type 1, top-bar view 0xd, at `CInGameIdler+0xda0`. Each tab hides one window and shows the other
+(Setup's handlers 0x31a67b0 and 0x31a68a0). Here it is one window with a mode (`ui.mode`). The
+code is in `lua/render/windows/creature.lua`, called from designer.lua.
+
+In creature mode:
+- the creature tabs show active and the ship tabs inactive;
+- the title is `CREATURE_DESIGNER` (GetShipDesignerTypeKey 0x3191120);
+- `3d_view_creature_designer` replaces `3d_view`;
+- the paint help text is `CREATURE_DESIGN_RIGHT_CLICK_TO_CANCEL_MUTATION_PAINT`.
+
+Opening a design whose stage-0 size has `is_space_fauna_ship` switches to creature mode
+(OpenDesigner 0x319c3e0, by GetDesignerType). The tab is enabled only for a country with the game
+rule `can_use_artificial_breeding` (tech_alien_cloning). **[I]** The RE found no code that gates
+the tab on this rule.
+
+**The list.** It shows the country's designs whose stage-0 size has `is_space_fauna_ship`; the
+ship mode shows the others (GetAllDesignsToDisplay 0x2c93650). A creature design is listed when
+the country has the culled DNA of its size's `ship_category`. That is CanCountryBuildPotential,
+which reads the size's `potential_country` and `has_dna`. **[I]** Its prerequisites are not checked.
+
+**A design** is its size's creature designer template plus the mutations on the six `ANY_` slots
+of its `mutation_section` (MUTATION_SECTION_NAME, slot `mutations`).
+- The template is the first global design with `creature_designer_template = yes` whose stage-0
+  size is that size, in file order (GetCreatureDesignerTemplate 0x24a8f20).
+- Each change rebuilds the body from the template (RefreshDesignAndApplyMutationsEffects 0x2c93440).
+- Each mutation puts its component for the size's `mutation_components_size` on its slot
+  (GetComponentForShipSize 0x1db4e00).
+- `component_slot_size_to_disable` removes the components of that slot size from the other
+  sections.
+- FixRequired keeps the template's required components that exist. Each required set with none
+  gets the newest component of the set the country has researched. **[I]** The choice. The 4.5.2
+  amoeba template's `BIO_PROPULSION_1_CORVETTE` is not a component.
+
+**New Design** opens the `selector` (CCreatureSelector::Update 0x31a08e0).
+- It shows a `selector_item` per ship category in the country's
+  `grand_archive_country_module.culled_dna_list` (rarity not 4), titled with the category's name.
+  **[I]** The key of the block holding that list: the extract reads `culled_dna_list` from any of
+  the country's blocks.
+- A category needs a designable fauna size with a template. Its first such size is used.
+- A click loads a copy of that template with an empty name.
+- **[I]** The item's 3D `ship_design_icon` is not drawn.
+
+**The design area.** One `creature_mutations_instance_entry` sits centred in the `sections` box
+(UpdateMutations 0x2c94000). It holds:
+- `change_size_button` (PICK_CREATURE_SIZE): a selector of the growth family's sizes. The family is
+  the templates linked by `upgrades_to`, both ways (GetShipSizesVariantsFromDesignerTemplates
+  0x1f67da0). A click loads the country's design of that size, preferring one with the same name,
+  with the current mutations and name. **[I]** With no such design it loads the template. Owned
+  ships are not counted.
+- `fixed_components_slots`: the template's other sections, read only. Weapons fill the first row
+  and utilities the second, centred.
+- `mutation_slots`: all six slots, three to a row.
+  - Slots past the country's count are disabled (UpdateInternalData 0x2c94ed0). The count is
+    mutation_slots_add; **[I]** only the technologies' modifier is counted (tech_controlled_mutations
+    +3, _2 +3).
+  - The button shows frame 2 for a unique mutation, else 1. Its sprite comes from the NInterface
+    defines CREATURE_DESIGNER_MUTATION_SLOT(_LOCKED)_ICON, which are empty in these files, so the
+    slot keeps its own sprite.
+  - The icon is the mutation component's.
+
+**The mutation picker** is `component_select_window` (ShowMutationSelectDialog 0x2c92e00,
+UpdateElementList 0x2c968a0). It opens from a slot click.
+- Its labels are SELECT_MUTATION, SELECT_MUTATION_DESC and CREATURE_MUTATIONS_FILTER_OBSOLETE.
+- The mutations are grouped by type (offensive, defensive, aux), each under a
+  `creature_mutation_type_entry` titled `<type>_mutation_type`. Clicking a header toggles its group.
+- A mutation is listed when its first component's prerequisites are researched (CanBuildComponent).
+  **[I]** The component's potential is not evaluated.
+- With the filter on, a mutation is hidden when a later one in its `upgrades_to` chain is usable
+  (HasBetterElement 0x2c96f80).
+- A unique mutation shows `unique_mutation_icon`, with the CREATURE_DESIGNER_MUTATION_IS_UNIQUE
+  tooltip.
+
+**Clicks.**
+- A mutation selects it for painting (ItemClicked 0x2c96f50).
+- A slot clicked while painting gets the mutation. Painting a unique mutation that is already on
+  another slot is refused (HasUniqueMutation 0x1f689c0). A drag across slots paints each one.
+- A right click cancels painting, or clears the slot when not painting (0x2c956a0).
+- Fill Empty puts the mutation on every empty slot, without the unique or locked checks
+  (0x2c93300).
+- Clear removes all mutations.
+- Save builds every size of the growth family with the same name and mutations, one
+  CCreateOrUpdateShipDesignCommand each (BuildAllCreatureDesignsVariants 0x1f682a0). Each saved
+  variant replaces the country's design of the same size and name. Here this is
+  `designer_commands.save_many`.
+
+**Checked by script** (`--script`, 10.5.0.24). The test saves come from
+`sim/render/tools/fauna_fixture.py`: the 2210.01.01 save with tech_alien_cloning, both mutation
+techs, two unique mutation techs, and amoeba, tiyanki and voidworm DNA.
+- The tab and the three categories.
+- An amoeba: its template's body and fixed components.
+- The mutation picker: groups, toggling, the unique mark.
+- Painting by click and by drag; a right click; the unique refusal.
+- Typing a name, then Save: designs 33554589 (`space_amoeba`, the `_SMALL` components) and
+  33554590 (`space_amoeba_mother`, the `_LARGE` components) in the simulation.
+- The size picker, which loads the mother design.
+- Back on the Ship Designer tab, the fauna designs are not listed.
+- With one mutation tech, slots 4 to 6 are locked.
+
 ## The combat view **[V]** (CCombatView::Update 0x2bf3c40, UpdateCombatantEntry 0x2bf3950, CCombatViewFleetEntry::UpdateEntry 0x2bf5a70, CCombatViewShipEntry::UpdateEntry 0x2bfa660, UpdateCombatStats 0x2bf4870)
 
 - The fleets: the selected fleet, then every fleet it is in combat with. A reference country: the
@@ -201,7 +306,7 @@ save written from it).
 |---|---|---|
 | close (X), Escape | Hide; ESCAPE closes the innermost popup first (each popup's close has the shortcut) | wired: a popup closes first, then the window |
 | fleet_manager_tab | the Fleet Manager's view | wired (`view:fleet_manager`, the designer closed) |
-| creature_designer_tab_inactive | the creature designer (disabled without artificial breeding) | not done (its window is not drawn) |
+| creature_designer_tab_inactive | the creature designer (disabled without artificial breeding) | wired: the Space Fauna mode (see The creature designer); disabled unless the country has the game rule `can_use_artificial_breeding` (tech_alien_cloning) [I]; the ship tab goes back |
 | auto_design | ToggleAutoDesign: the country's auto-generation of designs | wired, in the simulation (`ship_design_collection.auto_gen_design`); the list's tag becomes "Auto" |
 | a design in the list | CShipDesignEntry::Click: LoadDesign | wired |
 | new_ship_design_entry | ShowShipSizeSelectDialog: the `selector` of sizes | wired: a selector_item per designable size the country can build, three a row |
@@ -219,9 +324,9 @@ save written from it).
 | save_button | Save -> ConfirmedSave (CCreateOrUpdateShipDesignCommand); an auto-generated design asks first (`rename_autogen`) | wired, in the simulation: the design added to the country (its base design leaves the list: the game replaces the design of the same name [I: fleet templates not retrofitted]); an auto-generated one through `rename_autogen` (Save; its randomize button; close: nothing saved) |
 | upgrade_ship_components | AutoUpgradeComponents: the design's flag | wired (saved with the design) |
 | bioship stage spinner | a growth stage | not drawn (bioships only) |
-| 3d_view | its click observer (the view turned [I]) | not done (the inset view does not turn) |
+| 3d_view | its click observer (the view turned [I]) | wired: a drag that starts on the view turns the ship (0.01 rad a pixel across, 0.005 down, the pitch held to -0.8..1.2) [I: the rates]; the turn stays for the next design |
 | right click on a slot | ClearSlot | wired: the slot's component removed |
-| painting | a component chosen in the selector stays on the cursor: a click on a slot puts it there, the slots it fits framed, the help text shown; a right click or Escape ends it | wired [I: a click per slot, no dragging] |
+| painting | a component chosen in the selector stays on the cursor: a click on a slot puts it there, the slots it fits framed, the help text shown; a right click or Escape ends it | wired: a click per slot, or a drag with the button held across the slots (each one passed over painted) |
 | the lists | smoothListBoxes: the wheel scrolls | wired: the designs list, the component selector's and the section selector's, 45 pixels a notch [I] |
 | disabled frames | complete and save disabled when the design cannot be saved (IsValidToSaveForCountry) | wired: save disabled unless every section slot and required component set is filled and the name is not empty; complete disabled unless the first section has slots; choose_role without roles; the creature designer's tab always [I: the checks] |
 
@@ -232,10 +337,12 @@ The combat view:
 | close (X), Escape | Hide | wired: the selection cleared (which shows it) |
 | focus_on | OnClickFocus: the camera to the combat | wired: the fleet's system entered, the fleet followed [I] |
 | a ship's inspect | CCombatViewShipEntry::OnClickInspect: the ship view; disabled before contact | wired (`fleet:ship:ID`, the fleet windows' ship view) when the ship's owner is in contact; disabled (its frame) before |
-| emergency_ftl | EmergencyFTL (the player's fleets) | disabled (the engine has no emergency FTL order) |
+| emergency_ftl | EmergencyFTL (the player's fleets): CEmergencyFTLCommand after COMBAT_BASE_DAYS_UNTIL_EMERGENCY_FTL days of combat | wired (`designer:combat_eftl:FLEET`): enabled after 14 days of the fleet's combat (x (1 + ship_emergency_ftl_min_days_mult)), its tooltip EMERGENCY_FTL_DESC or the days left (EMERGENCY_FTL_DAYS_LEFT); in the simulation (`engine.fleets.combat.emergency_ftl`): each ship lost at 5%, else damaged at 25% (its hull down by up to 75%), the fleet out of every combat list, at its capital system and ordered back to its starbase [I: the game sends it MIA for the travel] |
 | owner flag | (the country) | wired: the owner's flag when it is known (the world's country flag); the blank frame before contact |
 | the ship lists | smoothListBoxes: the wheel scrolls | wired: the wheel over a side scrolls it, the list clipped to its box |
-| Damage Output | the combat's damage by type (hull, armor, shields) and hit chance | wired from the engine's combat (`engine.fleets.combat.fleet_stats`, tallied per shot); 0 until the engine's combat fires (the 2210.01.01 save's amoeba combat is not resumed by the engine: no shots in 5 days) |
+| Damage Output | the combat's damage by type (hull, armor, shields) and hit chance | wired from the engine's combat (`engine.fleets.combat.fleet_stats`, tallied per shot); the 2210.01.01 save's amoebas close on the science ship (the engine's combat movement, docs/windows/fleet.md) and fire within the first 16 days: 164 hull, 199 armor, 100 shields, 70% by 2210.01.17 |
+| the rings | the hull, armor and shield rings, `rotation = 3.14159` | drawn turned half a turn (a GUI sprite's `flip`: its texture's corners swapped) |
+| orders_hero_ship | a hero ship's actions in combat (a ship size with `hero_ship`, a combat computer that unlocks it) | hidden: no hero ship in the saves here (Nomads and Biogenesis ship sizes) |
 | the fleet view | (the combat view instead while the fleet fights) | the selected fleet's fleet view is not drawn under the combat view |
 
 Checked in a real window (the windowed renderer under Xvfb on 10.5.0.24, clicks by xdotool, the
@@ -254,9 +361,11 @@ error in the designer stays in it: the other windows go on drawing (`windows: ..
 ## Not done
 
 - Stats: the country's modifiers (speed, evasion, damage, upkeep), the role's.
-- Painting by dragging, turning the 3D view, the creature designer (see The buttons).
-- The combat view's rings' rotation, the order buttons (hero ships), emergency FTL (an engine
-  order); the save's ongoing combats are not resumed by the engine, so their damage stays 0.
+- The creature designer: the category items' 3D icons, federation and galactic community owners
+  (the federation view's Space Fauna button), owned ships in the size picker, and a comparison with
+  the game (needs the Grand Archive DLC on the test box).
+- The combat view's hero ship orders (no hero ship to check them on); emergency FTL's MIA travel
+  (the fleet lands at once).
 - The combat stats window.
 - The windows cannot yet be opened by clicking in the game's frames (render-controls' input is
   merged after this: the designer opens from the fleet manager, which another session draws).
