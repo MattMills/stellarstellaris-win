@@ -530,4 +530,5 @@ return function(eval)
     -- the triggers and the effects, in their own files
     require("simscript.handlers.empire_triggers")(eval, H)
     require("simscript.handlers.empire_effects")(eval, H)
+    require("simscript.handlers.empire_pops")(eval, H)
 end
