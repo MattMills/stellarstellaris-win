@@ -710,6 +710,10 @@ end
 local return_order = {}
 TYPES.return_fleet_order = return_order
 local function home_starbase(fid)
+    -- a home base set by script (set_home_base) when its starbase still exists [I]
+    local f = world.object("fleet", fid)
+    local hb = f and tonumber(world.field(f, "home_base"))
+    if hb and world.object("starbases", hb) then return hb end
     local country = world.fleet_owner[fid]
     local c = country and world.object("country", country)
     local col = c and tonumber(world.field(c, "capital"))
