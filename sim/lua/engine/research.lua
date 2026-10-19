@@ -795,6 +795,13 @@ function research.project_of(country, id)
     end
 end
 
+-- the species modification projects (engine.species_mod), and those the day completed (completed
+-- after the three areas: CCountryEventManager::CompleteSpecialProject)
+local function species_mod()
+    return require("engine.species_mod")
+end
+local completed_projects = {}
+
 -- one area of one country, one day (day: the day of the month counting from 0)
 local function area_day(host, country, status, area, day)
     local queue = world.field(status, area .. "_queue")
@@ -852,7 +859,27 @@ local function area_day(host, country, status, area, day)
         local te = item_field(item, "technology")
         local name = te and te.value.text
         local sp = item_field(item, "special_project")
-        if sp then
+        local smp = sp and species_mod().project(country, tonumber(sp.value.text))
+        if smp then
+            -- a species modification (engine.species_mod; DailyResearch 20adba0): checked every day
+            -- against its cost now; the month's points only while it can progress (a month it
+            -- cannot, it holds nothing back); done, it is completed after the three areas
+            emptied = false
+            local sm = species_mod()
+            local need = sm.needed(country, smp)
+            local pe = item_field(item, "progress")
+            local progress = pe and tonumber(pe.value.text) or 0
+            if progress < need and monthly and not halted and sm.can_progress(country, smp) then
+                progress = add_month(item)
+                sm.stats.progressed = sm.stats.progressed + 1
+                halted = true
+            elseif progress >= need then
+                halted = true
+            end
+            if progress >= need then
+                completed_projects[#completed_projects + 1] = smp
+            end
+        elseif sp then
             emptied = false
             local key = research.project_of(country, tonumber(sp.value.text))
             local pt = key and research.project_type(key)
@@ -929,10 +956,15 @@ function research.country_daily(host, country)
     slice.check("research country")
     local status = c and world.field(c, "tech_status")
     if type(status) == "table" then
+        completed_projects = {}
         for _, area in ipairs(research.AREAS) do
             slice.check("research area")
             area_day(host, country, status, area, the_day)
         end
+        for _, p in ipairs(completed_projects) do
+            species_mod().complete(country, p)
+        end
+        completed_projects = {}
     end
 end
 

@@ -246,6 +246,8 @@ P["daily.countries_serial"] = function(host, date)
         call_optional("engine.exploration", "country_serial", host, date, id)
         -- CCountryEventManager::DailyUpdateSerial: the special projects, then the events
         draws.special_projects(id, date)
+        -- (the species modifications that can no longer progress fail: engine.species_mod)
+        require("engine.species_mod").daily(id)
         host.scope_daily_events("country", id)
         -- CTechnologyStatus::DailyResearch (engine.research), CCountry::UpdateEnvoys, auto research
         research.country_daily(host, id)
