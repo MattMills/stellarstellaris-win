@@ -879,6 +879,17 @@ return function(eval)
             sync()
             return claims_on(s, us)
         end
+        -- num_favors (`target`): the favors we hold on the target, our relation's `num_favors`
+        -- (CNumFavorsTrigger 0x3be6110, the relation's +0x108 [V]; the trigger is
+        -- handlers/general_systems.lua's)
+        eval.TVAL["num_favors"] = eval.TVAL["num_favors"] or function(ctx, e)
+            local us = this_country(ctx)
+            local t = type(e.value) == "table" and param_scope(e.value, "target", ctx)
+            if not us or not t or t.kind ~= "country" then return nil end
+            sync()
+            local r = D.relation(us, t.id)
+            return tonumber(r and world.field(r, "num_favors")) or 0
+        end
         eval.TVAL["opinion"] = function(ctx, e)
             local us = this_country(ctx)
             local w = type(e.value) == "table" and param_scope(e.value, "who", ctx)
