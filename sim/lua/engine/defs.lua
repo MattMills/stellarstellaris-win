@@ -26,12 +26,26 @@ function defs.load(fs, game_dir)
     local folders = {}
     if fs and fs.vfs then
         -- every mount's folders (a folder only a mod has too), those with .txt files
-        -- (common/ itself too, as before: its loose files, alerts.txt and achievements.txt)
+        -- (common/ itself too, as before: its loose files, alerts.txt and achievements.txt). A
+        -- folder the game lists at more than one level (common/inline_scripts) has its subfolders'
+        -- files in its own listing: they are not folders of their own.
         local all = fs.rust.vfs_dirs(fs.vfs, "common")
         table.insert(all, 1, "common")
+        local deep = {}
         for _, folder in ipairs(all) do
-            if #fs.rust.vfs_list(fs.vfs, folder, "txt", 0) > 0 then
-                folders[folder] = true
+            local parent = folder:match("^(.*)/[^/]*$")
+            local inside = false
+            while parent do
+                if deep[parent] then inside = true break end
+                parent = parent:match("^(.*)/[^/]*$")
+            end
+            if not inside then
+                if folder ~= "common" and fs.rust.vfs_depth(folder, "txt") ~= 0 then
+                    deep[folder] = true
+                end
+                if #fs.rust.vfs_list(fs.vfs, folder, "txt") > 0 then
+                    folders[folder] = true
+                end
             end
         end
     else

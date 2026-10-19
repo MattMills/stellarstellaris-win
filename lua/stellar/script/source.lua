@@ -147,11 +147,14 @@ function FS:path(relative)
     end
 end
 
--- fs:files(subdir [, extension]) -> the relative paths of the subdir's files (not recursive) with
--- the extension, sorted by name (the game loads a directory in name order)
+-- fs:files(subdir [, extension]) -> the relative paths of the subdir's files with the extension,
+-- sorted by name (the game loads a directory in name order). With the shared file system, to the
+-- depth the game lists the folder at (sim/src/vfs.rs GAME_FOLDERS: common/inline_scripts,
+-- common/terraform, common/defines, ... at every level; most folders only their own files), a name
+-- once (exactly); without it, the folder's own files, a name once (without case).
 function FS:files(subdir, extension)
     if self.vfs then
-        return self.rust.vfs_list(self.vfs, subdir, extension, 0)
+        return self.rust.vfs_list(self.vfs, subdir, extension)
     end
     local names, seen = {}, {}
     for _, root in ipairs(self.roots) do

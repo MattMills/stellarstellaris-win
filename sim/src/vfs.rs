@@ -4,7 +4,8 @@
 //!
 //! A mount later in the list wins for the same relative path, and a mount's `replace_path` folders
 //! hide the files of the mounts before it in that folder (`stellar.script.source`'s rules, which
-//! this replaces under it). Listings and path lookups are cached; a file's version is a counter that
+//! this replaces under it). A folder is listed as the game lists it (4.5.2, `VFSEnumerateFiles`):
+//! to the depth the game reads it at ([`GAME_FOLDERS`]), sorted by byte order, a name once. Listings and path lookups are cached; a file's version is a counter that
 //! [`Vfs::invalidate`] raises, so a cache keyed by (path, version) above (the parse cache in
 //! `stellar.script.source`) stays valid until the file changes.
 //!
@@ -26,6 +27,27 @@ pub struct Mount {
 }
 
 type ListKey = (String, Option<String>, i32);
+
+include!("vfs_folders.rs");
+
+/// The depth the game lists a folder at for files with this extension: its `VFSPreEnumerateFiles`
+/// call's ([`GAME_FOLDERS`]: the entry for this extension, else the one for any file), and 0 for a
+/// folder it doesn't pre-enumerate (`VFSGetEnumeratedFiles`' fallback); negative: all levels.
+pub fn game_depth(sub: &str, ext: Option<&str>) -> i32 {
+    let sub = sub.trim_end_matches('/');
+    let ext = ext.map(|e| e.trim_start_matches('.').to_ascii_lowercase());
+    let mut any = None;
+    for (folder, e, depth) in GAME_FOLDERS {
+        if *folder == sub {
+            match (e, &ext) {
+                (Some(e), Some(x)) if e.eq_ignore_ascii_case(x) => return *depth,
+                (None, _) => any = any.or(Some(*depth)),
+                _ => {}
+            }
+        }
+    }
+    any.unwrap_or(0)
+}
 
 /// One set of mounts and its caches.
 pub struct Vfs {
@@ -57,8 +79,9 @@ impl Vfs {
     }
 
     /// The relative paths of `sub`'s files with extension `ext` (any when `None`; compared without
-    /// case), `depth` folder levels down (0: `sub` itself; negative: all), sorted by byte order. A
-    /// name in a later mount replaces the same name (without case) in an earlier one; a mount that
+    /// case), `depth` folder levels down (0: `sub` itself; negative: all), sorted by byte order
+    /// (`CString::operator<`: memcmp, then the shorter first). A name is listed once: the same
+    /// name (exactly, as the game's `std::unique`) in a later mount is the same file; a mount that
     /// replaces `sub` drops what the mounts before it listed. Names starting with `.` are skipped.
     pub fn list(&self, sub: &str, ext: Option<&str>, depth: i32) -> Arc<Vec<String>> {
         let sub = sub.trim_end_matches('/').to_string();
@@ -101,12 +124,11 @@ impl Vfs {
             let mut found = Vec::new();
             walk(&m.path.join(&sub), "", depth, &mut found);
             for name in found {
-                let lower = name.to_lowercase();
                 let wanted = match &ext {
-                    Some(e) => lower.ends_with(&format!(".{e}")),
+                    Some(e) => name.to_lowercase().ends_with(&format!(".{e}")),
                     None => true,
                 };
-                if wanted && seen.insert(lower) {
+                if wanted && seen.insert(name.clone()) {
                     names.push(name);
                 }
             }
@@ -234,7 +256,8 @@ fn by_key(key: &str) -> mlua::Result<Arc<Vfs>> {
 ///
 /// - `vfs_open(game_dir, mods)`: mods is a list of `{ path = dir, replace = { [folder] = true } }`
 ///   (`stellar.script.source.enabled_mods`); returns the file system's key
-/// - `vfs_list(key, sub, ext, depth)` -> sorted relative paths; `vfs_dirs(key, sub)` -> folders
+/// - `vfs_list(key, sub, ext [, depth])` -> sorted relative paths (depth: the game's for the
+///   folder when nil); `vfs_dirs(key, sub)` -> folders; `vfs_depth(sub, ext)` -> the game's depth
 /// - `vfs_path(key, rel)` -> the file's path or nil; `vfs_read(key, rel)` -> its text, or nil and a
 ///   message
 /// - `vfs_version(key, rel)` -> a number; `vfs_invalidate(key [, rel])`
@@ -272,9 +295,14 @@ pub fn register(lua: &Lua, rust: &Table) -> mlua::Result<()> {
         "vfs_list",
         lua.create_function(|lua, (key, sub, ext, depth): (String, String, Option<String>, Option<i32>)| {
             let v = by_key(&key)?;
-            let l = v.list(&sub, ext.as_deref(), depth.unwrap_or(0));
+            let depth = depth.unwrap_or_else(|| game_depth(&sub, ext.as_deref()));
+            let l = v.list(&sub, ext.as_deref(), depth);
             lua.create_sequence_from(l.iter().map(|s| s.as_str()))
         })?,
+    )?;
+    rust.set(
+        "vfs_depth",
+        lua.create_function(|_, (sub, ext): (String, Option<String>)| Ok(game_depth(&sub, ext.as_deref())))?,
     )?;
     rust.set(
         "vfs_dirs",
@@ -337,6 +365,7 @@ mod tests {
         put(&game, "common/y/old.txt", "old");
         put(&modd, "common/x/a.txt", "mod a");
         put(&modd, "common/x/m.TXT", "m");
+        put(&modd, "common/x/A.txt", "mod A");
         put(&modd, "common/y/new.txt", "new");
         let mut replace = HashSet::new();
         replace.insert("common/y".to_string());
@@ -345,8 +374,9 @@ mod tests {
             Mount { path: modd.clone(), replace },
         ]);
         // byte order (upper case first), the mod's a.txt once, depth 0 skips sub/
-        assert_eq!(*v.list("common/x", Some("txt"), 0), vec!["common/x/B2.txt", "common/x/a.txt", "common/x/b.txt", "common/x/m.TXT"]);
-        assert_eq!(*v.list("common/x", Some("txt"), -1), vec!["common/x/B2.txt", "common/x/a.txt", "common/x/b.txt", "common/x/m.TXT", "common/x/sub/c.txt"]);
+        // a name differing in case is another name (the game's exact std::unique)
+        assert_eq!(*v.list("common/x", Some("txt"), 0), vec!["common/x/A.txt", "common/x/B2.txt", "common/x/a.txt", "common/x/b.txt", "common/x/m.TXT"]);
+        assert_eq!(*v.list("common/x", Some("txt"), -1), vec!["common/x/A.txt", "common/x/B2.txt", "common/x/a.txt", "common/x/b.txt", "common/x/m.TXT", "common/x/sub/c.txt"]);
         assert_eq!(v.read("common/x/a.txt").unwrap(), b"mod a");
         assert_eq!(v.read("common/x/b.txt").unwrap(), b"b");
         // the mod replaces common/y: the game's old.txt is gone from the listing and the lookup
@@ -356,13 +386,26 @@ mod tests {
         // a change: the version moves and the listing is read again
         let v0 = v.version("common/x/b.txt");
         put(&game, "common/x/d.txt", "d");
-        assert_eq!(v.list("common/x", Some("txt"), 0).len(), 4);
-        v.invalidate(Some("common/x/d.txt"));
         assert_eq!(v.list("common/x", Some("txt"), 0).len(), 5);
+        v.invalidate(Some("common/x/d.txt"));
+        assert_eq!(v.list("common/x", Some("txt"), 0).len(), 6);
         assert_eq!(v.version("common/x/b.txt"), v0);
         v.invalidate(None);
         assert_ne!(v.version("common/x/b.txt"), v0);
         let _ = std::fs::remove_dir_all(&game);
         let _ = std::fs::remove_dir_all(&modd);
+    }
+
+    #[test]
+    fn game_depths() {
+        assert_eq!(game_depth("common/technology", Some("txt")), 0);
+        assert_eq!(game_depth("common/terraform", Some("txt")), -1);
+        assert_eq!(game_depth("common/inline_scripts", Some("txt")), -1);
+        assert_eq!(game_depth("events", Some("txt")), 0);
+        assert_eq!(game_depth("localisation", Some("yml")), -1);
+        // map/galaxy: every file at depth 0, .txt at every depth
+        assert_eq!(game_depth("map/galaxy", Some("txt")), -1);
+        assert_eq!(game_depth("map/galaxy", None), 0);
+        assert_eq!(game_depth("gfx/portraits/portraits", Some("txt")), 0);
     }
 }
