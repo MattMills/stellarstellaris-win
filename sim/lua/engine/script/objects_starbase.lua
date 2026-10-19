@@ -20,8 +20,13 @@ local function obj(kind, id)
     return id ~= nil and world.object(kind, id) or nil
 end
 local function today()
-    local d = package.loaded["engine.diplomacy"]
-    return d and d.today and d.today() or 0
+    return require("engine.diplomacy").today() or 0
+end
+-- `key = "text"`: a quoted string (the parser keeps the text without its quotes, quoted = true)
+local function set_quoted(o, key, text)
+    world.set(o, key, text)
+    local t = world.token_entry(o, key)
+    if t then t.value.quoted = true end
 end
 local function remove_field(o, key)
     local e = world.token_entry(o, key)
@@ -35,7 +40,7 @@ local function list_add(o, key, v, quoted)
     for _, x in ipairs(l) do
         if x.text and unq(x.text) == tostring(v) then return false end
     end
-    world.append_value(l, quoted and ('"' .. tostring(v) .. '"') or v)
+    world.append_value(l, v, quoted)
     return true
 end
 local function list_del(o, key, v)
@@ -131,7 +136,7 @@ function systems.effects.set_starbase_size(t)
     if not s then return skipped("set_starbase_size", "no starbase") end
     for name, d in pairs(defs.folder("common/starbase_levels")) do
         if unq(defs.field(d.block, "ship_size")) == t.size then
-            world.set(s, "level", '"' .. name .. '"')
+            set_quoted(s, "level", name)
             return applied("set_starbase_size")
         end
     end
@@ -151,7 +156,7 @@ function systems.effects.ai_starbase_override(t)
     if t.value == nil then
         remove_field(c, key)
     else
-        world.set(c, key, t.quoted and ('"' .. t.value .. '"') or t.value)
+        if t.quoted then set_quoted(c, key, t.value) else world.set(c, key, t.value) end
     end
     return applied("ai_starbase_override")
 end
@@ -232,13 +237,13 @@ function systems.effects.asteroid_belt(t)
     if t.set then
         for _, b in ipairs(world.blocks(belts)) do
             if tonumber(world.field(b, "inner_radius")) == t.radius then
-                world.set(b, "type", '"' .. t.belt .. '"')
+                set_quoted(b, "type", t.belt)
                 return applied("asteroid_belt")
             end
         end
     end
     local b = {}
-    world.append(b, "type", '"' .. t.belt .. '"')
+    world.append(b, "type", t.belt, true)
     world.append(b, "inner_radius", t.radius)
     world.push(belts, b)
     return applied("asteroid_belt")
@@ -247,13 +252,13 @@ function systems.effects.set_star_class(t)
     local s = obj("galactic_object", t.id)
     local d = defs.get("common/star_classes", t.class)
     if not s or not d then return skipped("set_star_class", s and "unknown class" or "no system") end
-    world.set(s, "star_class", '"' .. t.class .. '"')
+    set_quoted(s, "star_class", t.class)
     local pb = defs.field(d.block, "planet")
     local pc = type(pb) == "table" and unq(defs.field(pb, "key")) or nil
     local R = require("engine.script.runtime")
     local star = R.star_planet(t.id)
     local p = star and obj("planet", star)
-    if p and pc then world.set(p, "planet_class", '"' .. pc .. '"') end
+    if p and pc then set_quoted(p, "planet_class", pc) end
     return applied("set_star_class")
 end
 
@@ -344,7 +349,7 @@ function systems.effects.create_bypass(t)
     if not m then return skipped("create_bypass", "no megastructure") end
     if not defs.get("common/bypass", t.bypass_type) then return skipped("create_bypass", "unknown type") end
     local b = {}
-    world.append(b, "type", '"' .. t.bypass_type .. '"')
+    world.append(b, "type", t.bypass_type, true)
     world.append(b, "active", "yes")
     local o = {}
     world.append(o, "type", 6)
@@ -382,7 +387,7 @@ local function date_text(day)
     local y = math.floor(day / 360)
     local m = math.floor((day % 360) / 30) + 1
     local d = day % 30 + 1
-    return string.format('"%d.%02d.%02d"', y, m, d)
+    return string.format("%d.%02d.%02d", y, m, d)
 end
 function systems.effects.upgrade_megastructure(t)
     local m = obj("megastructures", t.id)
@@ -390,7 +395,7 @@ function systems.effects.upgrade_megastructure(t)
     if t.finish then
         local to = unq(world.field(m, "upgrade"))
         if not to then return skipped("upgrade_megastructure", "no upgrade") end
-        world.set(m, "type", '"' .. to .. '"')
+        set_quoted(m, "type", to)
         remove_field(m, "upgrade")
         remove_field(m, "upgrade_finish_date")
         remove_field(m, "halted_days")
@@ -398,9 +403,9 @@ function systems.effects.upgrade_megastructure(t)
     end
     local d = defs.get("common/megastructures", t.to)
     if not d then return skipped("upgrade_megastructure", "unknown type") end
-    world.set(m, "upgrade", '"' .. t.to .. '"')
+    set_quoted(m, "upgrade", t.to)
     local days = tonumber(defs.field(d.block, "build_time")) or 0
-    world.set(m, "upgrade_finish_date", date_text(today() + days))
+    set_quoted(m, "upgrade_finish_date", date_text(today() + days))
     return applied("upgrade_megastructure")
 end
 function systems.effects.set_halted(t)
@@ -415,7 +420,7 @@ function systems.effects.set_overclock(t)
     local m = obj("megastructures", t.id)
     local d = defs.get("common/megastructure_overclock_types", t.overclock)
     if not m or not d then return skipped("set_overclock", m and "unknown type" or "no megastructure") end
-    world.set(m, "overclock", '"' .. t.overclock .. '"')
+    set_quoted(m, "overclock", t.overclock)
     if t.cooldown then
         local R = require("engine.script.runtime")
         local days = tonumber(defs.field(d.block, "cooldown")) or R.define("NGameplay", "MEGASTRUCTURE_OVERCLOCK_COOLDOWN", 360)
@@ -441,7 +446,7 @@ function systems.effects.set_object_field(t)
     for _, id in ipairs(ids) do
         local o = obj(t.store, id)
         if o then
-            world.set(o, t.key, t.quoted and ('"' .. tostring(t.value) .. '"') or t.value)
+            if t.quoted then set_quoted(o, t.key, tostring(t.value)) else world.set(o, t.key, t.value) end
             any = true
         end
     end
@@ -465,7 +470,7 @@ function systems.effects.create_sector(t)
     if ref(world.field(sys, "sector")) then return skipped("create_sector", "in a sector") end
     local s = {}
     local name = {}
-    world.append(name, "key", '"' .. (t.name or "NEW_SECTOR") .. '"')
+    world.append(name, "key", t.name or "NEW_SECTOR", true)
     world.append(s, "name", name)
     local l = {}
     world.push(l, { text = tostring(t.system) })
@@ -473,7 +478,7 @@ function systems.effects.create_sector(t)
     world.append(s, "local_capital", t.colony)
     world.append(s, "owner", t.owner)
     world.append(s, "auto_expand", "yes")
-    world.append(s, "type", '"' .. (t.sector_type or "normal_sector") .. '"')
+    world.append(s, "type", t.sector_type or "normal_sector", true)
     local id = objects.create("sectors", s)
     world.set(sys, "sector", id)
     local c = obj("country", t.owner)
@@ -513,13 +518,13 @@ function systems.effects.psionic_aura(t)
         if not obj("country", t.country) or not obj("galactic_object", t.system) then return skipped("psionic_aura", "no country") end
         if a then
             world.set(a, "country", t.country)
-            if t.aura_type then world.set(a, "type", ' .. t.aura_type .. ') end
+            if t.aura_type then set_quoted(a, "type", t.aura_type) end
             return applied("psionic_aura")
         end
         local b = {}
         world.append(b, "country", t.country)
         world.append(b, "system", t.system)
-        if t.aura_type then world.append(b, "type", ' .. t.aura_type .. ') end
+        if t.aura_type then world.append(b, "type", t.aura_type, true) end
         world.append(b, "intensity", 0)
         world.push(h, b)
         return applied("psionic_aura")
@@ -533,4 +538,249 @@ function systems.effects.psionic_aura(t)
         world.set(a, "intensity", (tonumber(world.field(a, "intensity")) or 0) + t.value)
     end
     return applied("psionic_aura")
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- stations made by script: create_starbase (CGalacticObject::CreateStarbase through
+-- engine.fleets.stations.create: the station ship, its fleet, the starbase record, the system's
+-- ownership and borders), then its size, module and building; create_mining_station (the planet's
+-- shipclass_orbital_station). The station rules (one starbase per planet, one station per planet,
+-- a design of the class) are stations.can_create's; the costs are not paid (an effect)
+
+local function stations()
+    return require("engine.fleets.stations")
+end
+function systems.effects.create_starbase(t)
+    local st = stations()
+    if not obj("country", t.country) or not obj("planet", t.planet) then return skipped("create_starbase", "no owner or planet") end
+    local fid, why = st.create(t.country, t.planet, st.CLASS.shipclass_starbase)
+    if not fid then return skipped("create_starbase", why or "not made") end
+    local built = st.built[#st.built]
+    local sbid = built and built.fleet == fid and built.starbase
+    if not sbid then return skipped("create_starbase", "no starbase record") end
+    if t.size then systems.effects.set_starbase_size({ id = sbid, size = t.size }) end
+    if t.design then
+        local did = objects.fleets and objects.fleets.designs.global(t.design)
+        local s = obj("starbase", sbid)
+        local sdi = s and world.field(s, "ship_design_implementation")
+        if did and type(sdi) == "table" then world.set(sdi, "design", did) end
+        local ship = s and obj("ships", ref(world.field(s, "station")))
+        local ssdi = ship and world.field(ship, "ship_design_implementation")
+        if did and type(ssdi) == "table" then world.set(ssdi, "design", did) end
+    end
+    if t.module then systems.effects.set_starbase_item({ id = sbid, kind = "module", slot = 1, item = t.module }) end
+    if t.building then systems.effects.set_starbase_item({ id = sbid, kind = "building", slot = 1, item = t.building }) end
+    return applied("create_starbase", sbid)
+end
+function systems.effects.create_mining_station(t)
+    local st = stations()
+    if not obj("country", t.country) or not obj("planet", t.planet) then return skipped("create_mining_station", "no owner or planet") end
+    local fid, why = st.create(t.country, t.planet, st.CLASS.shipclass_mining_station)
+    if not fid then return skipped("create_mining_station", why or "not made") end
+    return applied("create_mining_station", fid)
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- nebulas: top-level `nebula = { coordinate = { x y origin randomized visual_height } name = { key }
+-- radius galactic_object = <id> ... }` [V: the save's nine]; the systems within the radius of the
+-- centre's system (t.systems: the handler runs the effect in each)
+
+function systems.effects.create_nebula(t)
+    local s = obj("galactic_object", t.id)
+    if not s or not world.tree then return skipped("create_nebula", "no system") end
+    local c = world.field(s, "coordinate")
+    local x0, y0 = tonumber(world.field(c, "x")) or 0, tonumber(world.field(c, "y")) or 0
+    local n = {}
+    local cb = {}
+    world.append(cb, "x", x0)
+    world.append(cb, "y", y0)
+    world.append(cb, "origin", NO_ID)
+    world.append(cb, "randomized", "yes")
+    world.append(cb, "visual_height", 0)
+    world.append(n, "coordinate", cb)
+    local nb = {}
+    world.append(nb, "key", t.name or "NEBULA", true)
+    world.append(n, "name", nb)
+    world.append(n, "radius", t.radius)
+    t.systems = {}
+    for _, sid in ipairs(world.all("galactic_object")) do
+        local o = obj("galactic_object", sid)
+        local oc = o and world.field(o, "coordinate")
+        if type(oc) == "table" then
+            local dx = (tonumber(world.field(oc, "x")) or 0) - x0
+            local dy = (tonumber(world.field(oc, "y")) or 0) - y0
+            if dx * dx + dy * dy <= t.radius * t.radius then
+                world.append(n, "galactic_object", sid)
+                t.systems[#t.systems + 1] = sid
+            end
+        end
+    end
+    world.tree[#world.tree + 1] = { key = { text = "nebula" }, op = "=", value = n }
+    return applied("create_nebula")
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- systems made or moved by script: the position the handler drew (x, y); hyperlane = yes: the
+-- system's lanes replaced by one to the nearest system [I]
+
+local function nearest_system(sid, x, y)
+    local best, bd
+    for _, other in ipairs(world.all("galactic_object")) do
+        if other ~= sid then
+            local o = obj("galactic_object", other)
+            local oc = o and world.field(o, "coordinate")
+            if type(oc) == "table" then
+                local dx = (tonumber(world.field(oc, "x")) or 0) - x
+                local dy = (tonumber(world.field(oc, "y")) or 0) - y
+                local d = dx * dx + dy * dy
+                if not bd or d < bd then best, bd = other, d end
+            end
+        end
+    end
+    return best
+end
+local function relink(sid, x, y)
+    local s = obj("galactic_object", sid)
+    for _, h in ipairs(world.blocks(world.field(s, "hyperlane"))) do
+        local to = tonumber(world.field(h, "to"))
+        if to then systems.effects.remove_hyperlane({ from = sid, to = to }) end
+    end
+    local n = nearest_system(sid, x, y)
+    if n then systems.effects.add_hyperlane({ from = sid, to = n }) end
+end
+function systems.effects.move_system(t)
+    local s = obj("galactic_object", t.id)
+    local c = s and world.field(s, "coordinate")
+    if type(c) ~= "table" then return skipped("move_system", "no system") end
+    world.set(c, "x", math.floor(t.x * 100 + 0.5) / 100)
+    world.set(c, "y", math.floor(t.y * 100 + 0.5) / 100)
+    if t.hyperlane then relink(t.id, t.x, t.y) end
+    return applied("move_system")
+end
+-- spawn_system: the system (`galactic_object`: coordinate, name, star_class, hyperlane,
+-- initializer, radii, starbases, sector, index, storm [V: save.lua write_system's form]) and its
+-- star (the class's planet class [V: common/star_classes `planet = { key }`]); the initializer's
+-- other planets are not made [I]; last_created_system
+function systems.effects.spawn_system(t)
+    local cls = t.star_class
+    local d = cls and defs.get("common/star_classes", cls)
+    if not d then return skipped("spawn_system", "no star class") end
+    local s = {}
+    local c = {}
+    world.append(c, "x", math.floor(t.x * 100 + 0.5) / 100)
+    world.append(c, "y", math.floor(t.y * 100 + 0.5) / 100)
+    world.append(c, "origin", NO_ID)
+    world.append(c, "randomized", "yes")
+    world.append(c, "visual_height", 3.65056)
+    world.append(s, "coordinate", c)
+    local nm = {}
+    world.append(nm, "key", t.name or "NEW_SYSTEM", true)
+    world.append(s, "name", nm)
+    local sid = objects.new_id("galactic_object")
+    -- the star
+    local pb = defs.field(d.block, "planet")
+    local pc = type(pb) == "table" and unq(defs.field(pb, "key")) or nil
+    local pid
+    if pc then
+        local p = {}
+        world.append(p, "planet_class", pc, true)
+        world.append(p, "planet_size", tonumber(defs.field(d.block, "planet_size")) or 30)
+        world.append(p, "carrier_binary_flags", 3)
+        world.append(p, "build_queue", NO_ID)
+        local pn = {}
+        world.append(pn, "key", t.name or "NEW_SYSTEM", true)
+        world.append(p, "name", pn)
+        local pcoord = {}
+        world.append(pcoord, "x", 0)
+        world.append(pcoord, "y", 0)
+        world.append(pcoord, "origin", sid)
+        world.append(p, "coordinate", pcoord)
+        world.append(p, "orbit", 0)
+        world.append(p, "last_bombardment", "0.01.01", true)
+        world.append(p, "planet_orbitals", {})
+        world.append(p, "bombardment_damage", 0)
+        world.append(p, "entity", 0)
+        pid = objects.create("planet", p)
+        world.append(s, "planet", pid)
+    end
+    world.append(s, "star_class", cls, true)
+    world.append(s, "hyperlane", {})
+    world.append(s, "initializer", t.initializer or "", true)
+    world.append(s, "inner_radius", 0)
+    world.append(s, "outer_radius", 0)
+    local sb = {}
+    world.push(sb, { text = tostring(NO_ID) })
+    world.append(s, "starbases", sb)
+    world.append(s, "sector", NO_ID)
+    world.append(s, "index", #world.all("galactic_object"))
+    world.append(s, "storm", NO_ID)
+    world.create("galactic_object", sid, s)
+    if t.hyperlane then relink(sid, t.x, t.y) end
+    objects.set_meta("last_created_system", sid)
+    return applied("spawn_system", sid)
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- debris (`debris = { id = { country from_country from_fleet_name coordinate resources
+-- stockpile_resources ship_size component date killed must_scavenge must_reanimate must_research }
+-- }`: CDebris::WriteMembers 0x290aab0 [V the keys; I the values]): the ships' sizes and their
+-- designs' components; destroy: the ships (or the fleet) taken away after
+
+local function design_components(did)
+    local d = did and obj("ship_design", did)
+    local out = {}
+    for _, sec in ipairs(d and world.fields(d, "section") or {}) do
+        if type(sec) == "table" then
+            for _, comp in ipairs(world.fields(sec, "component")) do
+                local tpl = type(comp) == "table" and unq(world.field(comp, "template"))
+                if tpl then out[#out + 1] = tpl end
+            end
+        end
+    end
+    return out
+end
+function systems.effects.spawn_debris(t)
+    local f = obj("fleet", t.fleet)
+    if not f or not obj("country", t.country) then return skipped("spawn_debris", "no fleet or country") end
+    local R = require("engine.script.runtime")
+    local b = {}
+    world.append(b, "country", t.country)
+    world.append(b, "from_country", R.fleet_owner(t.fleet) or NO_ID)
+    local name = world.field(f, "name")
+    if type(name) == "table" then world.append(b, "from_fleet_name", require("engine.fleets.create").copy(name)) end
+    local mc = world.path(f, "movement_manager", "coordinate")
+    local c = {}
+    for _, k in ipairs({ "x", "y", "origin" }) do
+        world.append(c, k, type(mc) == "table" and world.field(mc, k) or (k == "origin" and NO_ID or 0))
+    end
+    world.append(b, "coordinate", c)
+    world.append(b, "resources", {})
+    world.append(b, "stockpile_resources", {})
+    local seen = {}
+    for _, sid in ipairs(t.ships) do
+        local size = R.ship_size_of(sid)
+        if size then world.append(b, "ship_size", size, true) end
+        local ship = obj("ships", sid)
+        local sdi = ship and world.field(ship, "ship_design_implementation")
+        for _, tpl in ipairs(design_components(type(sdi) == "table" and ref(world.field(sdi, "design")) or nil)) do
+            if not seen[tpl] then
+                seen[tpl] = true
+                world.append(b, "component", tpl, true)
+            end
+        end
+    end
+    world.append(b, "date", date_text(today()), true)
+    world.append(b, "killed", #t.ships)
+    for _, k in ipairs({ "must_scavenge", "must_reanimate", "must_research" }) do
+        world.append(b, k, t[k] and "yes" or "no")
+    end
+    local id = objects.create("debris", b)
+    if t.destroy then
+        if t.ship then
+            require("engine.fleets.destroy").ship(t.ship)
+        else
+            require("engine.fleets.create").kill(t.fleet)
+        end
+    end
+    return applied("spawn_debris", id)
 end
