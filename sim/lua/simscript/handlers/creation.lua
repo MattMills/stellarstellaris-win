@@ -334,10 +334,10 @@ return function(eval)
     EFF["run_ai_strategic_war_data"] = EFF["run_ai_strategic_war_data"] or function() end
 
     -- export_trigger_value_to_variable = { trigger = <name> parameters = { } variable = <name>
-    -- rounded = yes } (CExportTriggerValueToVariableEffect): the trigger's value. The script layer's
-    -- triggers compare, they do not return values: a trigger written `<name> <op> <number>` is read by
-    -- bisection of `<name> > v` (exact to 1e-5 for what the game keeps as fixed point) [I]; a trigger
-    -- with parameters is counted as not implemented
+    -- rounded = yes } (CExportTriggerValueToVariableEffect): the trigger's value: its value function
+    -- (eval.trigger_value, with the parameters block), else, for a trigger without parameters
+    -- written `<name> <op> <number>`, by bisection of `<name> > v` (exact to 1e-5 for what the game
+    -- keeps as fixed point) [I]
     local function trigger_value(name, ctx, e)
         local key = name:lower()
         -- a fresh block each time: the compiler keys its caches on the block (weakly), so a block
@@ -361,10 +361,14 @@ return function(eval)
         local p = params(e)
         local name, var = text_of(p.trigger), text_of(p.variable)
         if not name or not var then return end
-        if p.parameters then
+        -- the trigger's value function (eval.trigger_value, with the parameters block, as
+        -- complex_trigger_modifier reads it), else, without parameters, the bisection
+        local block = p.parameters and p.parameters.value.text == nil and p.parameters.value or nil
+        local v = eval.trigger_value and eval.trigger_value(name, block, ctx, e)
+        if v == nil and p.parameters then
             return miss("effect", "export_trigger_value_to_variable " .. name .. " (parameters)", ctx, e)
         end
-        local v = trigger_value(name, ctx, e)
+        if v == nil then v = trigger_value(name, ctx, e) end
         if v == nil then
             return miss("effect", "export_trigger_value_to_variable " .. name, ctx, e)
         end
