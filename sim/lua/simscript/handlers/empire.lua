@@ -485,9 +485,28 @@ return function(eval)
         end
         return best and S("pop_group", best) or nil
     end
-    -- last_created_pop_faction: the faction a create_pop_faction made (its handle)
+    -- last_created_leader / last_created_species / last_created_pop_faction: the object the
+    -- script's last create_* made (its handle in the context), else the last one made anywhere in
+    -- the game (the save's last_created_leader, last_created_species_ref) [V save keys]
     I.CREATED_KIND.pop_faction = I.CREATED_KIND.pop_faction or "pop_faction"
     I.CREATED_KIND.species = I.CREATED_KIND.species or "species"
+    local function last_created(kind, meta_key)
+        return function(_, ctx)
+            local h = ctx and ctx.created and ctx.created[kind]
+            local id
+            if h then
+                sync()
+                id = E.resolve(h)
+            else
+                id = tonumber(world.meta[meta_key])
+            end
+            if id and world.object(kind == "pop_faction" and "pop_factions" or kind, id) then return S(kind, id) end
+            return nil
+        end
+    end
+    LINKS["last_created_leader"] = last_created("leader", "last_created_leader")
+    LINKS["last_created_species"] = last_created("species", "last_created_species_ref")
+    LINKS["last_created_pop_faction"] = last_created("pop_faction", "last_created_pop_faction")
 
     local H = {
         I = I, S = S, E = E, NONE = NONE, world = world, unq = unq, obj = obj, field = field, num = num,
