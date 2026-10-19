@@ -429,22 +429,25 @@ return function(eval)
     end
 
     -- set_trade_conversions = { <resource> = <fraction> ... } (CSetTradeConversions 0x37ed7a0) [V]:
-    -- the country's trade_conversions replaced by the table (its non-zero entries; `{}` empties
-    -- it). The budget books the net trade income out and each listed resource in at trade x its
-    -- fraction (a `trade` entry keeps that share as trade)
+    -- the country's trade_conversions replaced by the table (its non-zero entries); an empty table
+    -- changes nothing [V: the game's save after `set_trade_conversions = { }`]. The budget books the
+    -- net trade income out and each listed resource in at trade x its fraction (a `trade` entry
+    -- keeps that share as trade)
     EFF["set_trade_conversions"] = function(e, ctx)
         local id, c = this_country(ctx)
         if not id or e.value.text then return end
         local m = market()
-        local entries = {}
+        local entries, listed = {}, false
         for _, x in ipairs(e.value) do
             if x.op and x.key and m.resource(x.key.text) then
+                listed = true
                 local v = fixed(eval.value(x.value, ctx, x))
                 if v ~= 0 then
                     entries[#entries + 1] = { key = { text = x.key.text }, op = "=", value = { text = world.number_text(v) } }
                 end
             end
         end
+        if not listed then return end
         sync()
         world.replace(world.child(c, "trade_conversions"), entries)
         written()

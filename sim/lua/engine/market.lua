@@ -409,12 +409,16 @@ function market.set_stockpile(country, key, value)
         end
         return math.floor(v * ONE + 0.5) / ONE
     end
+    -- (research is also tech_status.stored_techpoints, which the game keeps equal [V: both 0 after
+    -- clear_resources])
     local ri = RESEARCH[key]
     if ri then
         local tp = world.child(world.child(c, "tech_status"), "stored_techpoints")
         set_list(tp, ri, clamp(key, value), 0)
-    else
-        local res = world.child(world.child(world.child(c, "modules"), "standard_economy_module"), "resources")
+    end
+    do
+        local module = world.child(world.child(c, "modules"), "standard_economy_module")
+        local res = world.child(module, "resources")
         world.set(res, key, clamp(key, value))
         -- (the clamp pass over the others: a resource over its max comes down to it)
         for k, v in world.statements(res) do
@@ -424,6 +428,20 @@ function market.set_stockpile(country, key, value)
                 if cv ~= n then
                     world.set(res, k, cv)
                 end
+            end
+        end
+        -- (the table is saved without its zeros, and not at all when empty [V: the game's save after
+        -- clear_resources: `standard_economy_module = { }`])
+        for i = #res, 1, -1 do
+            local x = res[i]
+            if x.op and x.value and x.value.text and tonumber(x.value.text) == 0 then
+                world.remove_entry(res, x)
+            end
+        end
+        if #res == 0 then
+            local e = world.entry(module, "resources")
+            if e then
+                world.remove_entry(module, e)
             end
         end
     end
