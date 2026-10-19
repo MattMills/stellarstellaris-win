@@ -237,8 +237,8 @@ pub struct App {
     /// the planet view's state: the planet and the tab shown (planet.rs)
     pub planet_view: crate::planet::State,
     /// what the windows were laid out for: the size, view, selection, snapshot, GUI shown, paused,
-    /// star names' zoom, observing
-    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool, u64)>,
+    /// star names' zoom, observing, the galaxy's hovered star
+    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool, u64, Option<usize>)>,
     /// the player holds the camera (a drag, a turn); the plane's point a drag holds; what the
     /// camera follows; the systems' cameras as they were left; the last system shown
     holding: bool,
@@ -1424,7 +1424,7 @@ impl App {
             let (w, h) = self.size;
             let states = self.states();
             if self.screen == Screen::Map {
-                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0), m.observe, self.fleet.key()));
+                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0), m.observe, self.fleet.key(), self.hovered_system()));
                 if key != self.overlay_key {
                     let t = Instant::now();
                     self.overlay_items = self.selection_windows();
@@ -1545,7 +1545,14 @@ impl App {
             None => None,
         };
         if self.hovered.as_ref().map(|h| &h.0) != target.as_ref() {
+            // a star hovered or left on the galaxy: its label's hover marker (mapicons.rs; the
+            // labels' key has the hovered system)
+            let before = self.hovered_system();
             self.hovered = target.map(|t| (t, Instant::now()));
+            if self.hovered_system() != before && hover == self.hover {
+                self.scene = None;
+                return Ok(true);
+            }
         }
         if hover != self.hover {
             self.hover = hover;
