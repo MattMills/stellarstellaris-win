@@ -364,9 +364,31 @@ return function(eval, H)
         world.set(c, "government_date", quoted(add_days(days)))
         wrote()
     end
-    -- advanced_authority_refresh (CAdvancedAuthorityRefreshEffect 0x37eb970) [V]: the government's
-    -- type recomputed and the modifiers [I: AssignMatchingType not modelled; no state written]
-    EFF["advanced_authority_refresh"] = function() end
+    -- advanced_authority_refresh (CAdvancedAuthorityRefreshEffect 0x37eb970 → CGovernment::
+    -- AssignMatchingType 0x1c13950 → GenerateType 0x1c56e50) [V]: the government's `type`: the
+    -- common/governments types in load order whose `possible` holds (this the country), each weighed
+    -- by its `weight`; one replaces the pick when the pick's weight is not above 0 or its own is
+    -- higher; none: no `type`. No draw, no on_action
+    EFF["advanced_authority_refresh"] = function(e, ctx)
+        local c = C(ctx)
+        if not c or e.value.text == "no" then return end
+        local g = gov_of(c)
+        local pick, pw
+        for _, x in ipairs(ordered("common/governments")) do
+            local b, file = x.def.block, x.def.file
+            local sc = eval.new_ctx(ctx.this, nil, nil, file)
+            local pos = dfield(b, "possible")
+            if type(pos) ~= "table" or #pos == 0 or eval.trigger(pos, sc) == true then
+                local wb = dfield(b, "weight")
+                local w = type(wb) == "table" and eval.weight(wb, sc, 0) or tonumber(wb) or 0
+                if pick == nil or pw <= 0 or w > pw then pick, pw = x.name, w end
+            end
+        end
+        local cur = unq(field(g, "type"))
+        if pick == cur then return end
+        if pick then world.set(g, "type", quoted(pick)) else remove_key(g, "type") end
+        wrote()
+    end
     -- add_edict = <edict> (CAddEdictEffect 0x38035b0 → CCountry::AddEdict 0x2398d90) [V]: active
     -- already: nothing; its cost paid (unchecked; the cost's multiplier not applied [I]); one global
     -- draw seeds the scope its `effect` runs in; on_edict_activated; the entry (length <= 0:
