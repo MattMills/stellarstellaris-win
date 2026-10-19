@@ -280,6 +280,9 @@ pub struct App {
     /// the left button held: where the pointer was last, and whether the press turns the ship
     /// designer's 3D view (designer.rs)
     left_held: Option<(f32, f32, bool)>,
+    /// the press's slot while painting (its path and its click's action): painted too when a drag
+    /// leaves it for another slot
+    paint_press: Option<(String, String)>,
     last_update: Option<Instant>,
     /// the diplomacy windows (Contacts, a country's diplomacy, ...: diplomacy.rs)
     pub diplomacy: crate::diplomacy::State,
@@ -391,6 +394,7 @@ impl App {
             cursor: None,
             map_press: None,
             left_held: None,
+            paint_press: None,
             last_update: None,
             diplomacy: Default::default(),
         })
@@ -1605,6 +1609,12 @@ impl App {
     pub fn mouse_down(&mut self, x: f32, y: f32) -> Result<bool, String> {
         self.map_press = Some((x, y));
         self.left_held = Some((x, y, self.designer.open && crate::designer::on_view(x, y) && self.button_at(x, y)?.is_none_or(|b| b.0 == "/designer" || b.0 == "/ship_designer/background")));
+        self.paint_press = match self.button_at(x, y)? {
+            Some((path, Some(a))) if a.starts_with("designer:ui:paint:") || a.starts_with("designer:ui:mpaint:") => {
+                Some((path, a.split_once("||").map_or(a.as_str(), |(l, _)| l).to_string()))
+            }
+            _ => None,
+        };
         let pressed = self.button_at(x, y)?.map(|b| b.0);
         if pressed != self.pressed {
             self.pressed = pressed;
@@ -1619,6 +1629,7 @@ impl App {
     /// nothing.
     pub fn mouse_up(&mut self, x: f32, y: f32) -> Result<bool, String> {
         self.left_held = None;
+        self.paint_press = None;
         let under = self.button_at(x, y)?;
         let pressed = self.pressed.take();
         if pressed.is_some() {
@@ -1652,8 +1663,12 @@ impl App {
             return Ok(true);
         }
         if let Some((path, Some(a))) = self.button_at(x, y)? {
-            if a.starts_with("designer:ui:paint:") && self.pressed.as_deref() != Some(path.as_str()) {
+            if (a.starts_with("designer:ui:paint:") || a.starts_with("designer:ui:mpaint:")) && self.pressed.as_deref() != Some(path.as_str()) {
                 let left = a.split_once("||").map_or(a.as_str(), |(l, _)| l).to_string();
+                // (the slot the drag started on first)
+                if let Some((pp, pa)) = self.paint_press.take() {
+                    self.act(&pp, Some(&pa))?;
+                }
                 self.act(&path, Some(&left))?;
                 self.pressed = Some(path);
                 self.scene = None;
