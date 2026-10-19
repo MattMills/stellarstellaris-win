@@ -292,6 +292,21 @@ first_contact.score = function(id, no_die)
     local fc = world.object("first_contact", id)
     return fc and score(fc, no_die)
 end
+-- CFirstContact::AddClues: add_stage_clues' (handlers/events_effects.lua), as the handler below
+first_contact.add_clues = function(id, n)
+    local fc = world.object("first_contact", id)
+    if not fc then return end
+    local clues = tonumber(world.field(fc, "clues")) or 0
+    if n < 0 and n < -clues then n = -clues end
+    first_contact.newly_added[id] = (first_contact.newly_added[id] or 0) + n
+    world.set(fc, "clues", clues + n)
+    first_contact.stats.clues_added = first_contact.stats.clues_added + n
+end
+-- the contact country's malus (CalcTargetDiscoveryMalus): GetCurrentStageDifficulty = difficulty + it
+first_contact.malus = function(id)
+    local fc = world.object("first_contact", id)
+    return fc and malus(fc) or 0
+end
 
 -- ---------------------------------------------------------------------------------------------
 -- the engine's actions
