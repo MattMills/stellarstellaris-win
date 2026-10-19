@@ -345,8 +345,11 @@ end
 -- panel): its portrait (a group: its `species` section's portraits for the species' gender, the
 -- first [I], else its default; a species of no gender (`not_set`) as a male one: the game's frames
 -- show Human's male portraits [I: the game's choice among them not traced]), the selectors'
--- `species` textures
-function portraits.species(game_dir, design)
+-- `species` textures; with look = { clothes, attachment } (the creator's portrait grid: the design
+-- ruler's indices, as the game's frame shows: clothes 4 of a new design is new_human's
+-- general_01, mammalian_normal_outfit_admiral for humanoid_hp_07, the massive admiral for
+-- humanoid_hp_08 and _12 [V]) those indices' textures of the selectors instead
+function portraits.species(game_dir, design, look)
     local sp = design and design.species or {}
     local gender = (sp.gender == "female" or sp.gender == "male") and sp.gender or "male"
     local key = sp.portrait
@@ -378,7 +381,8 @@ function portraits.species(game_dir, design)
         end
         key = list[1] or field(group, "default")
     end
-    local p = portrait_of(game_dir, key, 0, "species", { gender = gender })
+    local p = portrait_of(game_dir, key, 0, "species", { gender = gender },
+        look and tonumber(look.clothes), look and tonumber(look.attachment))
     if os.getenv and os.getenv("STELLAR_PORTRAIT_DEBUG") and p then
         io.stderr:write("portraits: species " .. tostring(sp.portrait) .. " -> " .. tostring(key) .. " clothes " .. tostring(p.clothes) .. " hair " .. tostring(p.hair) .. "\n")
     end

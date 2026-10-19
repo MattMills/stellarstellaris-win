@@ -788,6 +788,11 @@ function newgame.start_script(game)
         world.index()
         ran.jobs = jobs.report()
     end)
+    -- the month's budgets the views show from day 0 (the game's first daily update fills
+    -- budget.current_month: engine.economy.write_current_month)
+    guarded("budget", function()
+        require("engine.economy").write_current_month()
+    end)
     local lines = {
         string.format("start script: %d init_effects and %d on_actions run; %d script effects, %d engine effects queued; %d errors",
             ran.effects, ran.on_actions, stats.script - s0, stats.engine - e0, #errors),

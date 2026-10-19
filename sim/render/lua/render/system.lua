@@ -66,7 +66,8 @@ local function files(game_dir)
     if cache then
         return cache
     end
-    cache = { vars = {}, templates = {}, slots = {}, component_slots = {} }
+    cache = { vars = {}, templates = {}, slots = {}, component_slots = {}, template_order = {}, template_fit = {},
+        slot_order = {}, size_cultures = {} }
     for _, f in ipairs(source.files(game_dir, "common/scripted_variables", "txt")) do
         for _, e in ipairs(source.parse(game_dir, f) or {}) do
             if e.op and e.key and e.key.text:sub(1, 1) == "@" and e.value.text then
@@ -84,6 +85,9 @@ local function files(game_dir)
                 local key = get(e.value, "key")
                 if key then
                     cache.templates[key] = get(e.value, "entity")
+                    -- (its size and slot, in the files' order: default_sections)
+                    cache.template_order[#cache.template_order + 1] = key
+                    cache.template_fit[key] = { size = get(e.value, "ship_size"), slot = get(e.value, "fits_on_slot") }
                     -- its component slots: name -> { template (a slot template), locator }
                     local cs = {}
                     for _, x in ipairs(e.value) do
@@ -101,14 +105,26 @@ local function files(game_dir)
     end
     local sizes = source.definitions(game_dir, "common/ship_sizes")
     for name, d in pairs(sizes) do
-        local slots = {}
+        local slots, order = {}, {}
         local ss = get(d.block, "section_slots")
         for _, e in ipairs(type(ss) == "table" and ss or {}) do
             if e.op and e.key and type(e.value) == "table" then
                 slots[e.key.text] = get(e.value, "locator")
+                order[#order + 1] = e.key.text
             end
         end
         cache.slots[name] = slots
+        cache.slot_order[name] = order
+        -- (the cultures a size is limited to, `graphical_culture = { ... }`, in the files' order:
+        -- browser_size)
+        local gc = get(d.block, "graphical_culture")
+        if type(gc) == "table" then
+            local list = {}
+            for _, x in ipairs(gc) do
+                if x.text then list[#list + 1] = (x.text:gsub('"', "")) end
+            end
+            cache.size_cultures[#cache.size_cultures + 1] = { name = name, file = d.file or "", line = d.line or 0, cultures = list }
+        end
         cache.slots[name .. "#entity"] = get(d.block, "entity")
     end
     -- the `ship` swatches of flags/colors.txt (the empire colour of 3D ships, PrimaryColor)
@@ -569,6 +585,53 @@ function system.stage_model(game_dir, stage, culture, owner, colours)
         colour = (f.cultures[culture] or {}).ship_color and colour or nil,
         lighting = culture_lighting(f, culture),
     }
+end
+
+-- system.default_sections(game_dir, size) -> a stage's sections for a ship size shown without a
+-- design (the creator's ship browser): for each of the size's section slots, the first section
+-- template (in the files' order) of that size fitting the slot, no components [I: the game's
+-- CShipBrowser choice not traced]
+function system.default_sections(game_dir, size)
+    local f = files(game_dir)
+    local out = {}
+    for _, slot in ipairs(f.slot_order[size] or {}) do
+        for _, key in ipairs(f.template_order) do
+            local fit = f.template_fit[key]
+            if fit.size == size and fit.slot == slot then
+                out[#out + 1] = { template = key, slot = slot, components = {} }
+                break
+            end
+        end
+    end
+    return out
+end
+
+-- system.browser_size(game_dir, culture, size) -> the ship size a culture's ship is shown with
+-- for size: size when the culture has its frame (or the models are not read yet), else the first
+-- size (in the files' order) made for the culture (`graphical_culture`: the biological sets'
+-- mauler_stage_1 for a corvette) [I: the game's ship browser lists other sizes for those sets]
+function system.browser_size(game_dir, culture, size)
+    local f = files(game_dir)
+    local models = RENDER_MODELS and RENDER_MODELS.entities
+    if not models or next(models) == nil or first_entity({ culture .. "_" .. size .. "_entity",
+            f.slots[size .. "#entity"] and culture .. "_" .. f.slots[size .. "#entity"] }) then
+        return size
+    end
+    if not f.size_cultures_sorted then
+        table.sort(f.size_cultures, function(a, b)
+            if a.file ~= b.file then return a.file < b.file end
+            return a.line < b.line
+        end)
+        f.size_cultures_sorted = true
+    end
+    for _, s in ipairs(f.size_cultures) do
+        for _, c in ipairs(s.cultures) do
+            if c == culture then
+                return s.name
+            end
+        end
+    end
+    return size
 end
 
 -- system.look_of(game_dir, entity) -> the look of the planet class drawn with an entity (the

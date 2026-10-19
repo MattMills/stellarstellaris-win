@@ -217,6 +217,8 @@ end
 
 -- traditions.build(ctx, data, state) -> items, report
 function traditions.build(ctx, data, state)
+    -- the texts' [Name]s: their defaults (render.scripted_loc; the research view sets the scope's)
+    require("render.scripted_loc").defaults(ctx.game_dir)
     local defs = definitions(ctx.game_dir)
     -- (the data comes a snapshot after the view opens: every field guarded)
     data = data or {}
