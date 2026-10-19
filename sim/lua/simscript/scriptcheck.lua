@@ -238,9 +238,11 @@ function X.static(docs)
     end
     -- invented: what the Lua registers that the game does not document
     local lists = iterator_lists(docs)
+    -- keywords the game accepts and vanilla uses though its documentation leaves them out
+    local ACCEPTED = { optimize_memory = true }
     local function inv(tbl, kind, ok)
         for name in pairs(tbl) do
-            if type(name) == "string" and not ok(name:lower()) then
+            if type(name) == "string" and not ok(name:lower()) and not ACCEPTED[name:lower()] then
                 r.invented[#r.invented + 1] = { kind = kind, name = name }
             end
         end
@@ -275,12 +277,15 @@ local SCOPE_STORE = {
     ambient_object = "ambient_object", bypass = "bypasses", job = "pop_jobs",
 }
 
--- keywords that only hold other statements or only show text: when their documented use changes
--- nothing, that is the use (its body), not the keyword
+-- keywords that only hold other statements, only show text or only touch the interface (a sound, a
+-- tab, telemetry): when their documented use changes nothing, that is the use (its body), not the
+-- keyword
 local CONTAINER = {}
 for _, k in ipairs({ "if", "else", "else_if", "while", "switch", "inverted_switch", "random", "random_list",
     "locked_random_list", "hidden_effect", "custom_tooltip", "custom_tooltip_fail", "tooltip", "log", "log_error",
-    "break", "debug_break" }) do
+    "break", "debug_break", "custom_tooltip_with_params", "country_list_tooltip", "owned_planet_list_tooltip",
+    "owned_pop_faction_list_tooltip", "owned_leader_list_tooltip", "owned_fleet_list_tooltip", "play_sound",
+    "open_shroud_tab", "complete_tutorial_step", "endgame_telemetry" }) do
     CONTAINER[k] = true
 end
 local function is_container(name)
