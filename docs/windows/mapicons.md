@@ -186,9 +186,31 @@ Fixed in the window path:
   is never given back by lavapipe's X11 swapchain: the surface then timed out for good).
 - Cursor coordinates: winit's CursorMoved and Resized are both physical pixels, the app's size
   follows Resized, the GUI is laid out and picked at that size: under a resize the clicks select
-  what is drawn under them (checked at 1600x900 -> 1280x720 -> 1600x900). DPI scaling is not
-  testable here; nothing converts to logical units, so a scale factor changes the size only.
+  what is drawn under them (checked at 1600x900 -> 1280x720 -> 1600x900).
 
-Not done: the hover marker on the map (the galaxy's hover_indicator, the hovered planet's or
-ship's highlight), the box's rectangle while dragging, several selected fleets, the right-click
-menus.
+Not done: the box's rectangle while dragging, several selected fleets, the right-click menus.
+
+## The hover marker and display scaling (branch map-hover)
+
+**What the game draws under the cursor** (its frames, headless view mode, the 2210.01.01 save):
+
+| the cursor over | the game | here |
+|---|---|---|
+| a star on the galaxy | the star label's `hover_indicator` (CGalacticObjectMapIcon::UpdateHoverIndicator [V]: GFX_map_icon_system_enter, `system/system_enter.dds` 70 x 47, the hexagon and the eye, at (-35, -23): about the star), while the system is CInGameIdler's hovered one (idler+0xaa4, the star the ray picks) | the same: App::hovered_system, the labels' key has it |
+| a star's name, a label's part, empty space on the galaxy | no marker (the frames: the name 24 px under the star shows none) | none |
+| a planet, a planet's label, the star, a ship in a system | no marker; a tooltip only | none (tooltips not done) |
+
+[I]: the sprite's other frames (`system_enter_cant`, `system_goto_cant_has_intel`, the jump
+drives', chosen by the selected fleets' possible orders) and the idler's flag at +0xe88 that hides
+it; whether a hovered fleet on the galaxy marks its system.
+
+**Display scaling** (Windows at 125 % or 150 %): everything is in physical pixels: the window is
+made with a PhysicalSize, the surface and App::size follow Resized, CursorMoved is physical, the GUI
+is laid out and picked at that size; the scale factor changes no coordinate (the window logs it at
+start, `window: WxH pixels, display scale S`, and on ScaleFactorChanged, after which winit resizes
+the window and a Resized follows). Checked in a real window under Xvfb with
+WINIT_X11_SCALE_FACTOR=1.25 and 1.5 (logged as such), at 1536x864: the load screen's buttons, a
+planet label (planet 5 selected), a fleet label (fleet 3), an empty click (nothing selected), then
+a resize to 1280x720 (the bottom bar's galaxy button hit at its new place), then 1920x1080 (the
+hover marker under the cursor at the window's centre). The GUI is laid out at the game's scale
+1.0 whatever the display's scaling.
