@@ -1116,4 +1116,37 @@ return function(eval)
         if not a then return false end
         return compare(tonumber(world.field(a, "specialist_tier")) or 0, e.op, eval.value(e.value, ctx, e))
     end
+
+    -- ------------------------------------------------------------------------------------------
+    -- the numeric triggers as values (`complex_trigger_modifier = { trigger = <name> parameters =
+    -- { ... } }`, eval.trigger_value: TVAL[name](ctx, e), e.value the parameters): the number each
+    -- trigger compares (its GetTriggerValue)
+
+    -- num_researched_techs_of_tier: the country's technologies of `parameters = { tier = n }`
+    eval.TVAL["num_researched_techs_of_tier"] = function(ctx, e)
+        local id, c = this_country(ctx)
+        if not id then return 0 end
+        local block = e and type(e.value) == "table" and e.value.text == nil and e.value or {}
+        local tier = param_num(block, "tier", ctx)
+        if not tier then return 0 end
+        local n = 0
+        for name in pairs((researched(c))) do
+            if tech_tier(name) == tier then n = n + 1 end
+        end
+        return n
+    end
+    -- has_planetary_ascension_tier: the colony's tier (CHasPlanetaryAscensionTierTrigger 0x3c2ef90)
+    eval.TVAL["has_planetary_ascension_tier"] = function(ctx)
+        local cid = colony_of(ctx.this)
+        local col = cid and world.object("colony", cid)
+        return col and tonumber(world.field(col, "ascension_tier")) or 0
+    end
+    -- num_repeatable_techs: the levels of the country's repeatable technologies, as the trigger
+    -- (CNumRepeatableTechsTrigger 0x1990580, E.num_repeatable_techs)
+    eval.TVAL["num_repeatable_techs"] = function(ctx)
+        local sc = ctx.this
+        if not sc or sc == NONE or sc.kind ~= "country" or not I.E.num_repeatable_techs then return 0 end
+        sync()
+        return tonumber(I.E.num_repeatable_techs(sc.id)) or 0
+    end
 end
