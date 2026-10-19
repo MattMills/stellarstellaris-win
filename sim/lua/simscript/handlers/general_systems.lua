@@ -469,6 +469,16 @@ return function(eval, H)
         if v == nil then return false end
         return compare_value(v * max_attunement(), e, ctx)
     end
+    -- as a value (complex_trigger_modifier = { trigger = get_attunement_points_for parameters =
+    -- { patron negative } }: CGetAttunementPointsForTrigger::GetTriggerValue): the same points
+    eval.TVAL["get_attunement_points_for"] = function(ctx, e)
+        local id, c = this_country(ctx)
+        local block = e and e.value
+        if not id or type(block) ~= "table" or block.text then return nil end
+        local patron = param_text(block, "patron")
+        local v = patron and attunement_to(id, c, patron, param_text(block, "negative") == "yes")
+        return v and v * max_attunement() or nil
+    end
     -- has_most_attunement = <patron> (CHasMostAttunementTrigger 0x3c3ba10): of the country's
     -- patrons, this one has the highest attunement [V]
     TRIG["has_most_attunement"] = function(e, ctx)
@@ -1117,13 +1127,30 @@ return function(eval, H)
         end
     end
     -- clear_uncharted_space = <system> (CRemoveUnchartedSpaceEffect 0x375ceb0,
-    -- CCountry::ClearTerraIncognita): the country's `terra_incognita` map cleared around the system;
-    -- the map's cells are not modelled here (recorded)
+    -- CCountry::ClearTerraIncognita -> CTerraIncognitaMap::ClearSystem 0x20ba9f0): the system goes
+    -- into the map's sorted list of cleared systems (+0x50, the save's `terra_incognita = { size data
+    -- systems }`, CTerraIncognitaMap::WriteMembers 0x20b9d50), then its pixels (s_SystemBoxes,
+    -- s_PixelSystemOwnership) are lifted [V]. The pixels are the map's texture made from the systems'
+    -- ownership table of the galaxy's layout: not drawn here, `data` is left as it is [I]
     EFF["clear_uncharted_space"] = function(e, ctx)
-        local id = this_country(ctx)
+        local id, c = this_country(ctx)
         local t = target_scope(e.value.text, ctx, e)
         if not id or not t then return end
-        unmodelled("clear_uncharted_space", ctx, e)
+        local sys = t.kind == "system" and t.id or (E.system_of and E.system_of(t.kind, t.id))
+        if not sys or not world.object("system", sys) then return end
+        local ti = world.child(c, "terra_incognita")
+        local list = world.child(ti, "systems")
+        local ids = {}
+        for _, v in ipairs(world.list(list)) do
+            local n = tonumber(v)
+            if n == sys then return end
+            ids[#ids + 1] = n
+        end
+        ids[#ids + 1] = sys
+        table.sort(ids)
+        local block = {}
+        for i, n in ipairs(ids) do block[i] = { text = tostring(n) } end
+        world.set_entry(ti, world.entry(ti, "systems"), block)
     end
     -- copy_flags_and_variables_from = <scope>: the target's script flags and variables set on this
     -- scope too [V docs]
@@ -1271,7 +1298,54 @@ return function(eval, H)
     -- mode: nothing here), storm_apply_aftermath_modifier = { severity = { modifier days chance
     -- effect } ... }: one severity by chance, its modifier added to the scope [V docs]
     EFF["start_storm_area_placing"] = function() end
-    EFF["spawn_random_storm"] = function(e, ctx) unmodelled("spawn_random_storm", ctx, e) end
+    -- spawn_random_storm (CSpawnRandomStormEffect 0x37e5b30): a crude random from
+    -- CCosmicStorm::CalcRandomCosmicStormSeed; a storm type by its `spawn_weight`
+    -- (CStormTypeDatabase::GetRandomStormTypeBasedOnSpawnChance: GetWeightedRandom over the types in
+    -- database order), a random start system (ChooseRandomStartPosition), the storm made from there
+    -- (CGameState::TryCreateStormRandomDirection, create_cosmic_storm's) and forced active
+    -- (CCosmicStorm::ForceActivate) [V calls; I: the seed one draw of the game's generator, the
+    -- weights in thousandths, the start any system]
+    EFF["spawn_random_storm"] = function(e, ctx)
+        local create = EFF["create_cosmic_storm"]
+        local ok, defs = pcall(require, "engine.defs")
+        local folder = ok and defs.folder and defs.folder("common/storm_types") or nil
+        if not create or not folder then return end
+        local SR = require("engine.script.scope_random")
+        local r = SR.new(eval.rand())
+        local types, total = {}, 0
+        for name, d in pairs(folder) do types[#types + 1] = { name = name, d = d } end
+        table.sort(types, function(a, b)
+            if a.d.file ~= b.d.file then return tostring(a.d.file) < tostring(b.d.file) end
+            return (a.d.line or 0) < (b.d.line or 0)
+        end)
+        for _, t in ipairs(types) do
+            local sw = defs.field(t.d.block, "spawn_weight")
+            local w
+            if type(sw) == "table" then w = eval.weight(sw, ctx, 1) else w = tonumber(sw) or 0 end
+            t.w = math.max(0, floor(w * 1000))
+            total = total + t.w
+        end
+        if total <= 0 then return end
+        local x = SR.draw(r) % total
+        local pick
+        for _, t in ipairs(types) do
+            if x < t.w then pick = t.name break end
+            x = x - t.w
+        end
+        local systems = world.all("system")
+        if not pick or #systems == 0 then return end
+        local sys = systems[SR.draw(r) % #systems + 1]
+        local before = world.meta.last_created_cosmic_storm
+        local sc = S("system", sys)
+        local c2 = push(ctx, sc)
+        local block = { { key = { text = "type" }, op = "=", value = { text = pick } } }
+        create({ key = { text = "create_cosmic_storm" }, op = "=", value = block }, c2)
+        local id = tonumber(world.meta.last_created_cosmic_storm)
+        if id and world.meta.last_created_cosmic_storm ~= before then
+            local st = world.object("cosmic_storm", id)
+            if st then world.set(st, "activated", "yes") end
+        end
+    end
     EFF["storm_apply_aftermath_modifier"] = function(e, ctx)
         if e.value.text then return end
         local list, total = {}, 0
@@ -1305,13 +1379,61 @@ return function(eval, H)
         end
     end
     -- transfer_carrier = { source target transfer_ownership transfer_controller merge_pops
-    -- destroy_colony } (CTransferCarrierEffect): a nomad colony moved to another carrier; the
-    -- carriers are not modelled here (recorded)
+    -- destroy_colony } (CTransferCarrierEffect 0x37e26e0: the source's colony (a colony, or the
+    -- colony a planet or ship carries: CColonyCarrier::LookupCarrierRef), the target carrier (a
+    -- planet or a ship), CColony::TransferToCarrier): the colony's `carrier = { type reference }` is
+    -- the target, the old carrier's `colony` none and the new one's the colony [V calls]; with
+    -- transfer_ownership / transfer_controller the colony's planet takes the target carrier's owner
+    -- [I]; when the target carries a colony already and merge_pops is set, the source's pop groups
+    -- go to it, and destroy_colony removes the source colony [I]
+    local function colony_of_scope(sc)
+        if sc.kind == "colony" then return sc.id end
+        local o = world.object(sc.kind, sc.id)
+        local col = o and D.ref(world.field(o, "colony"))
+        return (col and world.object("colony", col)) and col or nil
+    end
+    local function carrier_owner(kind, id)
+        local o = world.object(kind, id)
+        if kind == "planet" then return D.ref(world.field(o, "owner")) end
+        return E.owner_of and E.owner_of("ship", id) or nil
+    end
     EFF["transfer_carrier"] = function(e, ctx)
         if e.value.text then return end
         local s = target_scope(param_text(e.value, "source"), ctx, e)
         local t = target_scope(param_text(e.value, "target"), ctx, e)
-        if s and t then unmodelled("transfer_carrier", ctx, e) end
+        if not s or not t or (t.kind ~= "planet" and t.kind ~= "ship") or not world.object(t.kind, t.id) then return end
+        local col = colony_of_scope(s)
+        if not col then return end
+        local cb = world.object("colony", col)
+        local old = world.field(cb, "carrier")
+        local ok_kind, ok_id
+        if type(old) == "table" then ok_kind, ok_id = tostring(world.field(old, "type")), D.ref(world.field(old, "reference")) end
+        if ok_kind == t.kind and ok_id == t.id then return end
+        local tb = world.object(t.kind, t.id)
+        local there = D.ref(world.field(tb, "colony"))
+        if there and world.object("colony", there) then
+            if param_text(e.value, "merge_pops") ~= "yes" then return end
+            local dst = world.child(world.object("colony", there), "pop_groups")
+            for _, v in ipairs(world.list(world.field(cb, "pop_groups"))) do world.push(dst, v) end
+            if param_text(e.value, "destroy_colony") == "yes" then
+                if ok_kind and ok_id and world.object(ok_kind, ok_id) then world.set(world.object(ok_kind, ok_id), "colony", NO_ID) end
+                world.remove("colony", col)
+            end
+            return
+        end
+        if ok_kind and ok_id and world.object(ok_kind, ok_id) then world.set(world.object(ok_kind, ok_id), "colony", NO_ID) end
+        local nc = {}
+        world.append(nc, "type", t.kind)
+        world.append(nc, "reference", t.id)
+        local entry = world.entry(cb, "carrier")
+        if entry then world.set_entry(cb, entry, nc) else world.append(cb, "carrier", nc) end
+        world.set(tb, "colony", col)
+        local own = carrier_owner(t.kind, t.id)
+        if own and t.kind == "planet" then
+            if param_text(e.value, "transfer_ownership") == "yes" then world.set(tb, "owner", own) end
+            if param_text(e.value, "transfer_controller") == "yes" then world.set(tb, "controller", own) end
+        end
+        if world.index then world.index() end
     end
     -- effect_on_blob = { center owned_planets_percentage planet_limit effect } (CEffectOnBlobEffect):
     -- the systems with the country's colonies matching planet_limit, nearest to the center first,
