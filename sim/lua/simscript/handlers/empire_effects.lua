@@ -707,6 +707,131 @@ return function(eval, H)
     EFF["set_council_position_title_female"] = council_title("female")
 
     -- ------------------------------------------------------------------------------------------
+    -- pop groups: amounts
+
+    -- a group's ethos (`ethos = { ethics = { } pops = { } }`): names and counts, and written back
+    -- (the most first, empty ones dropped, as engine.pops writes it)
+    local function ethos_of(g)
+        local ethos = field(g, "ethos")
+        if type(ethos) ~= "table" then return nil end
+        local names, counts = {}, {}
+        for _, n in ipairs(world.list(field(ethos, "ethics"))) do names[#names + 1] = unq(n) end
+        for i, t in ipairs(world.list(field(ethos, "pops"))) do counts[i] = floor(tonumber(t) or 0) end
+        return names, counts
+    end
+    local function write_ethos(g, names, counts)
+        local ethos = world.child(g, "ethos")
+        local idx = {}
+        for i = 1, #names do idx[i] = i end
+        table.sort(idx, function(a, b)
+            if counts[a] ~= counts[b] then return counts[a] > counts[b] end
+            return a < b
+        end)
+        local nb, cb = {}, {}
+        for _, i in ipairs(idx) do
+            if (counts[i] or 0) > 0 then
+                nb[#nb + 1] = { text = names[i], quoted = true }
+                cb[#cb + 1] = { text = tostring(counts[i]) }
+            end
+        end
+        set_block(ethos, "ethics", nb)
+        set_block(ethos, "pops", cb)
+    end
+    -- the ethos resized to the group's new size, each ethic's share kept (largest remainders)
+    local function resize_ethos(g, size)
+        local names, counts = ethos_of(g)
+        if not names or #names ~= #counts then return end
+        local total = 0
+        for _, n in ipairs(counts) do total = total + n end
+        if total == 0 or total == size then return end
+        local given, rem = 0, {}
+        for i, n in ipairs(counts) do
+            local x = size * n / total
+            counts[i] = floor(x)
+            rem[i] = x - counts[i]
+            given = given + counts[i]
+        end
+        while given < size do
+            local best
+            for i = 1, #counts do if not best or rem[i] > rem[best] then best = i end end
+            counts[best] = counts[best] + 1
+            rem[best] = -1
+            given = given + 1
+        end
+        write_ethos(g, names, counts)
+    end
+    -- an amount parameter: `<num>`, or { amount|percentage random } of the group's size; the random
+    -- part one draw in [max(0, n - random), n + random]
+    local function amount_of(e, ctx, size)
+        if e.value.text then return int_value(e, ctx) or 0 end
+        local p = params(e)
+        local n = 0
+        if p.amount then n = eval.value(p.amount.value, ctx, p.amount) or 0
+        elseif p.percentage then n = size * (eval.value(p.percentage.value, ctx, p.percentage) or 0) end
+        n = floor(n)
+        if p.random then
+            local r = floor(eval.value(p.random.value, ctx, p.random) or 0)
+            if r > 0 then
+                local lo = math.max(0, n - r)
+                n = lo + eval.rand() % (n + r - lo + 1)
+            end
+        end
+        return n
+    end
+    local function G(ctx) return ctx.this.kind == "pop_group" and H.group(ctx.this.id) or nil end
+    -- add_pop_amount / remove_pop_amount (CAddPopAmountEffect, CRemovePopAmountEffect): the group's
+    -- size, its ethos with it (an emptied group stays for the colony's update to remove [I])
+    local function change_size(g, delta)
+        local size = math.max(0, num(field(g, "size")) + delta)
+        world.set(g, "size", size)
+        resize_ethos(g, size)
+    end
+    EFF["add_pop_amount"] = function(e, ctx)
+        local g = G(ctx)
+        if not g then return end
+        local n = amount_of(e, ctx, num(field(g, "size")))
+        if n ~= 0 then change_size(g, n) wrote() end
+    end
+    EFF["remove_pop_amount"] = function(e, ctx)
+        local g = G(ctx)
+        if not g then return end
+        local n = amount_of(e, ctx, num(field(g, "size")))
+        if n ~= 0 then change_size(g, -n) wrote() end
+    end
+    -- scale_pop_amount = <factor> (CScalePopAmountEffect): the size times the factor
+    EFF["scale_pop_amount"] = function(e, ctx)
+        local g = G(ctx)
+        if not g then return end
+        local size = num(field(g, "size"))
+        local new = floor(size * (eval.value(e.value, ctx, e) or 1))
+        if new ~= size then change_size(g, new - size) wrote() end
+    end
+    -- transfer_pop_amount = { source target amount|percentage random growth_category }
+    -- (CTransferPopAmountEffect): pops.move_size from the source group to the target group
+    EFF["transfer_pop_amount"] = function(e, ctx)
+        if e.value.text then return end
+        local p = params(e)
+        local src, dst = target(p.source, ctx), target(p.target, ctx)
+        if not src or not dst or src.kind ~= "pop_group" or dst.kind ~= "pop_group" or src.id == dst.id then return end
+        local n = amount_of(e, ctx, H.group_size(src.id))
+        if n <= 0 then return end
+        local moved = require("engine.pops").move_size(dst.id, src.id, n, text_of(p.growth_category) or "GROWTH_CAT_OTHER",
+            H.group_colony(src.id))
+        if (moved or 0) > 0 then wrote() end
+    end
+    -- displace_pop_amount = { amount|percentage random } (CDisplacePopAmountEffect): fires
+    -- on_pop_displaced for the group with the amount [I: the on_action's scopes]
+    EFF["displace_pop_amount"] = function(e, ctx)
+        local g = G(ctx)
+        if not g then return end
+        local n = amount_of(e, ctx, num(field(g, "size")))
+        if n <= 0 then return end
+        eval.setvar(ctx.this, "displaced_pop_amount", n)
+        pcall(function() require("simscript.events").on_action("on_pop_displaced", ctx.this) end)
+        wrote()
+    end
+
+    -- ------------------------------------------------------------------------------------------
     -- kill_leader (replaces eval.lua's, which read only a leader scope)
 
     local function push_engine(t)

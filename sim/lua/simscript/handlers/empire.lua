@@ -141,7 +141,8 @@ return function(eval)
             if c then return c end
         elseif sc.kind == "pop_group" then
             local g = world.object("pop_groups", sc.id)
-            local p = g and tonumber(world.field(g, "planet"))
+            local col = g and tonumber(world.field(g, "planet"))
+            local p = col and world.colony_planet and world.colony_planet[col] or col
             if p and E.owner_of then return E.owner_of("planet", p) end
         end
         if E and E.owner_of then
@@ -159,7 +160,10 @@ return function(eval)
     end
     -- the colony of a planet scope (world.planet_colony), and the planet of a colony
     local function colony_of_planet(pid)
-        return world.planet_colony and world.planet_colony[pid] or nil
+        for col, p in pairs(world.colony_planet or {}) do
+            if p == pid then return col end
+        end
+        return nil
     end
     -- the pop groups of a scope: a pop group; a planet's; a country's (its planets'); a pop faction's
     local function pop_groups(sc)
@@ -203,9 +207,13 @@ return function(eval)
         local key = field(group(g), "key")
         return type(key) == "table" and unq(field(key, "category")) or nil
     end
-    -- a pop group's planet and owner
-    local function group_planet(g)
+    -- a pop group's colony (its `planet` field holds the colony id), planet and owner
+    local function group_colony(g)
         return tonumber(field(group(g), "planet"))
+    end
+    local function group_planet(g)
+        local col = group_colony(g)
+        return col and world.colony_planet and world.colony_planet[col] or col
     end
     local function group_owner(g)
         local p = group_planet(g)
@@ -487,7 +495,7 @@ return function(eval)
         target = target, compare_value = compare_value, numeric = numeric, boolean = boolean,
         days_of = days_of, now_days = now_days, country_of = country_of, country = country, gov = gov,
         pop_groups = pop_groups, group = group, group_size = group_size, group_species = group_species,
-        group_category = group_category, group_owner = group_owner, group_planet = group_planet,
+        group_category = group_category, group_owner = group_owner, group_planet = group_planet, group_colony = group_colony,
         species_of = species_of, species = species, base_of = base_of, species_traits = species_traits,
         archetype_of = archetype_of, class_archetype = class_archetype, robotic_archetype = robotic_archetype,
         trait_def = trait_def, trait_cost = trait_cost, is_leader_trait = is_leader_trait,
