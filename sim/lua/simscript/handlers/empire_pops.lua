@@ -210,7 +210,7 @@ return function(eval, H)
     -- (root the group, from its planet, fromfrom the owner; CColony::OnPopsSacrificed 0x2869220)
     local function kill_assigned(sacrifice)
         return function(e, ctx)
-            if ctx.this.kind ~= "pop_job" or e.value.text then return end
+            if (ctx.this.kind ~= "pop_job" and ctx.this.kind ~= "job") or e.value.text then return end
             local job = obj("pop_jobs", ctx.this.id)
             if not job then return end
             local p = params(e)

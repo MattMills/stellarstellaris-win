@@ -131,9 +131,18 @@ return function(eval)
     local function now_days()
         return days_of(tostring(world.meta.date or "")) or 0
     end
+    -- a planet's owner (its `owner`; none: nil). E.owner_of answers starbases, ships and fleets only
+    local function planet_owner(pid)
+        local p = pid and world.object("planet", pid)
+        local o = p and tonumber(world.field(p, "owner"))
+        if not o or o == 4294967295 then return nil end
+        return o
+    end
     local function country_of(sc)
         if not sc or sc == NONE then return nil end
         if sc.kind == "country" then return sc.id end
+        if sc.kind == "planet" then return planet_owner(sc.id) end
+        if sc.kind == "colony" then return planet_owner(world.colony_planet and world.colony_planet[sc.id]) end
         -- (a leader's country, a pop group's planet's owner)
         if sc.kind == "leader" then
             local l = world.object("leader", sc.id)
@@ -143,7 +152,7 @@ return function(eval)
             local g = world.object("pop_groups", sc.id)
             local col = g and tonumber(world.field(g, "planet"))
             local p = col and world.colony_planet and world.colony_planet[col] or col
-            if p and E.owner_of then return E.owner_of("planet", p) end
+            if p then return planet_owner(p) end
         end
         if E and E.owner_of then
             local o = E.owner_of(sc.kind, sc.id)
@@ -217,7 +226,7 @@ return function(eval)
     end
     local function group_owner(g)
         local p = group_planet(g)
-        return p and E.owner_of and E.owner_of("planet", p) or nil
+        return p and planet_owner(p) or nil
     end
     -- the species of a scope (E.species_of: a pop group's, a leader's, an army's, a country's
     -- founder species, a species itself)
@@ -525,6 +534,7 @@ return function(eval)
         owned_leaders = owned_leaders, pool_leaders = pool_leaders, leader = leader,
         leader_traits = leader_traits, rights_entry = rights_entry, country_ethics = country_ethics,
         group_ethics = group_ethics, councils = councils, scopes = scopes, all_species_traits = all_species_traits,
+        planet_owner = planet_owner,
         scope_species = scope_species, colony_of_planet = colony_of_planet, now_days = now_days,
     }
     -- the triggers and the effects, in their own files

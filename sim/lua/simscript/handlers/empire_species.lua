@@ -430,9 +430,6 @@ return function(eval, H)
     EFF["set_migration_controls"] = rights_effect("migration_control", true)
     EFF["set_population_controls"] = rights_effect("population_control", true)
     EFF["set_purge_type"] = rights_effect("purge")
-    -- refresh_species_rights (CRefreshSpeciesRightsEffect 0x38218e0 → ConfigureForCountry) [V]: the
-    -- entries' validity fixes [I: not modelled; no state written]
-    EFF["refresh_species_rights"] = function() end
 
     -- ------------------------------------------------------------------------------------------
     -- founder, built and dominant species
@@ -841,5 +838,94 @@ return function(eval, H)
             end
         end
         if fired then wrote() end
+    end
+    -- refresh_species_rights (CRefreshSpeciesRightsEffect 0x38218e0 → CSpeciesRightsModule::
+    -- ConfigureForCountry 0x2007cd0) [V]: the entries primary, default, built_species (its species
+    -- existing) and each species_rights entry, each right in turn (citizenship, military service,
+    -- slavery, purge, living standard, migration, population, colonization, subspecies integration)
+    -- set to the best option (CalcBestSpeciesRightForCountry: potential and allow holding, the highest
+    -- ai_will_do, the first on a tie; this the species, a sub-species inheriting its parent's rights
+    -- as its base, from the country), former_<right> the old one; then up to 100 validity passes;
+    -- last_changed_* not written. Then OnChangeRights: per colony and pop group one global draw and
+    -- on_pop_group_rights_change (this the group) [I: the pop jobs update and the factions' support
+    -- refresh it makes are not run here; the species_rights entries in the save's order]
+    local RIGHTS = {
+        { "citizenship", "citizenship_types" }, { "military_service", "military_service_types" },
+        { "slavery", "slavery_types" }, { "purge", "purge_types" }, { "living_standard", "living_standards" },
+        { "migration_control", "migration_controls" }, { "population_control", "population_controls" },
+        { "colonization_control", "colonization_controls" }, { "subspecies_integration", "subspecies_integration_types" },
+    }
+    local function right_holds(b, file, sid, cid)
+        local sc = eval.new_ctx(S("species", sid), S("country", cid), nil, file)
+        for _, k in ipairs({ "potential", "allow" }) do
+            local t = dfield(b, k)
+            if type(t) == "table" and #t > 0 and eval.trigger(t, sc) ~= true then return false end
+        end
+        return true
+    end
+    local function best_right(folder, sid, cid)
+        local s = sid
+        while true do
+            local o = H.species(s)
+            local b = o and tonumber(field(o, "base_ref"))
+            if not o or not b or b == s or field(o, "inherit_parent_rights") ~= "yes" or not H.species(b) then break end
+            s = b
+        end
+        local pick, pw
+        for _, x in ipairs(H.ordered("common/species_rights/" .. folder)) do
+            local b = x.def.block
+            if right_holds(b, x.def.file, s, cid) then
+                local aw = dfield(b, "ai_will_do")
+                local w = type(aw) == "table" and eval.weight(aw, eval.new_ctx(S("species", s), S("country", cid), nil, x.def.file), 1)
+                    or tonumber(aw) or 1
+                if pick == nil or w > pw then pick, pw = x.name, w end
+            end
+        end
+        return pick
+    end
+    local function set_right(entry, key, v)
+        local cur = unq(field(entry, key))
+        if not v or v == cur then return false end
+        if key ~= "subspecies_integration" and cur then world.set(entry, "former_" .. key, quoted(cur)) end
+        world.set(entry, key, quoted(v))
+        return true
+    end
+    local function configure(entry, cid)
+        local sid = tonumber(field(entry, "species_index")) or 0
+        for _, r in ipairs(RIGHTS) do set_right(entry, r[1], best_right(r[2], sid, cid)) end
+        for _ = 1, 100 do
+            local changed = false
+            for _, r in ipairs(RIGHTS) do
+                local cur = unq(field(entry, r[1]))
+                local b, file = def("common/species_rights/" .. r[2], cur)
+                if not (b and right_holds(b, file, sid, cid)) then
+                    if set_right(entry, r[1], best_right(r[2], sid, cid)) then changed = true break end
+                end
+            end
+            if not changed then break end
+        end
+    end
+    EFF["refresh_species_rights"] = function(e, ctx)
+        local c = C(ctx)
+        if not c then return end
+        local cid = ctx.this.id
+        local m = world.path(c, "modules", "standard_species_rights_module")
+        if type(m) == "table" then
+            for _, k in ipairs({ "primary", "default" }) do
+                local en = field(m, k)
+                if type(en) == "table" then configure(en, cid) end
+            end
+            local bs = field(m, "built_species")
+            if type(bs) == "table" and H.species(tonumber(field(bs, "species_index")) or -1) then configure(bs, cid) end
+            for _, en in ipairs(world.blocks(field(m, "species_rights"))) do configure(en, cid) end
+        end
+        local events = require("simscript.events")
+        for _, k in ipairs(world.list(field(c, "owned_planets"))) do
+            for _, gid in ipairs(group_ids(tonumber(k))) do
+                local s = eval.rand()
+                pcall(events.on_action, "on_pop_group_rights_change", S("pop_group", gid), nil, SR.new(s))
+            end
+        end
+        wrote()
     end
 end

@@ -525,6 +525,39 @@ return function(eval, H)
     H.off_council = off_council
     -- the country's ruler (`ruler`)
     local function set_ruler(c, lid) world.set(c, "ruler", lid or NO_ID) end
+    -- assign_leader = <leader> (CAssignLeaderEffect 0x37467c0) [V dispatch]: a country: CCountry::
+    -- SetRuler (`ruler`; the ruler holds no location in the save, so its post is left [I]); an army:
+    -- its `leader` and the leader's location; then one global draw and on_leader_assigned (this the
+    -- leader). A planet, colony or fleet: the objects area's assign_leader
+    local prev_assign = EFF["assign_leader"]
+    EFF["assign_leader"] = function(e, ctx)
+        local k = ctx.this.kind
+        if k ~= "country" and k ~= "army" then
+            if prev_assign then return prev_assign(e, ctx) end
+            return
+        end
+        local sc = target(e, ctx)
+        local l = sc and sc ~= NONE and sc.kind == "leader" and H.leader(sc.id)
+        local o = world.object(k, ctx.this.id)
+        if not l or not o then return end
+        if k == "country" then
+            if tonumber(field(o, "ruler")) == sc.id then return end
+            unassign(l, sc.id)
+            set_ruler(o, sc.id)
+        else
+            if tonumber(field(o, "leader")) == sc.id then return end
+            world.set(o, "leader", sc.id)
+            local loc = {}
+            world.append(loc, "type", "army")
+            world.append(loc, "assignment", "none")
+            world.append(loc, "id", ctx.this.id)
+            world.append(loc, "position", 0)
+            set_block(l, "location", loc)
+        end
+        local s = eval.rand()
+        pcall(require("simscript.events").on_action, "on_leader_assigned", S("leader", sc.id), nil, SR.new(s))
+        wrote()
+    end
 
     -- ------------------------------------------------------------------------------------------
     -- exiled leaders (the game's top-level saved_leaders = { "key" = id }, CGameState +0x950) and a

@@ -12,6 +12,18 @@ return function(eval, H)
     local compare_value, numeric, boolean = H.compare_value, H.numeric, H.boolean
     local country, gov, leader = H.country, H.gov, H.leader
     local floor = math.floor
+    -- a trigger asked for its number (eval.TVAL, complex_trigger_modifier): VALUE set, it returns the
+    -- number it would compare instead of comparing
+    local VALUE = false
+    local function as_value(name)
+        TVAL[name] = function(ctx, e)
+            if not e or e.value.text then return 0 end
+            VALUE = true
+            local ok, v = pcall(TRIG[name], e, ctx)
+            VALUE = false
+            return ok and type(v) == "number" and v or 0
+        end
+    end
 
     -- a define (common/defines NGroup.KEY), or a default
     local function define(group, key, default)
@@ -186,6 +198,7 @@ return function(eval, H)
                 n = n + (count_tiers and (tonumber(inline("TIER")) or 1) or 1)
             end
         end
+        if VALUE then return n end
         return compare_value(n, e, ctx)
     end
 
@@ -248,6 +261,7 @@ return function(eval, H)
             if ok and p.limit and p.limit.value.text == nil then ok = eval.trigger(p.limit.value, I.push(ctx, S("trait", t))) end
             if ok then n = n + 1 end
         end
+        if VALUE then return n end
         if not p.count then return n > 0 end
         return compare(n, p.count.op, eval.value(p.count.value, ctx, p.count))
     end
@@ -367,8 +381,9 @@ return function(eval, H)
         local p = params(e)
         local sc = target(p.species, ctx)
         local sid = sc and H.species_of(sc)
-        if not sid or not p.value then return false end
+        if not sid or (not p.value and not VALUE) then return false end
         sync()
+        if VALUE then return planet_species_pops(ctx.this)[sid] or 0 end
         return compare(planet_species_pops(ctx.this)[sid] or 0, p.value.op, eval.value(p.value.value, ctx, p.value))
     end
     -- is_original_owner = <country> (CIsOriginalOwnerTrigger): the planet's `original_owner`
@@ -393,7 +408,7 @@ return function(eval, H)
     end
     boolean("has_current_purge", PLANETS, function(sc)
         if sc.kind ~= "planet" then return false end
-        local cid = E.owner_of and E.owner_of("planet", sc.id)
+        local cid = H.planet_owner(sc.id)
         for _, g in ipairs(H.pop_groups(sc)) do
             if field(H.group(g), "killed") ~= "yes" and being_purged(g, cid) then return true end
         end
@@ -559,7 +574,7 @@ return function(eval, H)
     TRIG["pop_amount_percentage"] = function(e, ctx)
         if e.value.text then return false end
         local p = params(e)
-        if not p.percentage then return false end
+        if not p.percentage and not VALUE then return false end
         sync()
         local total, hit = 0, 0
         for _, g in ipairs(H.pop_groups(ctx.this)) do
@@ -573,6 +588,7 @@ return function(eval, H)
         end
         -- (no pops: the raw 0xffffffff, 42949.67295, and the comparison still made [V @3c332af])
         local v = total > 0 and floor(hit / total * 100000) / 100000 or 42949.67295
+        if VALUE then return v end
         return compare(v, p.percentage.op, eval.value(p.percentage.value, ctx, p.percentage))
     end
     -- pop_ethic_amount / pop_ethic_percentage = { amount|percentage ethic (= or !=) }: the pops
@@ -595,6 +611,10 @@ return function(eval, H)
             if not ex or not ex.value.text then return false end
             sync()
             local hit, total = ethic_pops(ctx.this, unq(ex.value.text), ex.op == "!=")
+            if VALUE then
+                if kind == "amount" then return hit end
+                return total > 0 and hit / total or 0
+            end
             if p.amount then return compare(hit, p.amount.op, eval.value(p.amount.value, ctx, p.amount)) end
             if p.percentage then
                 if total <= 0 then return false end
@@ -900,13 +920,14 @@ return function(eval, H)
         local p = params(e)
         local w = target(p.who, ctx)
         local o = w and w.kind == "country" and obj("country", w.id)
-        if not o or not p.steps then return false end
+        if not o or (not p.steps and not VALUE) then return false end
         local mine = {}
         for _, cv in ipairs(category_values(c)) do mine[cv[1]] = cv[2] end
         local steps = 0
         for _, cv in ipairs(category_values(o)) do
             steps = math.max(steps, math.abs((mine[cv[1]] or 0) - cv[2]))
         end
+        if VALUE then return steps end
         return compare(steps, p.steps.op, eval.value(p.steps.value, ctx, p.steps))
     end
     -- has_extorted_faction (CHasExtortedFactionTrigger): a pop faction of the country extorted
@@ -986,12 +1007,17 @@ return function(eval, H)
         local p = params(e)
         local name = p.flag and p.flag.value.text and I.flag_name(p.flag.value.text, ctx, p.flag)
         local cmp = p.days or p.value
-        if not name or not cmp then return false end
+        if not name or (not cmp and not VALUE) then return false end
         local o = ctx.this ~= NONE and world.object(ctx.this.kind, ctx.this.id)
         local f = o and field(o, "flags")
         local b = type(f) == "table" and field(f, name)
         if b == nil then return false end
         local left = type(b) == "table" and num(field(b, "flag_days")) or -1
+        if VALUE then return left end
         return compare(left, cmp.op, eval.value(cmp.value, ctx, cmp))
+    end
+    for _, k in ipairs({ "count_species_traits", "nb_pop_exact_species", "num_leader_traits", "opposing_ethics_divergence",
+        "pop_amount_percentage", "pop_ethic_amount", "pop_ethic_percentage", "timed_flag_days_left" }) do
+        as_value(k)
     end
 end
