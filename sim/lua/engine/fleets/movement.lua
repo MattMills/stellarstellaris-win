@@ -825,14 +825,74 @@ local function owner_of(sid)
     return world.system_owner and world.system_owner[sid]
 end
 
--- CGalacticObject::OnFleetEntered (0x2602960 Linux): terra incognita cleared (the hook), two
--- scopes and on_entering_system_fleet; into another owner's space a CCrudeRandom seeded by one
--- draw and on_crossing_border
+-- CGalacticObject::DoShipEnter (0x26045b0 Linux), for each ship of a fleet entering a system
+-- whose controller is a country: three draws for the scopes (this = the ship, from = the system,
+-- fromfrom = the country), then on_entering_system_first_time and the country added to the
+-- system's `discovery` (CGalacticObject::SetDiscoveredBy) when it is not there yet and the system
+-- is not its own, else on_entering_system [V]
+local function ship_on_action(name, ship, sid, country)
+    S.on_actions = S.on_actions + 1
+    local ok, err = pcall(function()
+        local events = package.loaded["simscript.events"] or require("simscript.events")
+        local eval = package.loaded["simscript.eval"] or require("simscript.eval")
+        events.on_action(name, eval.S("ship", ship), eval.new_ctx(eval.S("system", sid), eval.S("country", country)))
+    end)
+    if not ok then
+        S.on_action_errors = S.on_action_errors + 1
+        if #movement.errors < 10 then
+            movement.errors[#movement.errors + 1] = name .. ": " .. tostring(err)
+        end
+    end
+end
+
+local function discovered_by(g, country)
+    local d = g and world.field(g, "discovery")
+    for _, c in ipairs(world.list(type(d) == "table" and d or nil)) do
+        if tonumber(c) == country then
+            return true
+        end
+    end
+    return false
+end
+
+local function do_ship_enter(fid, sid)
+    local country = world.fleet_owner and world.fleet_owner[fid]
+    local g = world.object("galactic_object", sid)
+    if not country or not g then
+        return
+    end
+    local f = world.object("fleet", fid)
+    for _, ship in ipairs(world.list(f and world.field(f, "ships"))) do
+        ship = tonumber(ship)
+        if ship then
+            draw()
+            draw()
+            draw()
+            S.ships_entered = (S.ships_entered or 0) + 1
+            if world.system_owner and world.system_owner[sid] == country or discovered_by(g, country) then
+                ship_on_action("on_entering_system", ship, sid, country)
+            else
+                ship_on_action("on_entering_system_first_time", ship, sid, country)
+                local d = world.field(g, "discovery")
+                if type(d) ~= "table" then
+                    d = world.child(g, "discovery")
+                end
+                world.append_value(d, country)
+                live.touch("galactic_object", sid)
+            end
+        end
+    end
+end
+
+-- CGalacticObject::OnFleetEntered (0x2602960 Linux): terra incognita cleared (the hook), each
+-- ship's DoShipEnter, two scopes and on_entering_system_fleet; into another owner's space a
+-- CCrudeRandom seeded by one draw and on_crossing_border
 local function on_fleet_entered(st, sid, from_sid)
     local h = movement.hooks.on_entered
     if h then
         pcall(h, st.fid, sid, from_sid)
     end
+    do_ship_enter(st.fid, sid)
     draw()
     draw()
     on_action("on_entering_system_fleet", st.fid, sid, from_sid)

@@ -1377,6 +1377,66 @@ function create.station(o)
     return sid, fid
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- a fleet killed (destroy_fleet, destroy_on_arrival: CFleet::SetToBeKilled 0x2920ca0 marks the fleet
+-- and its ships; the day's kill pass removes them): queued, removed after the phase (create.flush_kills,
+-- engine.systems), so no loop over the fleets loses its place
+
+local to_kill, killing = {}, {}
+function create.kill(fid)
+    fid = tonumber(fid)
+    if fid and world.object("fleet", fid) and not killing[fid] then
+        killing[fid] = true
+        to_kill[#to_kill + 1] = fid
+    end
+end
+local function remove_from(block, pred)
+    if type(block) ~= "table" then return end
+    for i = #block, 1, -1 do
+        if pred(block[i]) then world.remove_entry(block, block[i]) end
+    end
+end
+local function destroy(fid)
+    local f = world.object("fleet", fid)
+    if not f then return end
+    for _, sid in ipairs(world.list(world.field(f, "ships"))) do
+        sid = tonumber(sid)
+        if sid then world.remove("ship", sid) end
+    end
+    local owner = world.fleet_owner and world.fleet_owner[fid]
+    local c = owner and world.object("country", owner)
+    local owned = c and world.path(c, "fleets_manager", "owned_fleets")
+    remove_from(owned, function(e)
+        return not e.op and not e.text and tonumber(world.field(e, "fleet")) == fid
+    end)
+    if owner then live.touch("country", owner) end
+    if world.fleet_owner then world.fleet_owner[fid] = nil end
+    local sys = tonumber(world.path(f, "movement_manager", "coordinate", "origin"))
+    local g = sys and world.object("galactic_object", sys)
+    if g then
+        local fp = world.field(g, "fleet_presence")
+        if type(fp) == "table" then world.remove_value(fp, tostring(fid)) end
+        live.touch("galactic_object", sys)
+    end
+    local ob = world.path(f, "movement_manager", "orbit", "orbitable")
+    local pid = type(ob) == "table" and tonumber(world.field(ob, "planet"))
+    local p = pid and world.object("planet", pid)
+    if p then
+        remove_from(world.field(p, "planet_orbitals"), function(e)
+            return e.op and e.value and tonumber(e.value.text) == fid
+        end)
+        live.touch("planet", pid)
+    end
+    world.remove("fleet", fid)
+    S.killed = (S.killed or 0) + 1
+end
+function create.flush_kills()
+    if #to_kill == 0 then return end
+    local list = to_kill
+    to_kill, killing = {}, {}
+    for _, fid in ipairs(list) do destroy(fid) end
+end
+
 function create.report()
     return string.format("fleets.create: %d ships, %d fleets (%d ships merged into a fleet), %d templates, %d orbits entered; %d draws (%d name tries), %d on_actions (%d errors)%s",
         S.ships, S.fleets, S.merged, S.templates, S.orbits, S.draws, S.name_tries, S.on_actions, S.on_action_errors,
