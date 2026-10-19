@@ -106,8 +106,15 @@ impl App {
         let (kind, text, src) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or("").to_string());
         self.log.push(format!("right click {x},{y}: fleets {ids} on {target}: {kind} {text}"));
         match kind {
-            "menu" => self.fleet.menu = Some(((x, y), src)),
-            "popup" => self.fleet.popup = Some(src),
+            // (the open menu or popup takes the cursor: the map's tooltip under it dropped)
+            "menu" => {
+                self.fleet.menu = Some(((x, y), src));
+                self.hovered = None;
+            }
+            "popup" => {
+                self.fleet.popup = Some(src);
+                self.hovered = None;
+            }
             "done" => self.fleet_published(),
             _ => {}
         }
