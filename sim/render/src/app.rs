@@ -1180,12 +1180,13 @@ impl App {
         }
         // a fleet in combat shows the combat view instead of its window (designer.rs)
         let combat = match self.selected {
-            Some(Pickable::Fleet(id)) if crate::designer::in_combat(&map.runtime, id) => Some(id),
+            Some(Pickable::Fleet(id)) if crate::designer::in_combat(map, id) => Some(id),
             _ => None,
         };
         if combat.is_some() {
             selected = None;
         }
+        crate::designer::set_combat(combat);
         let texts = gui::format_names(&self.runtime, &names)?;
         let mut rest = texts.iter();
         let mut next = || rest.next().cloned().unwrap_or_default();
@@ -1576,6 +1577,10 @@ impl App {
                 self.scene = None;
                 return Ok(true);
             }
+        }
+        // the ship designer's entry under the mouse (its delete button: designer.rs)
+        if self.designer.open && crate::designer::hover(self, hover.as_deref()) {
+            self.relayout();
         }
         if hover != self.hover {
             self.hover = hover;
@@ -2209,6 +2214,20 @@ impl App {
                 }
             }
         }
+        // the ship designer's rename box takes the keyboard while focused (designer.rs typed): its
+        // keys' releases too (no shortcut fires); Escape goes on (the box's text dropped)
+        if self.screen == Screen::Map && self.designer.open && crate::designer::editing(self) {
+            if let Input::Key { key, down, .. } = input {
+                if !matches!(key.as_str(), "shift" | "ctrl" | "alt" | "escape") {
+                    if *down {
+                        if let Some(a) = creator_key(key, self.controls.mods().shift).and_then(|t| crate::designer::typed(self, &t)) {
+                            crate::designer::act(self, &a)?;
+                        }
+                    }
+                    return Ok(true);
+                }
+            }
+        }
         // the starbase window's rename dialog takes the keyboard too (starbase.rs typed)
         if self.screen == Screen::Map && self.starbase.dialog.as_deref().is_some_and(|d| d.starts_with("rename:")) {
             if let Input::Key { key, down, .. } = input {
@@ -2353,8 +2372,8 @@ impl App {
             Effect::Zoom(n, _) if self.diplomacy.open.is_some() && { let at = self.cursor; crate::diplomacy::wheel(self, n, at) } => Ok(true),
             // the wheel over the starbase window's side view scrolls its list (starbase.rs)
             Effect::Zoom(n, _) if crate::starbase::wheel(self, n) => Ok(true),
-            // the wheel over the ship designer's lists (designer.rs)
-            Effect::Zoom(n, _) if self.designer.open && { let at = self.cursor; crate::designer::wheel(self, n, at) } => Ok(true),
+            // the wheel over the ship designer's or the combat view's lists (designer.rs)
+            Effect::Zoom(n, _) if { let at = self.cursor; crate::designer::wheel(self, n, at) } => Ok(true),
             Effect::Zoom(n, false) => {
                 self.wheel(n);
                 Ok(true)

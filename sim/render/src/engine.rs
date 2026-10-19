@@ -346,8 +346,8 @@ impl Engine {
             (Some("combat"), id) => {
                 let map = self.app.map.as_ref().ok_or("no map loaded")?;
                 let fleet = match id {
-                    Some(_) => Some(num(a.get(1), "id")?).filter(|&f| crate::designer::in_combat(&map.runtime, f)),
-                    None => crate::designer::first_in_combat(&map.runtime),
+                    Some(_) => Some(num(a.get(1), "id")?).filter(|&f| crate::designer::in_combat(map, f)),
+                    None => crate::designer::first_in_combat(map),
                 };
                 let fleet = fleet.ok_or("open_designer: no fleet in combat")?;
                 self.app.select(Some(Pickable::Fleet(fleet)));
