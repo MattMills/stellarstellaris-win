@@ -571,6 +571,13 @@ local function build(cid)
     if not c or not colony_planet(cid) then return nil end
     local owner = owner_of(cid)
     local C = { id = cid, c = c, owner = owner, groups = {}, jobs = {} }
+    -- the colony's favourite job a category (CColony +0xee0, save `favorite_jobs = { { category
+    -- job } }` [I the layout]: CSetFavoriteJobCommand)
+    C.favorites = {}
+    for _, fb in ipairs(world.blocks(world.field(c, "favorite_jobs"))) do
+        local fc, fj = world.field(fb, "category"), world.field(fb, "job")
+        if fc and fj then C.favorites[(tostring(fc):gsub('"', ""))] = (tostring(fj):gsub('"', "")) end
+    end
     for _, gid in ipairs(live_groups(c)) do
         local g = world.object("pop_groups", gid)
         local sid, cat = group_key(g)
@@ -765,6 +772,12 @@ local function assign(C, entries_jobs, base, month)
                 if stay_amount > 0 then s.w, s.amount = w, stay_amount end
             else
                 s.w, s.amount = stay_w, stay_amount
+            end
+            -- a favourite job: both weights x FAVORITE_JOB_WEIGHT_MULT (10) where not negative
+            -- (CalculatePopJobWeights $_1 0x26b7d4b)
+            if C.favorites[t.category] == t.name then
+                if e.w >= ZERO then e.w = e.w * 10 end
+                if s.w >= ZERO then s.w = s.w * 10 end
             end
             if reshuffle or s.w >= ZERO then s.rank = jrank end
             local rank = reshuffle and jrank or G.rank

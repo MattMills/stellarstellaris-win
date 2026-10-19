@@ -232,7 +232,7 @@ the planet modifiers row, the build queues, the side bar's other windows (buildi
 decisions, terraform), ShouldDisplayPlanetInfo, the window during a running simulation, scrolling
 and clipping of long lists (an entry is drawn while it fits).
 
-## Buttons (wire-planet, wire-planet-2)
+## Buttons (wire-planet, wire-planet-2, wire-planet-3)
 
 Clicks send `planet:` actions to `planet::act` (planet.rs). Changes to the game go through
 `render.windows.planet.command` (planet.lua), which runs on the simulation's thread. A click on a
@@ -299,13 +299,24 @@ player_started_terraform }` **[I]** (the keys are the game's strings). It advanc
 | terraforming_ongoing_window Abort | `CCancelTerraformationCommand` | wired `cancel_terraform` |
 | automation gear, designation, decisions, terraform buttons | side bar toggles | as before |
 | restore_jobs_button | `CChangeJobWorkforceLimitCommand` for every job | wired `restore_jobs`: each job's `workforce_limit` back to `max_workforce`, then `jobs.update` |
-| job workforce +/- | `CChangeJobWorkforceLimitCommand` (delta) | the command exists (`workforce:JOB:DELTA`); **[not done here]** the buttons, since the expanded job entries (planet_job_entry) aren't drawn |
-| favourite job | `CSetFavoriteJobCommand` | **[not done here]**: the engine has no favourite job |
+| pop category header | ToggleOpen: the job rows (planet_job_entry) | wired `planet:expand:CAT` (planet.rs `expanded`) **[V]** the game's frames |
+| job workforce - / + | `CChangeJobWorkforceLimitCommand` (delta) | wired: the step is max/20, at least 1, at most the room (CalcNumWorkforceToIncrease); clamped to [0, max]; then `jobs.update` **[V]** real window. **[I]** Shift (the whole room) and Ctrl (1) are not read |
+| workforce grid cells | SetWorkforceSliderIndex (absolute (i+1)·max/20) | wired `workforce_set:JOB:VALUE`; the slider sits at the limit's cell |
+| favourite job (the expanded row's icon, the collapsed job icon) | `CSetFavoriteJobCommand`: one favourite per pop category, a toggle | wired `favorite_job:TYPE` (colony `favorite_jobs = { { category job } }` **[I]** the layout); engine/jobs.lua multiplies a favourite's two weights by FAVORITE_JOB_WEIGHT_MULT (10) when ≥ 0 (CalculatePopJobWeights) **[V]** real window |
 | armies: checkboxes, recruit | as before | wired |
 | armies: disband | confirm, `CDisbandArmyCommand` | wired: confirm, then disband |
-| armies: embark all, retreat, land | `CMoveArmyToOrbitCommand`, `CFleetLandArmiesCommand` | **[not done here]**: the engine has no army embark or land orders |
-| governor / general portraits | assign-leader widget; right click unassigns | **[not done here]**: the assign-leader widget is another window |
-| sector buttons, ascension tier, branch offices | sector commands, `CIncreasePlanetaryAscensionTierCommand`, dialogs | **[not done here]**: other windows and costs not read |
+| armies: an army's row, Embark All | `CMoveArmyToOrbitCommand` (CArmy::MoveToOrbit) | wired `embark:ARMY`, `embark_all` (construction_planet.embark): a non-defensive army on the colony leaves its list and gets a transport ship (construction.move_to_orbit); the first makes the transport fleet in orbit, the others join it. Embark All is greyed without one. **[I]** joining a transport fleet already in orbit |
+| recruit with Deploy In Orbit off | NPlanetArmies::AddOrEmbark | engine fix: an assault army stays on the colony (and in its `army` list) when the planet's `deploy_armies_in_orbit = no`, as a defensive one does |
+| armies: retreat, land (orbiting armies) | `CMoveArmyToOrbitCommand` (retreat roll), `CFleetLandArmiesCommand` | **[not done here]**: the planet view shows the orbiting armies only over another empire's planet (an invasion: ground combat, not modelled); landing on an own planet is the fleet's order (win-fleet's `land_armies`) |
+| governor portrait | left: CAssignLeaderWidgetView; right: unassign | wired: the card (`paragon_portrait_container_horizontal_governor`, render.windows.leaders_common); left opens the widget, right `unassign_governor` (on_leader_unassigned) **[V]** real window |
+| assign widget (assign_leader_widget_view.gui) | the country's leaders that can govern, the pool after them | wired: `Your Leaders` (not the ruler), `Recruitable Leaders` (their cost); a row `governor:LEADER` (empire_commands' assign after the old governor is unset) or `hire_governor:LEADER` (hire, then assign); closes on a pick or a tab change **[V]** the game's frames. **[I]** the headers' class counts and refresh date, folding; the pool's ages show 0 and the owned leaders' 10 years less than the game's (leaders_common's ages) |
+| general portrait | assign-leader widget (a general) | **[not done here]**: generals lead armies in fleets (win-fleet) |
+| sector action button | delete (a confirm), move the capital here (a confirm), or a new sector | wired `sector_delete` (not a core sector: CANNOT_DELETE_CORE_SECTOR; its systems out), `sector_move_capital` (not the country's capital, not already it), `sector_create` (not within 4 jumps of another sector capital; normal_sector, the planet's name, the colony's system and the country's own systems without a sector within max_jumps 4 + sector_max_jumps_add) **[I]** the systems' scoring (the game ranks them by the type's system_scores) **[V]** created and deleted on a test colony |
+| sector edit button | the sector editor (sector_edit_view.gui) | wired: the editor with EDITING_SECTOR and its Auto Expand checkbox (`sector_auto_expand`) **[I]** the game opens it on the galaxy map, closing the view; adding and removing systems by clicking them on the map: **[not done here]** |
+| open_sector_view | ToggleTopBarView(sectors) | wired `view:empire` (the empire view's planets and sectors) |
+| sector focus, sector governor | — | no sector focus command or `focus` key exists in 4.5.2 (no gui element either); a sector's governor is its capital colony's governor (the planet view's governor) |
+| upgrade_ascension_tier_button | confirm, `CIncreasePlanetaryAscensionTierCommand` | wired `ascend`: enabled while the next tier ≤ the cap (max(perk points − 3 + 1, 0), + 4 with all 8), the planet controlled by its owner and the unity affordable; cost = empire_size × 10 × (1 + the country's tiers' sum × 0.6) × max(1 + planetary_ascension_cost_mult, 0.1) in unity; the tier + 1, one draw, on_colony_ascension_tier_increased. **[V]** the refusal at 2210 (1 perk point: cap 0). No save at hand has 3 perk points, so the tier's rise is not checked in a window |
+| branch offices | dialogs | **[not done here]**: the holdings' branch offices (Megacorp) |
 
 Commands refuse a planet that isn't the player's colony (colonize: one that is owned), and a cost
 the player can't pay (`invalid: cannot pay`).
@@ -335,3 +346,25 @@ Checked:
   - building details, then Escape twice (the side bar, then the view).
 - **Headless comparisons:** the earlier wire-planet frames. No headless game was run for this
   branch, as the parent asked.
+
+### wire-planet-3: what changed outside the planet view
+
+- `engine/jobs.lua`: a colony's `favorite_jobs` read, a favourite's weights × 10.
+- `engine/construction.lua`: `move_to_orbit` exported (with a fleet to join); the Deploy In Orbit
+  check and the colony's `army` list for a recruited army.
+- `engine/construction_planet.lua`: `embark`.
+- `render/gui.lua`: a `@variable` not in its element's scope falls back to the file's first
+  definition (the game reads them file-wide: paragon_ui_types.gui's
+  `@horizontal_slim_title_pos_x` is defined in one container and used in later ones; the
+  leader-assignment cards' names were at x 0 without it).
+
+Checked:
+- Load-sim scripts against the game's frames (one headless run on .24 for the references:
+  /root/wp/ref3):
+  - Economy tab: Elites opened, -, a cell, favourite;
+  - Management: the governor widget, assign, unassign, the sector editor, ascend refused;
+  - Armies: recruit with Deploy In Orbit off, 120 days, Embark All;
+  - sectors created, moved and deleted on a test colony.
+- Real window (Xvfb :81, Load Game): governor widget → a leader (this started the simulation),
+  right click unassigns; Economy: open Elites, -, favourite; the sector editor; Escape closes the
+  editor, then the view.
