@@ -205,6 +205,8 @@ end
 -- CCountry::DailyUpdateSelfDontReadOthers: the timed modifiers; CCountry::DailyUpdateOnlyChangeSafePrivate:
 -- every 30 days a country's ethics attraction (engine.ethics: UpdateCountryEthicsSafePrivate, no draws)
 P["daily.countries_parallel"] = function(host, date)
+    -- the fleets each country saw before today's sensor pass (its new ones: engine.draws)
+    require("engine.draws").sensor_snapshot()
     each_object({ "country" }, count_down_modifiers)
     call_optional("engine.ethics", "countries_daily", host, date)
     -- lambda_26 to lambda_28 of the day (visited systems, sensor coverage and intel levels, known
@@ -247,6 +249,8 @@ P["daily.countries_serial"] = function(host, date)
         -- CCountryEventManager::DailyUpdateSerial: the special projects, then the events
         draws.special_projects(id, date)
         host.scope_daily_events("country", id)
+        -- then (after diplomacy) the fleets newly in its sensor range
+        draws.fleets_detected(id)
         -- CTechnologyStatus::DailyResearch (engine.research), CCountry::UpdateEnvoys, auto research
         research.country_daily(host, id)
         draws.envoys(id)
@@ -255,8 +259,53 @@ P["daily.countries_serial"] = function(host, date)
     -- CPlanetManager::DailyUpdate: the planets' serial update (a draw per owned planet)
     draws.planets(date)
 end
+-- CColony::UpdateColonyOnActions (Linux 0x28817f0), in each colony's serial day after its jobs:
+-- with d the days since its carrier's colonize_date (CColonyCarrier::GetDaysSinceColonization),
+-- d >= 2 and d % 30 == 0: on_colony_monthly_pulse, and of those d % 360 == 0: on_colony_yearly_pulse,
+-- d % 1800: on_colony_5_year_pulse, d % 3600: on_colony_10_year_pulse; each one draw for the
+-- colony's scope (this = the planet) [V]. Only for a colony whose species resolves and that
+-- CGameRules::CanGetColonyEvents (not a cosmogenesis world): here a colony with species and a
+-- colonize_date. Over 60 days from 2210.02.01 the game fired the 84 pulses of the big groups as
+-- here, but not those of three young colonies and four of an unowned planet without a
+-- colonize_date (which species or date it reads is not traced) [I].
+local function date_days(d)
+    if type(d) == "table" then
+        return d.year * 360 + (d.month - 1) * 30 + (d.day - 1)
+    end
+    local y, m, dd = tostring(d or ""):match("(%d+)%.(%d+)%.(%d+)")
+    return y and tonumber(y) * 360 + (tonumber(m) - 1) * 30 + (tonumber(dd) - 1) or nil
+end
+local PULSES = { { 30, "on_colony_monthly_pulse" }, { 360, "on_colony_yearly_pulse" },
+    { 1800, "on_colony_5_year_pulse" }, { 3600, "on_colony_10_year_pulse" } }
+local function colony_pulses(host, date)
+    local today = date_days(date)
+    if not today then
+        return
+    end
+    for _, cid in ipairs(world.all("colony")) do
+        local c = world.object("colony", cid)
+        local carrier = c and world.field(c, "carrier")
+        local pid = type(carrier) == "table" and world.field(carrier, "type") == "planet"
+            and tonumber(world.field(carrier, "reference"))
+        local p = pid and world.object("planet", pid)
+        local since = p and date_days(world.field(p, "colonize_date"))
+        local species = c and world.field(c, "species_refs")
+        if since and type(species) == "table" and #world.list(species) > 0 then
+            local d = today - since
+            if d >= 2 then
+                for _, pulse in ipairs(PULSES) do
+                    if d % pulse[1] ~= 0 then
+                        break
+                    end
+                    host.on_action(pulse[2], "planet", pid, RUST.rand())
+                end
+            end
+        end
+    end
+end
+
 -- NColonyUpdate::DailySerialUpdate: the planets' daily events; the colonies' serial day
--- (engine.colonies, once it is there)
+-- (engine.colonies, once it is there), their on_action pulses
 P["daily.colonies_serial"] = function(host, date)
     for _, id in ipairs(world.all("planet")) do
         slice.tick("systems.lua:232")
@@ -265,6 +314,7 @@ P["daily.colonies_serial"] = function(host, date)
             host.scope_daily_events("planet", id)
         end
     end
+    colony_pulses(host, date)
     call_optional("engine.colonies", "daily_serial", host, date)
     -- NColonyUpdate::MonthlyOrDailyUpdatePopJobsInColony (0x28ecf80) from CGameState::DailyUpdate:
     -- the jobs update twice over the colonies (engine.jobs; its place in the day [I])

@@ -13,12 +13,14 @@
 --   draws.divergence(n) / draws.flush()     CPopGroup::OnEthicsDivergence, made after the parallel phase
 --   draws.monthly_modules(country)          CCountry::MonthlyUpdateSerial: the modules' (vivarium)
 --   draws.monthly_after_pulse_draw(country) CCountry::MonthlyUpdateSerial: personality, integration
+--   draws.sensor_snapshot()                 the fleets each country saw, before the day's sensor pass
+--   draws.fleets_detected(country)          CCountry::DailyUpdateNewFleetsDetectedSerial
 
 local world = require("engine.world")
 
 local draws = {
     stats = { factions = 0, abort = 0, fail = 0, envoys = 0, planets = 0, sites = 0, divergence = 0,
-        vivarium = 0, personality = 0, integration = 0 },
+        vivarium = 0, personality = 0, integration = 0, detected = 0 },
     pending = 0,
 }
 
@@ -145,6 +147,67 @@ function draws.monthly_after_pulse_draw(country)
     skip(1, "integration")
 end
 
+-- CCountry::DailyUpdateNewFleetsDetectedSerial (0x2356990), in the country's serial day after its
+-- events and diplomacy, before its research: for each fleet CCountry::UpdateFleetsInSensorRange
+-- found in sensor range today and not yesterday (sorted by id), that is alive, not the country's
+-- own and, in FTL, jumping to or from the country's space: contact made if new (not modelled),
+-- then two draws for the scopes and on_fleet_detected (this = the country, from = the fleet)
+-- [V]. A fleet flag (CFleet +0x1260 bit 2) skips the event: not modelled [I].
+local seen_before = {}
+function draws.sensor_snapshot()
+    seen_before = {}
+    for _, cid in ipairs(world.all("country")) do
+        local c = world.object("country", cid)
+        local set = {}
+        for _, fid in ipairs(world.list(c and world.field(c, "sensor_range_fleets") or nil)) do
+            set[tonumber(fid)] = true
+        end
+        seen_before[cid] = set
+    end
+end
+local function system_owner(sid)
+    return sid and world.system_owner and world.system_owner[sid]
+end
+function draws.fleets_detected(country, host)
+    local before = seen_before[country]
+    local c = world.object("country", country)
+    if not before or not c then
+        return
+    end
+    local new = {}
+    for _, fid in ipairs(world.list(world.field(c, "sensor_range_fleets") or nil)) do
+        fid = tonumber(fid)
+        if fid and not before[fid] then
+            new[#new + 1] = fid
+        end
+    end
+    table.sort(new)
+    for _, fid in ipairs(new) do
+        local f = world.object("fleet", fid)
+        local owner = world.fleet_owner and world.fleet_owner[fid]
+        local ok = f ~= nil and owner ~= country
+        local mm = f and world.field(f, "movement_manager")
+        if ok and mm and world.field(mm, "state") == "move_galaxy" then
+            local jump = world.field(mm, "last_ftl_jump")
+            local from = jump and tonumber(world.field(jump, "from"))
+            local to = jump and tonumber(world.field(jump, "to"))
+            ok = system_owner(to) == country or system_owner(from) == country
+        end
+        if ok then
+            RUST.rand()
+            RUST.rand()
+            draws.stats.detected = draws.stats.detected + 2
+            if host and host.on_action_scopes then
+                host.on_action_scopes("on_fleet_detected", "country", country, "fleet", fid)
+            else
+                local events = package.loaded["simscript.events"] or require("simscript.events")
+                local eval = package.loaded["simscript.eval"] or require("simscript.eval")
+                pcall(events.on_action, "on_fleet_detected", eval.S("country", country), eval.new_ctx(eval.S("fleet", fid)))
+            end
+        end
+    end
+end
+
 -- CPopGroup::OnEthicsDivergence (0x684640): two draws (the event scope of
 -- on_daily_pop_ethics_divergence) for a pop group whose ethics changed. The game makes them in
 -- CPopGroup::DailyUpdateSerial, right after the pop groups' parallel update; the simulation's pop
@@ -163,9 +226,9 @@ function draws.report()
     local s = draws.stats
     return string.format("engine draws (not modelled otherwise): %d factions, %d special project aborts, %d fails, "
         .. "%d envoys, %d planets, %d archaeological sites, %d ethics divergences; monthly %d vivarium, "
-        .. "%d personalities, %d species integrations",
+        .. "%d personalities, %d species integrations; %d fleet detection draws",
         s.factions, s.abort, s.fail, s.envoys, s.planets, s.sites, s.divergence, s.vivarium, s.personality,
-        s.integration)
+        s.integration, s.detected)
 end
 
 return draws

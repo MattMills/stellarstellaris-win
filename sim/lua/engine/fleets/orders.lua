@@ -350,6 +350,20 @@ local function starbase_orbit_coordinate(sbid)
     return { x = c.x + d, y = c.y - d, origin = c.origin }
 end
 
+-- NScriptUtil::OnFleetEnterOrbit / OnFleetLeaveOrbit<CPlanet / CStarbase> (Linux 0x2a72aa0,
+-- 0x2a72c80): two draws for the scopes (the orbitable, the fleet), then the fleet on_action
+-- on_fleet_enter_orbit / on_fleet_leave_orbit (this = the fleet, from = the orbitable) [V]. Made by
+-- CPlanet::OnFleetEnteredOrbit for every fleet entering a planet's orbit and by CPlanet::LeaveOrbit
+-- for every fleet that was in it (its orbital bombardment check between draws nothing)
+local function orbit_event(name, fid, kind, id)
+    RUST.rand()
+    RUST.rand()
+    S.orbit_events = (S.orbit_events or 0) + 1
+    local events = package.loaded["simscript.events"] or require("simscript.events")
+    pcall(events.on_action, name, eval.S("fleet", fid), eval.new_ctx(eval.S(kind == "starbase" and "starbase" or "planet", id)))
+end
+orders.orbit_event = orbit_event
+
 -- COrbitalSlotHandleBase::EnterOrbit: a planet's first free slot (planet_orbitals = { <slot> =
 -- <fleet> }, movement_manager.orbit = { orbitable = { planet } index }); a starbase's (orbitable =
 -- { starbase } index = -1)
@@ -377,6 +391,7 @@ function orders.enter_orbit(fid, f, id, kind)
     world.append(o, "orbitable", ob)
     world.append(o, "index", slot)
     S.entered_orbit = S.entered_orbit + 1
+    orbit_event("on_fleet_enter_orbit", fid, kind, id)
     return true
 end
 
@@ -403,6 +418,7 @@ function orders.leave_orbit(fid, f)
     end
     S.left_orbit = S.left_orbit + 1
     live.touch("fleet", fid)
+    orders.orbit_event("on_fleet_leave_orbit", fid, kind, pid)
     return true
 end
 
@@ -451,6 +467,17 @@ local function near(a, b)
     return a and b and a.origin == b.origin and math.abs(a.x - b.x) < 0.01 and math.abs(a.y - b.y) < 0.01
 end
 
+-- CMoveToSystemPointFleetOrder::IsDone (Linux 0x29a3a70): in the target's system and less than 1.0
+-- from it (CCelestialDistance::IsLessThan(CFixedPoint 100000)) [V]; the movement stops within that
+-- distance of its last node, short of the point itself
+local function arrived_at(a, b)
+    if not (a and b and a.origin == b.origin) then
+        return false
+    end
+    local dx, dy = a.x - b.x, a.y - b.y
+    return dx * dx + dy * dy < 1
+end
+
 local TYPES = {}
 orders.TYPES = TYPES
 
@@ -475,11 +502,11 @@ function move_order.is_done(o, fid, f)
         local ok, a = pcall(m.arrived, fid)
         if ok and a then
             local here = coord(world.field(mm_of(f), "coordinate"))
-            if not here or near(here, t) then return true end
+            if not here or arrived_at(here, t) then return true end
         end
         if ok and m.is_moving and m.is_moving(fid) then return false end
     end
-    return near(coord(world.field(mm_of(f), "coordinate")), t)
+    return arrived_at(coord(world.field(mm_of(f), "coordinate")), t)
 end
 function move_order.tick() end
 function move_order.finish() end

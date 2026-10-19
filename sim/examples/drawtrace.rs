@@ -44,9 +44,9 @@ local rand, skip, log = RUST.rand, RUST.skip, DRAWLOG
 local function site()
     local parts = {}
     for level = 3, 6 do
-        local i = debug.getinfo(level, "Sl")
+        local i = debug.getinfo(level, "Sln")
         if not i then break end
-        parts[#parts + 1] = i.short_src:gsub("^.*/lua/", "") .. ":" .. i.currentline
+        parts[#parts + 1] = i.short_src:gsub("^.*/lua/", "") .. ":" .. i.currentline .. "(" .. (i.name or "?") .. ")"
     end
     return table.concat(parts, " < ")
 end
