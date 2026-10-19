@@ -14,12 +14,18 @@ return function(eval, H)
         return eval.value(e.value, ctx, e)
     end
     -- `<trigger> <op> <number>` against v (false without a v)
+    -- while a trigger runs as a value (TVAL, below), the number it would compare is kept here: its
+    -- own comparison is the one without a number (the parameters block has no `value`); the
+    -- triggers it runs inside (a `limit`) compare as usual
+    local capture
     local function cmp(v, e, ctx)
+        if capture and type(e.value) == "table" and e.value.text == nil then capture.v = v return true end
         if v == nil then return false end
         return compare(v, e.op, value_of(e, ctx))
     end
     -- a block's `value <op> <number>` against v
     local function cmp_param(v, x, ctx)
+        if capture and not x then capture.v = v return true end
         if v == nil or not x then return false end
         return compare(v, x.op, eval.value(x.value, ctx, x))
     end
@@ -1076,5 +1082,23 @@ return function(eval, H)
         sync()
         local m = world.object("megastructures", sc.id)
         return (m ~= nil and ref(world.field(m, "planet")) ~= nil) == yes(e)
+    end
+
+    -- -----------------------------------------------------------------------------------------
+    -- the numeric triggers as values (`complex_trigger_modifier = { trigger = x parameters = { } }`,
+    -- the game's GetTriggerValue): the trigger run with the parameters, the number it compares
+    -- taken; a scope it has no number for: 0 [I]
+    for _, name in ipairs({ "branch_office_value", "check_economic_production_modifier_for_job",
+        "free_jobs_of_type", "habitability", "planet_crime", "planet_happiness_above_threshold",
+        "total_country_workforce_with_job_tag", "total_workforce_with_job_tag" }) do
+        local trig = TRIG[name]
+        eval.TVAL[name] = function(ctx, e)
+            local saved = capture
+            capture = {}
+            local ok = pcall(trig, e, ctx)
+            local v = capture.v
+            capture = saved
+            return ok and tonumber(v) or 0
+        end
     end
 end
