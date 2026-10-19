@@ -62,6 +62,17 @@ Findings:
   - `inline_script` statements open their own reader (`CreateInlineScriptReader`) while the file is read.
   - The template's bool is `true` for 7 databases (event chains, frontend backgrounds, leader classes, ship sizes, star classes, technology categories, technology) and `false` for 157. Both kinds replace in place; what the bool switches isn't settled.
 
+### Localisation
+`PdxLocalizeReadFolder` → `ReadLocalizationFolderHelper(folder, language, ...)` →
+`LocalizeAddLocalization`:
+1. It lists the folder's `.yml` files at every level (`localisation`, `pdx_online_assets/localisation`).
+2. It keeps the files whose path contains the current language's tag (`LocalizeGetCurrentLanguage`, `l_english`).
+3. It reads the files outside a replace folder first. A key defined twice keeps its first text, and the log says `Discarded duplicate key: ...`.
+4. It reads the files with `/replace/` in their path next, and their texts replace any before.
+5. The keys are sorted after each pass.
+
+A file without a UTF-8 BOM is still read; the log notes `should be in utf-8-bom encoding`.
+
 ### Reloading
 - **File watching is compiled out of the release build.**
   - `CGameApplication::InitFileWatchers` and `InitializePdxLocalizeFileWatcher` are a bare `ret`.
@@ -141,13 +152,12 @@ Each product records the files it was built from, so a change invalidates only w
 ## 4. Open questions for more RE
 - How each database's `CanInitialize` dependencies are declared, to reproduce the exact database order in match mode. `lua/stellar/databases.lua` reads them on Windows.
 - The VFS mount code: mod order, `replace_path`, and the DLC folders (`dlc/*/`).
-- Localisation: how the game picks the language (the `l_<language>:` header, not the folder), the `replace/` folders, and which file wins a duplicate key.
 - What the `bool` of `TSingleObjectGameDatabase` switches.
 - Whether `FileWatcherCallback` removes keys a file no longer defines (the reload path reads like it doesn't).
 
 ## 5. Steps
-1. The `Vfs` in Rust plus `source.lua` on top of it; the parse cache. No behaviour change except mods now reaching every reader. Check: the definition counts and the scriptcheck numbers are unchanged without mods.
-2. Fix the listing differences: folders that only a mod has, the game's depth per folder, events at depth 0, localisation from all of `localisation/`.
+1. The `Vfs` in Rust plus `source.lua` on top of it; the parse cache. No behaviour change except mods now reaching every reader. Check: the definition counts and the scriptcheck numbers are unchanged without mods. (PR #99)
+2. Fix the listing differences: folders that only a mod has, the game's depth per folder, events at depth 0, localisation from all of `localisation/`. (PR #99)
 3. The dependency index and the per-product reloads (3.3), triggered by hand first (a console command, as the game's `reload`).
 4. The watcher and the change queue.
 5. The renderer's Rust caches on the `Vfs` (textures, meshes, fonts, particles).
