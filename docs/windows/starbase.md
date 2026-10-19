@@ -150,7 +150,7 @@ cost from the stockpile). Commands the engine has no model for say so (`not done
 | Dismantle (class row) | Dismantle: STARBASE_DISMANTLE_DIALOG (an outpost) or STARBASE_DOWNGRADE_DIALOG | its dialog; Agree: `not done` (the engine removes no starbase, rebuilds no station design) |
 | Details | CShip::CanInspectShip: the station's ship view | `fleet:ship:STATION` (fleetwin.rs) |
 | Retrofit | OpenRetrofitWindow (CDesignSelectionWindow) | not done |
-| rename | CAbstractStarbaseView::OnRename (a text box) | not done (no text input) |
+| rename (the name; the waystation's too) | CAbstractStarbaseView::OnRename: CStarbase::CanRename, CShipRenameDialog on the station | rename_dialog.gui, its title RENAME_SHIP_TITLE (the game's frame), the box starting with the station's name; typing (app.rs: the keyboard goes to the box while it is open), Backspace, Return (OK), Escape (Cancel); OK: `rename SB NAME`, the station ship's name |
 | a module / building slot | the tab controller (CStarbaseComponentGridEntry's observer): the side view of the slot | `starbase:slot:KIND:N`: the side view (the slot's overlay shown); again: closed |
 | a side view component | CStarbaseBuildableComponentEntry: the component in the slot (CAddBuildableToQueueCommand) | `module|building SB SLOT KEY`: a starbase_module/_building item, its cost the definition's (economy template, the starbase's modifiers), its time construction_days; checked: the game's queue shows "Transit Hub / Transit Hub 180" and greys the slot's other choices |
 | a side view's current component: Dismantle | STARBASE_DISMANTLE_COMPONENT_DIALOG | its dialog; Agree: `dismantle_component SB KIND SLOT` (the slot emptied; no refund [I]) |
@@ -206,8 +206,9 @@ cost from the stockpile). Commands the engine has no model for say so (`not done
   11 platforms), Escape twice. Against the game (headless view.sh, the same clicks): the ship and
   defense lists, a slot's lists, queuing a construction ship, a defense platform, an upgrade and a
   building, the queue entries, the dialog, the scroll per notch.
+- **A new game's starbase** (#48: the station's `properties`, its queues, modules and design): checked in the real window (New Game, Select, Play, the outliner's Shipyards row): its window, the rename, a module slot's list and a replacement queued, a construction ship queued and built after 60 days (in orbit and in the outliner), the queue's startend progress bar; the upgrade greyed (the next level's technology not researched at the start).
 - **Not done**: the Devastator design greyed in the game (and its 360 days, 300 here): its reason
-  is not read; Army Hub's army types; retrofit and the upgrade's design selection; rename; the
+  is not read; Army Hub's army types; retrofit and the upgrade's design selection; the
   starbase's dismantle and downgrade; megastructure commands; cloaking; tooltips.
 
 ## Not done yet

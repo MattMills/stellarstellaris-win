@@ -30,6 +30,9 @@ function M.build(ctx, sel, e, items, report)
     actions[W .. "/header_actions/previous"] = "starbase:prev"
     actions[W .. "/header_actions/next"] = "starbase:next"
     actions[W .. "/header_actions/goto"] = "starbase:goto"
+    if e.owner == (tonumber((RENDER_STARBASE_STATE or {}).player) or -1) then
+        actions[W .. "/starbase_rename_button"] = "starbase:dialog:rename:" .. e.id
+    end
     -- one tab (CGuiButtonTabController<EWaystationsViewTabType, 1>): its _active button
     hide[W .. "/tabs/starbase_tab"] = true
 
