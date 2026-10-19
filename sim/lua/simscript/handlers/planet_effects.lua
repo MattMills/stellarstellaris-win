@@ -577,6 +577,57 @@ return function(eval, H)
         push({ type = "add_deposit", kind = "planet", id = pid, deposit = t })
         sync()
     end
+    -- add_random_non_blocker_deposit = yes (a planet): one non-blocker deposit type whose
+    -- potential holds, by drop_weight (a draw of the game's generator), add_deposit's applier;
+    -- can_add_random_non_blocker_deposit = yes: there is one to add
+    EFF["add_random_non_blocker_deposit"] = function(e, ctx)
+        if not yes(e) or ctx.this == NONE or ctx.this.kind ~= "planet" then return end
+        local p, pid = scope_planet(ctx)
+        if not p then return end
+        local cands, total = deposit_candidates(pid, function(_, b) return not is_blocker(b) end)
+        local t = pick_weighted(cands, total)
+        if not t then return end
+        push({ type = "add_deposit", kind = "planet", id = pid, deposit = t })
+        sync()
+    end
+    eval.TRIG["can_add_random_non_blocker_deposit"] = function(e, ctx)
+        local want = e.value.text ~= "no"
+        if ctx.this == NONE or ctx.this.kind ~= "planet" then return not want end
+        local p, pid = scope_planet(ctx)
+        if not p then return not want end
+        local _, total = deposit_candidates(pid, function(_, b) return not is_blocker(b) end)
+        return (total > 0) == want
+    end
+    -- the deposit scope's object, type and definition
+    local function deposit_of(ctx)
+        if ctx.this == NONE or ctx.this.kind ~= "deposit" then return nil end
+        sync()
+        local d = world.object("deposit", ctx.this.id)
+        local t = d and unq(world.field(d, "type"))
+        return d, t, t and def("common/deposits", t)
+    end
+    -- is_blocker = yes/no (a deposit): its type's category is a blocker category (`blocker = yes`)
+    eval.TRIG["is_blocker"] = function(e, ctx)
+        local d, _, b = deposit_of(ctx)
+        if not d then return false end
+        return (b ~= nil and is_blocker(b)) == (e.value.text ~= "no")
+    end
+    -- clear_blocker = yes (a deposit): a blocker's on_cleared run (this = its planet, from = the
+    -- planet's owner [I the scopes]), then the deposit removed (remove_deposit's applier)
+    EFF["clear_blocker"] = function(e, ctx)
+        if not yes(e) then return end
+        local d, t, b = deposit_of(ctx)
+        if not d or not b or not is_blocker(b) then return end
+        local h = world.field(d, "deposit_holder")
+        local pid = tonumber(world.field(h, "type")) == 0 and tonumber(world.field(h, "id")) or nil
+        local oc = defs.field(b, "on_cleared")
+        if pid and type(oc) == "table" then
+            local owner = ref(world.field(world.object("planet", pid), "owner"))
+            eval.effect(oc, eval.new_ctx(S("planet", pid), owner and S("country", owner) or nil))
+        end
+        push({ type = "remove_deposit", kind = "deposit", id = ctx.this.id, deposit = t })
+        sync()
+    end
     -- reroll_deposits = yes (CRerollDepositsEffect: CColonyCarrier::RandomizeDeposits): the
     -- planet's deposits gone, then COLONY_DEPOSITS_FIXED_BASE (5) + size x 0.2 picks among the
     -- deposit types (non-blockers first, by drop_weight) [I: the game's rolls per category and
