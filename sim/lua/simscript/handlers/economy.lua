@@ -255,6 +255,48 @@ return function(eval)
         return m.div(m.fx(n), m.fx(d)) / m.ONE
     end)
 
+    -- the values of the budget and stockpile triggers eval.lua implements (complex_trigger_modifier's
+    -- `trigger:` values): the number each trigger compares, from the same readers (E.budget_sum,
+    -- E.resource), the parameters block as e.value
+    local function Eng() return eval._internal.E or {} end
+    local function owner_country(sc)
+        if not sc or sc == NONE then return nil end
+        if sc.kind == "country" then return sc.id end
+        local o = world.object(sc.kind, sc.id)
+        return o and ref(world.field(o, "owner"))
+    end
+    local function budget_value(month, side, with_category)
+        return function(ctx, e)
+            local id = this_country(ctx)
+            if not id or not e or e.value.text or not Eng().budget_sum then return nil end
+            local key = param_text(e.value, "resource")
+            if not key then return nil end
+            sync()
+            return Eng().budget_sum(id, month, side, key, with_category and param_text(e.value, "category") or nil)
+        end
+    end
+    if eval.TVAL then
+        -- has_monthly_income = { resource value }: last month's balance
+        eval.TVAL["has_monthly_income"] = budget_value("last_month", "balance", false)
+        -- resource_income_compare: this month's balance; resource_expenses_compare: its expenses
+        eval.TVAL["resource_income_compare"] = budget_value("current_month", "balance", true)
+        eval.TVAL["resource_expenses_compare"] = budget_value("current_month", "expenses", true)
+        -- has_resource = { type amount } / resource_stockpile_compare = { resource value }: the
+        -- stockpile of the scope's country (a planet's, a ship's owner)
+        local function stock_value(key_param)
+            return function(ctx, e)
+                local id = owner_country(ctx.this)
+                if not id or not e or e.value.text or not Eng().resource then return nil end
+                local key = param_text(e.value, key_param)
+                if not key then return nil end
+                sync()
+                return Eng().resource(id, key)
+            end
+        end
+        eval.TVAL["has_resource"] = stock_value("type")
+        eval.TVAL["resource_stockpile_compare"] = stock_value("resource")
+    end
+
     -- export_resource_income_to_variable = { resource variable } (0x37ce700) [V]: the current
     -- month's balance (net) of the resource
     EFF["export_resource_income_to_variable"] = function(e, ctx)
