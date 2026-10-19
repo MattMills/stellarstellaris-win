@@ -689,12 +689,10 @@ local LISTS = {
     owned_planet = function(sc) if sc.kind ~= "country" then return {} end sync() return map_scopes("planet", E.colonies(sc.id)) end,
     country = function() sync() return map_scopes("country", E.countries()) end,
     owned_pop_group = pop_groups_of,
-    pop_group = pop_groups_of,
     owned_leader = function(sc) if sc.kind ~= "country" then return {} end sync() return map_scopes("leader", E.leaders(sc.id)) end,
 }
 LISTS.owned_colony = LISTS.owned_planet
 LISTS.playable_country = LISTS.country
-LISTS.leader = LISTS.owned_leader
 LISTS.neighbor_country = function(sc)
     if sc.kind ~= "country" or not E.neighbors then return {} end
     sync()
@@ -1147,8 +1145,8 @@ TRIG["resource_stockpile_compare"] = function(e, ctx)
     if have == nil then return false end
     return compare(have, op, amount)
 end
--- has_dlc: the save's DLCs (E.has_dlc reads its required_dlcs; yes without a world)
-TRIG["has_dlc"] = function(e)
+-- host_has_dlc: the save's DLCs (E.has_dlc reads its required_dlcs; yes without a world)
+TRIG["host_has_dlc"] = function(e)
     if E.has_dlc and e.value.text then return E.has_dlc(e.value.text) end
     return true
 end
@@ -1160,7 +1158,6 @@ end
 TRIG["end_game_years_passed"] = function(e, ctx)
     return compare(floor(M.today() / 360) - 2400, e.op, M.value(e.value, ctx, e))
 end
-TRIG["host_has_dlc"] = TRIG["has_dlc"]
 TRIG["is_multiplayer"] = function(e) return not yes(e) end
 TRIG["is_ironman"] = function(e) return not yes(e) end
 
@@ -1541,9 +1538,6 @@ end
 -- numeric engine reads: key -> scope kind, field
 local NUMS = {
     num_owned_planets = { "country", "num_colonies" },
-    num_colonies = { "country", "num_colonies" },
-    num_pops = { nil, "num_pops" },
-    num_leaders = { "country", "num_leaders" },
     has_base_skill = { "leader", "has_base_skill" },
 }
 for k, spec in pairs(NUMS) do
@@ -1552,9 +1546,7 @@ for k, spec in pairs(NUMS) do
         local kind = spec[1] or sc.kind
         if kind ~= sc.kind then return false end
         sync()
-        local field = spec[2]
-        if sc.kind == "planet" and field == "num_pops" then field = "pops" end
-        local v = E.get(sc.kind, sc.id, field)
+        local v = E.get(sc.kind, sc.id, spec[2])
         return compare(tonumber(v) or 0, e.op, M.value(e.value, ctx, e))
     end
 end
@@ -1841,6 +1833,18 @@ local function effect1(e, ctx)
     miss("effect", lk, ctx, e)
 end
 
+-- `break = yes` (simscript/handlers/general.lua): the scope's break flag (CEventScope +0x168), set
+-- on the scope itself (a scripted effect's context is the same scope); the statements after it in
+-- that scope are skipped, in every block that holds it (CEffect::ExecuteActual 0x24f7bf0). A scope
+-- made from it (push) starts without it
+local function scope_of(ctx)
+    while ctx.same do ctx = ctx.same end
+    return ctx
+end
+function M.set_broke(ctx) scope_of(ctx).broke = true end
+local function broke(ctx) return scope_of(ctx).broke == true end
+M.broke = broke
+
 effect = function(b, ctx, skip)
     tick("effect")
     local taken = false
@@ -1863,6 +1867,7 @@ effect = function(b, ctx, skip)
                 else
                     effect1(e, ctx)
                 end
+                if broke(ctx) then return end
             end
         end
     end
@@ -1876,8 +1881,6 @@ EFF["custom_tooltip"] = noop
 EFF["tooltip"] = noop
 EFF["log"] = noop
 EFF["log_error"] = noop
-EFF["set_update_modifiers_batch"] = noop
-EFF["optimize_memory"] = noop
 EFF["while"] = function(e, ctx)
     local n, limit = nil, nil
     for _, x in ipairs(e.value) do
@@ -1954,48 +1957,18 @@ local function var_effect(op)
         elseif op == "round" then cur = floor(cur + 0.5)
         elseif op == "floor" then cur = floor(cur)
         elseif op == "ceiling" then cur = math.ceil(cur)
-        elseif op == "abs" then cur = math.abs(cur)
         elseif op == "clear" then cur = nil end
         setvar(ctx.this, which, cur)
     end
 end
-for _, op in ipairs({ "set", "change", "subtract", "multiply", "divide", "modulo", "round", "floor", "ceiling", "abs" }) do
+for _, op in ipairs({ "set", "change", "subtract", "multiply", "divide", "modulo", "round", "floor", "ceiling" }) do
     EFF[op .. "_variable"] = var_effect(op)
 end
 EFF["clear_variable"] = var_effect("clear")
-EFF["remove_variable"] = var_effect("clear")
-EFF["clamp_variable"] = function(e, ctx)
-    local which, lo, hi
-    for _, x in ipairs(e.value) do
-        if x.op then
-            local xk = x.key.text:lower()
-            if xk == "which" then which = x.value.text
-            elseif xk == "min" then lo = M.value(x.value, ctx, x)
-            elseif xk == "max" then hi = M.value(x.value, ctx, x) end
-        end
-    end
-    if not which then return end
-    count_script()
-    local v = getvar(ctx.this, which) or 0
-    if lo and v < lo then v = lo end
-    if hi and v > hi then v = hi end
-    setvar(ctx.this, which, v)
-end
 EFF["save_event_target_as"] = function(e, ctx) count_script(); ctx.targets[e.value.text] = ctx.this end
 EFF["save_global_event_target_as"] = function(e, ctx) count_script(); state.global_targets[e.value.text] = ctx.this end
 EFF["clear_global_event_target"] = function(e) count_script(); state.global_targets[e.value.text] = nil end
 EFF["clear_global_event_targets"] = function() count_script(); state.global_targets = {} end
-EFF["add_to_temp_list"] = function(e, ctx)
-    count_script()
-    local l = ctx.lists[e.value.text]
-    if not l then l = {}; ctx.lists[e.value.text] = l end
-    l[#l + 1] = ctx.this
-end
-EFF["remove_from_temp_list"] = function(e, ctx)
-    count_script()
-    local l = ctx.lists[e.value.text] or {}
-    for i = #l, 1, -1 do if l[i] == ctx.this then table.remove(l, i) end end
-end
 EFF["fire_on_action"] = function(e, ctx)
     local name
     if e.value.text then name = e.value.text else
@@ -2005,6 +1978,11 @@ EFF["fire_on_action"] = function(e, ctx)
     end
     if name then M.on_action(name, ctx.this, ctx) end
 end
+
+-- optimize_memory: not in the game's documentation, but vanilla runs it (97 uses in on_actions
+-- and events): a memory hint for the game, no change to the world (simscript.scriptcheck
+-- lists it as accepted, not invented)
+EFF["optimize_memory"] = function() end
 
 -- engine effects with a model in the Rust engine
 EFF["add_resource"] = function(e, ctx)

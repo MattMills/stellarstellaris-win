@@ -1060,7 +1060,6 @@ return function(eval)
         sync()
         return scopes("system", r.all("system"))
     end
-    LISTS["galaxy_system"] = LISTS["galaxy_system"] or LISTS["system"]
     -- archaeological_site (CArchaeologicalSiteListBuilder 0x1812560): every site
     LISTS["archaeological_site"] = function()
         local r = rt()
