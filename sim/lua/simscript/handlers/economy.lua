@@ -288,11 +288,14 @@ return function(eval)
                 local id = owner_country(ctx.this)
                 if not id or not e or e.value.text or not Eng().resource then return nil end
                 local key = param_text(e.value, key_param)
+                    or (key_param == "type" and param_text(e.value, "resource")) or nil
                 if not key then return nil end
                 sync()
                 return Eng().resource(id, key)
             end
         end
+        -- has_resource takes its resource as `type` or `resource` (CHasResourceTrigger::ReadMember
+        -- 0x3b86310 reads both) [V]
         eval.TVAL["has_resource"] = stock_value("type")
         eval.TVAL["resource_stockpile_compare"] = stock_value("resource")
     end

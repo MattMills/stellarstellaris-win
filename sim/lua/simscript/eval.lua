@@ -1204,12 +1204,14 @@ TRIG["has_technology"] = function(e, ctx)
     sync()
     return E.has("country", c.id, "tech", e.value.text or "")
 end
+-- has_resource = { type|resource = <resource> amount <op> n }: CHasResourceTrigger::ReadMember
+-- (0x3b86310) reads the resource as `type` or `resource` [V]
 TRIG["has_resource"] = function(e, ctx)
     local res, op, amount = nil, ">=", 0
     for _, x in ipairs(e.value) do
         if x.op then
             local xk = x.key.text:lower()
-            if xk == "type" then res = x.value.text
+            if xk == "type" or xk == "resource" then res = x.value.text
             elseif xk == "amount" then op = x.op; amount = M.value(x.value, ctx, x) end
         end
     end
