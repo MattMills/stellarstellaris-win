@@ -201,81 +201,10 @@ return function(eval)
         end,
     }
 
-    -- the iterators of these lists as effects: every_ / random_ (with `weights`) / ordered_ (with
-    -- `inverse`), as eval's iterate_effect with the two parameters it does not read
+    -- (their every_ / random_ / ordered_ effects: eval's iterators, with random_'s `weights` and
+    -- ordered_'s `inverse`)
     local SKIP = {}
     for k in pairs(I.ITER_PARAMS) do SKIP[k] = true end
-    SKIP.weights, SKIP.inverse = true, true
-    local function iterate(kind, lname, e, ctx)
-        local list = I.list_of(lname, e.value, ctx, e)
-        if not list then
-            miss("iterator", kind .. "_" .. lname, ctx, e)
-            return
-        end
-        local p = params(e)
-        local limit = p.limit and p.limit.value
-        local chosen = {}
-        for _, s2 in ipairs(list) do
-            if not limit or eval.trigger(limit, eval.push(ctx, s2)) then chosen[#chosen + 1] = s2 end
-        end
-        local SR = eval.scope_iter
-        local loop = SR and SR.begin(ctx)
-        if kind == "random" then
-            if #chosen == 0 then return end
-            local pick
-            if p.weights and p.weights.value.text == nil then
-                -- weights = { base modifier = { add / factor triggers } } (CRandomInListEffect with
-                -- a weight: each element's weight in its own scope, a pick in [0, total)) [I]
-                local w, total = {}, 0
-                for i, s2 in ipairs(chosen) do
-                    w[i] = math.max(0, eval.weight(p.weights.value, eval.push(ctx, s2), 1))
-                    total = total + w[i]
-                end
-                if total <= 0 then return end
-                local r = ((loop and SR.draw(loop) or I.E.rand()) % 1000000) / 1000000 * total
-                for i, x in ipairs(w) do
-                    if r < x then pick = i break end
-                    r = r - x
-                end
-                pick = pick or #chosen
-            else
-                pick = (loop and SR.draw(loop) or I.E.rand()) % #chosen + 1
-            end
-            chosen = { chosen[pick] }
-        elseif kind == "ordered" then
-            local position = p.position and num_value(p.position, ctx) or 0
-            local max = p.max and num_value(p.max, ctx) or 1
-            local inverse = p.inverse and p.inverse.value.text == "yes"
-            local keyed = {}
-            for i, s2 in ipairs(chosen) do
-                keyed[i] = { s2, p.order_by and eval.value(p.order_by.value, eval.push(ctx, s2), e) or 0, i }
-            end
-            table.sort(keyed, function(a, b)
-                if a[2] ~= b[2] then
-                    if inverse then return a[2] < b[2] end
-                    return a[2] > b[2]
-                end
-                return a[3] < b[3]
-            end)
-            chosen = {}
-            for i = position + 1, math.min(#keyed, position + max) do chosen[#chosen + 1] = keyed[i][1] end
-        end
-        for _, s2 in ipairs(chosen) do
-            local c = eval.push(ctx, s2)
-            if loop then SR.element(loop, c, kind) end
-            eval.effect(e.value, c, SKIP)
-        end
-    end
-    for _, l in ipairs({ "controlled_colony", "controlled_planet", "galaxy_planet", "owned_colony", "owned_pop_group",
-        "owned_pop_job", "job_pop_group", "species_pop_group" }) do
-        for _, k in ipairs({ "every", "random", "ordered" }) do
-            local kind = k
-            EFF[k .. "_" .. l] = function(e, ctx)
-                if e.value.text ~= nil then return end
-                return iterate(kind, l, e, ctx)
-            end
-        end
-    end
 
     -- weighted_random_owned_pop_group = { limit effects } (CWeightedRandomOwnedPopGroupEffect [I]):
     -- one owned pop group, each weighted by its size
