@@ -288,6 +288,20 @@ local function is_container(name)
         or name:match("^ordered_") ~= nil
 end
 
+-- the save's (first) human player's country: `player = { { name country } }`
+local function player_country(world)
+    local ok, blocks = pcall(world.blocks, world.meta and world.meta.player)
+    for _, b in ipairs(ok and blocks or {}) do
+        local c = tonumber(world.field(b, "country"))
+        if c and world.object("country", c) then
+            return c
+        end
+    end
+end
+
+-- the object a keyword's use runs in: the player's country; for a planet scope the player's
+-- capital (a colony: most planet keywords need one), else the first colonised planet; else the
+-- first object of the store
 local function first_of(world, kind, store)
     if store then
         for _, id in ipairs(world.all(store)) do
@@ -298,9 +312,22 @@ local function first_of(world, kind, store)
         return nil
     end
     if kind == "country" then
-        local p = tonumber(world.meta and world.meta.player)
-        if p and world.object("country", p) then
+        local p = player_country(world)
+        if p then
             return p
+        end
+    end
+    if kind == "planet" then
+        local p = player_country(world)
+        local cap = p and tonumber(world.field(world.object("country", p), "capital"))
+        local pid = cap and world.colony_planet and world.colony_planet[cap]
+        if pid and world.object("planet", pid) then
+            return pid
+        end
+        for _, id in ipairs(world.all("planet")) do
+            if world.planet_colony and world.planet_colony[id] and world.object("planet", id) then
+                return id
+            end
         end
     end
     for _, id in ipairs(world.all(kind)) do
@@ -334,25 +361,34 @@ local function count_writes(world)
     end
 end
 
--- the statement of a file's tree at a line whose key is the keyword
+-- the blocks whose content is triggers, and those whose content is effects (the docs mod's
+-- events and scripted definitions use these; anything inside keeps its block's kind)
+local TRIGGER_CTX = { trigger = true, limit = true, potential = true, allow = true, possible = true }
+local EFFECT_CTX = { immediate = true, option = true, after = true, effect = true }
+
+-- the statement of a file's tree at a line whose key is the keyword, and whether it stands in a
+-- trigger block ("trigger") or an effect block ("effect") by its nearest such block
 local function node_at(tree, line, key)
-    local found
-    local function walk(block)
+    local found, found_ctx
+    local function walk(block, ctx)
         for _, e in ipairs(block) do
             if found then
                 return
             end
             if e.key and e.line == line and e.key.text:lower() == key then
-                found = e
+                found, found_ctx = e, ctx
                 return
             end
             if type(e.value) == "table" and e.value.text == nil then
-                walk(e.value)
+                local k = e.key and e.key.text:lower()
+                local c = ctx
+                if k and TRIGGER_CTX[k] then c = "trigger" elseif k and EFFECT_CTX[k] then c = "effect" end
+                walk(e.value, c)
             end
         end
     end
-    walk(tree)
-    return found
+    walk(tree, nil)
+    return found, found_ctx
 end
 
 local function sum_missing(stats)
@@ -395,7 +431,8 @@ function X.dynamic(mod_dir)
                 trees[file] = tree
             end
             local res = { kind = kind, name = name, scope = scope }
-            local node = tree and node_at(tree, line, name:lower())
+            local node, nctx
+            if tree then node, nctx = node_at(tree, line, name:lower()) end
             local sk = SCOPE_KIND[scope] or scope
             local id = node and first_of(world, sk, SCOPE_STORE[scope])
             if not node then
@@ -410,8 +447,11 @@ function X.dynamic(mod_dir)
                 if E and E.stats and E.stats.unapplied then
                     for k, c in pairs(E.stats.unapplied) do un0[k] = c end
                 end
-                local ctx = eval.new_ctx(eval.S(sk, id), nil, nil, file)
-                local is_trigger = kind == "trigger" or (kind == "link" and file:match("trigger"))
+                -- `from` is the player's country: many effects take their actor from it
+                local pc = player_country(world)
+                local ctx = eval.new_ctx(eval.S(sk, id), pc and eval.S("country", pc) or nil, nil, file)
+                -- the use's own block decides (a link's use is `link = { always = yes }` in a trigger)
+                local is_trigger = nctx == "trigger" or (nctx == nil and kind == "trigger")
                 local ok, err = pcall(function()
                     if is_trigger then
                         res.value = eval.trigger({ node }, ctx)
@@ -450,6 +490,9 @@ function X.dynamic(mod_dir)
                     res.result = "no applier"
                 elseif refused > 0 and res.applied == 0 and res.writes == 0 then
                     res.result = "refused"
+                elseif is_trigger and kind == "link" then
+                    -- `link = { always = yes }`: true when the link found its scope
+                    res.result = res.value and "resolved" or "no target"
                 elseif is_trigger then
                     res.result = "evaluated"
                 elseif res.writes > 0 or res.applied > 0 or res.script > 0 then
