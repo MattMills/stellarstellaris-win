@@ -404,6 +404,13 @@ Each handler's comment names its class and address and marks what is inferred **
   - The federation uses run after `dissolve_federation` has removed the save's federations; the checker's last-effects list does not have it.
   - The war uses need a save with a war (the 2210 save has none).
 
+**The review after PR 80** (the checker's `from` now a country the player has communications with):
+- In the 2210 save the player has communications with no country, so `from` is still the player and the 34 rows stay self-targets there.
+- On `rich_2212.sav`, 21 of the 34 act.
+- One was a bug: a targeted resolution's `effect` ran in the proposer's scope. The game runs it in the target's, with the proposer as `from` (99_README_RESOLUTIONS.txt), so `pass_targeted_resolution = { resolution = resolution_declare_crisis target = from }` had expelled the player.
+- `run_ai_strategic_war_data` now records its request (CCountryAI::SetNeedAIStrategicWarData [V]) in the script state.
+- The 13 left are the uses' no-ops: a country where a colony, war or operation is required; nothing to end or join; the scope in no federation or not at war with the enemy; a modifier not held. Run with real targets, each acts (`/root/cd/probe_review.lua`, its output `/root/cd/review_evidence.txt` on .24).
+
 **Approximated** **[I]**, besides what the comments mark:
 - Values the game recomputes from modifiers and are not in the save: `diplomacy_weight`, `federation_cohesion_growth`, `is_counter_espionage`, `relative_encryption_decryption`, a spy network's maximum level.
 - `used_favors_on_last_resolution` and a casus belli's days are kept in the script state.
