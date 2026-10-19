@@ -30,16 +30,6 @@ class shows. **[I]** marks what comes from the documentation and the save's fiel
 A design scope is `ship_design`; the checker also calls it `design`. A growth stage scope is
 `ship_growth_stage`, with the id `"<design>/<stage>"`.
 
-## Shared iterator parameters
-
-`eval.lua`'s iterators now read the documented `weights` of `random_*` and `inverse` of
-`ordered_*`:
-- `weights`: one draw over the elements' summed `M.weight` [I the draw].
-- `inverse`: the lowest first.
-
-Before this, the body walker treated both as effects. That made every package's `random_*` and
-`ordered_*` example "missing".
-
 ## Not modelled, or approximated
 
 These are noted in the handlers [I]:
@@ -57,22 +47,23 @@ These are noted in the handlers [I]:
 
 ## Checker results on the 2210.01.01 save
 
-**Statically**, every keyword of the package has a handler.
+These are from #67's checker, which runs links as triggers, uses the player's country and capital,
+and sets `from`.
+
+**Statically**, each of the package's 202 keywords has a handler.
 
 **Dynamically:**
 - 74 triggers evaluated.
-- 42 effects acted.
+- 49 effects acted.
 - 33 iterators ran as containers.
+- 7 links resolve; 5 have no target in this save (no army leader, no damage record, no orbital station on the capital).
 
-**Silent (36 effects).** The docs mod's example names `from`, which the checker's context does not
-set, or the scope's first object is the wrong kind. Planet 0 is a star, with no colony; fleet 0
-is a starbase; ship 0 is a starbase's station. The game would do nothing for these either.
+**Silent (28 effects).** Mostly the example's `from` is a country where the effect needs a fleet,
+ship or design. The others are cases where the game does nothing either: no lease contract, not
+MIA, a starbase where the effect needs a station.
 
-**Refused (1).** `set_fleet_stance = aggressive` on that immobile starbase fleet, as in the game.
+**Refused (2).** `set_fleet_stance` and `set_location`, on the immobile starbase fleet, as in the
+game.
 
 **Missing (1).** `create_random_fleet`: its example's size is a script value using
 `complex_trigger_modifier`, which is the general area's.
-
-The links show `missing` dynamically for every link that resolves. The checker runs
-`sdc_links.txt`'s uses as an effect block, so their `always = yes` counts as a missed effect.
-`capital_scope`, `leader` and `planet` show the same.
