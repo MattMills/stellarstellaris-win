@@ -866,6 +866,28 @@ return function(eval)
     -- ------------------------------------------------------------------------------------------
     -- values from triggers (`trigger:<name>`), when eval has the table
 
+    -- values with parameters (`complex_trigger_modifier = { trigger = <name> parameters = { ... } }`,
+    -- eval.TVAL: e.value is the parameter block): num_claims_on_system (`target`), as its trigger
+    -- reads it; opinion (`who`): the scope country's opinion of who (engine.ai.opinion, the opinion
+    -- trigger's)
+    if eval.TVAL then
+        eval.TVAL["num_claims_on_system"] = function(ctx, e)
+            local us = this_country(ctx)
+            local t = type(e.value) == "table" and param_scope(e.value, "target", ctx)
+            local s = t and system_of(t)
+            if not us or not s then return nil end
+            sync()
+            return claims_on(s, us)
+        end
+        eval.TVAL["opinion"] = function(ctx, e)
+            local us = this_country(ctx)
+            local w = type(e.value) == "table" and param_scope(e.value, "who", ctx)
+            if not us or not w or w.kind ~= "country" or not D.alive(w.id) then return nil end
+            sync()
+            return require("engine.ai.opinion").of(us, w.id)
+        end
+    end
+
     if eval.TRIGGER_VALUES then
         for k, f in pairs(VALUE) do
             eval.TRIGGER_VALUES[k] = function(ctx)
