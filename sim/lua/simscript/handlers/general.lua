@@ -336,6 +336,14 @@ return function(eval)
             return compare(v, e.op, eval.value(e.value, ctx, e))
         end
     end
+    -- is_difficulty as a value (complex_trigger_modifier: CIsDifficultyTrigger::GetTriggerValue
+    -- 0x3b81230, the setup's EDifficulty at +0xa0): the level's number, civilian 0 to grand admiral
+    -- 6 [V]
+    local DIFFICULTY = { civilian = 0, cadet = 1, ensign = 2, captain = 3, commodore = 4, admiral = 5, grand_admiral = 6 }
+    eval.TVAL["is_difficulty"] = function()
+        local g = galaxy()
+        return g and DIFFICULTY[(tostring(world.field(g, "difficulty")):gsub('"', ""))] or nil
+    end
     -- date_distortion = yes/no (CSetDateDistortionEffect 0x37c7f30): the game state's
     -- `date_distortion` (CGameState::WriteMembers) [V]
     EFF["date_distortion"] = function(e)
@@ -512,16 +520,98 @@ return function(eval)
     end
     -- change_country_flag = random / { icon background colors } (CChangeCountryFlagEffect
     -- 0x376ace0: CCountry::RandomizeFlag, CCountry::SetEmpireFlag) [V]; the save's `flag = { }`.
-    -- random: a flag drawn from the game's flags is not modelled (the draw is recorded)
+    -- random (CCountry::RandomizeFlag 0x2341300): one draw of the game's generator seeds a crude
+    -- random (CCrudeRandom(seed): the scope random's new(seed)), then CEmpireFlag::Randomize
+    -- (0x19edf40) draws the symbol (GetRandomSymbolTexture: one of the flag database's symbols, those
+    -- other countries use left out while any is free), the background (a category, then a texture
+    -- of it) and the colour combination (GetRandomColorCombination: flags/colors.txt's
+    -- randomizable_combo, a primary colour not yet used kept while any is free; the primary then
+    -- registered as used) [V the draws' order; I the lists' order: the files by name, the combos in
+    -- file order]
+    local flag_db
+    local function flags()
+        if flag_db then return flag_db end
+        flag_db = { symbols = {}, backgrounds = {}, combos = {} }
+        local db = I.db
+        local dir = db and db.game_dir
+        if RUST and RUST.list_files and dir then
+            local files = RUST.list_files(dir, "flags", "dds")
+            table.sort(files)
+            for _, f in ipairs(files) do
+                local cat, file = f:match("^flags/([^/]+)/([^/]+)$")
+                if cat == "backgrounds" then
+                    flag_db.backgrounds[#flag_db.backgrounds + 1] = { cat, file }
+                elseif cat then
+                    flag_db.symbols[#flag_db.symbols + 1] = { cat, file }
+                end
+            end
+            local text = db.read_file(dir .. "/flags/colors.txt")
+            local tree = text and require("pdxscript").parse(text, "flags/colors.txt")
+            local function walk(b)
+                for _, x in ipairs(b or {}) do
+                    if x.op and x.key and x.key.text == "randomizable_combo" and x.value.text == nil then
+                        local l = {}
+                        for _, v in ipairs(x.value) do if v.text then l[#l + 1] = v.text end end
+                        flag_db.combos[#flag_db.combos + 1] = l
+                    elseif x.op and type(x.value) == "table" and x.value.text == nil then
+                        walk(x.value)
+                    end
+                end
+            end
+            walk(tree)
+        end
+        return flag_db
+    end
+    local function random_flag(id, c)
+        local SR = require("engine.script.scope_random")
+        local fdb = flags()
+        if #fdb.symbols == 0 or #fdb.backgrounds == 0 then return false end
+        local r = SR.new(eval.rand())
+        -- the symbols other countries use
+        local used = {}
+        for _, cid in ipairs(world.all("country")) do
+            local o = cid ~= id and world.object("country", cid)
+            local icon = o and world.path(o, "flag", "icon")
+            if type(icon) == "table" then used[tostring(world.field(icon, "file"))] = true end
+        end
+        local free = {}
+        for _, s in ipairs(fdb.symbols) do if not used[s[2]] then free[#free + 1] = s end end
+        if #free == 0 then free = fdb.symbols end
+        local sym = free[SR.draw(r) % #free + 1]
+        local _ = SR.draw(r) % 1   -- the background category (one: `backgrounds`)
+        local bg = fdb.backgrounds[SR.draw(r) % #fdb.backgrounds + 1]
+        local combo
+        if #fdb.combos > 0 then
+            local usedc = {}
+            for _, v in ipairs(world.fields(world.tree, "used_color")) do usedc[tostring(v)] = true end
+            local fc = {}
+            for _, k in ipairs(fdb.combos) do if not usedc[k[1]] then fc[#fc + 1] = k end end
+            if #fc == 0 then fc = fdb.combos end
+            combo = fc[SR.draw(r) % #fc + 1]
+        end
+        local flag = world.child(c, "flag")
+        for part, v in pairs({ icon = sym, background = bg }) do
+            local b = world.child(flag, part)
+            set_quoted(b, "category", v[1])
+            set_quoted(b, "file", v[2])
+        end
+        if combo then
+            local list = {}
+            for _, k in ipairs(combo) do list[#list + 1] = { text = k, quoted = true } end
+            local entry = world.entry(flag, "colors")
+            if entry then world.set_entry(flag, entry, list) else world.append(flag, "colors", list) end
+            -- CGameState::RegisterUsedBorderColor: the primary among the save's `used_color`
+            local have = false
+            for _, v in ipairs(world.fields(world.tree, "used_color")) do if tostring(v) == combo[1] then have = true end end
+            if not have then world.append(world.tree, "used_color", combo[1], true) end
+        end
+        return true
+    end
     EFF["change_country_flag"] = function(e, ctx)
         local id, c = this_country(ctx)
         if not id then return end
         if e.value.text then
-            if e.value.text == "random" then
-                local m = stats.unmodelled["change_country_flag random"] or { key = "change_country_flag random", count = 0 }
-                m.count = m.count + 1
-                stats.unmodelled["change_country_flag random"] = m
-            end
+            if e.value.text == "random" then random_flag(id, c) end
             return
         end
         local flag = world.child(c, "flag")

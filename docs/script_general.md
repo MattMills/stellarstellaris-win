@@ -82,7 +82,7 @@ All of these live in `galactic_community = { }` in the save.
 |---|---|
 | `set_adjective` | `adjective = { key }`, or a copy of the target's [V] |
 | `set_city_graphical_culture`, `city_graphical_culture` | `city_graphical_culture` (the trigger also compares with a target) [V] |
-| `change_country_flag` | `flag = { icon background colors }` [V]. `random` (CCountry::RandomizeFlag) is recorded as unmodelled. |
+| `change_country_flag` | `flag = { icon background colors }` [V]. `random` draws a new flag (below). |
 | `set_ai_{armor,shields}_ratio`, `set_ai_weapon_preference`, the `platform` ones, `clear_ai_*` | `ai_<x>_override` (SShipDesignPreferences) [V] |
 | `ai_armor_ratio`, `ai_shields_ratio` | The override, else the personality's ratio (GetEffectiveArmorRatio) [V] |
 | `is_preferred_platform_weapons` | Platform override, else empire override, else the personality's `weapon_preferences` |
@@ -197,10 +197,35 @@ The save holds them in two places:
   - `create_message` adds a message to `message`;
   - `storm_apply_aftermath_modifier` picks a severity by chance and adds its modifier and effect;
   - `effect_on_blob` runs its effect on the nearest systems until the share of matching colonies is covered.
-- **Interface and recompute only:** `start_storm_area_placing`, `refresh_psionic_aura_type`, `run_ai_strategic_data`. The checker counts them as containers.
-- **Recorded as unmodelled:**
-  - `spawn_random_storm`;
-  - `transfer_carrier` (nomad carriers);
-  - `clear_uncharted_space` (the `terra_incognita` cells);
-  - `change_country_flag = random`;
-  - the fleets of released fauna.
+- **Interface and recompute only:** `start_storm_area_placing`, `refresh_psionic_aura_type`, `run_ai_strategic_data`. They change nothing of the game's state; the checker shows them silent until its container list names them.
+- **`spawn_random_storm`:**
+  - a crude random seeded by one draw of the game's generator [I: CCosmicStorm::CalcRandomCosmicStormSeed's seed];
+  - a storm type by its `spawn_weight`, in database order (GetRandomStormTypeBasedOnSpawnChance);
+  - a random start system;
+  - the storm made there by `create_cosmic_storm` and forced active [V calls].
+- **`transfer_carrier`:**
+  - finds the source's colony;
+  - points the colony's `carrier = { type reference }` at the target planet or ship;
+  - sets the old carrier's `colony` to none and the new one's to the colony [V calls];
+  - when the target already carries a colony, `merge_pops` moves the pop groups and `destroy_colony` removes the source [I].
+- **`clear_uncharted_space`** adds the system to the country's sorted `terra_incognita.systems` (CTerraIncognitaMap::ClearSystem) [V]. The map's pixel `data` comes from the galaxy's pixel-ownership table and is not redrawn here [I].
+- **`change_country_flag = random`** (CCountry::RandomizeFlag, CEmpireFlag::Randomize), in the game's draw order [V]:
+  - one game draw seeds a crude random;
+  - a symbol is drawn from `flags/` (those other countries use left out while any is free);
+  - then a background;
+  - then a `randomizable_combo` from `flags/colors.txt` whose primary colour is not yet in the save's `used_color`; the primary is then added there.
+
+  The lists' order is [I]: the files by name, the combos in file order.
+- **Recorded as unmodelled:** the fleets of released fauna.
+
+## Values
+
+`complex_trigger_modifier` reads these through `eval.TVAL`:
+- `is_difficulty` is the setup's level, civilian 0 to grand admiral 6 [V: CIsDifficultyTrigger::GetTriggerValue];
+- `get_attunement_points_for` takes `parameters = { patron negative }`.
+
+## Probes
+
+`sim/tools/scriptprobe_general.txt` (run by `tools/scriptprobe.lua`) runs the package's silent and newly modelled rows with real targets, on the 2210 autosave and on rich_2212. `sim/tools/general_fealty_probe.lua` covers `remove_secret_fealty`, which needs a relation with the flag; no script effect sets it.
+
+`remove_modifier`: the starbase probe's `artificial_planet_modifier` is not a vanilla static modifier, so `add_modifier` refuses it, as the game's reader would. With `relic_activation_cooldown`, the add stores the timed modifier and the remove takes it out (the case file's last lines).
