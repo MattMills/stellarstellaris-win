@@ -158,7 +158,10 @@ return function(eval)
     end
     M.param_text = param_text
     -- `<trigger> <op> <value>` on a number
+    -- (the value functions below run a numeric trigger with `capture` set: cmp keeps the number)
+    local capture
     local function cmp(v, e, ctx)
+        if capture then capture.v = v return false end
         if v == nil then return false end
         if e.value.text == nil then
             local x = param(e.value, "value")
@@ -689,11 +692,17 @@ return function(eval)
         return (LINKS.astral_rift(ctx.this) ~= nil) == want_yes(e)
     end
     -- astral_rifts_completed >= n (the country's `astral_rifts_completed` [I])
-    TRIG["astral_rifts_completed"] = function(e, ctx)
+    local function rifts_completed(ctx)
         local _, c = country_of(ctx.this)
-        if not c then return false end
-        return cmp(tonumber(world.field(c, "astral_rifts_completed")) or 0, e, ctx)
+        if not c then return nil end
+        return tonumber(world.field(c, "astral_rifts_completed")) or 0
     end
+    TRIG["astral_rifts_completed"] = function(e, ctx)
+        return cmp(rifts_completed(ctx), e, ctx)
+    end
+    -- (its value, `trigger:` / complex_trigger_modifier: CAstralRiftsCompletedTrigger::
+    -- GetTriggerValue [V])
+    eval.TVAL["astral_rifts_completed"] = function(ctx) return rifts_completed(ctx) end
     -- is_astral_rift_explored = <rift id>: a rift of that type explored by the country (its
     -- `explorer`, or the country among a completed rift's explorers) [I: IsAstralRiftExploredBy
     -- Country not read]
@@ -723,15 +732,20 @@ return function(eval)
     end
     -- astral_rift_relative_difficulty >= n: the explorer leader's level less the rift's current
     -- difficulty (CAstralRiftRelativeDifficultyTrigger: GetExplorerLeader, GetCurrentDifficulty [V])
-    TRIG["astral_rift_relative_difficulty"] = function(e, ctx)
+    local function relative_difficulty(ctx)
         local r = obj(ctx.this, "astral_rift")
-        if not r then return false end
+        if not r then return nil end
         local l = ref(world.field(r, "leader"))
         local lb = l and world.object("leader", l)
-        if not lb then return false end
+        if not lb then return nil end
         local level = tonumber(world.field(lb, "level")) or 0
-        return cmp(level - (tonumber(world.field(r, "difficulty")) or 0), e, ctx)
+        return level - (tonumber(world.field(r, "difficulty")) or 0)
     end
+    TRIG["astral_rift_relative_difficulty"] = function(e, ctx)
+        return cmp(relative_difficulty(ctx), e, ctx)
+    end
+    -- (its value: GetTriggerValue [V])
+    eval.TVAL["astral_rift_relative_difficulty"] = function(ctx) return relative_difficulty(ctx) end
 
     -- ------------------------------------------------------------------------------------------
     -- cosmic storms
@@ -927,6 +941,24 @@ return function(eval)
         local o = world.object("espionage_operation", ctx.this.id)
         if not o then return false end
         return (world.field(o, "auto_accept_events") == "yes") == want_yes(e)
+    end
+
+    -- the numeric triggers' values (`trigger:<name>`, complex_trigger_modifier: the game's
+    -- GetTriggerValue): the number each one compares, read by running it with `capture`
+    for _, k in ipairs({ "situation_progress_percent", "num_owned_relics", "acquired_specimen_count",
+        "is_site_at_stage", "is_site_days_to_next_die_roll", "is_site_last_die_result",
+        "is_current_stage_difficulty", "num_unique_cosmic_storms_encountered", "cosmic_storm_influence_value",
+        "cosmic_storm_system_influence", "mission_progress" }) do
+        if not eval.TVAL[k] then
+            eval.TVAL[k] = function(ctx, e)
+                local se = e or { op = "=", key = { text = k }, value = { text = "0" } }
+                capture = {}
+                local ok = pcall(TRIG[k], se, ctx)
+                local v = capture.v
+                capture = nil
+                return ok and v or nil
+            end
+        end
     end
 
     require("simscript.handlers.events_effects")(eval, M)
