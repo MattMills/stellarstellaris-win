@@ -1,0 +1,76 @@
+# the planet package's silent and refused rows, each run on a real target made just before
+# (on the player's capital unless said)
+# colonization progress: a colony being colonized, started on a free planet of the capital's system
+E country player capital_scope = { solar_system = { random_system_planet = { limit = { is_star = no NOT = { exists = owner } } save_global_event_target_as = probe_new_colony start_colony = { owner = root species = root.species } } } }
+E country player event_target:probe_new_colony = { add_colony_progress = 0.5 }
+# deposits
+E country player capital_scope = { add_deposit_category_effect = deposit_cat_energy }
+E country player capital_scope = { add_deposit = d_hot_springs }
+E country player capital_scope = { remove_deposit = d_hot_springs }
+E country player capital_scope = { add_deposit = d_decrepit_dwellings }
+T country player capital_scope = { last_added_deposit = { is_blocker = yes } }
+E country player capital_scope = { last_added_deposit = { clear_blocker = yes } }
+T country player capital_scope = { has_deposit = d_decrepit_dwellings }
+# terraforming: a scripted process (start_terraform_progress), then a timed one (start_terraform_process)
+E country player capital_scope = { start_terraform_progress = pc_arid }
+E country player capital_scope = { add_terraform_progress = 0.3 }
+E country player capital_scope = { set_terraform_progress = 0.5 }
+E country player capital_scope = { finish_terraformation = yes }
+T country player capital_scope = { is_terraformed = yes }
+E country player capital_scope = { start_terraform_process = pc_hive }
+E country player capital_scope = { add_terraformation_total_time_mult = 1 }
+E country player capital_scope = { cancel_terraformation = yes }
+T country player capital_scope = { is_terraforming = no }
+# modifiers: recalculated (the economy's caches dropped, rebuilt on the next read)
+E country player calculate_modifier = yes
+E country player capital_scope = { calculate_modifier = yes }
+# a leader's background job
+E country player random_owned_leader = { change_background_job = noble }
+# the purge type
+E country player capital_scope = { set_planet_purge_type = purge_labor_camps }
+E country player capital_scope = { clear_planet_purge_type = yes }
+# a branch office and a holding
+E country player capital_scope = { establish_branch_office = root }
+E country player capital_scope = { close_branch_office = yes }
+E country player capital_scope = { add_holding = { holding = holding_garrison owner = root } }
+E country player capital_scope = { remove_holding = { holding = holding_garrison owner = root } }
+# buildings: added first, then disabled, ruined, repaired, downgraded, removed
+E country player capital_scope = { add_building = building_research_lab_1 }
+E country player capital_scope = { disable_building = building_research_lab_1 }
+E country player capital_scope = { ruin_building = building_research_lab_1 }
+E country player capital_scope = { repair_building = building_research_lab_1 }
+E country player capital_scope = { ruin_building = building_research_lab_1 }
+E country player capital_scope = { repair_all_buildings = yes }
+E country player capital_scope = { remove_building = building_research_lab_1 }
+E country player capital_scope = { add_building = building_research_lab_2 }
+E country player capital_scope = { downgrade_buildings_of_type = building_research_lab_2 }
+E country player capital_scope = { remove_building = building_research_lab_1 }
+# districts and zones
+E country player capital_scope = { add_district = district_farming }
+E country player capital_scope = { remove_district = district_farming }
+E country player capital_scope = { remove_zone = { district = district_city zone_slot = 0 } }
+# a building and a district the planet cannot have: validate removes them
+E country player capital_scope = { add_building = building_hive_capital }
+E country player capital_scope = { add_district = district_hive }
+E country player capital_scope = { validate_planet_buildings_and_districts = yes }
+# pops
+E country player capital_scope = { random_owned_pop_group = { kill_pop_group = { pop_group = this amount = 10 } } }
+E country player capital_scope = { random_owned_pop_group = { sacrifice_pop_group = { pop_group = this amount = 10 } } }
+# a point of interest
+E country player create_point_of_interest = { id = probe_poi name = "PROBE" desc = "PROBE" location = capital_scope }
+E country player remove_point_of_interest = probe_poi
+# a decision whose potential holds on the capital (decision_hunker_down's does not: no storm-resistant building)
+E country player capital_scope = { select_decision = { name = decision_hunker_down } }
+E country player capital_scope = { select_decision = { name = decision_launch_anticrime_campaign } }
+E country player capital_scope = { select_decision = { name = decision_planet_luxuries_boost } }
+E country player capital_scope = { select_decision = { name = decision_museum_exhibits } }
+# the ring
+E country player capital_scope = { set_ring = yes }
+T country player capital_scope = { has_ring = yes }
+E country player capital_scope = { set_ring = no }
+# another country steals the capital's output
+E country player random_country = { limit = { is_country_type = default NOT = { is_same_value = root } } save_global_event_target_as = probe_thief }
+E country player capital_scope = { steal_planet_output = { planet = this who = event_target:probe_thief resource = all percentage = 0.4 mode = steal } }
+# num_moons as a value (an anomaly's spawn_chance: factor = trigger:num_moons)
+V planet 5 num_moons
+V planet 10 num_moons

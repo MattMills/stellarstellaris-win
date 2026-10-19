@@ -109,6 +109,12 @@ return function(eval, H)
         local p = planet(ctx.this)
         return cmp(p and #ids(world.field(p, "moons")), e, ctx)
     end
+    -- as a value (`trigger:num_moons`, an anomaly's spawn_chance): the count; not a planet: 0
+    eval.TVAL["num_moons"] = function(ctx)
+        sync()
+        local p = planet(ctx.this)
+        return p and #ids(world.field(p, "moons")) or 0
+    end
 
     -- is_primary_star = yes/no (CIsPrimaryStarTrigger): the planet is its system's star (the
     -- system's first planet of a star class)
