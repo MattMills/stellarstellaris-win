@@ -356,26 +356,28 @@ return function(eval)
         local c = I.E.branch_office_owner("planet", cur.id)
         return c and S("country", c) or nil
     end
-    -- observation_outpost / observation_outpost_owner: the observation station's fleet in orbit
-    -- of the planet (a planet keeps its stations by class: `shipclass_<class> = <fleet>`, as
-    -- shipclass_orbital_station; the observation post's class shipclass_observation_station [I])
-    local function outpost_of(pid)
-        local p = world.object("planet", pid)
-        local f = p and ref(world.field(p, "shipclass_observation_station"))
-        return f and world.object("fleet", f) and f or nil
+    -- observation_outpost (a planet or its colony): CPlanet::GetOrbitalStation, the planet's
+    -- `shipclass_orbital_station` fleet, when it is a fleet [V]. observation_outpost_owner: only
+    -- when the planet has an observation station (HasObservationStation [V]: its
+    -- `shipclass_observation_station` fleet [I the key]), the orbital station fleet's controller
+    -- (its `owner` [I])
+    local function station_of(cur)
+        local pid = cur.kind == "planet" and cur.id or cur.kind == "colony" and planet_of_colony(cur.id) or nil
+        local p = pid and world.object("planet", pid)
+        local f = p and ref(world.field(p, "shipclass_orbital_station"))
+        return p, f and world.object("fleet", f) and f or nil
     end
     LINKS.observation_outpost = function(cur)
-        if cur.kind ~= "planet" then return nil end
         sync()
-        local f = outpost_of(cur.id)
+        local _, f = station_of(cur)
         return f and S("fleet", f) or nil
     end
     LINKS.observation_outpost_owner = function(cur)
-        if cur.kind ~= "planet" then return nil end
         sync()
-        local f = outpost_of(cur.id)
-        local fl = f and world.object("fleet", f)
-        local c = ref(fl and world.field(fl, "owner"))
+        local p, f = station_of(cur)
+        local obs = p and ref(world.field(p, "shipclass_observation_station"))
+        if not f or not (obs and world.object("fleet", obs)) then return nil end
+        local c = ref(world.field(world.object("fleet", f), "owner"))
         return c and S("country", c) or nil
     end
     -- last_added_deposit: the planet's last deposit (its `deposits` list's last) [I]
