@@ -408,4 +408,48 @@ return function(eval)
             error(mod, 0)
         end
     end
+
+    -- the counting triggers of the other modules as values (num_districts, num_buildings,
+    -- num_assigned_jobs, num_free_districts, num_zones: `value <op> n`; count_deposits: `count`):
+    -- their count is a whole number, found with the trigger itself (`<key> >= k`, a binary search),
+    -- so the value is what the trigger compares; a scope it has no count for: 0 [I]
+    local function count_of(name, key)
+        return function(ctx, e)
+            local trig = eval.TRIG[name]
+            if not trig then return nil end
+            local base = {}
+            for _, x in ipairs(type(e.value) == "table" and e.value.text == nil and e.value or {}) do
+                if not (x.op and x.key and x.key.text:lower() == key) then base[#base + 1] = x end
+            end
+            local function at_least(k)
+                local b = { op = "=", key = { text = name }, value = {}, line = e.line, file = e.file }
+                for i, x in ipairs(base) do b.value[i] = x end
+                b.value[#b.value + 1] = { op = ">=", key = { text = key }, value = { text = tostring(k) } }
+                local ok, r = pcall(trig, b, ctx)
+                return ok and r == true
+            end
+            if not at_least(-1e9) then return 0 end
+            local lo, hi
+            if at_least(0) then
+                lo, hi = 0, 1
+                while at_least(hi) do
+                    lo, hi = hi, hi * 2
+                    if hi > 1e9 then return lo end
+                end
+            else
+                lo, hi = -1, 0
+                while not at_least(lo) do hi, lo = lo, lo * 2 end
+            end
+            -- at_least(lo) holds, at_least(hi) does not
+            while hi - lo > 1 do
+                local mid = math.floor((lo + hi) / 2)
+                if at_least(mid) then lo = mid else hi = mid end
+            end
+            return lo
+        end
+    end
+    for _, name in ipairs({ "num_districts", "num_buildings", "num_assigned_jobs", "num_free_districts", "num_zones" }) do
+        eval.TVAL[name] = eval.TVAL[name] or count_of(name, "value")
+    end
+    eval.TVAL["count_deposits"] = eval.TVAL["count_deposits"] or count_of("count_deposits", "count")
 end
