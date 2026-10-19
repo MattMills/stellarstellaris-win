@@ -977,12 +977,15 @@ function M.trigger_value(name, params, ctx, e)
 end
 
 -- complex_trigger_modifier = { trigger = <numeric trigger> trigger_scope = <scope>
--- parameters = { ... } mode = add|subtract|mult|factor|divide } in a value or a weight: the
--- trigger's value in trigger_scope (default this), with its parameters, applied to acc by mode
--- (default add) [I: the documented form; vanilla uses add, subtract, mult, factor, divide]. A
+-- parameters = { ... } potential = { ... } mult = n min_value = n max_value = n
+-- mode = add|subtract|mult|factor|divide desc = <key> } in a value or a weight
+-- (CComplexTriggerMTTHModifier::ReadMember 0x1d56be0 for the keys, ModifyNumber 0x1d57a50) [V]:
+-- when potential holds in the current scope, the trigger's value in trigger_scope (default this),
+-- with its parameters, times mult (`multiplier` is the same field; default 1), clamped to
+-- min_value / max_value when given, is applied to acc by mode [I: the default mode, add]. A
 -- trigger_scope that names no object leaves acc as it is.
 function M.complex_trigger_modifier(b, ctx, acc, e)
-    local name, scope, params, mode
+    local name, scope, params, mode, potential, mult, lo, hi
     for _, x in ipairs(b) do
         if x.op and x.key then
             local xk = x.key.text:lower()
@@ -990,11 +993,18 @@ function M.complex_trigger_modifier(b, ctx, acc, e)
             elseif xk == "trigger_scope" then scope = x
             elseif xk == "parameters" then params = x.value
             elseif xk == "mode" then mode = x.value.text
+            elseif xk == "potential" then potential = x.value
+            elseif xk == "mult" or xk == "multiplier" then mult = x
+            elseif xk == "min_value" then lo = x
+            elseif xk == "max_value" then hi = x
             end
         end
     end
     if not name then
         miss("value op", "complex_trigger_modifier", ctx, e)
+        return acc
+    end
+    if potential and potential.text == nil and not trigger(potential, ctx) then
         return acc
     end
     local c = ctx
@@ -1015,6 +1025,9 @@ function M.complex_trigger_modifier(b, ctx, acc, e)
         miss("trigger value", name:lower(), ctx, e)
         return acc
     end
+    if mult then v = v * M.value(mult.value, ctx, mult) end
+    if lo then v = math.max(v, M.value(lo.value, ctx, lo)) end
+    if hi then v = math.min(v, M.value(hi.value, ctx, hi)) end
     mode = (mode or "add"):lower()
     if mode == "add" then return acc + v
     elseif mode == "subtract" then return acc - v
