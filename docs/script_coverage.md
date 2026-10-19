@@ -50,6 +50,9 @@ That column is informational only: coverage is the goal whether vanilla uses a k
   - whether its body is empty.
 
 **Dynamic**, from the docs mod's use of each keyword. Each use runs in the first object of its documented scope in the world, and the check measures what it did:
+- a country scope is the player's country, and a planet scope is the player's capital;
+- `from` is another country the player has communications with (a regular empire if there is one), so `who = from` isn't a self-target;
+- the uses run in four phases: triggers and links, then effects, then effects that take objects away, then those that take a whole scope away (`dissolve_`).
 
 | result | meaning |
 |---|---|

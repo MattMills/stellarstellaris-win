@@ -876,6 +876,20 @@ return function(eval)
     end
     eval.diplomacy_values = VALUE
 
+    -- the script coverage parts (docs/script_diplomacy.md): relations, intel and envoys; wars;
+    -- federations and the galactic community; agreements and subjects; espionage. They share
+    -- handlers/diplomacy_common.lua's helpers.
+    local H = require("simscript.handlers.diplomacy_common")(eval)
+    for _, part in ipairs({ "diplomacy_relations", "diplomacy_wars", "diplomacy_federations",
+        "diplomacy_agreements", "diplomacy_espionage" }) do
+        local ok, mod = pcall(require, "simscript.handlers." .. part)
+        if ok then
+            mod(eval, H)
+        elseif not tostring(mod):find("module 'simscript.handlers." .. part .. "' not found", 1, true) then
+            error(mod, 0)
+        end
+    end
+
     -- the fleets' access (engine.diplomacy fills the pathfinder's and the movement's hooks)
     D.install_access_hooks()
 end

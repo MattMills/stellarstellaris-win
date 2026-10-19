@@ -275,6 +275,7 @@ local SCOPE_KIND = {
 local SCOPE_STORE = {
     design = "ship_design", archaeological_site = "sites", spy_network = "spy_networks",
     ambient_object = "ambient_object", bypass = "bypasses", job = "pop_jobs",
+    agreement = "agreements", espionage_operation = "operations", espionage_asset = "espionage_assets",
 }
 
 -- keywords that only hold other statements, only show text or only touch the interface (a sound, a
@@ -302,6 +303,22 @@ local function player_country(world)
             return c
         end
     end
+end
+
+-- the use's `from`: another country the player has communications with (a `who = from` aimed at
+-- the player itself is refused, as the game refuses it), preferring a regular empire; else the
+-- player
+local function from_country(world, pc)
+    local ok, D = pcall(require, "engine.diplomacy")
+    if not (ok and pc) then return pc end
+    local any
+    for _, id in ipairs(world.all("country")) do
+        if id ~= pc and D.alive(id) and D.flag(pc, id, "communications") then
+            if world.field(world.object("country", id), "type") == "default" then return id end
+            any = any or id
+        end
+    end
+    return any or pc
 end
 
 -- the object a keyword's use runs in: the player's country; for a planet scope the player's
@@ -428,9 +445,15 @@ function X.dynamic(mod_dir)
     -- capital and the links to it would be gone for everything after them)
     local DESTROYS = { "destroy", "kill", "remove", "create_rebels", "set_owner", "set_controller", "abandon",
         "delete", "clear", "ruin", "end_", "cancel", "disband", "despawn", "dismantle", "depopulate", "purge" }
+    -- and after those, the ones that take a whole scope away (a federation dissolved: its own
+    -- remove_ effects need it)
+    local LAST = { "dissolve" }
     local function phase(kind, name)
         if kind ~= "effect" then return 1 end
         local n = name:lower()
+        for _, w in ipairs(LAST) do
+            if n:find(w, 1, true) then return 4 end
+        end
         for _, w in ipairs(DESTROYS) do
             if n:find(w, 1, true) then return 3 end
         end
@@ -472,9 +495,10 @@ function X.dynamic(mod_dir)
                 if E and E.stats and E.stats.unapplied then
                     for k, c in pairs(E.stats.unapplied) do un0[k] = c end
                 end
-                -- `from` is the player's country: many effects take their actor from it
-                local pc = player_country(world)
-                local ctx = eval.new_ctx(eval.S(sk, id), pc and eval.S("country", pc) or nil, nil, file)
+                -- `from` is another country the player knows: many effects take their actor or target
+                -- from it
+                local fc = from_country(world, player_country(world))
+                local ctx = eval.new_ctx(eval.S(sk, id), fc and eval.S("country", fc) or nil, nil, file)
                 -- the use's own block decides (a link's use is `link = { always = yes }` in a trigger)
                 local is_trigger = nctx == "trigger" or (nctx == nil and kind == "trigger")
                 local ok, err = pcall(function()
