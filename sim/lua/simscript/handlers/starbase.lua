@@ -17,7 +17,7 @@ local world = require("engine.world")
 return function(eval)
     local I = eval._internal
     local TRIG, EFF, LINKS, LISTS = eval.TRIG, eval.EFF, eval.LINKS, eval.LISTS
-    local S, NONE, compare, yes, sync = I.S, I.NONE, I.compare, I.yes, I.sync
+    local S, NONE, compare, yes, sync, E = I.S, I.NONE, I.compare, I.yes, I.sync, I.E
 
     local NO_ID = 4294967295
     -- the stores of the scope kinds engine.world.KINDS does not name
@@ -1125,7 +1125,7 @@ return function(eval)
     TRIG["is_aura_intensity_level"] = function(e, ctx)
         if ctx.this.kind ~= "system" then return false end
         local a = aura_of_system(ctx.this.id)
-        local lvl = a and tonumber(world.field(a, "intensity_level") or world.field(a, "level"))
+        local lvl = a and tonumber(world.field(a, "intensity_level") or world.field(a, "level") or world.field(a, "intensity"))
         return lvl ~= nil and compare(lvl, e.op, eval.value(e.value, ctx, e))
     end
     -- monthly_intensity_increase <op> f (a system): its aura's monthly increase [I]
@@ -1173,13 +1173,8 @@ return function(eval)
         local o = r.system_owner(t.id)
         local mine = r.fleet_owner(ctx.this.id)
         if o == nil or o == mine then return true end
-        local oc = obj("country", o)
-        for _, rel in ipairs(world.blocks(oc and world.path(oc, "relations_manager")) or {}) do
-            if ref(world.field(rel, "country")) == mine then
-                return world.field(rel, "closed_borders") ~= "yes"
-            end
-        end
-        return true
+        -- the owner's relation towards the fleet's owner (engine.diplomacy: CRelation's flags)
+        return not require("engine.diplomacy").flag(o, mine, "closed_borders")
     end
     -- is_system_locked = yes/no (a planet carrier, a colony, a ship carrier, a fleet): its
     -- `system_locked` [I]
@@ -1274,4 +1269,375 @@ return function(eval)
         end
         return false
     end
+
+    -- -----------------------------------------------------------------------------------------
+    -- effects (engine/script/objects_starbase.lua applies the queued ones)
+
+    local O = eval.objects
+    local params, text_of = O.params, O.text_of
+    local function engine(t)
+        O.push(t)
+        sync()
+    end
+    local function script_work()
+        I.stats.script = I.stats.script + 1
+    end
+    local function num_of(x, ctx)
+        if not x then return nil end
+        return tonumber(eval.value(x.value, ctx, x))
+    end
+    local function tgt_of(x, ctx)
+        return O.target(x, ctx)
+    end
+    local function kind_is(ctx, kind)
+        return ctx.this ~= NONE and ctx.this.kind == kind
+    end
+
+    -- variables (eval's store, as set_variable's): add_variable = { which value } (change_variable's
+    -- sum), round_variable_to_closest = { which value } (to the nearest multiple),
+    -- set_variable_to_random_value = { which min max rounded } (the scope's draw [I]),
+    -- set_saved_date = { key days_from_present expires } (a flag named key, its date saved in the
+    -- variable of that name as days since 0.1.1 [I])
+    EFF["add_variable"] = function(e, ctx)
+        local p = params(e)
+        local which = text_of(p.which)
+        if not which then return end
+        script_work()
+        eval.setvar(ctx.this, which, (eval.getvar(ctx.this, which) or 0) + (num_of(p.value, ctx) or 0))
+    end
+    EFF["round_variable_to_closest"] = function(e, ctx)
+        local p = params(e)
+        local which, step = text_of(p.which), num_of(p.value, ctx)
+        if not which or not step or step == 0 then return end
+        script_work()
+        local v = eval.getvar(ctx.this, which) or 0
+        eval.setvar(ctx.this, which, math.floor(v / step + 0.5) * step)
+    end
+    EFF["set_variable_to_random_value"] = function(e, ctx)
+        local p = params(e)
+        local which = text_of(p.which)
+        if not which then return end
+        local lo, hi = num_of(p.min, ctx) or 0, num_of(p.max, ctx) or 1
+        script_work()
+        local v = lo + eval.rand() * (hi - lo)
+        if p.rounded and p.rounded.value.text == "yes" then v = math.floor(v + 0.5) end
+        eval.setvar(ctx.this, which, v)
+    end
+    EFF["set_saved_date"] = function(e, ctx)
+        local p = params(e)
+        local key = text_of(p.key)
+        if not key then return end
+        script_work()
+        local expires = num_of(p.expires, ctx)
+        eval.store.set_flag(ctx.this, key, expires)
+        eval.setvar(ctx.this, key, today() + (num_of(p.days_from_present, ctx) or 0))
+    end
+    -- set_spawn_system_batch = begin/end: the game batches spawn_system's map work; no state of its
+    -- own (the documentation)
+    EFF["set_spawn_system_batch"] = function(e, ctx)
+        if e.value.text == "begin" or e.value.text == "end" then script_work() end
+    end
+
+    -- closest_system = { min_steps max_steps use_bypasses limit <effects> }: the effects in the
+    -- nearest system the limit holds for
+    EFF["closest_system"] = function(e, ctx)
+        if e.value.text then return end
+        sync()
+        local s = closest(e.value, ctx)
+        if s then eval.effect(e.value, I.push(ctx, s), CLOSEST_PARAMS) end
+    end
+    -- system_in_cluster (every_/random_/...): the systems of the cluster the scope's system is in
+    -- (`clusters = { { id position radius objects = { } } }` [V])
+    LISTS["system_in_cluster"] = function(sc)
+        local sid = system_of(sc)
+        if not sid then return {} end
+        local holder = world.meta and world.meta.clusters
+        for _, c in ipairs(world.blocks(type(holder) == "table" and holder or nil)) do
+            local ids, inside = {}, false
+            for _, v in ipairs(world.list(world.field(c, "objects"))) do
+                local id = ref(v)
+                if id then
+                    ids[#ids + 1] = id
+                    if id == sid then inside = true end
+                end
+            end
+            if inside then return scopes("system", ids) end
+        end
+        return {}
+    end
+
+    -- starbases
+    for _, kind in ipairs({ "module", "building" }) do
+        -- set_starbase_<kind> = { slot <kind> }
+        EFF["set_starbase_" .. kind] = function(e, ctx)
+            if not kind_is(ctx, "starbase") then return end
+            local p = params(e)
+            local item, slot = text_of(p[kind]), num_of(p.slot, ctx)
+            if not item or not slot then return end
+            engine({ type = "set_starbase_item", id = ctx.this.id, kind = kind, slot = slot, item = item })
+        end
+        -- remove_starbase_<kind> = { slot (default all) <kind> }
+        EFF["remove_starbase_" .. kind] = function(e, ctx)
+            if not kind_is(ctx, "starbase") then return end
+            local p = params(e)
+            local slot = p.slot and p.slot.value.text ~= "all" and num_of(p.slot, ctx) or nil
+            engine({ type = "remove_starbase_item", id = ctx.this.id, kind = kind, slot = slot, item = text_of(p[kind]) })
+        end
+        -- remove_random_starbase_<kind> = { type count }
+        EFF["remove_random_starbase_" .. kind] = function(e, ctx)
+            if not kind_is(ctx, "starbase") then return end
+            local p = params(e)
+            engine({ type = "remove_starbase_item", id = ctx.this.id, kind = kind, item = text_of(p.type),
+                random = true, count = num_of(p.count, ctx) or 1 })
+        end
+    end
+    for _, spec in ipairs({ { "add_starbase_component", true }, { "remove_starbase_component", false } }) do
+        local add = spec[2]
+        EFF[spec[1]] = function(e, ctx)
+            if not kind_is(ctx, "starbase") then return end
+            local c = text_of(params(e).component)
+            if not c then return end
+            engine({ type = "starbase_component", id = ctx.this.id, component = c, add = add })
+        end
+    end
+    EFF["set_starbase_size"] = function(e, ctx)
+        if not kind_is(ctx, "starbase") or not e.value.text then return end
+        engine({ type = "set_starbase_size", id = ctx.this.id, size = unq(e.value.text) })
+    end
+
+    -- countries
+    for _, what in ipairs({ "armor_ratio", "shields_ratio", "weapon_preference" }) do
+        EFF["set_ai_starbase_" .. what] = function(e, ctx)
+            if not kind_is(ctx, "country") then return end
+            local v = what == "weapon_preference" and unq(e.value.text) or num_of(e, ctx)
+            if v == nil then return end
+            engine({ type = "ai_starbase_override", id = ctx.this.id, what = what, value = v, quoted = what == "weapon_preference" })
+        end
+        EFF["clear_ai_starbase_" .. what] = function(e, ctx)
+            if not kind_is(ctx, "country") or e.value.text ~= "yes" then return end
+            engine({ type = "ai_starbase_override", id = ctx.this.id, what = what })
+        end
+    end
+    EFF["add_seen_bypass_type"] = function(e, ctx)
+        if not kind_is(ctx, "country") or not e.value.text then return end
+        engine({ type = "add_seen_bypass", id = ctx.this.id, bypass_type = unq(e.value.text) })
+    end
+    EFF["add_seen_bypass"] = function(e, ctx)
+        local t = target(e, ctx)
+        if not kind_is(ctx, "country") or not t or t.kind ~= "bypass" then return end
+        engine({ type = "add_seen_bypass", id = ctx.this.id, bypass = t.id })
+    end
+    EFF["set_closed_borders"] = function(e, ctx)
+        if not kind_is(ctx, "country") then return end
+        local p = params(e)
+        local who = tgt_of(p.who, ctx)
+        if not who or who.kind ~= "country" then return end
+        engine({ type = "set_closed_borders", id = ctx.this.id, who = who.id, status = O.yes_of(p.status, true),
+            forced = num_of(p.forced, ctx) })
+    end
+
+    -- systems
+    for _, spec in ipairs({ { "add_hyperlane", "add_hyperlane" }, { "remove_hyperlane", "remove_hyperlane" } }) do
+        local ty = spec[2]
+        EFF[spec[1]] = function(e, ctx)
+            local p = params(e)
+            local a, b = tgt_of(p.from, ctx), tgt_of(p.to, ctx)
+            local sa, sbb = a and system_of(a), b and system_of(b)
+            if not sa or not sbb then return end
+            engine({ type = ty, from = sa, to = sbb })
+        end
+    end
+    for _, spec in ipairs({ { "add_asteroid_belt", false }, { "set_asteroid_belt", true } }) do
+        local set = spec[2]
+        EFF[spec[1]] = function(e, ctx)
+            if not kind_is(ctx, "system") then return end
+            local p = params(e)
+            local belt, radius = text_of(p.type), num_of(p.radius, ctx)
+            if not belt or not radius then return end
+            engine({ type = "asteroid_belt", id = ctx.this.id, belt = belt, radius = radius, set = set })
+        end
+    end
+    EFF["set_star_class"] = function(e, ctx)
+        if not kind_is(ctx, "system") or not e.value.text then return end
+        engine({ type = "set_star_class", id = ctx.this.id, class = unq(e.value.text) })
+    end
+
+    -- megastructures, bypasses, ambient objects
+    local function mega_target(e, ctx)
+        local t = target(e, ctx)
+        return t and t.kind == "megastructure" and t.id or nil
+    end
+    for _, name in ipairs({ "delete_megastructure", "remove_megastructure" }) do
+        EFF[name] = function(e, ctx)
+            local m = mega_target(e, ctx)
+            if m then engine({ type = "remove_megastructure", id = m }) end
+        end
+    end
+    EFF["destroy_ambient_object"] = function(e, ctx)
+        local t = target(e, ctx)
+        if t and t.kind == "ambient_object" then engine({ type = "destroy_ambient_object", id = t.id }) end
+    end
+    EFF["activate_gateway"] = function(e, ctx)
+        local m = mega_target(e, ctx)
+        if m then engine({ type = "activate_gateway", id = m }) end
+    end
+    EFF["link_to"] = function(e, ctx)
+        local m = mega_target(e, ctx)
+        if kind_is(ctx, "megastructure") and m then engine({ type = "link_to", id = ctx.this.id, target = m }) end
+    end
+    -- create_bypass = { owner type effect }: the effect runs in the new bypass
+    EFF["create_bypass"] = function(e, ctx)
+        if not kind_is(ctx, "megastructure") then return end
+        local p = params(e)
+        local ty = text_of(p.type)
+        if not ty then return end
+        local h = E.new_handle()
+        engine({ type = "create_bypass", id = ctx.this.id, bypass_type = ty, handle = h })
+        local id = E.resolve(h)
+        if id and p.effect and p.effect.value.text == nil then eval.effect(p.effect.value, I.push(ctx, S("bypass", id))) end
+    end
+    EFF["lock_bypass"] = function(e, ctx)
+        if not kind_is(ctx, "bypass") then return end
+        local p = params(e)
+        local c = tgt_of(p.country, ctx)
+        if not c or c.kind ~= "country" then return end
+        engine({ type = "lock_bypass", id = ctx.this.id, country = c.id, duration = num_of(p.duration, ctx) })
+    end
+    EFF["renew_bypass_lock"] = function(e, ctx)
+        if kind_is(ctx, "bypass") and e.value.text == "yes" then engine({ type = "lock_bypass", id = ctx.this.id, renew = true }) end
+    end
+    EFF["upgrade_megastructure_to"] = function(e, ctx)
+        if kind_is(ctx, "megastructure") and e.value.text then
+            engine({ type = "upgrade_megastructure", id = ctx.this.id, to = unq(e.value.text) })
+        end
+    end
+    EFF["finish_upgrade"] = function(e, ctx)
+        if kind_is(ctx, "megastructure") and e.value.text == "yes" then
+            engine({ type = "upgrade_megastructure", id = ctx.this.id, finish = true })
+        end
+    end
+    EFF["set_halted"] = function(e, ctx)
+        local d = num_of(e, ctx)
+        if kind_is(ctx, "megastructure") and d then engine({ type = "set_halted", id = ctx.this.id, days = d }) end
+    end
+    EFF["set_overclock"] = function(e, ctx)
+        if not kind_is(ctx, "megastructure") then return end
+        local oc, cooldown = e.value.text and unq(e.value.text), true
+        if not oc then
+            local p = params(e)
+            oc, cooldown = text_of(p.overclock), O.yes_of(p.cooldown, true)
+        end
+        if oc then engine({ type = "set_overclock", id = ctx.this.id, overclock = oc, cooldown = cooldown }) end
+    end
+    -- set_owner of a megastructure (the other scopes: the handlers before this one)
+    local prev_owner = EFF["set_owner"]
+    EFF["set_owner"] = function(e, ctx, lk)
+        if kind_is(ctx, "megastructure") then
+            local t = target(e, ctx)
+            local c = t and (t.kind == "country" and t.id or nil)
+            if c then engine({ type = "set_megastructure_owner", id = ctx.this.id, country = c }) end
+            return
+        end
+        if prev_owner then return prev_owner(e, ctx, lk) end
+    end
+
+    -- the graphical side
+    local function fields_of(ctx)
+        local r = rt()
+        local sc = ctx.this
+        if sc.kind == "fleet" then return "ship", r and r.fleet_ships(sc.id) or {} end
+        if sc.kind == "starbase" then
+            local s = obj("starbase", sc.id)
+            local st = s and ref(world.field(s, "station"))
+            return "ship", { st }
+        end
+        return sc.kind, { sc.id }
+    end
+    EFF["set_graphical_culture"] = function(e, ctx)
+        local sc = ctx.this
+        if sc == NONE or not e.value.text then return end
+        local kinds = { megastructure = true, country = true, ship = true, fleet = true, starbase = true }
+        if not kinds[sc.kind] then return end
+        sync()
+        local store, ids = fields_of(ctx)
+        engine({ type = "set_object_field", store = store, ids = ids, key = "graphical_culture", value = unq(e.value.text), quoted = true })
+    end
+    EFF["set_animation_state"] = function(e, ctx)
+        local sc = ctx.this
+        if sc == NONE or not e.value.text or not ({ megastructure = true, ship = true, fleet = true })[sc.kind] then return end
+        sync()
+        local store, ids = fields_of(ctx)
+        engine({ type = "set_object_field", store = store, ids = ids, key = "animation_state", value = unq(e.value.text), quoted = true })
+    end
+    EFF["trigger_megastructure_icon"] = function(e, ctx)
+        if not kind_is(ctx, "planet") then return end
+        engine({ type = "set_object_field", store = "planet", id = ctx.this.id, key = "trigger_megastructure_icon",
+            value = e.value.text == "no" and "no" or "yes" })
+    end
+
+    -- colonies, sectors
+    EFF["set_system_locked"] = function(e, ctx)
+        local r = rt()
+        if not r or ctx.this == NONE then return end
+        sync()
+        local kind, id = r.carrier_of(ctx.this.kind, ctx.this.id)
+        if not kind then return end
+        engine({ type = "set_object_field", store = kind, id = id, key = "system_locked", value = e.value.text == "no" and "no" or "yes" })
+    end
+    local function colony_and_system(ctx)
+        local r = rt()
+        if not r or ctx.this == NONE then return nil end
+        sync()
+        local col = r.colony_of(ctx.this.kind, ctx.this.id)
+        return col, system_of(ctx.this)
+    end
+    EFF["set_sector_capital"] = function(e, ctx)
+        if e.value.text ~= "yes" then return end
+        local col, sid = colony_and_system(ctx)
+        local s = sid and obj("system", sid)
+        local sec = s and ref(world.field(s, "sector"))
+        if col and sec then engine({ type = "set_sector_capital", sector = sec, colony = col }) end
+    end
+    EFF["create_sector"] = function(e, ctx)
+        if e.value.text ~= "yes" then return end
+        local col, sid = colony_and_system(ctx)
+        local r = rt()
+        local owner = sid and r.system_owner(sid)
+        if col and owner then engine({ type = "create_sector", system = sid, colony = col, owner = owner }) end
+    end
+    -- add_planet_devastation = n: the planet's `devastation` (0..100 [I])
+    EFF["add_planet_devastation"] = function(e, ctx)
+        local r = rt()
+        local n = num_of(e, ctx)
+        if not r or not n or ctx.this == NONE then return end
+        sync()
+        local kind, id = r.carrier_of(ctx.this.kind, ctx.this.id)
+        local p = kind == "planet" and obj("planet", id)
+        if not p then return end
+        local v = math.max(0, math.min(100, (tonumber(world.field(p, "devastation")) or 0) + n))
+        engine({ type = "set_object_field", store = "planet", id = id, key = "devastation", value = v })
+    end
+
+    -- psionic auras
+    local function aura_effect(op, e, ctx)
+        if not kind_is(ctx, "system") then return end
+        local t = { type = "psionic_aura", op = op, system = ctx.this.id }
+        if op == "spawn" then
+            -- { country } (the documentation) or { owner type } (vanillas: the auras type)
+            local p = params(e)
+            local c = tgt_of(p.country or p.owner, ctx)
+            if not c or c.kind ~= "country" then return end
+            t.country, t.aura_type = c.id, text_of(p.type)
+        elseif op == "set" or op == "add" then
+            t.value = num_of(e, ctx)
+            if not t.value then return end
+        elseif e.value.text ~= "yes" then
+            return
+        end
+        engine(t)
+    end
+    EFF["spawn_psionic_aura"] = function(e, ctx) aura_effect("spawn", e, ctx) end
+    EFF["destroy_psionic_aura"] = function(e, ctx) aura_effect("destroy", e, ctx) end
+    EFF["set_aura_intensity"] = function(e, ctx) aura_effect("set", e, ctx) end
+    EFF["add_aura_intensity"] = function(e, ctx) aura_effect("add", e, ctx) end
 end
