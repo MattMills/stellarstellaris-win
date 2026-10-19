@@ -5,6 +5,10 @@
 return function(eval, F)
     local I = eval._internal
     local TRIG, AMOUNTS = eval.TRIG, I.AMOUNTS
+    -- numeric triggers as values (complex_trigger_modifier: eval.TVAL[name](ctx, e), e.value the
+    -- `parameters` block)
+    eval.TVAL = eval.TVAL or {}
+    local TVAL = eval.TVAL
     local S, NONE, sync, compare = I.S, I.NONE, I.sync, I.compare
     local world = require("engine.world")
     local R = F.R
@@ -362,6 +366,12 @@ return function(eval, F)
         if not size then return false end
         return cmp(size_number(size, "size_multiplier") or 1, e, ctx)
     end
+    -- (as a value: the size multiplier, 0 without a ship size)
+    TVAL["ship_size_multiplier"] = function(ctx)
+        sync()
+        local size = size_of(ctx.this)
+        return size and (size_number(size, "size_multiplier") or 1) or 0
+    end
     -- count_ship_size_in_system (a system) = { count limit }: the sum of the size_multiplier of
     -- the ships present for which the limit holds
     if AMOUNTS then
@@ -443,9 +453,8 @@ return function(eval, F)
         return cmp(math.floor(c and num(world.field(c, "used_naval_capacity")) or 0), e, ctx)
     end
     -- max_naval_capacity (a country) <op> <n>: CCountry::CalcNavalCapacity (engine.ai.navy)
-    TRIG["max_naval_capacity"] = function(e, ctx)
-        local sc = ctx.this
-        if sc == NONE or sc.kind ~= "country" then return false end
+    local function max_cap(sc)
+        if sc == NONE or sc.kind ~= "country" then return nil end
         sync()
         local okn, navy = pcall(require, "engine.ai.navy")
         local cap = okn and navy.naval_capacity and navy.naval_capacity(sc.id)
@@ -453,14 +462,32 @@ return function(eval, F)
             local c = world.object("country", sc.id)
             cap = c and num(world.field(c, "naval_capacity")) or 0
         end
-        return cmp(math.floor(cap), e, ctx)
+        return math.floor(cap)
     end
+    TRIG["max_naval_capacity"] = function(e, ctx)
+        local cap = max_cap(ctx.this)
+        return cap ~= nil and cmp(cap, e, ctx)
+    end
+    -- (as a value, complex_trigger_modifier: the capacity)
+    TVAL["max_naval_capacity"] = function(ctx) return max_cap(ctx.this) or 0 end
     -- count_used_naval_cap (a country, ship, fleet) = { limit value <op> n }: the naval cap used
     -- (size_multiplier, military non-civilian ships) of its controlled ships for which limit holds
+    local used_cap
     TRIG["count_used_naval_cap"] = function(e, ctx)
         local sc = ctx.this
         if sc == NONE or e.value.text then return false end
+        return F.block_value(e, ctx, used_cap(sc, e.value, ctx))
+    end
+    -- (as a value: the naval cap used, the `parameters = { limit }` block's limit)
+    TVAL["count_used_naval_cap"] = function(ctx, e)
+        local sc = ctx.this
+        if sc == NONE then return 0 end
+        local block = e and type(e.value) == "table" and not e.value.text and e.value or {}
+        return used_cap(sc, block, ctx)
+    end
+    used_cap = function(sc, block, ctx)
         sync()
+        local e = { value = block }
         local ships
         if sc.kind == "country" then
             ships = {}
@@ -485,7 +512,7 @@ return function(eval, F)
                 end
             end
         end
-        return F.block_value(e, ctx, total)
+        return total
     end
     -- is_ai_ship_role = { ship_size role } (a country): the role is among the country's roles for
     -- that size (`ai_ship_role_overrides`, every entry of a weighted block), else the size's own
@@ -836,9 +863,7 @@ return function(eval, F)
 
     -- num_ships_in_debris = { ship_size value <op> n } (a debris): its ships of that size
     -- (`debris.ships = { { ship_size count } }` [I])
-    TRIG["num_ships_in_debris"] = function(e, ctx)
-        local sc = ctx.this
-        if sc == NONE or sc.kind ~= "debris" or e.value.text then return false end
+    local function debris_ships(sc, e)
         sync()
         local p = F.params(e)
         local want = p.ship_size and unq(p.ship_size.value.text)
@@ -848,7 +873,18 @@ return function(eval, F)
         for _, b in ipairs(type(l) == "table" and world.blocks(l) or {}) do
             if unq(world.field(b, "ship_size")) == want then n = n + (num(world.field(b, "count")) or 1) end
         end
-        return F.block_value(e, ctx, n)
+        return n
+    end
+    TRIG["num_ships_in_debris"] = function(e, ctx)
+        local sc = ctx.this
+        if sc == NONE or sc.kind ~= "debris" or e.value.text then return false end
+        return F.block_value(e, ctx, debris_ships(sc, e))
+    end
+    -- (as a value: the count, `parameters = { ship_size }`)
+    TVAL["num_ships_in_debris"] = function(ctx, e)
+        local sc = ctx.this
+        if sc == NONE or sc.kind ~= "debris" or not e or e.value.text then return 0 end
+        return debris_ships(sc, e)
     end
 
     -- -----------------------------------------------------------------------------------------
@@ -923,5 +959,54 @@ return function(eval, F)
             local _, b = rights(rights_country(sc), sp, (key:gsub("^former_", "")))
             return b ~= nil and unq(world.field(b, key)) == unq(e.value.text)
         end
+    end
+
+    -- -----------------------------------------------------------------------------------------
+    -- distance as a value (complex_trigger_modifier = { trigger = distance parameters = { source
+    -- type same_solar_system } }): the number CDistanceTrigger compares (0x1964df0 [V the class]):
+    -- with same_solar_system, the two objects' distance inside their system (none apart: 0 [I]);
+    -- type = euclidean, the systems' galactic distance; else the hyperlane distance (the lanes'
+    -- `length`, shortest path) [I]
+    local function lane_distance(from, to)
+        if from == to then return 0 end
+        local dist, done = { [from] = 0 }, {}
+        for _ = 1, 100000 do
+            local best, bd
+            for s, d in pairs(dist) do
+                if not done[s] and (not bd or d < bd) then best, bd = s, d end
+            end
+            if not best then return nil end
+            if best == to then return bd end
+            done[best] = true
+            local g = world.object("galactic_object", best)
+            for _, h in ipairs(g and world.blocks(world.field(g, "hyperlane") or {}) or {}) do
+                local t = ref(world.field(h, "to"))
+                local len = num(world.field(h, "length")) or 0
+                if t and not done[t] and (dist[t] == nil or bd + len < dist[t]) then dist[t] = bd + len end
+            end
+        end
+        return nil
+    end
+    TVAL["distance"] = function(ctx, e)
+        local sc = ctx.this
+        if sc == NONE or not e or type(e.value) ~= "table" or e.value.text then return 0 end
+        local p = F.params(e)
+        local src = F.target_of(p.source, ctx)
+        if not src then return 0 end
+        sync()
+        if p.same_solar_system and yes(p.same_solar_system) then
+            local a, b = coord(sc), coord(src)
+            if not a or not b or a.origin ~= b.origin then return 0 end
+            return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
+        end
+        local sa, sb = system_of(sc), system_of(src)
+        if not sa or not sb then return 0 end
+        if p.type and unq(p.type.value.text) == "euclidean" then
+            local ax, ay = galactic(sa)
+            local bx, by = galactic(sb)
+            if not ax or not bx then return 0 end
+            return math.sqrt((ax - bx) ^ 2 + (ay - by) ^ 2)
+        end
+        return lane_distance(sa, sb) or 0
     end
 end

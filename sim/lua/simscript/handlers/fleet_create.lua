@@ -381,9 +381,62 @@ return function(eval, F)
         local cap = okn and navy.naval_capacity and navy.naval_capacity(owner.id) or 0
         make_fleet(ctx, owner.id, nil, balanced(defaults(owner.id), math.max(1, cap * 0.1 * scale), true), p.effect)
     end
-    -- create_smaller_size_creature_in_fleet = <count> | { count effect } (a ship): ships of the
-    -- next smaller size of the creature's family (the size whose `next_size`... the ship size the
-    -- design's stage grows from: the previous growth stage) in its fleet [I]
+    -- the design one size smaller than a ship's (CCreateSmallerSizeCreatureInFleetEffect::
+    -- ExecuteActual 0x37fbb90 / GetSmallerSizeDesign 0x37fbf00 [V the calls]): a check of the ship
+    -- first (a design virtual, read here as its size being space fauna [I]), then among the fleet
+    -- owner's designs (CCountry::GetShipDesigns, no global fallback) the one whose upgrade
+    -- (CShipDesign::CalcUpgradesToDesigns, by name: CPersistentName ==) is the ship's design (the
+    -- global definition's `upgrades_to = "<name>"`: NAME_Voidworms_Nymph upgrades_to
+    -- NAME_Voidworms_Juvenile) [I]; then `count` new ships of it, the ship's rarity kept. The
+    -- headless game made no ship in three tests: a player's stage-3 mauler, a player's Juvenile
+    -- voidworm, and the same with the Nymph design added to the player's designs. The last one
+    -- this reading would fill, so a condition is still unknown (docs/script_fleet.md)
+    local function design_name(did)
+        local d = F.design_obj(did)
+        local n = d and world.field(d, "name")
+        return type(n) == "table" and unq(world.field(n, "key")) or unq(n)
+    end
+    local upgrades_from
+    local function global_upgrades()
+        if upgrades_from then return upgrades_from end
+        upgrades_from = {}
+        local okd, db = pcall(require, "simscript.db")
+        local source = require("stellar.script.source")
+        local defs = require("engine.defs")
+        if not (okd and db and db.fs) then return upgrades_from end
+        for _, file in ipairs(source.files(db.fs, "common/global_ship_designs", "txt")) do
+            for _, e in ipairs(source.parse(db.fs, file) or {}) do
+                if e.op and e.key and e.key.text == "ship_design" and e.value.text == nil then
+                    local name = unq(defs.field(e.value, "name"))
+                    local up = unq(defs.field(e.value, "upgrades_to"))
+                    if name and up and not upgrades_from[up] then upgrades_from[up] = name end
+                end
+            end
+        end
+        return upgrades_from
+    end
+    local function smaller_design(sid)
+        local s = F.ship_obj(sid)
+        local sdi = s and world.field(s, "ship_design_implementation")
+        local did = type(sdi) == "table" and ref(world.field(sdi, "design"))
+        local fid = F.ship_fleet(sid)
+        local owner = fid and F.fleet_owner(fid)
+        local name = did and design_name(did)
+        if not name or not owner then return nil end
+        local size = design_size(did, num(world.field(sdi, "growth_stage")) or 0)
+        if not (size and R.ship_size_flag(size, "is_space_fauna_ship")) then return nil end
+        local small = global_upgrades()[name]
+        for _, other in ipairs(F.owned_designs(owner)) do
+            local d = F.design_obj(other)
+            if other ~= did and d and (unq(world.field(d, "upgrades_to")) == name
+                or (small and design_name(other) == small)) then
+                return other
+            end
+        end
+        return nil
+    end
+    -- create_smaller_size_creature_in_fleet = <count> | { count effect } (a ship): `count` ships of
+    -- the smaller design in its fleet, each running the effect (this = the new ship)
     EFF["create_smaller_size_creature_in_fleet"] = function(e, ctx)
         local sc = ctx.this
         if sc == NONE or sc.kind ~= "ship" then return end
@@ -395,16 +448,13 @@ return function(eval, F)
             n = p.count and eval.value(p.count.value, ctx, p.count) or 1
             effect = p.effect
         end
-        local s = F.ship_obj(sc.id)
-        local sdi = s and world.field(s, "ship_design_implementation")
-        local did = type(sdi) == "table" and ref(world.field(sdi, "design"))
-        local stage = type(sdi) == "table" and num(world.field(sdi, "growth_stage")) or 0
+        local did = smaller_design(sc.id)
         local fid = F.ship_fleet(sc.id)
-        if not did or not fid or stage < 1 then return end
+        if not did or not fid then return end
         for _ = 1, math.floor(n) do
             local hs = E.new_handle()
             created(ctx, "ship", hs)
-            push({ type = "create_ship", fleet = fid, design = did, stage = stage - 1, handle = hs, name = "random" })
+            push({ type = "create_ship", fleet = fid, design = did, handle = hs, name = "random" })
             sync()
             local sid = E.resolve(hs)
             F.effect_stats.applied = F.effect_stats.applied + 1
