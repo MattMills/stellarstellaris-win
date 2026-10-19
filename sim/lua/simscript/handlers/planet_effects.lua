@@ -104,19 +104,20 @@ return function(eval, H)
         for _, b in ipairs(buildings(c)) do remove_building(c, b) end
         done(c)
     end
-    -- remove_random_building = yes (CRemoveRandomBuildingEffect: "removes last built building"):
-    -- the colony's last building (its buildings_cache's last), not a capital building [I]
+    -- remove_random_building = yes (CRemoveLastBuiltBuildingEffect, a planet: CColony::
+    -- RemoveRandomBuilding): one of the colony's non-capital buildings (weight 1 each, a capital
+    -- 0), picked with a draw of the game's generator [V]
     EFF["remove_random_building"] = function(e, ctx)
-        if not yes(e) then return end
+        if not yes(e) or ctx.this.kind ~= "planet" then return end
         local c = scope_colony(ctx)
         if not c then return end
-        local list = buildings(c)
-        for i = #list, 1, -1 do
-            if not is_capital_building(unq(world.field(list[i].block, "type"))) then
-                remove_building(c, list[i])
-                return done(c)
-            end
+        local cands = {}
+        for _, b in ipairs(buildings(c)) do
+            if not is_capital_building(unq(world.field(b.block, "type"))) then cands[#cands + 1] = b end
         end
+        if #cands == 0 then return end
+        remove_building(c, cands[draw() % #cands + 1])
+        done(c)
     end
     -- the colony's first building of a type (or, for random_no_capital, a random non-capital one)
     local function building_of_type(c, btype, pred)
@@ -148,7 +149,9 @@ return function(eval, H)
                 end
             end
             if #cands == 0 then return end
-            b = cands[draw() % #cands + 1]
+            -- (SRuinBuildingImpl::GetRandomBuilding: the scope's own random state) [V]
+            local r = eval.scope_draw and eval.scope_draw(ctx) or draw()
+            b = cands[r % #cands + 1]
         else
             b = building_of_type(c, v, function(x) return world.field(x.block, "ruined") ~= "yes" end)
         end
@@ -162,11 +165,14 @@ return function(eval, H)
         local en = world.entry(b.block, "ruined")
         if en then world.remove_entry(b.block, en) end
     end
+    -- (CColony::RepairBuildingType: SetRuined(false), the type's OnRepaired, two draws [V])
     EFF["repair_building"] = function(e, ctx)
         local c = scope_colony(ctx)
         local b = c and e.value.text and building_of_type(c, e.value.text, function(x) return world.field(x.block, "ruined") == "yes" end)
         if not b then return end
         repair(b)
+        draw()
+        draw()
         done(c)
     end
     EFF["repair_all_buildings"] = function(e, ctx)
@@ -177,6 +183,7 @@ return function(eval, H)
         for _, b in ipairs(buildings(c)) do
             if world.field(b.block, "ruined") == "yes" then
                 repair(b)
+                draw()
                 any = true
             end
         end
@@ -197,6 +204,8 @@ return function(eval, H)
         return upgraded_from[btype]
     end
     H.predecessor = predecessor
+    -- a colony block's planet (scope_colonies records it)
+    local planet_of_block = setmetatable({}, { __mode = "k" })
     -- the planets of a planet or a country scope (a country: its colonies)
     local function scope_colonies(ctx)
         sync()
@@ -205,9 +214,21 @@ return function(eval, H)
         for _, pid in ipairs(sc ~= NONE and H.colonies_under(sc) or {}) do
             local cid = H.colony_of_planet(pid)
             local c = cid and world.object("colony", cid)
-            if c then out[#out + 1] = c end
+            if c then
+                out[#out + 1] = c
+                planet_of_block[c] = pid
+            end
         end
         return out
+    end
+    -- CColony::DowngradeBuilding: the lower tier in its place (ReplaceBuilding; the refund **[I]**
+    -- not ported), two draws, on_building_downgraded (this = the colony's planet) [V]
+    local function downgrade(c, b, prev)
+        world.set(b.block, "type", '"' .. prev .. '"')
+        draw()
+        draw()
+        local pid = planet_of_block[c]
+        if pid then on_action("on_building_downgraded", eval.S("planet", pid)) end
     end
     -- downgrade_all_buildings = yes (a planet or a country: CDowngradeAllBuildingsEffect): every
     -- non-capital building with a predecessor becomes it (tier 1 buildings stay)
@@ -219,7 +240,7 @@ return function(eval, H)
                 local t = unq(world.field(b.block, "type"))
                 local prev = predecessor(t)
                 if prev and not is_capital_building(t) then
-                    world.set(b.block, "type", '"' .. prev .. '"')
+                    downgrade(c, b, prev)
                     any = true
                 end
             end
@@ -237,7 +258,7 @@ return function(eval, H)
                 local t = unq(world.field(b.block, "type"))
                 local prev = predecessor(t)
                 if prev and (t == want or want == "yes") and not is_capital_building(t) then
-                    world.set(b.block, "type", '"' .. prev .. '"')
+                    downgrade(c, b, prev)
                     any = true
                 end
             end
