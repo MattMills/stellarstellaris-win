@@ -41,6 +41,17 @@ return function(eval, H)
         return sc and sc ~= NONE and H.species_of(sc) or nil
     end
     local function species_mod() return require("engine.species_mod") end
+    -- CCrudeRandom::GetInteger(0, n - 1) (0x422b100) of the scope random: one noise x, (x & 0x7FFFFFFE) ^
+    -- (x >> 8) % n [V]
+    local function crude_int(ctx, n)
+        local bit = require("bit")
+        local r = eval.scope_rng(ctx)
+        local x = require("engine.newgame.rng").noise32(r.pos, r.seed)
+        r.pos = (r.pos + 1) % 4294967296
+        local v = bit.bxor(bit.band(x, 0x7FFFFFFE), bit.rshift(x, 8))
+        if v < 0 then v = v + 4294967296 end
+        return v % n
+    end
 
     -- ------------------------------------------------------------------------------------------
     -- a species' data
@@ -207,12 +218,82 @@ return function(eval, H)
         end
         return out
     end
+    -- CSpecies::RandomizeName (0x1fc59e0) [V]: the species class's common/species_names entries
+    -- (database order [I]); up to 100 tries, each one global draw: TakeUnusedIndex over the class's
+    -- used indices (`used_species_names = { class values }`; all used: cleared), the entry kept
+    -- unless another species has it as name_data (the 100th kept anyway). name_data, name, plural,
+    -- adjective; the old index not released. [I: the used indices the save holds for other classes
+    -- than the last block world.meta keeps are not read; the fallback class not followed]
+    local used_names = {}
+    local function used_of(class)
+        local u = used_names[class]
+        if u then return u end
+        u = {}
+        local b = world.meta.used_species_names
+        if type(b) == "table" and unq(field(b, "class")) == class then
+            for _, v in ipairs(world.list(field(b, "values"))) do u[#u + 1] = tonumber(v) end
+        end
+        used_names[class] = u
+        return u
+    end
+    local function randomize_name(sid)
+        local s = H.species(sid)
+        local class = s and unq(field(s, "class"))
+        local cb = class and def("common/species_names", class)
+        if type(cb) ~= "table" then return false end
+        local entries = {}
+        for _, x in ipairs(cb) do
+            if x.op and x.key and type(x.value) == "table" then entries[#entries + 1] = x end
+        end
+        local count = #entries
+        if count == 0 then return false end
+        local taken = {}
+        for _, id in ipairs(world.all("species")) do
+            local o = H.species(id)
+            local nd = o and field(o, "name_data")
+            if nd and id ~= sid then taken[unq(nd)] = true end
+        end
+        local used = used_of(class)
+        local pick
+        for attempt = 1, 100 do
+            local r = eval.rand()
+            local arr, avail = {}, count
+            for i = 1, count do arr[i] = i - 1 end
+            for _, u in ipairs(used) do
+                for j = 1, avail do
+                    if arr[j] == u then
+                        arr[j], arr[avail] = arr[avail], arr[j]
+                        avail = avail - 1
+                        break
+                    end
+                end
+            end
+            local idx
+            if avail > 0 then
+                idx = arr[r % avail + 1]
+            else
+                for k = #used, 1, -1 do used[k] = nil end
+                idx = r % count
+            end
+            local seen = false
+            for _, u in ipairs(used) do if u == idx then seen = true end end
+            if not seen then used[#used + 1] = idx end
+            pick = entries[idx + 1]
+            if not taken[pick.key.text] or attempt == 100 then break end
+        end
+        world.set(s, "name_data", quoted(pick.key.text))
+        set_names(s, unq(dfield(pick.value, "name")), unq(dfield(pick.value, "plural")))
+        return true
+    end
     EFF["rename_species"] = function(e, ctx)
         local s = SP(ctx)
         if not s or e.value.text then return end
         local p = params(e)
         local name, list = unq(text_of(p.name)), unq(text_of(p.name_list))
-        if name == "random" then I.miss("effect", "rename_species = { name = random }", ctx, e) return end
+        if name == "random" then
+            if randomize_name(ctx.this.id) then wrote() end
+            return
+        end
         for _, nl in ipairs(named_lists()) do
             for _, lx in ipairs(nl) do
                 if lx.op and lx.key and type(lx.value) == "table" and (not list or lx.key.text == list) then
@@ -472,7 +553,7 @@ return function(eval, H)
     -- portrait, the base species (none / auto: the source's / a target's) and
     -- inherit_parent_rights; an identical species reused, else a new one (last_created_species);
     -- the scope's species changed to it (a pop group; a planet's groups; a country's colonies,
-    -- leaders); the effect in its scope. [I: add_random_species_trait not modelled, reported]
+    -- leaders); the effect in its scope; add_random_species_trait (below)
     EFF["modify_species"] = function(e, ctx)
         if e.value.text then return end
         local p = params(e)
@@ -490,7 +571,31 @@ return function(eval, H)
         for _, x in ipairs(e.value) do
             if x.op and x.key and x.key.text == "remove_trait" and x.value.text then remove_trait(copy, unq(x.value.text)) end
         end
-        if p.add_random_species_trait then I.miss("effect", "modify_species: add_random_species_trait", ctx, e) end
+        -- add_random_species_trait = { <trigger> } (CModifySpecies::AddRandomSpeciesTrait 0x3738040)
+        -- [V]: run when the trigger has a statement; one global draw seeds its scope (root and from
+        -- the caller's, prev the caller); the traits the copy has not whose trigger holds (this the
+        -- trait; database order, no other filter [I: the DLC check]); one uniform draw of the
+        -- caller's scope random; added; on_random_trait_added (this the trait, from the new species)
+        -- runs once the species exists
+        local random_trait, tctx
+        local rt = p.add_random_species_trait
+        if rt and rt.value.text == nil and #rt.value > 0 then
+            tctx = eval.seed_scope(eval.new_ctx(NONE, ctx.from), eval.rand())
+            tctx.root, tctx.prev = ctx.root, ctx.this
+            local have = {}
+            for _, x in ipairs(world.fields(field(copy, "traits"), "trait")) do have[unq(x)] = true end
+            local cands = {}
+            for _, x in ipairs(H.ordered("common/traits")) do
+                if not have[x.name] then
+                    tctx.this = S("trait", x.name)
+                    if eval.trigger(rt.value, tctx) == true then cands[#cands + 1] = x.name end
+                end
+            end
+            if #cands > 0 then
+                random_trait = cands[crude_int(ctx, #cands) + 1]
+                add_trait(copy, random_trait, at_start)
+            end
+        end
         if p.sapient then set_bit(copy, "sapient", yes(p.sapient), false) end
         if p.ideal_planet_class and p.ideal_planet_class.value.text then
             world.set(copy, "ideal_planet_class", quoted(unq(p.ideal_planet_class.value.text)))
@@ -514,6 +619,10 @@ return function(eval, H)
         if not new then
             new = require("engine.script.objects").create("species", copy)
             world.meta.last_created_species_ref = new
+        end
+        if random_trait and p.on_random_trait_added and p.on_random_trait_added.value.text == nil then
+            tctx.this, tctx.from = S("trait", random_trait), S("species", new)
+            eval.effect(p.on_random_trait_added.value, tctx)
         end
         if p.change_scoped_species == nil or yes(p.change_scoped_species) then
             local sc = ctx.this
@@ -577,9 +686,160 @@ return function(eval, H)
         if merged then wrote() end
     end
     -- integrate_species = yes (CIntegrateSpeciesEffect 0x37ebbb0 → CCountry::
-    -- HandleSubSpeciesIntegration 0x237b2c0) [V]: [I: the integration step not modelled, reported]
+    -- HandleSubSpeciesIntegration 0x237b2c0) [V]: one global draw seeds the on_actions' scope
+    -- (this the country, from the target species, fromfrom the integrated one); for each colony
+    -- (owned_planets order) and each species there (pop group order): its rights' subspecies
+    -- integration type with `integration = yes`; the target GetDefaultSpecies (default_species of
+    -- its base, the built species, the base); [I: CanChangeSpeciesIntoTemplate's trait checks taken
+    -- as passing]; HandleSpeciesModification(mode 1) with the budget
+    -- max(1, round((SUBSPECIES_INTEGRATION_BASE + subspecies_integration_add) x (1 +
+    -- subspecies_integration_mult))) [I: the modifiers' names]; on_subspecies_integration_step
+    -- when pops of it are left there, else on_subspecies_integration_complete
+    local SR = require("engine.script.scope_random")
+    local function default_species(c, sid)
+        local b = base_of(sid) or sid
+        local ds = field(c, "default_species")
+        local d = type(ds) == "table" and tonumber(field(ds, tostring(b)))
+        if d and H.species(d) then return d end
+        local built = tonumber(field(c, "built_species_ref"))
+        if built == sid then return built end
+        if built and H.species(built) and base_of(built) == b then return built end
+        return b
+    end
+    local function trait_cost(sid)
+        local n = 0
+        for _, x in ipairs(world.fields(field(H.species(sid), "traits"), "trait")) do
+            local b = def("common/traits", unq(x))
+            n = n + (b and tonumber(dfield(b, "cost")) or 0)
+        end
+        return n
+    end
+    local function round(x) return x < 0 and -floor(-x + 0.5) or floor(x + 0.5) end
+    local function group_ids(col)
+        local out = {}
+        for _, x in ipairs(world.list(field(obj("colony", col), "pop_groups"))) do out[#out + 1] = tonumber(x) end
+        return out
+    end
+    local function pops_of(col, sid)
+        local n = 0
+        for _, gid in ipairs(group_ids(col)) do
+            if H.group(gid) and H.group_species(gid) == sid then n = n + H.group_size(gid) end
+        end
+        return n
+    end
+    -- CColony::HandleSpeciesModification (0x2876320) [V]: the colony's groups of src, last first,
+    -- moved into its group of tgt with the same category, at most `budget` pops; returns the moved
+    -- pops and whether some were left
+    local function colony_move(col, src, tgt, budget)
+        local colony = require("engine.script.objects_colony")
+        local pops = require("engine.pops")
+        local total, moved = pops_of(col, src), 0
+        local gids = group_ids(col)
+        for i = #gids, 1, -1 do
+            if budget > 0 and moved >= budget then break end
+            local gid = gids[i]
+            local g = gid and H.group(gid)
+            if g and H.group_species(gid) == src then
+                local size = num(field(g, "size"))
+                local mv = budget <= 0 and size or math.min(size, budget - moved)
+                local cat = H.group_category(gid)
+                local dst
+                for _, o in ipairs(group_ids(col)) do
+                    if H.group(o) and H.group_species(o) == tgt and H.group_category(o) == cat then dst = o end
+                end
+                dst = dst or colony.new_group(col, tgt, cat)
+                if mv > 0 and dst then
+                    pops.move_size(dst, gid, mv, "GROWTH_CAT_SPECIES_MOD", col)
+                    moved = moved + mv
+                end
+            end
+        end
+        return moved, moved < total
+    end
+    -- CCountry::HandleSpeciesModification (0x237b7f0, mode 1) [V]: SetDefaultSpecies; the leaders
+    -- (owned, then the pool) and armies of src by the colony's share of its pops (rounded; the ruler
+    -- and heir first, or last when the target's traits cost less and the share is not all); the
+    -- colony's pops; the founder species [I: colony ships and the colony's own armies not done]
+    local function integrate_on(cid, c, col, src, tgt, budget)
+        world.set(world.child(c, "default_species"), tostring(base_of(tgt) or tgt), tgt)
+        rights_for(cid, tgt)
+        local here = math.min(pops_of(col, src), budget)
+        local total = 0
+        for _, k in ipairs(world.list(field(c, "owned_planets"))) do total = total + pops_of(tonumber(k), src) end
+        if total > 0 and here > 0 then
+            local frac = here / total
+            local ruler = tonumber(field(c, "ruler"))
+            local heir = tonumber(field(world.child(c, "government"), "heir"))
+            local cheaper = trait_cost(tgt) < trait_cost(src) and frac ~= 1
+            local function convert(ids, special)
+                local list = {}
+                for _, lid in ipairs(ids) do
+                    local l = H.leader(lid)
+                    if l and tonumber(field(l, "species")) == src and lid ~= ruler and lid ~= heir then
+                        table.insert(list, 1, lid)
+                    end
+                end
+                if special then
+                    for _, lid in ipairs({ heir, ruler }) do
+                        local l = lid and H.leader(lid)
+                        if l and tonumber(field(l, "species")) == src then
+                            if cheaper then table.insert(list, 1, lid) else list[#list + 1] = lid end
+                        end
+                    end
+                end
+                local n = math.min(round(#list * frac), #list)
+                for i = #list, #list - n + 1, -1 do leader_species(H.leader(list[i]), tgt) end
+            end
+            local owned, pool = {}, {}
+            for _, k in ipairs(world.list(field(c, "owned_leaders"))) do owned[#owned + 1] = tonumber(k) end
+            for _, k in ipairs(world.list(world.path(c, "modules", "standard_leader_module", "leaders"))) do
+                pool[#pool + 1] = tonumber(k)
+            end
+            convert(owned, true)
+            convert(pool, false)
+            local armies = {}
+            for _, k in ipairs(world.list(field(c, "owned_armies"))) do
+                local a = obj("army", tonumber(k))
+                if a and tonumber(field(a, "species")) == src then armies[#armies + 1] = a end
+            end
+            for i = 1, math.min(round(#armies * frac), #armies) do world.set(armies[i], "species", tgt) end
+        end
+        local moved, left = colony_move(col, src, tgt, budget)
+        if tonumber(field(c, "founder_species_ref")) == src then set_founder(cid, tgt) end
+        return moved, left
+    end
     EFF["integrate_species"] = function(e, ctx)
-        if not C(ctx) or e.value.text ~= "yes" then return end
-        I.miss("effect", "integrate_species (HandleSubSpeciesIntegration)", ctx, e)
+        local c = C(ctx)
+        if not c or e.value.text ~= "yes" then return end
+        local cid = ctx.this.id
+        local seed = eval.rand()
+        local function mod(name) return E.modifier and tonumber(E.modifier("country", cid, name)) or 0 end
+        local budget = math.max(1, round((define("NGameplay", "SUBSPECIES_INTEGRATION_BASE", 25) + mod("subspecies_integration_add"))
+            * (1 + mod("subspecies_integration_mult"))))
+        local fired = false
+        for _, k in ipairs(world.list(field(c, "owned_planets"))) do
+            local col = tonumber(k)
+            local seen, order = {}, {}
+            for _, gid in ipairs(group_ids(col)) do
+                local sid = H.group(gid) and H.group_species(gid)
+                if sid and not seen[sid] then seen[sid] = true order[#order + 1] = sid end
+            end
+            for _, sid in ipairs(order) do
+                local entry = H.rights_entry(cid, sid)
+                local t = type(entry) == "table" and unq(field(entry, "subspecies_integration"))
+                local tb = t and def("common/species_rights/subspecies_integration_types", t)
+                local s = H.species(sid)
+                if tb and dfield(tb, "integration") == "yes" and s and field(s, "sapient") ~= "no" then
+                    local tgt = default_species(c, sid)
+                    local _, left = integrate_on(cid, c, col, sid, tgt, budget)
+                    local from = eval.new_ctx(S("species", tgt), S("species", sid))
+                    pcall(require("simscript.events").on_action,
+                        left and "on_subspecies_integration_step" or "on_subspecies_integration_complete",
+                        S("country", cid), from, SR.new(seed))
+                    fired = true
+                end
+            end
+        end
+        if fired then wrote() end
     end
 end

@@ -533,4 +533,5 @@ return function(eval)
     require("simscript.handlers.empire_pops")(eval, H)
     require("simscript.handlers.empire_leaders")(eval, H)
     require("simscript.handlers.empire_species")(eval, H)
+    require("simscript.handlers.empire_council")(eval, H)
 end
