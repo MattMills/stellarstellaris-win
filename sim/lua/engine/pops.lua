@@ -1740,6 +1740,9 @@ local function reset_caches()
     founder_cache, scale_cache = {}, {}
 end
 pops.remove_killed = remove_killed
+-- pops.add_size(gid, cid, n, detail): a pop group's size changed by n (its ethos with it, the
+-- month's detail): the script's kill_pop_group / sacrifice_pop_group (handlers/planet_effects.lua)
+pops.add_size = add_size
 
 -- pops.monthly(host, date): NColonyUpdate::MonthlyUpdate's pops
 local monthly
