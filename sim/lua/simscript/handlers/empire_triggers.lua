@@ -30,6 +30,18 @@ return function(eval, H)
         return 0
     end
 
+    -- a game rule (common/game_rules: a trigger block) with this and from
+    local function rule(name, this, from)
+        local b, file = def("common/game_rules", name)
+        if type(b) ~= "table" then return true end
+        local c = eval.new_ctx(this, from, nil, file)
+        return eval.trigger(b, c) == true
+    end
+    H.rule = rule
+    -- the country's runtime-only last changed policy group (CCountry +0x2a98: set by ChangePolicy,
+    -- not saved [V]); the policy effects and commands set it
+    H.last_policy = H.last_policy or {}
+
     -- ------------------------------------------------------------------------------------------
     -- leaders
 
@@ -52,14 +64,23 @@ return function(eval, H)
         if not d then return 0 end
         return floor((H.now_days() - d) / 360)
     end)
-    -- leader_lifespan (CLeaderLifespanTrigger → CLeader::GetLifespan): the species' leader
-    -- lifespan (its class's / the defines' base) and the leader's lifespan modifiers [I: refined
-    -- in docs/script_empire.md]
+    -- leader_lifespan (CLeaderLifespanTrigger @3b91630 → CLeader::GetLifespan @1d13600 [V]):
+    -- trunc((LEADER_LIFESPAN_DEATH_CHANCE_AGE + trunc(leader_lifespan_add) +
+    -- trunc(<class>_lifespan_add)) x (1 + leader_lifespan_mult + <class>_lifespan_mult + (organic:
+    -- leader_organic_lifespan_mult))), the leader's modifiers [the organic test, the game rule
+    -- is_leader_organic: not a robotic species I]
+    local function trunc(x) return x < 0 and -floor(-x) or floor(x) end
     numeric("leader_lifespan", { "leader" }, function(sc)
         local l = L(sc)
         if not l then return nil end
-        local base = define("NGameplay", "LEADER_BASE_LIFESPAN", nil) or 80
-        return base + modifier("leader", sc.id, "species_leader_age_add") + modifier("leader", sc.id, "leader_age")
+        local class = unq(field(l, "class")) or ""
+        local add = trunc(modifier("leader", sc.id, "leader_lifespan_add")) + trunc(modifier("leader", sc.id, class .. "_lifespan_add"))
+        local mult = 1 + modifier("leader", sc.id, "leader_lifespan_mult") + modifier("leader", sc.id, class .. "_lifespan_mult")
+        local sid = tonumber(field(l, "species"))
+        if sid and not H.robotic_archetype(H.archetype_of(sid)) then
+            mult = mult + modifier("leader", sc.id, "leader_organic_lifespan_mult")
+        end
+        return trunc((define("NGameplay", "LEADER_LIFESPAN_DEATH_CHANCE_AGE", 80) + add) * mult)
     end)
     -- gender = female/male/indeterminable (CGenderTrigger): the leader's `gender`
     TRIG["gender"] = function(e, ctx)
@@ -74,20 +95,51 @@ return function(eval, H)
         if not l or not e.value.text then return false end
         return set_of(H.leader_traits(l))[unq(e.value.text)] == true
     end
-    -- is_idle (CIsIdleTrigger): a leader with no location and no council seat [I]
+    -- is_idle (CIsIdleTrigger @3b93250 → CLeader::IsIdle @1d0d4f0 [V]): not idle when its location
+    -- holds it (a colony's governor, a ship's leader); for a country that cannot change its
+    -- councillors (game rule can_country_change_councilors) not when it is the ruler or on the
+    -- council; else idle unless it is the ruler [I: the envoy, federation and community posts not
+    -- read]
     boolean("is_idle", { "leader" }, function(sc)
         local l = L(sc)
         if not l then return nil end
-        return type(field(l, "location")) ~= "table" and type(field(l, "council_location")) ~= "table"
+        local loc = field(l, "location")
+        if type(loc) == "table" then
+            local t, id = unq(field(loc, "type")), tonumber(field(loc, "id"))
+            if t == "planet" and tonumber(field(obj("colony", id), "governor")) == sc.id then return false end
+            if t == "ship" and tonumber(field(obj("ship", id), "leader")) == sc.id then return false end
+        end
+        local cid = tonumber(field(l, "country"))
+        local c = cid and obj("country", cid)
+        local ruler = c and tonumber(field(c, "ruler")) == sc.id
+        if c and not rule("can_country_change_councilors", S("country", cid)) then
+            if ruler then return false end
+            local cl = field(l, "council_location")
+            if type(cl) == "table" and tonumber(field(cl, "id")) and tonumber(field(cl, "id")) ~= 4294967295 then return false end
+        end
+        return not ruler
     end)
-    -- num_candidate_supported (CNumCandidateSupportedTrigger): the times the leader was supported
-    -- as an election candidate (`candidate_supported`) [I key]
+    -- num_candidate_supported (CNumCandidateSupported @3bfba20 [V]): the times the country's
+    -- election supported the leader (CElection::GetNumTimesLeaderSupported); no election: 0 [I:
+    -- the election's save form not read: 0]
     numeric("num_candidate_supported", { "leader" }, function(sc)
         local l = L(sc)
-        return l and num(field(l, "candidate_supported"))
+        if not l then return nil end
+        local c = obj("country", tonumber(field(l, "country")))
+        if not c then return nil end
+        local el = field(c, "election")
+        if type(el) ~= "table" then return 0 end
+        local ids, counts = world.list(field(el, "leaders")), world.list(field(el, "supported"))
+        for i, id in ipairs(ids) do
+            if tonumber(id) == sc.id then return tonumber(counts[i]) or 0 end
+        end
+        return 0
     end)
     -- num_leader_traits = { value is_councilor negative count_tiers contains_modifier is_subclass }
-    -- (CNumLeaderTraitsTrigger): the leader's traits that pass the filters, or their tiers
+    -- (CNumLeaderTraitsTrigger @3b98c00 [V]): the leader's traits that pass the filters (each yes,
+    -- no or any): negative and is_subclass the trait's leader_trait_type (negative, subclass),
+    -- is_councilor its councilor modifier blocks, contains_modifier a modifier whose name holds the
+    -- string (type yes by default [I]); count_tiers adds each trait's tiers
     TRIG["num_leader_traits"] = function(e, ctx)
         local l = L(ctx.this)
         if not l then return false end
@@ -103,7 +155,8 @@ return function(eval, H)
         local cm_string, cm_type
         if cm and cm.value.text == nil then
             local cp = params(cm)
-            cm_string, cm_type = text_of(cp.string), tri(cp.type)
+            cm_string = text_of(cp.string)
+            if cp.type then cm_type = tri(cp.type) else cm_type = true end
         end
         local n = 0
         for _, t in ipairs(H.leader_traits(l)) do
@@ -116,12 +169,9 @@ return function(eval, H)
             if ok and is_councilor ~= nil then
                 ok = ((inline("COUNCIL") == "yes") or dfield(b, "councilor_modifier") ~= nil) == is_councilor
             end
-            if ok and negative ~= nil then
-                ok = ((inline("RARITY") == "negative") or (tonumber(dfield(b, "cost")) or 0) < 0) == negative
-            end
-            if ok and is_subclass ~= nil then
-                ok = ((inline("RARITY") == "subclass") or t:find("subclass", 1, true) ~= nil) == is_subclass
-            end
+            local ltype = b and (unq(dfield(b, "leader_trait_type")) or inline("RARITY")) or nil
+            if ok and negative ~= nil then ok = (ltype == "negative") == negative end
+            if ok and is_subclass ~= nil then ok = (ltype == "subclass") == is_subclass end
             if ok and cm_string then
                 local has = false
                 for _, mk in ipairs({ "modifier", "councilor_modifier", "self_modifier", "triggered_modifier" }) do
@@ -152,7 +202,11 @@ return function(eval, H)
         local sid = H.species_of(sc)
         return sid and H.species_traits(sid) or nil
     end
+    -- (positive / negative: the cost in the trigger's scope; trait points: CTrait::GetCost with the
+    -- scope's country: the country, a pop group's owner, a leader's owner, none for a species
+    -- [V @3b97e20, @20f5240])
     local function trait_cost_in(sc, t)
+        if sc.kind == "species" then return H.trait_cost(t, nil) end
         return H.trait_cost(t, H.country_of(sc))
     end
     -- num_positive_traits / num_negative_traits (cost > 0 / < 0), num_trait_points (the costs)
@@ -224,40 +278,41 @@ return function(eval, H)
         if ctx.this.kind ~= "species" or not e.value.text then return false end
         return (unq(field(H.species(ctx.this.id), "gender")) or "not_set") == unq(e.value.text)
     end
-    -- uplift_is_archetype = <archetype> (CUpliftIsArchetypeTrigger): the archetype a pre-sapient
-    -- class uplifts to (its archetype's `uplift_archetype`), else the class's own [I]
+    -- uplift_is_archetype = <archetype> (CUpliftIsArchetypeTrigger @3c3b320 [V]): the archetype of
+    -- the class the species' class is uplifted into (`uplifted_into`); none: false (no inversion)
     TRIG["uplift_is_archetype"] = function(e, ctx)
         if ctx.this.kind ~= "species" or not e.value.text then return false end
-        local a = H.archetype_of(ctx.this.id)
-        local ab = def("common/species_archetypes", a)
-        local up = unq(dfield(ab, "uplift_archetype")) or a
-        return up == unq(e.value.text)
+        local cb = def("common/species_classes", unq(field(H.species(ctx.this.id), "class")))
+        local into = cb and unq(dfield(cb, "uplifted_into"))
+        if not into then return false end
+        return H.class_archetype(into) == unq(e.value.text)
     end
-    -- species_has_happiness_with_owner = <country> (CSpeciesHasHappinessWithOwnerTrigger): the
-    -- species has happiness under that country (not a gestalt's, not a pre-sapient, its archetype
-    -- not without happiness) [I]
+    -- the game rule species_has_happiness (CCountry::SpeciesHasHappiness @23b6580 [V]): this the
+    -- species, from the country (none without an owner)
+    local function species_has_happiness(sid, cid)
+        return rule("species_has_happiness", S("species", sid), cid and S("country", cid) or NONE)
+    end
+    H.species_has_happiness = species_has_happiness
+    -- species_has_happiness_with_owner = <country> (CSpeciesHasHappinessTrigger @3be3e50 [V]): that
+    -- rule; an invalid country or species: false; `= no` not applied
     TRIG["species_has_happiness_with_owner"] = function(e, ctx)
-        if ctx.this.kind ~= "species" then return false end
+        if ctx.this.kind ~= "species" or not H.species(ctx.this.id) then return false end
         local sc = target(e, ctx)
-        if not sc or sc.kind ~= "country" then return false end
-        local c = obj("country", sc.id)
-        if not c then return false end
-        for _, eth in ipairs(H.country_ethics(c)) do
-            if eth == "ethic_gestalt_consciousness" then return false end
-        end
-        return H.archetype_of(ctx.this.id) ~= "PRESAPIENT"
+        if not sc or sc.kind ~= "country" or not obj("country", sc.id) then return false end
+        return species_has_happiness(ctx.this.id, sc.id)
     end
-    -- inherits_parent_rights (CInheritsParentRightsTrigger): a sub-species (base_ref) with no rights
-    -- of its own in its owner's species rights module; no parent: false
-    boolean("inherits_parent_rights", { "pop_group", "species" }, function(sc)
+    -- inherits_parent_rights (CInheritsParentRights @3b8da40 [V]): a sub-species' (base_ref)
+    -- `inherit_parent_rights`; a base species: false; no pop group nor species: (value ~= yes)
+    TRIG["inherits_parent_rights"] = function(e, ctx)
+        local sc = ctx.this
+        if sc.kind ~= "pop_group" and sc.kind ~= "species" then return false end
         local sid = H.species_of(sc)
         local s = sid and H.species(sid)
-        if not s or not tonumber(field(s, "base_ref")) then return false end
-        local cid = sc.kind == "pop_group" and H.group_owner(sc.id) or nil
-        if not cid then return true end
-        local _, own = H.rights_entry(cid, sid)
-        return not own
-    end)
+        if not s then return not yes(e) end
+        local r = tonumber(field(s, "base_ref")) ~= nil and H.species(tonumber(field(s, "base_ref"))) ~= nil
+            and field(s, "inherit_parent_rights") == "yes"
+        return r == yes(e)
+    end
     -- is_robot_pop (CIsRobotPopTrigger): the pop group's species is robotic (its archetype)
     boolean("is_robot_pop", { "pop", "pop_group" }, function(sc)
         local sid = H.species_of(sc)
@@ -323,11 +378,24 @@ return function(eval, H)
         if not sc or sc.kind ~= "country" then return false end
         return tonumber(field(obj("planet", ctx.this.id), "original_owner")) == sc.id
     end
-    -- has_current_purge (CHasCurrentPurgeTrigger): a pop group of the planet in the purge category
+    -- has_current_purge (CPlanetPurgingPopsTrigger @3be2ef0 → CColony::IsPurging [V]): a pop group of
+    -- the colony not killed and being purged: its species' rights in the owner say purge
+    -- (CPopGroup::IsBeingPurged: the citizenship's purge; a pre-sapient's: the pre-sapient
+    -- policy [I: not read, false])
+    local function being_purged(g, cid)
+        local sid = H.group_species(g)
+        if not sid or H.archetype_of(sid) == "PRESAPIENT" then return false end
+        local entry = cid and H.rights_entry(cid, sid)
+        local cit = entry and unq(field(entry, "citizenship"))
+        local b = cit and def("common/species_rights/citizenship_types", cit)
+        if b and dfield(b, "purge") ~= nil then return dfield(b, "purge") == "yes" end
+        return cit == "citizenship_purge"
+    end
     boolean("has_current_purge", PLANETS, function(sc)
         if sc.kind ~= "planet" then return false end
+        local cid = E.owner_of and E.owner_of("planet", sc.id)
         for _, g in ipairs(H.pop_groups(sc)) do
-            if H.group_category(g) == "purge" and H.group_size(g) > 0 then return true end
+            if field(H.group(g), "killed") ~= "yes" and being_purged(g, cid) then return true end
         end
         return false
     end)
@@ -347,24 +415,29 @@ return function(eval, H)
     end
     numeric("organic_pops_last_month_growth", PLANETS, function(sc) return growth(sc, false) end)
     numeric("artificial_pops_last_month_growth", PLANETS, function(sc) return growth(sc, true) end)
-    -- pop_ethics_divergence (CPopEthicsDivergenceTrigger): the planet's pops not of its owner's
-    -- ethics over its pops; false on a colony with no pops
+    -- pop_ethics_divergence (CPopEthicsDivergenceTrigger @3b7c2f0 [V]): per pop group its size less
+    -- the pops of an ethic the owner holds (its regular or fanatic form too), over the sizes;
+    -- false with no pops
     numeric("pop_ethics_divergence", PLANETS, function(sc)
         if sc.kind ~= "planet" then return nil end
         local c = country(sc)
-        local own = set_of(c and H.country_ethics(c) or {})
-        local total, other = 0, 0
+        local own = {}
+        for _, eth in ipairs(c and H.country_ethics(c) or {}) do
+            own[eth] = true
+            own[(eth:gsub("^ethic_fanatic_", "ethic_"))] = true
+        end
+        local total, diverging = 0, 0
         for _, g in ipairs(H.pop_groups(sc)) do
+            local size = H.group_size(g)
+            local matching = 0
             for _, ep in ipairs(H.group_ethics(g)) do
-                total = total + ep[2]
-                local base = ep[1]:gsub("^ethic_fanatic_", "ethic_")
-                if not own[ep[1]] and not own[(ep[1]:gsub("^ethic_", "ethic_fanatic_"))] and not own[base] then
-                    other = other + ep[2]
-                end
+                if own[ep[1]] or own[(ep[1]:gsub("^ethic_fanatic_", "ethic_"))] then matching = matching + ep[2] end
             end
+            total = total + size
+            diverging = diverging + size - matching
         end
         if total <= 0 then return nil end
-        return other / total
+        return floor(diverging / total * 100000) / 100000
     end)
 
     -- ------------------------------------------------------------------------------------------
@@ -376,45 +449,45 @@ return function(eval, H)
         if sc.kind ~= "pop_group" then return nil end
         return tonumber(field(H.group(sc.id), "happiness"))
     end)
-    -- pop_has_happiness (CPopHasHappinessTrigger): its species has happiness with its owner
+    -- pop_has_happiness (CPopHasHappinessTrigger @3be3310 [V]): the game rule species_has_happiness
+    -- for its species, from its owner (none: no country)
     boolean("pop_has_happiness", POPS, function(sc)
         if sc.kind ~= "pop_group" then return nil end
-        local cid = H.group_owner(sc.id)
-        local c = cid and obj("country", cid)
-        if not c then return false end
-        for _, eth in ipairs(H.country_ethics(c)) do
-            if eth == "ethic_gestalt_consciousness" then return false end
-        end
-        return H.archetype_of(H.group_species(sc.id)) ~= "PRESAPIENT"
+        local sid = H.group_species(sc.id)
+        if not sid then return false end
+        return H.species_has_happiness(sid, H.group_owner(sc.id))
     end)
-    -- can_join_factions (CCanJoinFactionsTrigger): the pop group's citizenship lets it join factions
-    -- (its species right's `can_join_factions`; a full citizen) [I]
-    boolean("can_join_factions", POPS, function(sc)
-        if sc.kind ~= "pop_group" then return nil end
-        local cid = H.group_owner(sc.id)
-        if not cid then return false end
-        local entry = H.rights_entry(cid, H.group_species(sc.id))
-        local cit = entry and unq(field(entry, "citizenship"))
-        local b = cit and def("common/species_rights/citizenship_types", cit)
-        local f = b and dfield(b, "can_join_factions")
-        if f ~= nil then return f == "yes" end
-        return cit == "citizenship_full" or cit == "citizenship_full_machine"
-    end)
-    -- member_of_faction = no / <faction> / <faction type> (CMemberOfFactionTrigger): the pop
-    -- group's `factions`
+    -- can_join_factions (CCanJoinFactionsTrigger @3bc7aa0 → CPopGroup::CanJoinFactions [V]): a
+    -- sapient species and the game rule pop_group_can_join_factions (this the pop group); another
+    -- scope: false (no inversion)
+    TRIG["can_join_factions"] = function(e, ctx)
+        local sc = ctx.this
+        if sc.kind ~= "pop_group" then return false end
+        local sid = H.group_species(sc.id)
+        local r = sid ~= nil and H.archetype_of(sid) ~= "PRESAPIENT"
+            and rule("pop_group_can_join_factions", sc, NONE)
+        return r == yes(e)
+    end
+    -- member_of_faction = <faction type> / <faction scope> / other (CMemberOfFactionTrigger @3b9cb30
+    -- [V]): the pop group's `factions` hold one of that type, that faction, or any; `= no` not
+    -- applied (the result as it is)
     TRIG["member_of_faction"] = function(e, ctx)
         if ctx.this.kind ~= "pop_group" or not e.value.text then return false end
         local fs = world.list(field(H.group(ctx.this.id), "factions"))
         local v = unq(e.value.text)
-        if v == "no" then return #fs == 0 end
-        if v == "yes" then return #fs > 0 end
-        local sc = target(e, ctx)
-        for _, f in ipairs(fs) do
-            local fid = tonumber(f)
-            if sc and sc.kind == "pop_faction" and fid == sc.id then return true end
-            if not sc and unq(field(obj("pop_factions", fid), "type")) == v then return true end
+        if def("common/pop_faction_types", v) then
+            for _, f in ipairs(fs) do
+                if unq(field(obj("pop_factions", tonumber(f)), "type")) == v then return true end
+            end
+            return false
         end
-        return false
+        local found, sc = eval.resolve(e.value.text, ctx, e)
+        if found then
+            if not sc or sc.kind ~= "pop_faction" then return false end
+            for _, f in ipairs(fs) do if tonumber(f) == sc.id then return true end end
+            return false
+        end
+        return #fs > 0
     end
     -- former_<right>_type = <option> (CFormer...TypeTrigger): the pop group's species' rights entry's
     -- former_<right> in its owner
@@ -460,9 +533,9 @@ return function(eval, H)
         end
         return v == want
     end
-    -- pop_maintenance_cost = { value resource } (CPopMaintenanceCostTrigger): the pop group's
-    -- category's upkeep of the resource per pop (common/pop_categories `upkeep`) [I: its
-    -- modifiers not taken]
+    -- pop_maintenance_cost = { value resource } (CPopMaintenanceCostTrigger @3bd54d0 [V]): the whole
+    -- group's upkeep of the resource (its category's `upkeep` x size / POP_BULK_UNIT_SIZE) [I: the
+    -- economic unit's modifiers not taken]
     TRIG["pop_maintenance_cost"] = function(e, ctx)
         if ctx.this.kind ~= "pop_group" or e.value.text then return false end
         local p = params(e)
@@ -474,6 +547,7 @@ return function(eval, H)
         local r = dfield(b, "resources")
         local up = type(r) == "table" and dfield(r, "upkeep")
         if type(up) == "table" then v = tonumber(dfield(up, res)) or 0 end
+        v = v * H.group_size(ctx.this.id) / 100
         return compare(v, p.value.op, eval.value(p.value.value, ctx, p.value))
     end
 
@@ -490,15 +564,16 @@ return function(eval, H)
         local total, hit = 0, 0
         for _, g in ipairs(H.pop_groups(ctx.this)) do
             local c2 = I.push(ctx, S("pop_group", g))
-            local excluded = p.exclude and p.exclude.value.text == nil and eval.trigger(p.exclude.value, c2)
+            local excluded = p.exclude and p.exclude.value.text == nil and #p.exclude.value > 0 and eval.trigger(p.exclude.value, c2)
             if not excluded then
                 local n = H.group_size(g)
                 total = total + n
                 if not p.limit or p.limit.value.text ~= nil or eval.trigger(p.limit.value, c2) then hit = hit + n end
             end
         end
-        if total <= 0 then return false end
-        return compare(hit / total, p.percentage.op, eval.value(p.percentage.value, ctx, p.percentage))
+        -- (no pops: the raw 0xffffffff, 42949.67295, and the comparison still made [V @3c332af])
+        local v = total > 0 and floor(hit / total * 100000) / 100000 or 42949.67295
+        return compare(v, p.percentage.op, eval.value(p.percentage.value, ctx, p.percentage))
     end
     -- pop_ethic_amount / pop_ethic_percentage = { amount|percentage ethic (= or !=) }: the pops
     -- of the scope following (or not) the ethic; as a value: the amount / the share
@@ -530,7 +605,8 @@ return function(eval, H)
     end
     TRIG["pop_ethic_amount"] = pop_ethic("amount")
     TRIG["pop_ethic_percentage"] = pop_ethic("percentage")
-    -- num_species (CNumSpeciesTrigger): the species of the scope's pops, not counting sub-species
+    -- num_species (CNumSpeciesTrigger @3bc85c0 [V]): the base species of the scope's pops (a
+    -- country's: of every pop group, size 0 and pre-sapient too; a planet's: with pops there)
     numeric("num_species", { "planet", "country", "ship", "pop_faction", "colony" }, function(sc)
         return #H.scope_species(sc, true)
     end)
@@ -635,17 +711,24 @@ return function(eval, H)
         end
         return nil
     end
-    -- can_change_policy = <group> (CCanChangePolicyTrigger): never changed, or POLICY_YEARS since
+    -- can_change_policy = <group> (CCanChangePolicyTrigger @3ba7fd0 → SPolicyData::CanBeChanged
+    -- [V]): the country's active_policies entry of the group (none: false); never changed (no
+    -- date): true; else POLICY_YEARS since and the group's `allow`; `= no` not applied
     TRIG["can_change_policy"] = function(e, ctx)
         local c = C(ctx.this)
         if not c or not e.value.text then return false end
-        local b = policy_entry(c, unq(e.value.text))
-        local d = b and H.days_of(field(b, "date"))
+        local group = unq(e.value.text)
+        local b = policy_entry(c, group)
+        if not b then return false end
+        local d = H.days_of(field(b, "date"))
         if not d or d <= 0 then return true end
-        return H.now_days() - d >= define("NGameplay", "POLICY_YEARS", 10) * 360
+        if H.now_days() - d < define("NGameplay", "POLICY_YEARS", 10) * 360 then return false end
+        local gb, file = def("common/policies", group)
+        local allow = gb and dfield(gb, "allow")
+        return type(allow) ~= "table" or eval.trigger(allow, eval.new_ctx(ctx.this, nil, nil, file))
     end
-    -- can_set_policy = { policy option } (CCanSetPolicyTrigger): the group's and the option's
-    -- potential hold in the country's scope
+    -- can_set_policy = { policy option } (CCanSetPolicyTrigger @3ba8510 → CPolicyOption::
+    -- IsValidForCountry [V]): the option's potential and its `valid` block in the country's scope
     TRIG["can_set_policy"] = function(e, ctx)
         local c = C(ctx.this)
         if not c or e.value.text then return false end
@@ -654,22 +737,24 @@ return function(eval, H)
         local gb, file = def("common/policies", group)
         if not gb or not option then return false end
         local cctx = eval.new_ctx(ctx.this, nil, nil, file)
-        local pot = dfield(gb, "potential")
-        if type(pot) == "table" and not eval.trigger(pot, cctx) then return false end
         for _, x in ipairs(gb) do
             if x.op and x.key and x.key.text == "option" and type(x.value) == "table" and unq(dfield(x.value, "name")) == option then
-                local op = dfield(x.value, "potential")
-                return type(op) ~= "table" or eval.trigger(op, cctx)
+                for _, k in ipairs({ "potential", "valid" }) do
+                    local blk = dfield(x.value, k)
+                    if type(blk) == "table" and not eval.trigger(blk, cctx) then return false end
+                end
+                return true
             end
         end
         return false
     end
-    -- last_changed_policy = <group> (CLastChangedPolicyTrigger): the group the country changed
-    -- last (`last_changed_policy`, written by the policy effects and commands [I key])
+    -- last_changed_policy = <group> (CLastChangedPolicyTrigger @3bab4f0 [V]): the group the
+    -- country changed last in this session (CCountry +0x2a98: not saved, so false after a load
+    -- until a policy changes; H.last_policy)
     TRIG["last_changed_policy"] = function(e, ctx)
         local c = C(ctx.this)
         if not c or not e.value.text then return false end
-        return unq(field(c, "last_changed_policy")) == unq(e.value.text)
+        return H.last_policy[ctx.this.id] == unq(e.value.text)
     end
     -- the council's agenda: council_agenda_progress (its progress), _percent (over its cost)
     local function agenda_cost(c)
@@ -704,35 +789,49 @@ return function(eval, H)
         if v == "no" or v == "none" then return not has end
         return a == v
     end
-    -- council_legitimacy (CCouncilLegitimacyTrigger): the government's `council_legitimacy` [I key]
+    -- council_legitimacy (CNumCouncilLegitimacy @3bfbc90 → CGovernment::CalcCouncilLegitimacy [V]):
+    -- the country's pop factions' support_percent x faction_approval summed (none: 0); no
+    -- government: false
     numeric("council_legitimacy", { "country" }, function(sc)
         local c = C(sc)
-        return c and num(field(gov(c), "council_legitimacy") or field(c, "council_legitimacy"))
+        if not c or type(gov(c)) ~= "table" then return nil end
+        local v = 0
+        for _, fid in ipairs(world.all("pop_factions")) do
+            local f = obj("pop_factions", fid)
+            if f and tonumber(field(f, "country")) == sc.id then
+                v = v + num(field(f, "support_percent")) * num(field(f, "faction_approval"))
+            end
+        end
+        return v
     end)
-    -- get_councilor_level = { type value } (CGetCouncilorLevelTrigger): the level of the
-    -- councillor of that position type (0 without one); as a trigger, compared with `value`
-    -- (none: has a councillor) [I]
-    local function councilor_level(c, ctype)
+    -- get_councilor_level = { type value } (CGetCouncilorLevel @3b776c0 [V]): the first council
+    -- position of that type with a leader: its level + bonus_skill_level + councilor_skill_add;
+    -- none: false
+    local function councilor_level(c, ctype, cid)
         for _, p in ipairs(H.councils(c)) do
             if unq(field(p, "type")) == ctype then
                 local l = leader(tonumber(field(p, "leader")))
-                return l and (num(field(l, "level")) + num(field(l, "bonus_skill_level"))) or 0
+                if l then
+                    return num(field(l, "level")) + num(field(l, "bonus_skill_level"))
+                        + trunc(modifier("country", cid, "councilor_skill_add"))
+                end
             end
         end
-        return 0
+        return nil
     end
     TRIG["get_councilor_level"] = function(e, ctx)
         local c = C(ctx.this)
         if not c or e.value.text then return false end
         local p = params(e)
-        local n = councilor_level(c, text_of(p.type))
+        local n = councilor_level(c, text_of(p.type), ctx.this.id)
+        if n == nil then return false end
         if p.value then return compare(n, p.value.op, eval.value(p.value.value, ctx, p.value)) end
-        return n > 0
+        return true
     end
     TVAL["get_councilor_level"] = function(ctx, e)
         local c = C(ctx.this)
         if not c or not e or e.value.text then return 0 end
-        return councilor_level(c, text_of(params(e).type))
+        return councilor_level(c, text_of(params(e).type), ctx.this.id) or 0
     end
     -- is_ethic_represented_on_council = <ethic> (CIsEthicRepresentedOnCouncilTrigger): a
     -- councillor (or the ruler) with that ethic
@@ -760,40 +859,40 @@ return function(eval, H)
         end
         return n
     end)
-    -- empire_sprawl (CEmpireSprawlTrigger, the same as empire_size); its cap fraction and the part
-    -- over the cap: the admin cap (EMPIRE_SIZE_BASE + country_admin_cap_add) x (1 +
-    -- country_admin_cap_mult)
+    -- empire_sprawl (CEmpireSprawlTrigger, the same as empire_size); its cap fraction
+    -- (@3b959a0: size / cap, cap 0: 42949.67295) and the part over the cap (@3b955c0: size -
+    -- floor(cap), may be negative) [V]: the admin cap (EMPIRE_SIZE_BASE + country_admin_cap_add) x
+    -- max(0, 1 + country_admin_cap_mult), not rounded
     local function sprawl(sc) local c = C(sc) return c and num(field(c, "empire_size")) end
     local function admin_cap(sc)
         return (define("NGameplay", "EMPIRE_SIZE_BASE", 100) + modifier("country", sc.id, "country_admin_cap_add"))
-            * (1 + modifier("country", sc.id, "country_admin_cap_mult"))
+            * math.max(0, 1 + modifier("country", sc.id, "country_admin_cap_mult"))
     end
     numeric("empire_sprawl", { "country" }, sprawl)
     numeric("empire_sprawl_cap_fraction", { "country" }, function(sc)
         local s = sprawl(sc)
         if not s then return nil end
         local cap = admin_cap(sc)
-        return cap > 0 and s / cap or 0
+        if cap == 0 then return 42949.67295 end
+        return trunc(s / cap * 100000) / 100000
     end)
     numeric("empire_sprawl_over_cap", { "country" }, function(sc)
         local s = sprawl(sc)
         if not s then return nil end
-        return math.max(0, s - admin_cap(sc))
+        return s - floor(admin_cap(sc))
     end)
-    -- opposing_ethics_divergence = { steps who } (COpposingEthicsDivergenceTrigger): the steps
-    -- between the two ethos along the ethics axes (a regular ethic 1 step, a fanatic 2, opposite
-    -- sides added) [I]
-    local function axis_points(c)
-        local pts = {}
+    -- opposing_ethics_divergence = { steps who } (COpposingEthicsDivergenceTrigger @3ba9010 [V]):
+    -- the most category_value steps between one of `who`'s ethics and the scope country's ethic
+    -- of that category (category_value 0 fanatic A, 1 A, 3 B, 4 fanatic B; a category the scope
+    -- country has no ethic in counts as 0, not neutral)
+    local function category_values(c)
+        local out = {}
         for _, eth in ipairs(H.country_ethics(c)) do
-            local fan = eth:match("^ethic_fanatic_(.+)$")
-            local base = fan and ("ethic_" .. fan) or eth
-            local b = def("common/ethics", base)
+            local b = def("common/ethics", eth)
             local cat = b and unq(dfield(b, "category"))
-            local cv = b and tonumber(dfield(b, "category_value")) or 0
-            if cat then pts[cat] = (pts[cat] or 0) + (cv >= 0 and 1 or -1) * (fan and 2 or 1) end
+            if cat then out[#out + 1] = { cat, tonumber(dfield(b, "category_value")) or 0 } end
         end
-        return pts
+        return out
     end
     TRIG["opposing_ethics_divergence"] = function(e, ctx)
         local c = C(ctx.this)
@@ -802,12 +901,12 @@ return function(eval, H)
         local w = target(p.who, ctx)
         local o = w and w.kind == "country" and obj("country", w.id)
         if not o or not p.steps then return false end
-        local a, b = axis_points(c), axis_points(o)
+        local mine = {}
+        for _, cv in ipairs(category_values(c)) do mine[cv[1]] = cv[2] end
         local steps = 0
-        local cats = {}
-        for k in pairs(a) do cats[k] = true end
-        for k in pairs(b) do cats[k] = true end
-        for k in pairs(cats) do steps = steps + math.abs((a[k] or 0) - (b[k] or 0)) end
+        for _, cv in ipairs(category_values(o)) do
+            steps = math.max(steps, math.abs((mine[cv[1]] or 0) - cv[2]))
+        end
         return compare(steps, p.steps.op, eval.value(p.steps.value, ctx, p.steps))
     end
     -- has_extorted_faction (CHasExtortedFactionTrigger): a pop faction of the country extorted
@@ -834,28 +933,43 @@ return function(eval, H)
     numeric("num_fallen_empires_setting", nil, function() return gfield("num_fallen_empires") end)
     numeric("num_marauder_empires_to_spawn", nil, function() return gfield("num_marauder_empires") end)
     numeric("fallen_empire_strength_scale", nil, function() return gfield("fallen_empire_strength_scale") end)
-    -- num_empires / num_fallen_empires (a country scope): the regular empires (type default) and the
-    -- fallen ones (fallen_empire, awakened_fallen_empire) of the galaxy
-    local function count_types(types)
+    -- num_empires (CNumEmpiresTrigger @3ba2bd0 [V]): the countries whose type is playable, dead
+    -- ones included; num_fallen_empires (@3ba2810 [V]): those whose type is a fallen_empire, the
+    -- ones passing game rule count_as_split_fallen_empire together counting as one
+    local function country_type_has(c, key)
+        local b = def("common/country_types", unq(field(c, "type")))
+        return b and dfield(b, key) == "yes" or false
+    end
+    numeric("num_empires", nil, function()
         local n = 0
         for _, id in ipairs(world.all("country")) do
-            local t = unq(field(obj("country", id), "type"))
-            if types[t] then n = n + 1 end
+            local c = obj("country", id)
+            if c and country_type_has(c, "playable") then n = n + 1 end
         end
         return n
-    end
-    numeric("num_empires", { "country" }, function() return count_types({ default = true }) end)
-    numeric("num_fallen_empires", { "country" }, function()
-        return count_types({ fallen_empire = true, awakened_fallen_empire = true })
     end)
-    -- is_years_since_council_establishment (CIsYearsSinceCouncilEstablishmentTrigger): years since
-    -- the galactic council was established (the galactic community's council_established_date;
-    -- -1 when it has not been) [I key]
+    numeric("num_fallen_empires", nil, function()
+        local normal, split = 0, 0
+        for _, id in ipairs(world.all("country")) do
+            local c = obj("country", id)
+            if c and country_type_has(c, "fallen_empire") then
+                if H.rule("count_as_split_fallen_empire", S("country", id), NONE) and def("common/game_rules", "count_as_split_fallen_empire") then
+                    split = split + 1
+                else
+                    normal = normal + 1
+                end
+            end
+        end
+        return normal + (split > 0 and 1 or 0)
+    end)
+    -- is_years_since_council_establishment (@3c219d0 → CGalacticCommunity::
+    -- GetYearsSinceCouncilEstablishment [V]): the current year less the year of
+    -- galactic_community.council_established (calendar years); -1 when it is absent
     numeric("is_years_since_council_establishment", nil, function()
         local gc = world.meta and world.meta.galactic_community
-        local d = type(gc) == "table" and H.days_of(field(gc, "council_established_date")) or nil
+        local d = type(gc) == "table" and H.days_of(field(gc, "council_established")) or nil
         if not d then return -1 end
-        return floor((H.now_days() - d) / 360)
+        return floor(H.now_days() / 360) - floor(d / 360)
     end)
     -- name_list_category (a dlc_recommendation scope: the empire creator's) [I: no such object in the
     -- simulation; false]
@@ -864,17 +978,20 @@ return function(eval, H)
     -- ------------------------------------------------------------------------------------------
     -- flags
 
-    -- timed_flag_days_left = { flag value } (CTimedFlagDaysLeftTrigger): the timed flag's days
-    -- left (engine.scriptstate: `name = { flag_date flag_days }`); none: 0
+    -- timed_flag_days_left = { flag days } (CTimedFlagDaysLeftTrigger @3b4ac50 [V]): the timed
+    -- flag's days left (`name = { flag_date flag_days }`; a permanent flag -1); no flag: false.
+    -- `value` is read as well as `days`
     TRIG["timed_flag_days_left"] = function(e, ctx)
         if e.value.text then return false end
         local p = params(e)
         local name = p.flag and p.flag.value.text and I.flag_name(p.flag.value.text, ctx, p.flag)
-        if not name or not p.value then return false end
+        local cmp = p.days or p.value
+        if not name or not cmp then return false end
         local o = ctx.this ~= NONE and world.object(ctx.this.kind, ctx.this.id)
         local f = o and field(o, "flags")
         local b = type(f) == "table" and field(f, name)
-        local left = type(b) == "table" and num(field(b, "flag_days")) or 0
-        return compare(left, p.value.op, eval.value(p.value.value, ctx, p.value))
+        if b == nil then return false end
+        local left = type(b) == "table" and num(field(b, "flag_days")) or -1
+        return compare(left, cmp.op, eval.value(cmp.value, ctx, cmp))
     end
 end

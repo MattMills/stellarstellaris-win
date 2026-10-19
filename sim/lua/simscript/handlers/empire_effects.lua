@@ -48,22 +48,6 @@ return function(eval, H)
         if en then world.remove_entry(o, en) return true end
         return false
     end
-    -- a leader's traits (repeated `traits = "x"` statements)
-    local function remove_leader_trait(l, t)
-        for i = #l, 1, -1 do
-            local x = l[i]
-            if x.op and x.key and x.key.text == "traits" and unq(x.value.text) == t then
-                world.remove_entry(l, x)
-                return true
-            end
-        end
-        return false
-    end
-    local function add_leader_trait(l, t)
-        if H.set_of(H.leader_traits(l))[t] then return false end
-        world.append(l, "traits", t, true)
-        return true
-    end
     local function name_block(text, literal)
         local b = {}
         world.append(b, "key", text, true)
@@ -72,258 +56,359 @@ return function(eval, H)
     end
 
     -- ------------------------------------------------------------------------------------------
-    -- leaders
+    -- the government: authority, civics, origin, type, its cooldown, edicts
 
-    -- add_age / set_age = <int> (CAddAgeEffect, CSetAgeEffect): the leader's `age`
-    EFF["add_age"] = function(e, ctx)
-        local l = L(ctx)
-        if not l then return end
-        world.set(l, "age", num(field(l, "age")) + (int_value(e, ctx) or 0))
-        wrote()
-    end
-    EFF["set_age"] = function(e, ctx)
-        local l = L(ctx)
-        if not l then return end
-        world.set(l, "age", math.max(0, int_value(e, ctx) or 0))
-        wrote()
-    end
-    -- add_skill / add_skill_without_trait_selection / set_skill (CAddSkillEffect, ...): the
-    -- leader's `level`, within 1 and LEADER_MAX_SKILL_CAP [I: the trait selections a level grants
-    -- not drawn]
-    local function set_level(l, v)
-        local cap = 10
-        for _, d in pairs(require("engine.defs").folder("common/defines")) do
-            local g = H.dfield(d.block, "NGameplay")
-            local x = g and tonumber(H.dfield(g, "LEADER_MAX_SKILL_CAP"))
-            if x then cap = x end
-        end
-        world.set(l, "level", math.max(1, math.min(cap, v)))
-    end
-    EFF["add_skill"] = function(e, ctx)
-        local l = L(ctx)
-        if not l then return end
-        set_level(l, num(field(l, "level")) + (int_value(e, ctx) or 0))
-        wrote()
-    end
-    EFF["add_skill_without_trait_selection"] = EFF["add_skill"]
-    EFF["set_skill"] = function(e, ctx)
-        local l = L(ctx)
-        if not l then return end
-        set_level(l, int_value(e, ctx) or 1)
-        wrote()
-    end
-    -- the leader traits of a rarity the leader's class may take (common/traits with leader_class
-    -- holding the class; their inline script's RARITY) [I]
-    local function leader_trait_pool(l, rarity)
-        local class = unq(field(l, "class"))
-        local out = {}
-        for k, d in pairs(require("engine.defs").folder("common/traits")) do
-            local b = d.block
-            if H.is_leader_trait(b) and set_of(tokens(dfield(b, "leader_class")))[class] then
-                local is = dfield(b, "inline_script")
-                local r = type(is) == "table" and unq(dfield(is, "RARITY")) or nil
-                if r == rarity then out[#out + 1] = k end
-            end
-        end
-        table.sort(out)
-        return out
-    end
-    local function pick_trait(l, key, ctx)
-        if key ~= "random_common" and key ~= "random_negative" then return key end
-        local pool = leader_trait_pool(l, key == "random_common" and "common" or "negative")
-        local have = set_of(H.leader_traits(l))
-        local free = {}
-        for _, k in ipairs(pool) do if not have[k] then free[#free + 1] = k end end
-        if #free == 0 then return nil end
-        return free[eval.rand() % #free + 1]
-    end
-    -- add_trait = <trait>|random_common|random_negative or { trait consume_selection show_message }
-    -- (CAddTraitEffect): a leader's `traits`
-    EFF["add_trait"] = function(e, ctx)
-        local l = L(ctx)
-        if not l then return end
-        local key = e.value.text and unq(e.value.text) or text_of(params(e).trait)
-        key = key and pick_trait(l, key, ctx)
-        if key and add_leader_trait(l, key) then wrote() end
-    end
-    -- add_timed_trait = { trait days|months|years } (CAddTimedTraitEffect): the trait and its end
-    -- (`timed_traits = { { trait days } }`) [I key]
-    EFF["add_timed_trait"] = function(e, ctx)
-        local l = L(ctx)
-        if not l or e.value.text then return end
-        local p = params(e)
-        local key = text_of(p.trait)
-        if not key then return end
-        local days = (p.days and eval.value(p.days.value, ctx, p.days)) or (p.months and eval.value(p.months.value, ctx, p.months) * 30)
-            or (p.years and eval.value(p.years.value, ctx, p.years) * 360) or 0
-        add_leader_trait(l, key)
-        local list = world.child(l, "timed_traits")
-        local b = {}
-        world.append(b, "trait", key, true)
-        world.append(b, "days", floor(days))
-        world.push(list, b)
-        wrote()
-    end
-    -- remove_trait = <trait>|all_negative (CRemoveTraitEffect)
-    local function trait_negative(t)
-        local b = H.trait_def(t)
-        local is = b and dfield(b, "inline_script")
-        local r = type(is) == "table" and unq(dfield(is, "RARITY")) or nil
-        return r == "negative" or (tonumber(dfield(b, "cost")) or 0) < 0
-    end
-    local function remove_traits(l, which)
-        local n = 0
-        for _, t in ipairs(H.leader_traits(l)) do
-            if which == "all" or (which == "negative") == trait_negative(t) then
-                if remove_leader_trait(l, t) then n = n + 1 end
-            end
-        end
-        return n
-    end
-    EFF["remove_trait"] = function(e, ctx)
-        local l = L(ctx)
-        if not l or not e.value.text then return end
-        local key = unq(e.value.text)
-        local n = key == "all_negative" and remove_traits(l, "negative") or (remove_leader_trait(l, key) and 1 or 0)
-        if n > 0 then wrote() end
-    end
-    EFF["remove_all_traits"] = function(_, ctx) local l = L(ctx) if l and remove_traits(l, "all") > 0 then wrote() end end
-    EFF["remove_all_negative_traits"] = function(_, ctx) local l = L(ctx) if l and remove_traits(l, "negative") > 0 then wrote() end end
-    EFF["remove_all_positive_traits"] = function(_, ctx) local l = L(ctx) if l and remove_traits(l, "positive") > 0 then wrote() end end
-    -- change_background_ethic = <ethic> (CChangeBackgroundEthicEffect): the leader's `ethic`
-    EFF["change_background_ethic"] = function(e, ctx)
-        local l = L(ctx)
-        if not l or not e.value.text then return end
-        world.set(l, "ethic", quoted(unq(e.value.text)))
-        wrote()
-    end
-    -- change_leader_class = <class>|<leader target> (CChangeLeaderClassEffect): the leader's `class`
-    EFF["change_leader_class"] = function(e, ctx)
-        local l = L(ctx)
-        if not l or not e.value.text then return end
-        local sc = target(e, ctx)
-        local class = sc and sc.kind == "leader" and unq(field(H.leader(sc.id), "class")) or unq(e.value.text)
-        if not def("common/leader_classes", class) then return end
-        world.set(l, "class", quoted(class))
-        wrote()
-    end
-    -- change_leader_portrait = <portrait>|<species target> (CChangeLeaderPortraitEffect): the
-    -- leader's `portrait` (a species': its portrait)
-    EFF["change_leader_portrait"] = function(e, ctx)
-        local l = L(ctx)
-        if not l or not e.value.text then return end
-        local sc = target(e, ctx)
-        local sid = sc and H.species_of(sc)
-        local p = sid and unq(field(H.species(sid), "portrait")) or unq(e.value.text)
-        world.set(l, "portrait", quoted(p))
-        wrote()
-    end
-    -- set_gender = <gender> (CSetGenderEffect)
-    EFF["set_gender"] = function(e, ctx)
-        local l = L(ctx)
-        if not l or not e.value.text then return end
-        world.set(l, "gender", unq(e.value.text))
-        wrote()
-    end
-    -- set_cooldown = <days> (CSetCooldownEffect): the leader's `cooldown`
-    EFF["set_cooldown"] = function(e, ctx)
-        local l = L(ctx)
-        if not l then return end
-        world.set(l, "cooldown", math.max(0, int_value(e, ctx) or 0))
-        wrote()
-    end
-    -- set_years_served = <leader> (CSetYearsServedEffect): the target's recruitment date
-    EFF["set_years_served"] = function(e, ctx)
-        local l = L(ctx)
-        local sc = target(e, ctx)
-        local o = sc and sc.kind == "leader" and H.leader(sc.id)
-        if not l or not o then return end
-        local d = field(o, "recruitment_date")
-        if d then world.set(l, "recruitment_date", quoted(unq(d))) wrote() end
-    end
-
-    -- ------------------------------------------------------------------------------------------
-    -- the government: civics, origin, type, its cooldown
-
+    local SR = require("engine.script.scope_random")
     local function gov_of(c) return world.child(c, "government") end
     local function civic_list(c) return world.child(gov_of(c), "civics") end
     local function civics_of(c)
         local out = {}
-        for _, v in ipairs(world.list(civic_list(c))) do out[#out + 1] = unq(v) end
+        for _, v in ipairs(world.list(field(gov_of(c), "civics"))) do out[#out + 1] = unq(v) end
         return out
     end
-    -- force_add_civic = <civic> (CForceAddCivicEffect): the government's civics, unchecked
+    local function define(group, key, default)
+        return H.define and H.define(group, key, default) or default
+    end
+    -- an on_action of the country, its scope random a copy of the effect's [I: the seed]
+    local function fire(name, scope, ctx)
+        local ok = pcall(require("simscript.events").on_action, name, scope, nil, SR.copy(eval.scope_rng(ctx)))
+        if not ok then I.miss("effect", name, ctx, nil) end
+    end
+    -- a folder's definitions in the database's order (the files' load order, then the line)
+    local ordered_cache = {}
+    local function ordered(folder)
+        local list = ordered_cache[folder]
+        if list then return list end
+        list = {}
+        for name, d in pairs(require("engine.defs").folder(folder)) do
+            if type(d) == "table" and d.block then list[#list + 1] = { name = name, def = d } end
+        end
+        table.sort(list, function(a, b)
+            if a.def.file ~= b.def.file then return tostring(a.def.file) < tostring(b.def.file) end
+            return (a.def.line or 0) < (b.def.line or 0)
+        end)
+        ordered_cache[folder] = list
+        return list
+    end
+    H.ordered = ordered
+    -- a government restriction block (a civic's or authority's potential / possible: `ethics`,
+    -- `authority`, `civics`, `origin`, `species_class`, `species_archetype`, `country_type`, each
+    -- with value / OR / NOR / NOT / AND of values) against a configuration (sets of names)
+    local RESTRICT = { ethics = true, authority = true, civics = true, origin = true, species_class = true,
+        species_archetype = true, country_type = true }
+    local function values_hold(b, set, mode)
+        local any, all = false, true
+        for _, x in ipairs(b) do
+            if x.op and x.key then
+                local k = x.key.text
+                local r
+                if k == "value" then r = set[unq(x.value.text)] == true
+                elseif k == "OR" and type(x.value) == "table" then r = values_hold(x.value, set, "or")
+                elseif k == "NOR" and type(x.value) == "table" then r = not values_hold(x.value, set, "or")
+                elseif k == "NOT" and type(x.value) == "table" then r = not values_hold(x.value, set, "or")
+                elseif k == "AND" and type(x.value) == "table" then r = values_hold(x.value, set, "and")
+                end
+                if r ~= nil then
+                    if r then any = true else all = false end
+                end
+            end
+        end
+        if mode == "or" then return any end
+        return all
+    end
+    local function restrictions_hold(b, config)
+        if type(b) ~= "table" then return true end
+        for _, x in ipairs(b) do
+            if x.op and x.key and RESTRICT[x.key.text] and type(x.value) == "table" then
+                if not values_hold(x.value, config[x.key.text] or {}, "and") then return false end
+            end
+        end
+        return true
+    end
+    local function config_of(c, auth, civics, ethics_list)
+        local set = function(list) local s = {} for _, v in ipairs(list) do s[v] = true end return s end
+        local sid = tonumber(field(c, "founder_species_ref"))
+        local sp = sid and H.species(sid)
+        return {
+            ethics = set(ethics_list or H.country_ethics(c)), authority = { [auth or ""] = true },
+            civics = set(civics), origin = { [unq(field(gov_of(c), "origin")) or ""] = true },
+            species_class = { [sp and unq(field(sp, "class")) or ""] = true },
+            species_archetype = { [sid and H.archetype_of(sid) or ""] = true },
+            country_type = { [unq(field(c, "type")) or ""] = true },
+        }
+    end
+    local function same_list(a, b)
+        if #a ~= #b then return false end
+        for i = 1, #a do if a[i] ~= b[i] then return false end end
+        return true
+    end
+    local TITLE_KEYS = { "ruler_title", "ruler_title_female", "heir_title", "heir_title_female" }
+    -- CCountry::ClearCustomRulerTitles (0x23803c0) [V]: the four custom titles (the country's) out
+    local function clear_titles(c)
+        local n = 0
+        for _, k in ipairs(TITLE_KEYS) do if remove_key(c, k) then n = n + 1 end end
+        return n
+    end
+    -- CCountry::SetGovernmentAndCivics (0x2341ee0 → 0x237f650) [V]: the same authority, civics (in
+    -- order) and origin: nothing. A new authority with an election under way: one global draw.
+    -- on_pre_government_changed, the government written, government_date today (+
+    -- GOVERNMENT_COOLDOWN_YEARS with cooldown), the custom titles cleared,
+    -- on_post_government_changed, then one global draw (UpdateNextElectionDate; next_election not
+    -- recomputed [I]; nor the government's type, councillors or heir [I])
+    local function set_government(ctx, cid, c, auth, civics, origin, cooldown)
+        local g = gov_of(c)
+        local cur_auth, cur_origin = unq(field(g, "authority")), unq(field(g, "origin"))
+        origin = origin or cur_origin
+        if auth == cur_auth and origin == cur_origin and same_list(civics, civics_of(c)) then return false end
+        if auth ~= cur_auth and field(c, "election") ~= nil then eval.rand() end
+        local scope = S("country", cid)
+        fire("on_pre_government_changed", scope, ctx)
+        if auth then world.set(g, "authority", quoted(auth)) end
+        local list = {}
+        for _, v in ipairs(civics) do list[#list + 1] = { text = v, quoted = true } end
+        set_block(g, "civics", list)
+        if origin then world.set(g, "origin", quoted(origin)) end
+        local years = cooldown and define("NGameplay", "GOVERNMENT_COOLDOWN_YEARS", 20) or 0
+        world.set(c, "government_date", quoted(add_days(years * 360)))
+        clear_titles(c)
+        fire("on_post_government_changed", scope, ctx)
+        eval.rand()
+        return true
+    end
+    H.set_government = set_government
+
+    local function civic_cost(name)
+        local b = def("common/governments/civics", name)
+        return b and tonumber(dfield(b, "cost")) or 1
+    end
+    local function weight_of(b, file, ctx)
+        local rw = dfield(b, "random_weight")
+        if type(rw) ~= "table" then return 1 end
+        return eval.weight(rw, eval.new_ctx(ctx.this, nil, nil, file)) or 0
+    end
+    -- ChooseAuthorityForFilling (0x26a0230) [V]: the authorities whose potential and possible hold,
+    -- weighted by random_weight, one global draw
+    local function random_authority(c, ctx, civics)
+        local cands, ws = {}, {}
+        for _, x in ipairs(ordered("common/governments/authorities")) do
+            local b = x.def.block
+            local cfg = config_of(c, x.name, civics)
+            if restrictions_hold(dfield(b, "potential"), cfg) and restrictions_hold(dfield(b, "possible"), cfg) then
+                cands[#cands + 1] = x.name
+                ws[#ws + 1] = H.raw(weight_of(b, x.def.file, ctx))
+            end
+        end
+        return H.weighted(cands, ws, eval.rand())
+    end
+    -- DoFillCivics (0x269d410) [V]: while civic points are left, one global draw per pick among the
+    -- civics (database order) not chosen, not origins, affordable, whose potential and possible hold
+    -- and whose random_weight is over 0
+    local function fill_civics(c, ctx, auth, civics, pts)
+        while pts > 0 do
+            local chosen = {}
+            for _, v in ipairs(civics) do chosen[v] = true end
+            local cfg = config_of(c, auth, civics)
+            local cands, ws = {}, {}
+            for _, x in ipairs(ordered("common/governments/civics")) do
+                local b = x.def.block
+                if not chosen[x.name] and dfield(b, "is_origin") ~= "yes" and civic_cost(x.name) <= pts
+                    and restrictions_hold(dfield(b, "potential"), cfg) and restrictions_hold(dfield(b, "possible"), cfg) then
+                    local w = weight_of(b, x.def.file, ctx)
+                    if w > 0 then
+                        cands[#cands + 1] = x.name
+                        ws[#ws + 1] = H.raw(w)
+                    end
+                end
+            end
+            local pick = H.weighted(cands, ws, eval.rand())
+            if not pick then break end
+            civics[#civics + 1] = pick
+            pts = pts - civic_cost(pick)
+        end
+        return civics
+    end
+    -- CCountry::CalcTotalCivicPoints: GOVERNMENT_CIVIC_POINTS_BASE + the country's civic points [I]
+    local function civic_points(cid)
+        local m = E.modifier and tonumber(E.modifier("country", cid, "country_civic_points")) or 0
+        return define("NGameplay", "GOVERNMENT_CIVIC_POINTS_BASE", 2) + math.max(0, m)
+    end
+    local function has_government(c)
+        local ct = def("common/country_types", unq(field(c, "type")))
+        return not (ct and dfield(ct, "government") == "no")
+    end
+    -- change_government = random | <authority> | { authority = random|<key> civics = random|{ civic
+    -- = <key>|random ... } cooldown remove_invalid_civics } (CChangeGovernmentEffect 0x37245e0) [V]:
+    -- a country type with a government; a random authority (one draw) and random civics filled
+    -- (one draw a pick) [I: the restrictions solver's other checks]; SetGovernmentAndCivics
+    EFF["change_government"] = function(e, ctx)
+        local c = C(ctx)
+        if not c or not has_government(c) then return end
+        local cid = ctx.this.id
+        local auth = unq(field(gov_of(c), "authority"))
+        local civics = civics_of(c)
+        local auth_random, civ_random, cooldown, remove_invalid = false, false, true, false
+        if e.value.text then
+            local v = unq(e.value.text)
+            if v == "random" then
+                auth_random, civ_random, civics = true, true, {}
+            else
+                auth = v
+            end
+        else
+            local p = params(e)
+            local a = p.authority and unq(p.authority.value.text)
+            if a == "random" then auth_random = true elseif a then auth = a end
+            if p.civics then
+                if p.civics.value.text == "random" then
+                    civ_random, civics = true, {}
+                elseif not p.civics.value.text then
+                    civics = {}
+                    for _, x in ipairs(p.civics.value) do
+                        if x.op and x.key and x.key.text == "civic" and x.value.text then
+                            local v = unq(x.value.text)
+                            if v == "random" then civ_random = true else civics[#civics + 1] = v end
+                        end
+                    end
+                end
+            end
+            if p.cooldown then cooldown = p.cooldown.value.text ~= "no" end
+            if p.remove_invalid_civics then remove_invalid = p.remove_invalid_civics.value.text == "yes" end
+        end
+        if auth_random then auth = random_authority(c, ctx, civics) or auth end
+        if civ_random then
+            if remove_invalid then
+                local kept = {}
+                for _, v in ipairs(civics) do
+                    local b = def("common/governments/civics", v)
+                    if b and restrictions_hold(dfield(b, "possible"), config_of(c, auth, civics)) then kept[#kept + 1] = v end
+                end
+                civics = kept
+            end
+            local pts = civic_points(cid)
+            for _, v in ipairs(civics) do pts = pts - civic_cost(v) end
+            civics = fill_civics(c, ctx, auth, civics, pts)
+        end
+        if set_government(ctx, cid, c, auth, civics, nil, cooldown) then wrote() end
+    end
+    -- force_add_civic = <civic> (CForceAddCivicEffect 0x3713ab0) [V]: appended, unchecked;
+    -- SetGovernmentAndCivics with the cooldown
     EFF["force_add_civic"] = function(e, ctx)
         local c = C(ctx)
         if not c or not e.value.text then return end
-        local civ = unq(e.value.text)
-        if set_of(civics_of(c))[civ] or not def("common/governments/civics", civ) then return end
-        world.append_value(civic_list(c), civ, true)
-        wrote()
+        local civics = civics_of(c)
+        civics[#civics + 1] = unq(e.value.text)
+        if set_government(ctx, ctx.this.id, c, unq(field(gov_of(c), "authority")), civics, nil, true) then wrote() end
     end
-    -- force_remove_civic = <civic>|<index> and force_remove_civic_by_index = <index>
-    -- (CForceRemoveCivicEffect): a civic out of the government's (an index: 1-based [I])
-    local function remove_civic_at(c, i)
-        local list = civic_list(c)
-        local n = 0
-        for k, x in ipairs(list) do
-            if x.text then
-                n = n + 1
-                if n == i then world.remove_at(list, k) return true end
-            end
-        end
-        return false
-    end
+    -- force_remove_civic = <civic> (CForceRemoveCivicEffect 0x3714000) [V]: every occurrence out
     EFF["force_remove_civic"] = function(e, ctx)
         local c = C(ctx)
         if not c or not e.value.text then return end
         local v = unq(e.value.text)
-        local i = tonumber(v)
-        if i then
-            if remove_civic_at(c, i) then wrote() end
-            return
-        end
-        for k, x in ipairs(civic_list(c)) do
-            if x.text and unq(x.text) == v then world.remove_at(civic_list(c), k) wrote() return end
-        end
+        local civics = {}
+        for _, x in ipairs(civics_of(c)) do if x ~= v then civics[#civics + 1] = x end end
+        if set_government(ctx, ctx.this.id, c, unq(field(gov_of(c), "authority")), civics, nil, true) then wrote() end
     end
+    -- force_remove_civic_by_index = <1-based index> (CForceRemoveCivicByIndexEffect 0x3714440) [V]
     EFF["force_remove_civic_by_index"] = function(e, ctx)
         local c = C(ctx)
         if not c then return end
         local i = int_value(e, ctx)
-        if i and remove_civic_at(c, i) then wrote() end
+        local civics = civics_of(c)
+        if not i or i <= 0 or i > #civics then return end
+        table.remove(civics, i)
+        if set_government(ctx, ctx.this.id, c, unq(field(gov_of(c), "authority")), civics, nil, true) then wrote() end
     end
-    -- set_origin = <origin> (CSetOriginEffect): the government's origin (the origin's effects not run)
+    -- set_origin = <origin> (CSetOriginEffect 0x37147e0) [V]: SetGovernmentAndCivics without the
+    -- cooldown (government_date today); the origin's own effects not run
     EFF["set_origin"] = function(e, ctx)
         local c = C(ctx)
         if not c or not e.value.text then return end
-        local o = unq(e.value.text)
-        if not def("common/governments/civics", o) then return end
-        world.set(gov_of(c), "origin", quoted(o))
+        if set_government(ctx, ctx.this.id, c, unq(field(gov_of(c), "authority")), civics_of(c), unq(e.value.text), false) then
+            wrote()
+        end
+    end
+    -- copy_ethos_and_authority = <country> (CCopyCountryAspectEffect<SCopyEthosAndAuthorityImpl>
+    -- 0x379ccc0) [V]: the target's ethics and authority, the scope's civics kept,
+    -- SetGovernmentAndCivics with the cooldown [I: the restrictions solver's re-pick not modelled;
+    -- nor RandomizeRuler, the new ruler it makes]
+    EFF["copy_ethos_and_authority"] = function(e, ctx)
+        local c = C(ctx)
+        local t = target(e, ctx)
+        local o = t and t.kind == "country" and obj("country", t.id)
+        if not c or not o then return end
+        H.write_country_ethics(c, H.country_ethics(o))
+        set_government(ctx, ctx.this.id, c, unq(field(gov_of(o), "authority")), civics_of(c), nil, true)
         wrote()
     end
-    -- set_country_type = <type> (CSetCountryTypeEffect): the country's `type`
+    -- set_country_type = <type> (CSetCountryTypeEffect 0x3723100 → CCountry::SetCountryType 0x233d4f0)
+    -- [V]: the same type: nothing; `type`, last_changed_country_type today, on_country_type_changed
+    -- [I: the modules rebuilt from the new type and the pre-FTL room not modelled]
     EFF["set_country_type"] = function(e, ctx)
         local c = C(ctx)
         if not c or not e.value.text then return end
         local t = unq(e.value.text)
-        if not def("common/country_types", t) then return end
+        if not def("common/country_types", t) or unq(field(c, "type")) == t then return end
         world.set(c, "type", quoted(t))
         world.set(c, "last_changed_country_type", quoted(today_text()))
+        fire("on_country_type_changed", ctx.this, ctx)
         wrote()
     end
-    -- set_government_cooldown = <days>|default|no (CSetGovernmentCooldownEffect): government_date
-    -- (default: GOVERNMENT_COOLDOWN_YEARS; no: none)
+    -- set_government_cooldown = <days>|default|no (CSetGovernmentCooldownEffect 0x3714b30) [V]:
+    -- government_date = today + the days (no: 0; default: GOVERNMENT_COOLDOWN_YEARS)
     EFF["set_government_cooldown"] = function(e, ctx)
         local c = C(ctx)
         if not c or not e.value.text then return end
         local v = unq(e.value.text)
-        if v == "no" then
-            if remove_key(c, "government_date") then wrote() end
-            return
-        end
-        local days = v == "default" and 20 * 360 or int_value(e, ctx) or 0
+        local days = v == "no" and 0 or v == "default" and define("NGameplay", "GOVERNMENT_COOLDOWN_YEARS", 20) * 360
+            or int_value(e, ctx) or 0
         world.set(c, "government_date", quoted(add_days(days)))
+        wrote()
+    end
+    -- advanced_authority_refresh (CAdvancedAuthorityRefreshEffect 0x37eb970) [V]: the government's
+    -- type recomputed and the modifiers [I: AssignMatchingType not modelled; no state written]
+    EFF["advanced_authority_refresh"] = function() end
+    -- add_edict = <edict> (CAddEdictEffect 0x38035b0 → CCountry::AddEdict 0x2398d90) [V]: active
+    -- already: nothing; its cost paid (unchecked; the cost's multiplier not applied [I]); one global
+    -- draw seeds the scope its `effect` runs in; on_edict_activated; the entry (length <= 0:
+    -- perpetual, date 0)
+    EFF["add_edict"] = function(e, ctx)
+        local c = C(ctx)
+        if not c or not e.value.text then return end
+        local key = unq(e.value.text)
+        local b, file = def("common/edicts", key)
+        if not b then return end
+        local list = world.child(c, "edicts")
+        for _, x in ipairs(world.blocks(list)) do
+            if unq(field(x, "edict")) == key then return end
+        end
+        local res = dfield(b, "resources")
+        local cost = type(res) == "table" and dfield(res, "cost")
+        local stock = world.path(c, "modules", "standard_economy_module", "resources")
+        if type(cost) == "table" and type(stock) == "table" then
+            local cctx = eval.new_ctx(ctx.this, nil, nil, file)
+            for _, x in ipairs(cost) do
+                if x.op and x.key and x.key.text ~= "multiplier" and def("common/strategic_resources", x.key.text) then
+                    local v = tonumber(eval.value(x.value, cctx, x)) or 0
+                    world.set(stock, x.key.text, num(field(stock, x.key.text)) - v)
+                end
+            end
+        end
+        local ectx = eval.seed_scope(eval.new_ctx(ctx.this, nil, nil, file), eval.rand())
+        local eff = dfield(b, "effect")
+        if type(eff) == "table" then eval.effect(eff, ectx) end
+        fire("on_edict_activated", ctx.this, ectx)
+        local len = world.entry(b, "length")
+        local length = len and tonumber(eval.value(len.value, ectx, len)) or 0
+        local en = {}
+        world.append(en, "edict", key, true)
+        if length > 0 then
+            world.append(en, "date", add_days(length), true)
+        else
+            world.append(en, "date", "-5070.07.21", true)
+            world.append(en, "perpetual", "yes")
+        end
+        world.append(en, "start_date", today_text(), true)
+        world.push(list, en)
         wrote()
     end
 
@@ -336,58 +421,76 @@ return function(eval, H)
         end
         return nil
     end
-    -- set_policy_cooldown = <group> (CSetPolicyCooldownEffect): its entry's date today
+    -- set_policy_cooldown = <group> (CSetPolicyCooldownEffect 0x3760650 → ChangePolicy) [V]: the
+    -- group's entry's date today (no entry: nothing)
     EFF["set_policy_cooldown"] = function(e, ctx)
         local c = C(ctx)
         local b = c and e.value.text and policy_entry(c, unq(e.value.text))
         if not b then return end
         world.set(b, "date", quoted(today_text()))
+        H.last_policy[ctx.this.id] = unq(e.value.text)
         wrote()
     end
-    -- reset_policy_cooldowns (CResetPolicyCooldownsEffect): every entry's date cleared
+    -- reset_policy_cooldowns (CResetPolicyCooldownsEffect 0x3760f10) [V]: every entry's date 0 (the
+    -- key left out)
     EFF["reset_policy_cooldowns"] = function(_, ctx)
         local c = C(ctx)
         if not c then return end
+        local n = 0
         for _, b in ipairs(world.blocks(field(c, "active_policies"))) do
-            world.set(b, "date", quoted("0.01.01"))
+            if remove_key(b, "date") then n = n + 1 end
         end
-        wrote()
+        if n > 0 then wrote() end
     end
-    -- set_council_agenda = <agenda> (CSetCouncilAgendaEffect → CGovernment::SetCouncilAgenda): the
-    -- agenda, its progress 0
+    -- set_council_agenda = <agenda> (CSetCouncilAgendaEffect 0x376aee0 → CGovernment::
+    -- SetCouncilAgenda 0x1c11620) [V]: the same: nothing; the agenda and progress 0 (cooldowns and
+    -- potential not checked); one global draw seeds the scope its init_effect runs in
     EFF["set_council_agenda"] = function(e, ctx)
         local c = C(ctx)
         if not c or not e.value.text then return end
         local a = unq(e.value.text)
-        if not def("common/council_agendas", a) then return end
-        world.set(gov_of(c), "council_agenda", quoted(a))
-        world.set(gov_of(c), "council_agenda_progress", 0)
+        local b, file = def("common/council_agendas", a)
+        if not b then return end
+        local g = gov_of(c)
+        if unq(field(g, "council_agenda")) == a then return end
+        world.set(g, "council_agenda", quoted(a))
+        world.set(g, "council_agenda_progress", 0)
+        local ectx = eval.seed_scope(eval.new_ctx(ctx.this, nil, nil, file), eval.rand())
+        local init = dfield(b, "init_effect")
+        if type(init) == "table" then eval.effect(init, ectx) end
         wrote()
     end
-    -- the agenda's cost (CCouncilAgenda::GetCost: agenda_cost)
-    local function agenda_cost(c)
+    -- the agenda's cost (CCouncilAgenda::GetCost: agenda_cost) [I: the empire size penalty]
+    local function agenda_cost(c, cid)
         local key = unq(field(gov_of(c), "council_agenda"))
         local b, file = def("common/council_agendas", key)
         local en = b and world.entry(b, "agenda_cost")
         if not en then return nil end
-        local ok, v = pcall(eval.value, en.value, eval.new_ctx(S("country", 0), nil, nil, file), en)
+        local ok, v = pcall(eval.value, en.value, eval.new_ctx(S("country", cid), nil, nil, file), en)
         return ok and tonumber(v) or nil
     end
-    -- add_council_agenda_progress_percent = <-1..1> (CAddCouncilAgendaProgressPercentEffect): that
-    -- part of the agenda's cost
+    -- add_council_agenda_progress_percent = <-1..1> (CAddCouncilAgendaProgressPercentEffect
+    -- 0x376b5e0) [V]: the value clamped to [-1, 1], times the cost (fixed, truncated); the progress
+    -- at least 0, not capped, not finished here
     EFF["add_council_agenda_progress_percent"] = function(e, ctx)
         local c = C(ctx)
         if not c then return end
-        local cost = agenda_cost(c)
+        local cost = agenda_cost(c, ctx.this.id)
         if not cost then return end
         local g = gov_of(c)
-        local p = num(field(g, "council_agenda_progress")) + cost * (eval.value(e.value, ctx, e) or 0)
-        world.set(g, "council_agenda_progress", math.max(0, floor(p * 100000 + 0.5) / 100000))
+        local v = math.max(-100000, math.min(100000, H.raw(eval.value(e.value, ctx, e))))
+        local d = H.raw(cost) * v
+        d = (d < 0 and -floor(-d / 100000) or floor(d / 100000))
+        local p = math.max(0, H.raw(num(field(g, "council_agenda_progress"))) + d)
+        world.set(g, "council_agenda_progress", p / 100000)
         wrote()
     end
-    -- finish_council_agenda (CFinishCouncilAgendaEffect → CGovernment::FinishAgenda): the agenda's
-    -- finish_modifier for COUNCIL_AGENDA_FINISH_MODIFIER_DURATION days, its effect, its cooldown
-    -- (council_agenda_cooldowns), no agenda, progress 0
+    -- finish_council_agenda (CFinishCouncilAgendaEffect 0x3803510 → CFinishAgendaCommand →
+    -- CGovernment::FinishAgenda 0x1c11da0) [V]: an agenda set (progress not checked): its
+    -- finish_modifier for agenda_finish_modifier_duration (else COUNCIL_AGENDA_FINISH_MODIFIER_DURATION)
+    -- days; one global draw seeds the scope its `effect` runs in; its cooldown (the end date:
+    -- agenda_cooldown, else COUNCIL_AGENDA_COOLDOWN); no agenda, progress 0; one global draw and
+    -- on_agenda_finished. The game runs it as a command after the effect [I: here at once]
     EFF["finish_council_agenda"] = function(e, ctx)
         local c = C(ctx)
         if not c or e.value.text == "no" then return end
@@ -400,122 +503,24 @@ return function(eval, H)
             local items = world.child(world.child(c, "timed_modifier"), "items")
             local it = {}
             world.append(it, "modifier", fm, true)
-            world.append(it, "days", 3600)
+            world.append(it, "days", tonumber(dfield(b, "agenda_finish_modifier_duration"))
+                or define("NGameplay", "COUNCIL_AGENDA_FINISH_MODIFIER_DURATION", 3600))
             world.push(items, it)
         end
+        local ectx = eval.seed_scope(eval.new_ctx(ctx.this, nil, nil, file), eval.rand())
         local eff = dfield(b, "effect")
-        if type(eff) == "table" then eval.effect(eff, eval.new_ctx(ctx.this, nil, nil, file)) end
-        local cd = tonumber(dfield(b, "agenda_cooldown")) or 10800
+        if type(eff) == "table" then eval.effect(eff, ectx) end
+        local cd = tonumber(dfield(b, "agenda_cooldown")) or define("NGameplay", "COUNCIL_AGENDA_COOLDOWN", 10800)
         local entry = {}
         world.append(entry, "council_agenda", key, true)
         world.append(entry, "start_date", add_days(cd), true)
         world.push(world.child(g, "council_agenda_cooldowns"), entry)
         remove_key(g, "council_agenda")
-        world.set(g, "council_agenda_progress", 0)
+        remove_key(g, "council_agenda_progress")
+        local octx = eval.seed_scope(eval.new_ctx(ctx.this), eval.rand())
+        fire("on_agenda_finished", ctx.this, octx)
         wrote()
     end
-
-    -- ------------------------------------------------------------------------------------------
-    -- species
-
-    local function species_target(e, ctx)
-        local sc = target(e, ctx)
-        return sc and H.species_of(sc) or nil
-    end
-    local function SP(ctx) return ctx.this.kind == "species" and H.species(ctx.this.id) or nil end
-    -- set_built_species = <species> (CSetBuiltSpeciesEffect): the country's built_species_ref
-    EFF["set_built_species"] = function(e, ctx)
-        local c = C(ctx)
-        local sid = species_target(e, ctx)
-        if not c or not sid then return end
-        world.set(c, "built_species_ref", sid)
-        wrote()
-    end
-    -- set_species_homeworld = <planet> (CSetSpeciesHomeworldEffect): the species' home_planet
-    EFF["set_species_homeworld"] = function(e, ctx)
-        local s = SP(ctx)
-        local sc = target(e, ctx)
-        if not s or not sc or sc.kind ~= "planet" then return end
-        world.set(s, "home_planet", sc.id)
-        wrote()
-    end
-    -- change_species_portrait = <portrait>|<species> (CChangeSpeciesPortraitEffect)
-    EFF["change_species_portrait"] = function(e, ctx)
-        local s = SP(ctx)
-        if not s or not e.value.text then return end
-        local sid = species_target(e, ctx)
-        local p = sid and unq(field(H.species(sid), "portrait")) or unq(e.value.text)
-        world.set(s, "portrait", quoted(p))
-        wrote()
-    end
-    -- change_species = <species> (CChangeSpeciesEffect): a leader's or army's `species`, a pop
-    -- group's key (its pops moved into the colony's group of that species and category), a
-    -- country's founder species, a ship's colonization species [I]
-    EFF["change_species"] = function(e, ctx)
-        local sid = species_target(e, ctx)
-        local sc = ctx.this
-        if not sid then return end
-        if sc.kind == "leader" or sc.kind == "army" then
-            local o = obj(sc.kind, sc.id)
-            if o then world.set(o, "species", sid) wrote() end
-        elseif sc.kind == "country" then
-            local c = obj("country", sc.id)
-            if c then world.set(c, "founder_species_ref", sid) wrote() end
-        elseif sc.kind == "pop_group" then
-            local g = H.group(sc.id)
-            local key = g and field(g, "key")
-            if type(key) == "table" then world.set(key, "species", sid) wrote() end
-        elseif sc.kind == "ship" then
-            local o = obj("ship", sc.id)
-            if o then world.set(o, "colonize_species", sid) wrote() end
-        end
-    end
-    -- set_<right> = { country type cooldown } on a species, pop group or leader
-    -- (CSetLivingStandardEffect and its kin): the species' entry in the country's species rights
-    -- module (made from the default when it has none); with cooldown its lock date
-    local LOCK = {
-        living_standard = "last_changed_living_standard", migration_control = "last_changed_migration_control",
-        population_control = "last_changed_population_control", purge = "last_changed_purge_type",
-    }
-    local function rights_effect(field_name, yes_no)
-        return function(e, ctx)
-            if e.value.text then return end
-            local sid = H.species_of(ctx.this)
-            local p = params(e)
-            local csc = target(p.country, ctx)
-            local cid = csc and csc.kind == "country" and csc.id or H.country_of(ctx.this)
-            local c = cid and obj("country", cid)
-            local m = c and world.path(c, "modules", "standard_species_rights_module")
-            local v = text_of(p.type)
-            if not sid or type(m) ~= "table" or not v then return end
-            if yes_no then
-                if v == "yes" then v = field_name .. "_yes" elseif v == "no" then v = field_name .. "_no" end
-            end
-            local entry, own = H.rights_entry(cid, sid)
-            if not own then
-                entry = {}
-                world.append(entry, "species_index", sid)
-                for _, x in ipairs(field(m, "default") or {}) do
-                    if x.op and x.key and x.key.text ~= "species_index" and x.value.text then
-                        world.append(entry, x.key.text, x.value.text)
-                    end
-                end
-                world.push(world.child(m, "species_rights"), entry)
-            end
-            local old = unq(field(entry, field_name))
-            if old and old ~= v then world.set(entry, "former_" .. field_name, quoted(old)) end
-            world.set(entry, field_name, quoted(v))
-            world.set(entry, "last_changed_value", field_name)
-            if text_of(p.cooldown) == "yes" and LOCK[field_name] then
-                world.set(entry, LOCK[field_name], quoted(add_days(360 * 10)))
-            end
-            wrote()
-        end
-    end
-    EFF["set_living_standard"] = rights_effect("living_standard")
-    EFF["set_migration_controls"] = rights_effect("migration_control", true)
-    EFF["set_population_controls"] = rights_effect("population_control", true)
-    EFF["set_purge_type"] = rights_effect("purge")
 
     -- ------------------------------------------------------------------------------------------
     -- the council, the heir, names and titles
@@ -539,45 +544,87 @@ return function(eval, H)
         if p then world.set(p, "leader", 4294967295) end
         if remove_key(l, "council_location") or p then wrote() end
     end
-    -- set_empire_name = <name> (CSetEmpireNameEffect) and set_name = <name> (CSetNameEffect): the
-    -- object's `name` (a localisation key, or a literal text when it is none)
-    local function set_name_of(o, text)
-        local lit = not (text:match("^[%w_]+$") ~= nil and text:upper() == text)
-        set_block(o, "name", name_block(text, lit))
+    -- a parsed block copied (key, op, value, text, quoted)
+    local function copy_node(x)
+        if type(x) ~= "table" then return x end
+        local out = {}
+        for k, v in pairs(x) do out[k] = copy_node(v) end
+        return out
     end
+    -- a CPersistentName: `{ key = "<text>" }` (a block given: copied)
+    local function persistent(v)
+        if type(v) == "table" and v.text == nil then return copy_node(v) end
+        return name_block(unq(type(v) == "table" and v.text or v), false)
+    end
+    -- CCountry::SetCustomName (0x23455d0) [V]: name, the adjective `%ADJECTIVE%` of it, custom_name
+    local function set_country_name(c, name)
+        set_block(c, "name", name)
+        local key = unq(field(name, "key")) or ""
+        local adj = {}
+        world.append(adj, "key", "%ADJECTIVE%", true)
+        local var = {}
+        world.append(var, "key", "adjective", true)
+        local inner = {}
+        world.append(inner, "key", key, true)
+        world.append_entry(var, { key = { text = "value" }, op = "=", value = inner })
+        local vars = {}
+        world.push(vars, var)
+        world.append_entry(adj, { key = { text = "variables" }, op = "=", value = vars })
+        set_block(c, "adjective", adj)
+        world.set(c, "custom_name", "yes")
+    end
+    -- set_empire_name = <name> (CSetEmpireNameEffect 0x3774a50) [V]: SetCustomName [I: the
+    -- substrings not evaluated]
     EFF["set_empire_name"] = function(e, ctx)
         local c = C(ctx)
         if not c or not e.value.text then return end
-        set_name_of(c, unq(e.value.text))
+        local t = unq(e.value.text)
+        if t == "" then return end
+        set_country_name(c, name_block(t, false))
         wrote()
     end
+    -- set_name = <name> | <target> | { key variables } | random (CSetNameEffect 0x37191f0) [V]: a
+    -- target's name copied, else the name; a country: SetCustomName; a leader: name = { full_names
+    -- }; others their `name`; species are not a scope of it. random: a new name from the scope's
+    -- name list [I: not modelled, reported]
     EFF["set_name"] = function(e, ctx)
-        if not e.value.text or ctx.this == NONE then return end
+        if ctx.this == NONE or ctx.this.kind == "species" then return end
         local o = world.object(ctx.this.kind, ctx.this.id)
         if not o then return end
-        local sc = target(e, ctx)
-        local text = unq(e.value.text)
-        if sc then
+        if e.value.text == "random" then I.miss("effect", "set_name = random", ctx, e) return end
+        local name
+        local sc = e.value.text and target(e, ctx)
+        if sc and sc ~= NONE then
             local n = field(world.object(sc.kind, sc.id), "name")
-            if type(n) == "table" then set_block(o, "name", n) wrote() end
-            return
-        end
-        if ctx.this.kind == "leader" then
-            set_block(world.child(o, "name"), "full_names", name_block(text, true))
+            if type(n) == "table" then
+                local fn = field(n, "full_names")
+                name = copy_node(type(fn) == "table" and fn or n)
+            end
         else
-            set_name_of(o, text)
+            name = persistent(e.value)
+        end
+        if not name or (unq(field(name, "key")) or "") == "" then return end
+        if ctx.this.kind == "country" then
+            set_country_name(o, name)
+        elseif ctx.this.kind == "leader" then
+            local nb = {}
+            world.append_entry(nb, { key = { text = "full_names" }, op = "=", value = name })
+            set_block(o, "name", nb)
+        else
+            set_block(o, "name", name)
         end
         wrote()
     end
-    -- the ruler's and heir's titles (CSetRulerTitleEffect and its kin): the government's
-    -- ruler_title(_female) / heir_title(_female) (a text: literal; a key: as it is) [I keys]
+    -- set_male_ruler_title / set_female_ruler_title / set_male_heir_title / set_female_heir_title =
+    -- <text> (CSetRulerHeirTitleEffect<...> 0x37b1ff0 ...) [V]: the country's ruler_title /
+    -- ruler_title_female / heir_title / heir_title_female = { key }; an empty text: nothing
     local function title_effect(key)
         return function(e, ctx)
             local c = C(ctx)
             if not c or not e.value.text then return end
             local t = unq(e.value.text)
-            local lit = not (t:match("^[%w_]+$") ~= nil and t:upper() == t)
-            set_block(gov_of(c), key, name_block(t, lit))
+            if t == "" then return end
+            set_block(c, key, name_block(t, false))
             wrote()
         end
     end
@@ -585,168 +632,130 @@ return function(eval, H)
     EFF["set_female_ruler_title"] = title_effect("ruler_title_female")
     EFF["set_male_heir_title"] = title_effect("heir_title")
     EFF["set_female_heir_title"] = title_effect("heir_title_female")
-    EFF["set_ruler_title_male"] = title_effect("ruler_title")
-    EFF["set_ruler_title_female"] = title_effect("ruler_title_female")
-    -- clear_custom_ruler_and_heir_titles (CClearCustomRulerAndHeirTitlesEffect)
+    -- the government type's ruler title (common/governments: ruler_title / ruler_title_female)
+    local function gov_title(c, key)
+        local t = unq(field(world.child(c, "government"), "type"))
+        local b = t and def("common/governments", t)
+        local v = b and dfield(b, key)
+        return v and unq(v) or nil
+    end
+    -- set_ruler_title_male / set_ruler_title_female = <name> (CSetRulerTitleMaleEffect 0x37b41e0,
+    -- ...Female 0x37b4930) [V]: that title, and the other gender's current one (custom, else the
+    -- government type's) written as custom too; the heir's untouched [I: substrings not evaluated]
+    local function ruler_title(key, other)
+        return function(e, ctx)
+            local c = C(ctx)
+            if not c then return end
+            local name = persistent(e.value)
+            if (unq(field(name, "key")) or "") == "" then return end
+            set_block(c, key, name)
+            if type(field(c, other)) ~= "table" then
+                local t = gov_title(c, other)
+                if t then set_block(c, other, name_block(t, false)) end
+            end
+            wrote()
+        end
+    end
+    EFF["set_ruler_title_male"] = ruler_title("ruler_title", "ruler_title_female")
+    EFF["set_ruler_title_female"] = ruler_title("ruler_title_female", "ruler_title")
+    -- clear_custom_ruler_and_heir_titles (CClearCustomRulerAndHeirTitlesEffect 0x37b2fd0) [V]
     EFF["clear_custom_ruler_and_heir_titles"] = function(_, ctx)
         local c = C(ctx)
         if not c then return end
-        local g = gov_of(c)
         local n = 0
         for _, k in ipairs({ "ruler_title", "ruler_title_female", "heir_title", "heir_title_female" }) do
-            if remove_key(g, k) then n = n + 1 end
+            if remove_key(c, k) then n = n + 1 end
         end
         if n > 0 then wrote() end
     end
-    -- set_council_position_title_male / _female = { position_tag title }: the country's
-    -- custom_council_titles entry of that councillor type [I keys]
+    -- set_council_position_title_male / _female = { position_tag title }
+    -- (CSetCouncilPositionTitleMaleEffect 0x37b5090, ...Female 0x37b5860 → CCountry::
+    -- SetCustomCouncilTitle 0x23940b0) [V]: the position's entries in custom_council_titles out, one
+    -- appended: { council_position male female } with the other gender's custom title kept
     local function council_title(which)
         return function(e, ctx)
             local c = C(ctx)
             if not c or e.value.text then return end
             local p = params(e)
-            local tag, t = text_of(p.position_tag), text_of(p.title)
-            if not tag or not t then return end
+            local tag, t = unq(text_of(p.position_tag)), unq(text_of(p.title))
+            if not tag or not t or not def("common/governments/councilors", tag) then return end
             local titles = world.child(c, "custom_council_titles")
-            local entry
-            for _, b in ipairs(world.blocks(titles)) do
-                if unq(field(b, "type")) == tag then entry = b end
+            local other = which == "male" and "female" or "male"
+            local keep = ""
+            for _, x in ipairs(world.blocks(titles)) do
+                if unq(field(x, "council_position")) == tag then
+                    keep = unq(field(x, other)) or keep
+                    world.remove_entry(titles, x)
+                end
             end
-            if not entry then
-                entry = {}
-                world.append(entry, "type", tag, true)
-                world.push(titles, entry)
-            end
-            local lit = not (t:match("^[%w_]+$") ~= nil and t:upper() == t)
-            set_block(entry, which, name_block(t, lit))
+            local entry = {}
+            world.append(entry, "council_position", tag, true)
+            world.append(entry, "male", which == "male" and t or keep, true)
+            world.append(entry, "female", which == "female" and t or keep, true)
+            world.push(titles, entry)
             wrote()
         end
     end
     EFF["set_council_position_title_male"] = council_title("male")
     EFF["set_council_position_title_female"] = council_title("female")
-
-    -- ------------------------------------------------------------------------------------------
-    -- pop groups: amounts
-
-    -- a group's ethos (`ethos = { ethics = { } pops = { } }`): names and counts, and written back
-    -- (the most first, empty ones dropped, as engine.pops writes it)
-    local function ethos_of(g)
-        local ethos = field(g, "ethos")
-        if type(ethos) ~= "table" then return nil end
-        local names, counts = {}, {}
-        for _, n in ipairs(world.list(field(ethos, "ethics"))) do names[#names + 1] = unq(n) end
-        for i, t in ipairs(world.list(field(ethos, "pops"))) do counts[i] = floor(tonumber(t) or 0) end
-        return names, counts
+    -- room_name_override = <text> (CRoomNameOverrideEffect 0x3795ad0) [V]: the country's `room`; an
+    -- empty text removes it
+    EFF["room_name_override"] = function(e, ctx)
+        local c = C(ctx)
+        if not c or not e.value.text then return end
+        local t = unq(e.value.text)
+        if t == "" then
+            if remove_key(c, "room") then wrote() end
+            return
+        end
+        world.set(c, "room", quoted(t))
+        wrote()
     end
-    local function write_ethos(g, names, counts)
-        local ethos = world.child(g, "ethos")
-        local idx = {}
-        for i = 1, #names do idx[i] = i end
-        table.sort(idx, function(a, b)
-            if counts[a] ~= counts[b] then return counts[a] > counts[b] end
-            return a < b
-        end)
-        local nb, cb = {}, {}
-        for _, i in ipairs(idx) do
-            if (counts[i] or 0) > 0 then
-                nb[#nb + 1] = { text = names[i], quoted = true }
-                cb[#cb + 1] = { text = tostring(counts[i]) }
+    -- randomize_flag_symbol = <category> (CRandomizeFlagSymbolEffect 0x376b9b0 → CEmpireFlag::
+    -- RandomizeSymbol 0x19ee9b0) [V]: one global draw s; the flag's icon category; a CCrudeRandom(s)
+    -- draw picks among the category's textures (flags/<category>/, in name order [I: the database's
+    -- order]); used_symbols not touched
+    local flag_files = {}
+    local function category_textures(cat)
+        local list = flag_files[cat]
+        if list then return list end
+        list = {}
+        local ok, files = pcall(RUST.list_files, os.getenv("STELLARIS_DIR") or "", "flags")
+        if ok and type(files) == "table" then
+            for _, f in ipairs(files) do
+                local c2, name = tostring(f):match("flags/([^/]+)/([^/]+%.dds)$")
+                if c2 == cat then list[#list + 1] = name end
             end
         end
-        set_block(ethos, "ethics", nb)
-        set_block(ethos, "pops", cb)
+        table.sort(list)
+        flag_files[cat] = list
+        return list
     end
-    -- the ethos resized to the group's new size, each ethic's share kept (largest remainders)
-    local function resize_ethos(g, size)
-        local names, counts = ethos_of(g)
-        if not names or #names ~= #counts then return end
-        local total = 0
-        for _, n in ipairs(counts) do total = total + n end
-        if total == 0 or total == size then return end
-        local given, rem = 0, {}
-        for i, n in ipairs(counts) do
-            local x = size * n / total
-            counts[i] = floor(x)
-            rem[i] = x - counts[i]
-            given = given + counts[i]
+    EFF["randomize_flag_symbol"] = function(e, ctx)
+        local c = C(ctx)
+        if not c or not e.value.text then return end
+        local cat = unq(e.value.text)
+        local s = eval.rand()
+        local icon = world.child(world.child(c, "flag"), "icon")
+        world.set(icon, "category", quoted(cat))
+        local list = category_textures(cat)
+        if #list > 0 then
+            local r = SR.new(s)
+            local x = require("engine.newgame.rng").noise32(r.pos, r.seed)
+            local bit = require("bit")
+            local n = bit.bxor(bit.band(x, 0x7FFFFFFE), bit.rshift(x, 8))
+            if n < 0 then n = n + 4294967296 end
+            world.set(icon, "file", quoted(list[n % #list + 1]))
         end
-        while given < size do
-            local best
-            for i = 1, #counts do if not best or rem[i] > rem[best] then best = i end end
-            counts[best] = counts[best] + 1
-            rem[best] = -1
-            given = given + 1
-        end
-        write_ethos(g, names, counts)
+        wrote()
     end
-    -- an amount parameter: `<num>`, or { amount|percentage random } of the group's size; the random
-    -- part one draw in [max(0, n - random), n + random]
-    local function amount_of(e, ctx, size)
-        if e.value.text then return int_value(e, ctx) or 0 end
-        local p = params(e)
-        local n = 0
-        if p.amount then n = eval.value(p.amount.value, ctx, p.amount) or 0
-        elseif p.percentage then n = size * (eval.value(p.percentage.value, ctx, p.percentage) or 0) end
-        n = floor(n)
-        if p.random then
-            local r = floor(eval.value(p.random.value, ctx, p.random) or 0)
-            if r > 0 then
-                local lo = math.max(0, n - r)
-                n = lo + eval.rand() % (n + r - lo + 1)
-            end
-        end
-        return n
-    end
-    local function G(ctx) return ctx.this.kind == "pop_group" and H.group(ctx.this.id) or nil end
-    -- add_pop_amount / remove_pop_amount (CAddPopAmountEffect, CRemovePopAmountEffect): the group's
-    -- size, its ethos with it (an emptied group stays for the colony's update to remove [I])
-    local function change_size(g, delta)
-        local size = math.max(0, num(field(g, "size")) + delta)
-        world.set(g, "size", size)
-        resize_ethos(g, size)
-    end
-    EFF["add_pop_amount"] = function(e, ctx)
-        local g = G(ctx)
-        if not g then return end
-        local n = amount_of(e, ctx, num(field(g, "size")))
-        if n ~= 0 then change_size(g, n) wrote() end
-    end
-    EFF["remove_pop_amount"] = function(e, ctx)
-        local g = G(ctx)
-        if not g then return end
-        local n = amount_of(e, ctx, num(field(g, "size")))
-        if n ~= 0 then change_size(g, -n) wrote() end
-    end
-    -- scale_pop_amount = <factor> (CScalePopAmountEffect): the size times the factor
-    EFF["scale_pop_amount"] = function(e, ctx)
-        local g = G(ctx)
-        if not g then return end
-        local size = num(field(g, "size"))
-        local new = floor(size * (eval.value(e.value, ctx, e) or 1))
-        if new ~= size then change_size(g, new - size) wrote() end
-    end
-    -- transfer_pop_amount = { source target amount|percentage random growth_category }
-    -- (CTransferPopAmountEffect): pops.move_size from the source group to the target group
-    EFF["transfer_pop_amount"] = function(e, ctx)
-        if e.value.text then return end
-        local p = params(e)
-        local src, dst = target(p.source, ctx), target(p.target, ctx)
-        if not src or not dst or src.kind ~= "pop_group" or dst.kind ~= "pop_group" or src.id == dst.id then return end
-        local n = amount_of(e, ctx, H.group_size(src.id))
-        if n <= 0 then return end
-        local moved = require("engine.pops").move_size(dst.id, src.id, n, text_of(p.growth_category) or "GROWTH_CAT_OTHER",
-            H.group_colony(src.id))
-        if (moved or 0) > 0 then wrote() end
-    end
-    -- displace_pop_amount = { amount|percentage random } (CDisplacePopAmountEffect): fires
-    -- on_pop_displaced for the group with the amount [I: the on_action's scopes]
-    EFF["displace_pop_amount"] = function(e, ctx)
-        local g = G(ctx)
-        if not g then return end
-        local n = amount_of(e, ctx, num(field(g, "size")))
-        if n <= 0 then return end
-        eval.setvar(ctx.this, "displaced_pop_amount", n)
-        pcall(function() require("simscript.events").on_action("on_pop_displaced", ctx.this) end)
+    -- set_empire_flag = { icon background colors } (CSetEmpireFlagEffect 0x37750b0 → CCountry::
+    -- SetEmpireFlag 0x2341970) [V]: the country's flag replaced [I: the top-level used_color and
+    -- used_symbols entries it adds not written]
+    EFF["set_empire_flag"] = function(e, ctx)
+        local c = C(ctx)
+        if not c or e.value.text then return end
+        set_block(c, "flag", copy_node(e.value))
         wrote()
     end
 
