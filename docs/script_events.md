@@ -136,6 +136,45 @@ Part 2's probe (`/root/ce/p4.txt`, `p5.txt`) runs the same effects with real tar
 - the situation aborted (to_be_killed);
 - the rift destroyed.
 
+## The review: every silent and refused row acting on real targets
+
+`sim/tools/scriptprobe.lua` with `sim/tools/scriptprobe_events.txt` runs each of the package's
+silent and refused effects on a real target that the probe makes first. That covers 29 rows:
+abort_situation, abort_special_project, add_anomaly, add_awareness, add_event_chain_counter,
+add_mission_counter, add_mission_progress, complete_special_project, create_cosmic_storm,
+destroy_archaeological_site, destroy_astral_rift, destroy_cosmic_storm_influence_field,
+destroy_situation, end_event_chain, fleet_action_research_special_project, give_culling_rewards,
+give_specimen, remove_patron, remove_relic, remove_specimen, reset_event_chain_counter,
+roll_ai_preferred_patron, set_awareness, set_cosmic_storm, set_event_locked, set_mission_counter,
+set_situation_approach, spawn_random_anomaly, steal_specimens. The targets it makes:
+- a situation;
+- an active event chain;
+- an enabled special project;
+- a pre-FTL country;
+- an active mission;
+- an observation mission;
+- a locked fleet;
+- a storm;
+- a field;
+- a site;
+- a rift;
+- a relic the country has;
+- patron relations;
+- a grand archive with a specimen, and a victim country holding one.
+
+On both the 2210.01.01 autosave and `rich_2212.sav`, every one writes the world (the probe counts
+the writes).
+```
+cd sim
+PROBE=tools/scriptprobe_events.txt STELLARIS_DIR=/opt/stellaris STELLAR_LUA=tools/scriptprobe.lua \
+  <target>/release/examples/run 0 /root/scov/saves/rich_2212.sav
+```
+The checker's own uses stay silent or refused for the reasons above: the target is missing, so the
+game does nothing either.
+
+The probe also showed one miss that belongs to another package: `num_moons`, read as a trigger value
+in an anomaly category's spawn_chance.
+
 ## The coverage save
 
 The 2210.01.01 save has no cosmic storm, astral rift, mission or exhibit. The headless game makes one: `/root/ce/cov_events/autosave_2210.01.03.sav` on .24 (`/root/ce/gsave.txt`). It is `console Effect` with, on the player's country:
