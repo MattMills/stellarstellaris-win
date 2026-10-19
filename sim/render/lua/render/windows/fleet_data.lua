@@ -166,7 +166,7 @@ end
 -- the current order's line (CFleetView::UpdateOrders' FLEETORDER_* texts) as { key, vars } with
 -- name blocks for the GUI's side to localise; nil: none (NO_ORDERS) [I: the order types the
 -- engine runs; the others none]
-local function order_line(f)
+local function current_line(f)
     local cur = world.field(f, "current_order")
     local e
     for _, x in ipairs(type(cur) == "table" and cur or {}) do
@@ -188,17 +188,71 @@ local function order_line(f)
         local sid = num(world.path(b, "coordinate", "origin"))
         return { key = "FLEETORDER_MOVE_OTHER_SYSTEM", names = { SYSTEM = system_name(sid) } }
     elseif ty == "orbit_planet_order" then
+        -- in the planet's system "Entering Orbit of X" [V: the game's frame], from another system
+        -- the move there [I]; a starbase's slot: its "$PLANET$ Station" (the system's star) [I]
         local pid = num(world.path(b, "orbitable", "planet"))
-        local p = pid and world.object("planet", pid)
+        local sb = num(world.path(b, "orbitable", "starbase"))
+        local star = num(world.path(b, "star", "planet"))
+        local p = world.object("planet", pid or star or -1)
         local sid = p and num(world.path(p, "coordinate", "origin"))
-        return { key = "FLEETORDER_MOVE_OTHER_SYSTEM", names = { SYSTEM = system_name(sid) } }
+        local here = num(world.path(f, "movement_manager", "coordinate", "origin"))
+        if sid and here ~= sid then
+            return { key = "FLEETORDER_MOVE_OTHER_SYSTEM", names = { SYSTEM = system_name(sid) } }
+        end
+        if sb then
+            return { key = "FLEETORDER_ORBIT", nested = { PLANET = { key = "STARBASE_STATION_NAME_FORMAT_NON_PRIMARY", names = { PLANET = planet_name(star) } } } }
+        end
+        return { key = "FLEETORDER_ORBIT", names = { PLANET = planet_name(pid) } }
     elseif ty == "survey_planet_order" then
+        -- PROGRESS a fraction (|%0): the days over BASE_SURVEY_TIME x the planet class's
+        -- survey_time_factor (engine.fleets.survey's GetNeededProgress) [V: the game's "80%"]
         local pid = num(world.path(b, "deposit_holder", "id"))
-        return { key = "FLEETORDER_SURVEY", names = { PLANET = planet_name(pid) }, vars = { PROGRESS = num(world.field(b, "progress")) or 0 } }
+        local needed = 30
+        pcall(function()
+            local defs = require("engine.defs")
+            local g = defs.get("common/defines", "NGameplay")
+            needed = tonumber(g and defs.field(g.block, "BASE_SURVEY_TIME")) or needed
+            local p = world.object("planet", pid)
+            local d = p and defs.get("common/planet_classes", unquote(world.field(p, "planet_class")))
+            needed = needed * (tonumber(d and defs.field(d.block, "survey_time_factor")) or 1)
+        end)
+        return { key = "FLEETORDER_SURVEY", names = { PLANET = planet_name(pid) },
+                 vars = { PROGRESS = (num(world.field(b, "progress")) or 0) / math.max(needed, 1) } }
+    elseif ty == "build_orbital_station_order" then
+        -- "Building X Starbase: 12%": the progress done at 100 (engine.fleets.orders' station
+        -- order) [I: the game's FLEETORDER_BUILD_ORBITALSTATION with the class's name]
+        local pid = num(world.path(b, "deposit_holder", "id"))
+        return { key = "FLEETORDER_BUILD_ORBITALSTATION", names = { PLANET = planet_name(pid) },
+                 nested = { SHIPCLASS = { key = unquote(world.field(b, "class")) or "" } },
+                 vars = { PROGRESS = (num(world.field(b, "progress")) or 0) / 100 } }
     elseif ty == "return_fleet_order" then
         return { key = "FLEETORDER_RETURN" }
+    elseif ty == "follow_order" then
+        -- "Following X" / "Attacking X" [V: the game's frame, the follow]
+        local tf = num(world.field(b, "fleet"))
+        local t = tf and world.object("fleet", tf)
+        return { key = world.field(b, "attack_when_in_range") == "yes" and "FLEETORDER_FOLLOW_AND_ATTACK" or "FLEETORDER_FOLLOW",
+                 names = { NAME = t and galaxy.name_block(world.field(t, "name")) } }
     end
     return nil
+end
+
+-- the line with the queued orders' count: "X (+N Orders)" (FLEETORDER_TOP_LEVEL_TEXT) [V: the
+-- game's frame after a Shift + right click]
+local function order_line(f)
+    local line = current_line(f)
+    if not line then
+        return nil
+    end
+    local n = 0
+    local q = world.field(f, "order")
+    for _, e in ipairs(type(q) == "table" and q or {}) do
+        if e.op and e.key then n = n + 1 end
+    end
+    if n == 0 then
+        return line
+    end
+    return { key = "FLEETORDER_TOP_LEVEL_TEXT", nested = { ORDER = line }, vars = { ORDERS_LEFT = n } }
 end
 
 -- fd.fleet(fid [, observer]) -> the fleet_view's data, as the observer (the player) sees it

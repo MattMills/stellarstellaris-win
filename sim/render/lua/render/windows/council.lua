@@ -28,6 +28,9 @@ function M.data(cid, state)
         ethics = C.strings(world.path(c, "ethos", "ethics")),
         agenda = C.strip(world.field(gov, "council_agenda")),
         agenda_progress = tonumber(world.field(gov, "council_agenda_progress")) or 0,
+        -- (the early launch's price: the empire's size, its unity)
+        empire_size = tonumber(world.field(c, "empire_size")) or 0,
+        unity = tonumber(world.path(c, "modules", "standard_economy_module", "resources", "unity")) or 0,
         positions = {},
         edicts = {},
         -- the DLCs the save names (meta.required_dlcs): has_paragon_dlc
@@ -116,7 +119,9 @@ function M.build(ctx, d, state)
         -- activate_council_agenda_button and its glow; CFinishAgendaCommand, the simulation's
         -- cmd:council:launch; CCouncilAgenda::GetCost: agenda_cost x (1 +
         -- EMPIRE_SIZE_COUNCIL_AGENDA_COST_PENALTY x the size over EMPIRE_SIZE_BASE)); early
-        -- (early_activate_council_agenda_button, paid in unity): disabled [not done here]
+        -- (early_activate_council_agenda_button: CEarlyFinishAgendaCommand, its cost the game rule
+        -- council_agenda_early_activation_cost, render.windows.empire_commands.early_cost): enabled
+        -- when the unity covers it
         local cost = C.number(ctx, "common/council_agendas", d.agenda, C.field(C.defs(ctx, "common/council_agendas")[d.agenda] or {}, "agenda_cost")) or 0
         if d.agenda_progress < cost or cost <= 0 then
             hide.activate_council_agenda_button = true
@@ -148,8 +153,17 @@ function M.build(ctx, d, state)
     if agendas_open then
         sprites[V .. "/council_agenda_container/council_agenda_button"] = "GFX_button_open_agendas_active"
     end
+    local early_ok = false
+    if d.agenda then
+        local cost = C.number(ctx, "common/council_agendas", d.agenda, C.field(C.defs(ctx, "common/council_agendas")[d.agenda] or {}, "agenda_cost")) or 0
+        local price = require("render.windows.empire_commands").early_cost(d.empire_size or 0, cost > 0 and d.agenda_progress / cost or 0)
+        early_ok = price >= 0 and (d.unity or 0) >= price
+        if early_ok then
+            actions[V .. "/council_agenda_container/early_activate_council_agenda_button"] = "cmd:council:launch_early"
+        end
+    end
     local r = b:add(FILE, "council_view", { hide = hide, text = text, sprites = sprites, frames = frames, actions = actions,
-        disabled = { [V .. "/council_agenda_container/early_activate_council_agenda_button"] = true } })
+        disabled = { [V .. "/council_agenda_container/early_activate_council_agenda_button"] = not early_ok or nil } })
 
     -- the sidebar's ethics (CListBoxItemEntry<CEthic>: object_icon), one under the other
     local box = r.rects[V .. "/council_sidebar_small/ethics"]

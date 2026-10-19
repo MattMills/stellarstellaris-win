@@ -702,6 +702,10 @@ function M.build(ctx, sel, items, report)
     actions[W .. "/header_actions/next_starbase"] = "starbase:next"
     actions[W .. "/header_actions/goto"] = "starbase:goto"
     actions[W .. "/header_actions/open_planet"] = "starbase:planet"
+    -- the name's rename button (CAbstractStarbaseView::OnRename: CStarbase::CanRename, its own)
+    if own then
+        actions[W .. "/starbase_rename_button"] = "starbase:dialog:rename:" .. e.id
+    end
 
     -- the tabs (CGameGraphics::UpdateTabVisibility: the chosen tab's _active button, the others'
     -- plain one; UpdateSpecialized enables the shipyard and army hub tabs; the shipyard tab reads
@@ -875,6 +879,32 @@ function M.dialog(ctx, items, report, state, e)
         return
     end
     local loc = ctx.loc
+    -- the rename (CShipRenameDialog, rename_dialog.gui): the edit box with the name typed, else
+    -- the station's (the box starts with it); OK renames, Cancel closes; Return and Escape the same
+    if d:match("^rename:") then
+        local P = "/rename_dialog"
+        local text = state.text or (e and e.name and names.format(loc, e.name)) or ""
+        -- (the name shown, where the typing starts: starbase.rs reads it)
+        RENDER_STARBASE_DIALOG_NAME = text
+        local wi, wr = gui.layout(ctx.game_dir, ctx.db, "interface/rename_dialog.gui", "rename_dialog", ctx.screen, {
+            texture_size = ctx.texture_size, loc = loc,
+            hide = { [P .. "/RandomizeButton"] = true },
+            -- (CShipRenameDialogs title: RENAME_SHIP_TITLE, the games frame)
+            text = { [P .. "/title"] = "RENAME_SHIP_TITLE" },
+            actions = { [P] = "starbase:none", [P .. "/AgreeButton"] = "starbase:dialog_yes", [P .. "/DeclineButton"] = "starbase:dialog_no" },
+        })
+        gui.merge(items, report, wi, wr)
+        local rect = wr.rects[P .. "/editbox"]
+        if rect then
+            items[#items + 1] = {
+                kind = "text", path = P .. "/editbox/text", font = "malgun_goth_24", text = text .. "|",
+                spans = { { text = text .. "|", colour = { 1, 1, 1 } } }, x = rect.x + 4, y = rect.y, w = rect.w - 8, h = rect.h,
+                format = "left", valign = "center", fixed = true,
+            }
+            report.texts = report.texts + 1
+        end
+        return
+    end
     local verb = d:match("^(%a[%a_]*)")
     local args = {}
     for a in d:gmatch("[^:]+") do

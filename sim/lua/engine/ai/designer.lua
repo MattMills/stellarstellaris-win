@@ -747,11 +747,41 @@ end
 -- TakeRandomShipClassNameForDesign(size, country, r) [I]: from the country's name list's ship
 -- names of the size (the generic ones when it has none), the first of (r + i) % n, i = 0..99,
 -- that none of its designs is named
+local ROMAN = { { 1000, "M" }, { 900, "CM" }, { 500, "D" }, { 400, "CD" }, { 100, "C" }, { 90, "XC" },
+    { 50, "L" }, { 40, "XL" }, { 10, "X" }, { 9, "IX" }, { 5, "V" }, { 4, "IV" }, { 1, "I" } }
+local function roman(n)
+    local out = {}
+    for _, p in ipairs(ROMAN) do
+        while n >= p[1] do
+            out[#out + 1] = p[2]
+            n = n - p[1]
+        end
+    end
+    return table.concat(out)
+end
+
+-- a size without ship names (the stations, the starbases): the game names the design
+-- SUFFIX_NAME_FORMAT with an empty NAME and a literal Roman SUFFIX, a count over the country's
+-- such designs (the game's new game: II, III, IV, V, VI, VII for military_station_large,
+-- mining_station, research_station, observation_station, starbase_outpost, starbase_starport) [I:
+-- the count]; the name given here as "SUFFIX_NAME_FORMAT:<numeral>" (design_block writes it)
+local function suffix_name(country)
+    local n = 0
+    for _, did in ipairs(design_ids(country)) do
+        local d = world.object("ship_design", did)
+        local nb = d and world.field(d, "name")
+        if type(nb) == "table" and unq(world.field(nb, "key")) == "SUFFIX_NAME_FORMAT" then
+            n = n + 1
+        end
+    end
+    return "SUFFIX_NAME_FORMAT:" .. roman(n + 1)
+end
+
 function designer.class_name(country, size, r)
     local own, generic = create().name_lists(country, size)
     local list = #own > 0 and own or generic
     if #list == 0 then
-        return "SHIP_DESIGN_" .. size
+        return suffix_name(country)
     end
     local used = {}
     for _, did in ipairs(design_ids(country)) do
@@ -770,7 +800,25 @@ local function design_block(country, stage, name, role, auto)
     local c = world.object("country", country)
     local b = {}
     local nb = {}
-    world.append(nb, "key", name, true)
+    local numeral = type(name) == "string" and name:match("^SUFFIX_NAME_FORMAT:(.+)$")
+    if numeral then
+        -- name = { key = "SUFFIX_NAME_FORMAT" variables = { { key = "NAME" } { key = "SUFFIX"
+        -- value = { key = <numeral> literal = yes } } } } (the game's save)
+        world.append(nb, "key", "SUFFIX_NAME_FORMAT", true)
+        local vars = {}
+        local nv = {}
+        world.append(nv, "key", "NAME", true)
+        world.insert_value(vars, #vars + 1, nv)
+        local sv, val = {}, {}
+        world.append(sv, "key", "SUFFIX", true)
+        world.append(val, "key", numeral, true)
+        world.append(val, "literal", "yes")
+        world.append(sv, "value", val)
+        world.insert_value(vars, #vars + 1, sv)
+        world.append(nb, "variables", vars)
+    else
+        world.append(nb, "key", name, true)
+    end
     world.append(b, "name", nb)
     if role and role ~= "" then
         world.append(b, "role", role, true)

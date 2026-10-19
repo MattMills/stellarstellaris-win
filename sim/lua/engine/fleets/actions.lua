@@ -1,7 +1,7 @@
 -- engine/fleets/actions.lua : the fleets' scripted actions (CFleetAction: queue_actions in the
 -- scripts, `actions = { }` in the save), run as the game runs them, on every tick
 -- (CFleet::MicroUpdateSerial, Linux 0x291f460, in fleet id order, before the movement). From the
--- disassembly of 4.5.2 (headless/re notes: actions_queue.md, actions_find_move_orbit.md,
+-- disassembly of 4.5.2 (docs/re notes: actions_queue.md, actions_find_move_orbit.md,
 -- actions_wait_automove.md) [V].
 --
 -- The queue: only its first action runs; Init once (the fleet's `action_initialized` property),

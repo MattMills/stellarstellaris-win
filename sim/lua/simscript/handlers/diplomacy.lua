@@ -115,6 +115,25 @@ return function(eval)
     TRIG["is_at_war"] = bool_trigger(D.at_war)
     -- is_at_war_with = <c> (CIsAtWarWithTrigger 0x194e280): the relation's wars
     TRIG["is_at_war_with"] = pair_trigger(D.at_war_with)
+    -- has_opinion_modifier = { who = <country> modifier = <key> } (a country): its relation with
+    -- `who` holds the opinion modifier (the relation's `modifier = { modifier = <key> }`). The
+    -- galactic community's galcom.61 removes opinion_fellow_galcom_member with it when a member
+    -- leaves, as the game's save shows. (engine/ethics/script.lua installed the same only while the
+    -- ethics evaluate.)
+    TRIG["has_opinion_modifier"] = function(e, ctx)
+        local us = this_country(ctx)
+        if not us or e.value.text then return false end
+        local sc = param_scope(e.value, "who", ctx)
+        local who = sc and sc.kind == "country" and sc.id or nil
+        local key = param_text(e.value, "modifier")
+        if not who or not key then return false end
+        sync()
+        local r = D.relation(us, who)
+        for _, m in ipairs(r and world.fields(r, "modifier") or {}) do
+            if type(m) == "table" and world.field(m, "modifier") == key then return true end
+        end
+        return false
+    end
     -- recently_lost_war = yes/no (CRecentlyLostWarTrigger 0x1958460): months since last_date_war_lost
     -- <= TRUCE_YEARS * 12 (months: year * 12 + day of year / 30)
     local function months(days) return floor(days / 360) * 12 + floor((days % 360) / 30) end

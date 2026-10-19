@@ -385,18 +385,18 @@ function M.build(ctx, d, state)
             only[n] = true
         end
     end
-    -- their commands (the simulation's: cmd:leaders): hire (ShowRecruitLeaderDialog: the game asks
-    -- first [not done here: the dialog]), dismiss (ShowFireLeaderDialog; CFireLeaderCommand is not
-    -- valid for the ruler: disabled), assign (ShowAssignLeaderJobList: the job list, enabled when
+    -- their commands (the simulation's: cmd:leaders), each hire and dismissal asked first:
+    -- ShowRecruitLeaderDialog / ShowFireLeaderDialog (the confirmation below; CFireLeaderCommand is
+    -- not valid for the ruler: disabled); assign (ShowAssignLeaderJobList: the job list, enabled when
     -- it has a place)
     local act, disabled = {}, {}
     local cats = selected and not in_pool and M.jobs_for(ctx, d, selected) or {}
     if selected then
-        act[V .. "/hire_leader_button"] = "cmd:leaders:hire:" .. selected.id
+        act[V .. "/hire_leader_button"] = "view_set:confirm=hire:" .. selected.id
         if selected.ruler then
             disabled[V .. "/dismiss_leader_button"] = true
         else
-            act[V .. "/dismiss_leader_button"] = "cmd:leaders:dismiss:" .. selected.id
+            act[V .. "/dismiss_leader_button"] = "view_set:confirm=dismiss:" .. selected.id
         end
         if #cats > 0 then
             act[V .. "/assign_leader_button"] = "view_set:jobs=" .. (state.jobs == "1" and "" or "1")
@@ -462,6 +462,47 @@ function M.build(ctx, d, state)
             end
         end
     end
+    -- the confirmations (standard_dialog): CRecruitLeaderDialog (RECRUIT_LEADER_TITLE, its cost and
+    -- upkeep; at or over the class's leader cap the AT_CAP / ALREADY_OVER_CAP texts and Hire Anyway)
+    -- and CFireLeaderDialog (FIRE_LEADER_TITLE / _DESC); YES runs the command, NO closes it
+    local verb, cid = tostring(state.confirm or ""):match("^(%a+):(%d+)$")
+    local who
+    for _, l in ipairs(d.owned or {}) do
+        who = who or (tostring(l.id) == cid and l or nil)
+    end
+    for _, l in ipairs(d.pool or {}) do
+        who = who or (tostring(l.id) == cid and l or nil)
+    end
+    if who then
+        local title, desc, yes, no = "FIRE_LEADER_TITLE", C.loc(ctx, "FIRE_LEADER_DESC"), "YES", "NO"
+        if verb == "hire" then
+            local used = 0
+            for _, o in ipairs(d.owned or {}) do
+                if o.class == who.class then
+                    used = used + 1
+                end
+            end
+            local n = cap(ctx, who.class)
+            local key = used > n and "RECRUIT_LEADER_ALREADY_OVER_CAP" or used == n and "RECRUIT_LEADER_AT_CAP" or nil
+            title = key and (key .. "_TITLE") or "RECRUIT_LEADER_TITLE"
+            -- (the cost: the class's leader_cost; the upkeep, Root.GetUpkeep: 2 x the level [I])
+            desc = C.raw(ctx, key and (key .. "_DESC") or "RECRUIT_LEADER_DESC")
+                :gsub("%$COST[^$]*%$", "§Y£unity£" .. M.cost(who) .. "§!")
+                :gsub("%[Root%.GetUpkeep%]", string.format("£unity£%.1f", 2 * (who.level or 1)))
+                :gsub("\\n", "\n")
+            yes, no = key and "RECRUIT_LEADER_HIRE_ANYWAY" or "YES", key and "CANCEL" or "NO"
+        end
+        local D = "/standard_dialog/"
+        b:add("interface/standard_dialog.gui", "standard_dialog", {
+            -- (the description box sized for its lines: CGameDialog lays the text out in the window [I])
+            sizes = { [D .. "description"] = { 420, 100 } },
+            text = { [D .. "title"] = title, [D .. "description"] = desc, [D .. "AgreeButton"] = yes, [D .. "DeclineButton"] = no },
+            actions = {
+                [D .. "AgreeButton"] = "cmd:leaders:" .. verb .. ":" .. who.id .. "#confirm=",
+                [D .. "DeclineButton"] = "view_set:confirm=",
+            },
+        })
+    end
     -- the rename dialog over the view (the cards' rename buttons)
     require("render.windows.rename").build(b, ctx, "leaders", state, nil)
     return b.items, b.report
@@ -495,7 +536,7 @@ function M.command(...)
 end
 
 -- Escape (views.rs): the side windows in these state keys close first, else the view closes
-M.escape_keys = { "jobs" }
+M.escape_keys = { "jobs", "confirm" }
 require("render.windows.rename").install(M, "leaders")
 
 return M

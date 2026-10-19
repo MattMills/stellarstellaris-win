@@ -94,6 +94,11 @@ pub fn shading_of(game_dir: &str, shader: &str) -> Option<Shading> {
     if s.contains("star") {
         return Some(Shading::Emissive);
     }
+    // a portrait's parts (PdxMeshPortrait and its Skinned, HueShift, Clothes, Hair forms:
+    // PixelPdxMeshPortrait), drawn in the views' portraits (portraits.rs)
+    if s.starts_with("pdxmeshportrait") {
+        return Some(Shading::Portrait);
+    }
     if s.contains("additive") || s.contains("alphablend") || s.contains("shield") || s.contains("flow") || s.contains("portrait")
         || s.contains("navigation") || s.contains("gradient") || s.contains("rift") || s.contains("snare") || s.contains("frontend")
     {

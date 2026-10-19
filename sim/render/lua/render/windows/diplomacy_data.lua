@@ -31,9 +31,13 @@
 --   attitude = { [id] = their AI's attitude towards the player ("null": none) }
 --   intel = { [id] = the player's intel level on id (intel_manager) }
 --   federations = { [id] = { name (block), type, leader, members = { }, associates = { },
---       cohesion, experience, laws = { category = law }, president } }
---   wars = { [id] = { name (block), attackers = { }, defenders = { }, war_goal, start_date,
---       attacker_war_exhaustion, defender_war_exhaustion } }
+--       cohesion, experience, laws = { category = law }, levels, envoys = { }, perks = { { level,
+--       type } } } }
+--   wars = { [id] = { name (block), attackers = { }, defenders = { }, calls = { [country] =
+--       { type, caller } }, start_date, attacker_war_exhaustion, defender_war_exhaustion,
+--       attacker_war_goal, defender_war_goal (types), have_defender_war_goal,
+--       attackers_surrendered, defenders_surrendered, battles = { { type,
+--       attacker_war_exhaustion, defender_war_exhaustion } } } }
 --   community = { members = { }, council = { }, leader, formed (bool), election }
 
 local world = require("engine.world")
@@ -276,6 +280,11 @@ function data.extract(game_dir, player, add_country)
         if f then
             local prog = world.field(f, "federation_progression")
             local laws = {}
+            -- the perks unlocked: { level, type }
+            local perks = {}
+            for _, p in ipairs(world.blocks(type(prog) == "table" and world.field(prog, "perks") or nil)) do
+                perks[#perks + 1] = { level = tonumber(world.field(p, "level")), type = text(world.field(p, "type")) }
+            end
             local lb = type(prog) == "table" and world.field(prog, "laws")
             for k, v in world.statements(type(lb) == "table" and lb or nil) do
                 laws[k] = text(v)
@@ -290,6 +299,9 @@ function data.extract(game_dir, player, add_country)
                 members = ids(world.field(f, "members")),
                 associates = ids(world.field(f, "associates")),
                 laws = laws,
+                levels = type(prog) == "table" and tonumber(world.field(prog, "levels")) or 1,
+                envoys = ids(type(prog) == "table" and world.field(prog, "envoy") or nil),
+                perks = perks,
             }
         end
     end
@@ -297,22 +309,47 @@ function data.extract(game_dir, player, add_country)
     for _, wid in ipairs(world.all("war")) do
         local w = world.object("war", wid)
         if w then
+            -- SWarParticipant: country, caller (-1 none), call_type (EWarCallerType's token)
             local function side(k)
-                local s = {}
+                local s, calls = {}, {}
                 for _, p in ipairs(world.blocks(world.field(w, k))) do
                     local cid = ref(world.field(p, "country"))
                     if cid then
                         s[#s + 1] = cid
+                        calls[cid] = { type = text(world.field(p, "call_type")) or "primary", caller = ref(world.field(p, "caller")) }
                     end
                 end
-                return s
+                return s, calls
             end
+            -- a side's war goal: its type, none when the block is empty
+            local function goal(k)
+                local g = world.field(w, k)
+                return type(g) == "table" and text(world.field(g, "type")) or nil
+            end
+            -- SWarBattle: the type and each side's war exhaustion and losses
+            local battles = {}
+            for _, b in ipairs(world.blocks(world.field(w, "battles"))) do
+                battles[#battles + 1] = {
+                    type = text(world.field(b, "type")),
+                    attacker_war_exhaustion = tonumber(world.field(b, "attacker_war_exhaustion")) or 0,
+                    defender_war_exhaustion = tonumber(world.field(b, "defender_war_exhaustion")) or 0,
+                }
+            end
+            local att, att_calls = side("attackers")
+            local def, def_calls = side("defenders")
+            local calls = att_calls
+            for k, v in pairs(def_calls) do calls[k] = v end
             out.wars[wid] = {
                 name = name_block(world.field(w, "name")),
-                attackers = side("attackers"), defenders = side("defenders"),
+                attackers = att, defenders = def, calls = calls,
                 start_date = text(world.field(w, "start_date")),
                 attacker_war_exhaustion = tonumber(world.field(w, "attacker_war_exhaustion")) or 0,
                 defender_war_exhaustion = tonumber(world.field(w, "defender_war_exhaustion")) or 0,
+                attacker_war_goal = goal("attacker_war_goal"), defender_war_goal = goal("defender_war_goal"),
+                have_defender_war_goal = text(world.field(w, "have_defender_war_goal")) == "yes",
+                attackers_surrendered = text(world.field(w, "attackers_surrendered")) == "yes",
+                defenders_surrendered = text(world.field(w, "defenders_surrendered")) == "yes",
+                battles = battles,
             }
         end
     end
@@ -337,8 +374,21 @@ function data.extract(game_dir, player, add_country)
             council = ids(world.field(gc, "council")),
             leader = ref(world.field(gc, "leader")),
             formed = world.field(gc, "community_formed") ~= nil,
+            focus = text(world.field(gc, "focus")),
+            proposed = ids(world.field(gc, "proposed")),
+            emissaries = ids(world.field(gc, "emissaries")),
             election = tonumber(world.field(gc, "election")),
+            custodian = ref(world.field(gc, "custodian")),
         }
+        -- Join / Leave: their costs and whether the player can (render.windows.diplomacy_membership)
+        if player and player >= 0 then
+            local okm, Mb = pcall(require, "render.windows.diplomacy_membership")
+            if okm then
+                local j, l, cj, cl, why = Mb.community_costs(game_dir, player)
+                out.community.join_cost, out.community.leave_cost = j, l
+                out.community.can_join, out.community.can_leave, out.community.why = cj, cl, why
+            end
+        end
     end
 
     out.ms = math.floor(((RUST and RUST.clock and RUST.clock() or os.clock()) - t0) * 1000 + 0.5)

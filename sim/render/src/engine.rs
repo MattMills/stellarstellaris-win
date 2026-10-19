@@ -377,6 +377,13 @@ impl Engine {
         let a = &words[1..];
         let rest = line.trim_start()[verb.len()..].trim();
         match verb {
+            // `console Effect WORDS...`: the game console's effect, as the headless game's `console
+            // Effect` (one command file for both): `effect`
+            "console" if a.first().copied() == Some("Effect") => {
+                let words = rest["Effect".len()..].trim();
+                let code = format!("return require('render.windows.console_effect').run({words:?})");
+                self.app.fleet_run(&code).map(|r| Reply::ok(format!("console {r}")))
+            }
             "console" => {
                 // the load screens' console (console.rs): `console on|off`
                 let on = match a.first().copied() {
@@ -567,18 +574,25 @@ impl Engine {
                     ["close"] => "diplo:close".to_string(),
                     ["community"] => "diplo:community".to_string(),
                     [what @ ("country" | "federation" | "war"), id] => format!("diplo:{what}:{id}"),
-                    [what @ ("select" | "tab" | "sort" | "action" | "filter" | "zoom"), v] => format!("diplo:{what}:{v}"),
+                    [what @ ("select" | "tab" | "sort" | "action" | "filter" | "zoom" | "peace" | "member"), v] => format!("diplo:{what}:{v}"),
                     // the picked action proposed (its Confirm button), whether or not the list offers it
                     ["confirm"] => "diplo:action_confirm".to_string(),
-                    _ => return Err("open_diplomacy contacts|country ID|community|federation ID|war ID|close (or select ID, tab NAME, sort NAME, action KEY, confirm, filter NAME, zoom ID)".into()),
+                    // a war's selected peace option sent (Send Offer)
+                    ["peace_send"] => "diplo:peace_send".to_string(),
+                    // a leave's yes/no popup answered
+                    [ans @ ("confirm_yes" | "confirm_no")] => format!("diplo:{ans}"),
+                    // an object of the world as the save writes it (the tests' comparisons)
+                    ["inspect", kind, id] => format!("diplo:inspect:{kind}:{id}"),
+                    _ => return Err("open_diplomacy contacts|country ID|community|federation ID|war ID|close (or select ID, tab NAME, sort NAME, action KEY, confirm, filter NAME, zoom ID, peace OPTION, peace_send, member VERB, confirm_yes, confirm_no, inspect KIND ID)".into()),
                 };
                 // (the left bar's button toggles Contacts; the command opens it)
                 if action == "view:contacts" && self.app.diplomacy.open == Some(crate::diplomacy::Open::Contacts) {
                     return Ok(Reply::ok("open_diplomacy contacts"));
                 }
                 self.app.action(&action)?;
-                self.flush_log();
-                Ok(Reply::ok(format!("open_diplomacy {rest}")))
+                // what it did (the log: a proposal's answer and its terms), in the reply
+                let lines = self.flush_log();
+                Ok(Reply::ok(if lines.is_empty() { format!("open_diplomacy {rest}") } else { format!("open_diplomacy {rest} ({})", lines.join("; ")) }))
             }
             "observe" => {
                 // the game's console `observe` (headless.c serves it too): the player an observer
@@ -863,13 +877,28 @@ impl Engine {
                 Ok(Reply::ok(format!("bench {r}")))
             }
             "state" => Ok(Reply::ok(self.state())),
+            // `effect WORDS...`: the console's effect in the simulation (render.windows.console_effect),
+            // as the headless game's `effect`: a test's setup made the same way on both sides
+            "effect" => {
+                let code = format!("return require('render.windows.console_effect').run({rest:?})");
+                self.app.fleet_run(&code).map(Reply::ok)
+            }
+            // `fleet_cmd CALL`: a render.windows.fleet_commands call in the simulation (fleetwin.rs:
+            // `fleet_cmd .debug(1)`, `fleet_cmd ["stop"](3)`), its reply
+            "fleet_cmd" => self.app.fleet_command(rest).map(|r| Reply::ok(format!("fleet_cmd {r}"))),
             "quit" => Ok(Reply { line: "ok quit".into(), bytes: None, quit: true }),
             other => Err(format!("unknown command {other:?}")),
         }
     }
 
     fn flush_log(&mut self) -> Vec<String> {
-        self.app.log.drain(..).collect()
+        // (into the load screens' console here: these go into the replies, not to stderr, so
+        // eprintln!'s copy does not take them)
+        let lines: Vec<String> = self.app.log.drain(..).collect();
+        for l in &lines {
+            crate::console::push(l);
+        }
+        lines
     }
 
     /// Input for the app: in lockstep kept for the next frame; else taken at once (the polled

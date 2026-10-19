@@ -4,6 +4,13 @@
 --
 --   list GAME_DIR ACTOR RECIPIENT          the actions of the recipient's diplomacy window
 --   propose GAME_DIR ACTION ACTOR RECIPIENT  an action proposed (render.windows.diplomacy_actions)
+--   peace GAME_DIR WAR OPTION PLAYER       a peace offered (render.windows.diplomacy_peace)
+--   leave_federation GAME_DIR PLAYER       the player's federation left
+--   join_community GAME_DIR PLAYER        the galactic community joined
+--   leave_community GAME_DIR PLAYER       the galactic community left
+--   inspect GAME_DIR KIND ID               an object as the save writes it (KIND top: a top-level
+--                                          block named ID)
+--     (render.windows.diplomacy_membership)
 --
 -- Each returns a Lua chunk (render.windows.diplomacy_data.serialize).
 
@@ -15,6 +22,30 @@ function M.command(verb, game_dir, a, b, c)
         return A.list(game_dir, tonumber(a), tonumber(b))
     elseif verb == "propose" then
         return A.apply(game_dir, a, tonumber(b), tonumber(c))
+    elseif verb == "peace" then
+        return require("render.windows.diplomacy_peace").apply(game_dir, tonumber(a), tonumber(c), b)
+    elseif verb == "leave_federation" then
+        return require("render.windows.diplomacy_membership").leave_federation(game_dir, tonumber(a))
+    elseif verb == "join_community" then
+        return require("render.windows.diplomacy_membership").join_community(game_dir, tonumber(a))
+    elseif verb == "leave_community" then
+        return require("render.windows.diplomacy_membership").leave_community(game_dir, tonumber(a))
+    elseif verb == "inspect" then
+        -- an object (or a top-level block: KIND `top`, ID its key) as the save writes it, for the
+        -- tests that compare the world with the game's saves
+        local world = require("engine.world")
+        local block
+        if a == "top" then
+            for _, e in ipairs(world.tree or {}) do
+                if e.op and e.key and e.key.text == b and e.value.text == nil then
+                    block = e.value
+                end
+            end
+        else
+            block = world.object(a, tonumber(b))
+        end
+        local text = block and require("pdxscript").write(block) or "none"
+        return require("render.windows.diplomacy_data").serialize({ ok = block ~= nil, note = text })
     end
     return "return { note = 'no command " .. tostring(verb) .. "' }"
 end

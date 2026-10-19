@@ -1,6 +1,6 @@
 -- engine/fleets/automove.lua : the fleets' auto-movement (SFleetAutoMoveSettings, the save's
 -- `auto_movement = { type auto_move_target clear_auto_move_on_arrival clear_on_new_orders
--- destroy_on_arrival has_arrived arrival_effect }`), from the disassembly of 4.5.2 (headless/re
+-- destroy_on_arrival has_arrived arrival_effect }`), from the disassembly of 4.5.2 (docs/re
 -- notes: actions_wait_automove.md) [V]:
 --
 --   automove.save_orbit_targets()   CFleet::SaveOrbitTarget (0x2922560) from the fleets' daily Self

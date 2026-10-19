@@ -40,6 +40,9 @@ pub enum GuiItem {
         /// the same), the texture's v0..v1 and a shift of its u (progress_startend's rows and
         /// end cap): { u0, u1, v0, v1, shift }
         clip: [f32; 5],
+        /// its tooltip: a text or a localisation key (render.gui: a window's `tooltips`, else the
+        /// .gui's pdx_tooltip; tooltip.rs shows it)
+        tooltip: Option<String>,
     },
     Text {
         path: String,
@@ -203,6 +206,7 @@ pub(crate) fn read_items(items: Table) -> mlua::Result<Vec<GuiItem>> {
                     ],
                     None => [0.0, 1.0, 0.0, 1.0, 0.0],
                 },
+                tooltip: it.get::<Option<String>>("tooltip")?,
             });
         } else {
             let mut spans = Vec::new();
@@ -582,6 +586,8 @@ pub struct WindowSpec {
     pub positions: Vec<(String, (f32, f32))>,
     pub sprites: Vec<(String, String)>,
     pub tints: Vec<(String, [f32; 4])>,
+    /// the elements' tooltips (path, text or key: render.gui opts.tooltips)
+    pub tooltips: Vec<(String, String)>,
     pub prefix: Option<String>,
     pub parent: Option<[f32; 4]>,
 }
@@ -636,6 +642,7 @@ pub fn layout_specs(runtime: &Runtime, width: u32, height: u32, specs: &[WindowS
                 tints.set(k.as_str(), lua.create_sequence_from(*c)?)?;
             }
             t.set("tints", tints)?;
+            t.set("tooltips", map(&s.tooltips)?)?;
             if let Some(p) = &s.prefix {
                 t.set("prefix", p.as_str())?;
             }

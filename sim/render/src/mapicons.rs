@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use stellar_sim::mlua::{self, Table};
 
-use crate::app::{si_number, App, MapView};
+use crate::app::{si_number, App, HoverTarget, MapView};
 use crate::gui::{self, GuiItem};
 use crate::math::V3;
 use crate::scene::{self, Pickable};
@@ -411,6 +411,7 @@ impl App {
         let font = map.fonts.as_ref().and_then(|f| f.get("cg_16b"));
         let widths: Vec<f32> = names.iter().map(|n| font.map_or(8.0 * n.len() as f32, |f| f.width(n)).min(176.0)).collect();
         let empty = SystemIcons::default();
+        let hovered = self.hovered_system();
         let mut specs = Vec::new();
         let mut anchors = Vec::new();
         let mut owners = Vec::new();
@@ -470,6 +471,14 @@ impl App {
                     }
                     spec.actions.push((format!("{p}/{bg}"), format!("map:slide:{i}")));
                 }
+            }
+            // the hover marker (CGalacticObjectMapIcon::UpdateHoverIndicator [V]: hover_indicator,
+            // GFX_map_icon_system_enter at (-35, -23), the hexagon and the eye about the star,
+            // shown while the system is hovered; the game's frames: at the star, not its name)
+            // [I: the sprite's variants by the selected fleets' orders (system_enter_cant,
+            // system_goto_cant_has_intel, the jump drives') and idler+0xe88 not done]
+            if hovered == Some(i) {
+                only.push("hover_indicator".into());
             }
             spec.only = Some(only);
             spec.prefix = Some(prefix.clone());
@@ -912,51 +921,10 @@ impl App {
         Ok(())
     }
 
-    /// A right click on the map (CInGameIdler::HandleInputEvent @0x1c862a2, PerformAction /
-    /// PerformRightClickActionAt): the selected fleet of the player's, mobile, is ordered there:
-    /// to a planet in a system (orbit_planet_order), to a system on the galaxy, to the point of
-    /// the system's plane (move_to_system_point_order); the order replaces the fleet's
-    /// (engine.fleets.orders, run in the simulation: Clock::query) [I: the right-click menus and
-    /// the other targets' actions (attack, survey, colonize) not done]. Whether anything changed.
-    pub(crate) fn order_at(&mut self, x: f32, y: f32) -> Result<bool, String> {
-        let Some(Pickable::Fleet(fid)) = self.selected else { return Ok(false) };
-        let Some(map) = self.map.as_ref() else { return Ok(false) };
-        let g = map.galaxy.clone();
-        let observing = map.observe;
-        let Some(f) = g.fleets.iter().find(|f| f.id == fid) else { return Ok(false) };
-        let own = f.owner.map(|o| g.countries[o].id) == Some(g.player);
-        if f.station || !own || observing {
-            self.log.push(format!("order at {x},{y}: fleet {fid} is not a mobile fleet of the player's"));
-            return Ok(false);
-        }
-        let hit = self.scene()?.pick_at(x, y, 6.0);
-        let order = match (self.view, hit) {
-            (MapView::System(_), Some(Pickable::Body(pid))) => format!("o.orbit({fid}, {pid})"),
-            (MapView::System(si), _) => {
-                let Some(c) = self.current() else { return Ok(false) };
-                let p = c.ground_at(x, y, self.size.0, self.size.1);
-                format!("o.move_to({fid}, {{ x = {:.3}, y = {:.3}, origin = {} }})", p.0, p.2, g.systems[si].id)
-            }
-            (MapView::Galaxy, Some(Pickable::System(i))) => format!("o.move_to({fid}, {{ x = 0, y = 0, origin = {} }})", g.systems[i].id),
-            _ => return Ok(false),
-        };
-        let code = format!("local o = require('engine.fleets.orders') o.clear({fid}) return tostring({order})");
-        let map = self.map.as_ref().unwrap();
-        match map.clock.as_ref() {
-            Some(c) => {
-                let r = c.query(&code)?;
-                c.publish(false);
-                self.log.push(format!("order: fleet {fid}: {order} -> {r}"));
-            }
-            None => self.log.push(format!("order: fleet {fid}: {order}: no simulation running (not sent)")),
-        }
-        Ok(true)
-    }
-
     /// The left button dragged over the map and released (CInGameIdler::HandleInputEvent
     /// @0x1c8613f, 16 pixels squared from the press; CGameState::GetSelectablesForDragSelection):
     /// the fleets in the box, the player's mobile ones first (FilterSelectionList) [V]; the first
-    /// of them selected [I: the game selects them all; the selection here is one thing]; none:
+    /// of them selected, all of them the right click's (App::selected_fleets); none:
     /// the selection cleared.
     pub(crate) fn box_select(&mut self, x: f32, y: f32) -> Result<bool, String> {
         let Some((x0, y0)) = self.map_press.take() else { return Ok(false) };
@@ -985,6 +953,8 @@ impl App {
         found.sort_by_key(|f| f.0);
         self.log.push(format!("box select {l},{t} {r},{b}: {} fleets", found.len()));
         self.select(found.first().map(|f| Pickable::Fleet(f.1)));
+        // all of them selected for the right click's orders (rightclick.rs: App::selected_fleets)
+        self.fleet.group = found.iter().map(|f| f.1).collect();
         Ok(true)
     }
 }
@@ -1019,5 +989,16 @@ impl App {
         self.log.push(format!("system camera: fitted again to the system's radius {size} (was {fitted})"));
         self.relayout();
         true
+    }
+}
+
+impl App {
+    /// The galaxy's system under the cursor (CInGameIdler's hovered system, idler+0xaa4: the star
+    /// the ray picks; not its name nor a label's part): its star label's hover marker.
+    pub(crate) fn hovered_system(&self) -> Option<usize> {
+        match (&self.hovered, self.view) {
+            (Some((HoverTarget::Map(Pickable::System(i)), _)), MapView::Galaxy) => Some(*i),
+            _ => None,
+        }
     }
 }

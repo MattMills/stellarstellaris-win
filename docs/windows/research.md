@@ -57,7 +57,8 @@ decelerated, when shown **[V gui]**; the renderer draws it in place).
   type is one of NGameplay.COUNCIL_RESEARCH_POSITIONS. Drawn: `bg_head_of_research`, the
   position's icon (`common/governments/councilors` `icon`: GFX_icon_councilor_research), the
   leader's name (`name.full_names`, `%LEADER_2%`: its two parts) and the position's name ("Head of
-  Research"). Not drawn: the portrait, rarity, class, skill and trait icons.
+  Research"), the portrait (docs/windows/portraits.md). Not drawn: the rarity, class, skill and
+  trait icons.
 - **The areas** (CTechnologyViewAreaEntry ctor 0x32d9ae0, UpdateEntry 0x32db240) **[V]**:
   `area_name` the area's name, `area_icon` GFX_resource_AREA, `topbar`
   GFX_scientist_top_bar_AREA; `modifier_icon` ApplyModifierToButton(ModifierType 0xae): the
@@ -278,8 +279,37 @@ research view must show what the game's start makes, not what the simulation's f
   (`unlock_council_slots`, `set_council_position_to_council`, `set_council_position`) are modelled
   (docs/script_objects.md "Leaders and policies"). The UNE start: Head of Research seated, +2%
   (councilor_research's all_technology_research_speed 0.02 x level 1) in each area.
-- The head of research's name and title show on the card; the portrait picture is a 3D portrait
-  (CPortraitObject), which no view of the renderer draws yet.
+- The head of research's name, title and portrait show on the card (docs/windows/portraits.md).
+- **The incomes at day 0**: the game's day-0 save has empty budgets (`budget = { current_month =
+  { income = { } ... } }`), its first day's the month's (2200.01.02: physics_research 10, 3,
+  2.70311, ...); its top bar shows them at day 0. A new game's world had no budget at all, so the
+  top bar showed +0 everywhere. The start script now ends with the budget computed from the world as
+  it is and written as each country's `budget.current_month` income, expenses and balance
+  (engine.economy.write_current_month): the UNE at 2200.01.01 shows +35 energy, +14 minerals,
+  +13 food, +26 alloys, +37 research [I: not checked number for number against the game's first
+  day; the trade tables not written].
+
+### Scripted localisation and job references
+
+The unlock lines and modifier texts name scripted localisations and pop jobs:
+`[GetMinerSwapPluralWithIcon]` (a tech's unlock text), `[technician.GetIcon]
+[technician.GetNamePlural]`, `Upkeep for [physicist.GetIcon][biologist.GetIcon]...`.
+
+- **Scripted localisation** (common/scripted_loc `defined_text = { name text = { trigger
+  localization_key } ... default }`, CScriptedLocalisation): render/scripted_loc.lua reads them;
+  the research view's extract evaluates each one's triggers in the player's country scope
+  (simscript.eval, once a day) and the build hands the chosen keys to engine.localisation
+  (`localisation.scripted`), whose resolve replaces `[Name]` by the chosen key's text, else the
+  `default`'s (the traditions view uses the defaults). Texts with `random` or `weight` blocks take
+  their default [I].
+- **Job commands** (CPopJobType): `[job.GetName]` is `job_<job>`, `.GetNamePlural`
+  `job_<job>_plural`, `.GetIcon` `£job_<job>£`; the text icon is GFX_job_<job>, else the job's
+  icon file gfx/interface/icons/jobs/job_<job>.dds (render/gui.lua) [I: the swappable names of a
+  gestalt or a swap_type not chosen].
+
+Checked: every text item of the research view (offers and researched lists in all three areas,
+scrolled) on the 2212 save and a new game holds no `[...]` left (a STELLAR_LOC_DEBUG scan, since
+removed).
 
 Checked: `newgame scenario=tiny seed=1`, the view opened at 2200.01.01 without a day passed (Wu
 Cheng, +2%, Engineering offering Rare Crystal Mining, Weather Control Systems, Improved Corvette

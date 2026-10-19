@@ -27,6 +27,13 @@ pub struct FleetWindows {
     pub armed: Option<(u32, String)>,
     /// a counter of the commands done (their effect re-read: the windows laid out again)
     pub commands: u64,
+    /// the box selection's fleets, in the selection's order (rightclick.rs: they all get a right
+    /// click's order; App::selected is the first)
+    pub group: Vec<u32>,
+    /// a right click's order selector: where it opened, and fleet_rightclick's result (Lua source)
+    pub menu: Option<((f32, f32), String)>,
+    /// a right click's Yes/No popup: fleet_rightclick's result (Lua source)
+    pub popup: Option<String>,
 }
 
 impl FleetWindows {
@@ -36,6 +43,7 @@ impl FleetWindows {
         if let Some((f, o)) = &self.armed {
             k = k.wrapping_mul(1_000_003).wrapping_add(*f as u64 + o.len() as u64 * 7919);
         }
+        k = k.wrapping_mul(1_000_003).wrapping_add(self.menu.is_some() as u64 * 2 + self.popup.is_some() as u64);
         k.wrapping_mul(1_000_003).wrapping_add(self.commands)
     }
 }
@@ -83,6 +91,10 @@ impl App {
     /// fleet.md "The buttons"): `fleet:do:FID:NAME`, `fleet:arm:FID:NAME`, `fleet:ship_do:SID:NAME`,
     /// `fleet:tpl:FID:DESIGN:DELTA`, `fleet:focus:FID`, `fleet:designer[:DESIGN]`.
     pub fn fleet_act(&mut self, action: &str) -> Result<(), String> {
+        // a right click's order selector and popup (rightclick.rs)
+        if action.starts_with("fleet:menu:") || action.starts_with("fleet:popup_") {
+            return self.fleet_menu_act(action);
+        }
         let parts: Vec<&str> = action.split(':').collect();
         let verb = parts.get(1).copied().unwrap_or("");
         let id = parts.get(2).and_then(|v| v.parse::<u32>().ok());
@@ -151,37 +163,52 @@ impl App {
         Ok(())
     }
 
-    /// Escape disarms an armed order, else closes the ship_view (its close button's shortcut);
-    /// whether it did.
+    /// Escape closes a right click's popup or order selector, else disarms an armed order, else
+    /// closes the ship_view (its close button's shortcut); whether it did.
     pub fn fleet_escape(&mut self) -> bool {
-        if self.fleet.armed.take().is_some() || self.fleet.ship.take().is_some() {
+        if self.fleet.popup.take().is_some() || self.fleet.menu.take().is_some() || self.fleet.armed.take().is_some() || self.fleet.ship.take().is_some() {
             self.relayout_windows();
             return true;
         }
         false
     }
 
-    /// A fleet command run in the world (render.windows.fleet_commands, where the world is: the
-    /// simulation's thread between days, else the map's own world): the state changed as the
-    /// game's command changes it; the windows read it again. Returns the command's reply.
-    pub fn fleet_command(&mut self, call: &str) -> Result<String, String> {
-        // the engine's orders run in the simulation (its definitions, script layer, modifiers):
-        // started now if the map shows the save's world alone (paused: no day runs, as `step 0`)
+    /// A query run where the engine's orders run: the simulation (its definitions, script layer,
+    /// modifiers), started now if the map shows the save's world alone (paused: no day runs, as
+    /// `step 0`). `fd` is render.windows.fleet_data.
+    pub(crate) fn fleet_sim_query(&mut self, code: &str) -> Result<String, String> {
         if let Some(m) = self.map.as_mut() {
             if m.has_world() {
                 let r = m.step(0)?;
                 self.log.push(format!("fleet command: the simulation started ({r})"));
             }
         }
-        let r = self.fleet_world_query(&format!("local fc = require('render.windows.fleet_commands') return tostring(fc{call})"))?;
-        self.log.push(format!("fleet command: {call} -> {r}"));
-        // the map shows it without a day run: a snapshot now, taken when it comes
+        self.fleet_world_query(code)
+    }
+
+    /// The map shows a command's effect without a day run: a snapshot now, taken when it comes.
+    pub(crate) fn fleet_published(&mut self) {
         if let Some(c) = self.map.as_ref().and_then(|m| m.clock.as_ref()) {
             c.publish(true);
         }
+    }
+
+    /// Commands run in the simulation (Lua code returning a text): the state changed as the
+    /// game's commands change it; the windows read it again. Returns the reply.
+    pub(crate) fn fleet_run(&mut self, code: &str) -> Result<String, String> {
+        let r = self.fleet_sim_query(code)?;
+        self.log.push(format!("fleet command: {r}"));
+        self.fleet_published();
         self.fleet.commands += 1;
         self.relayout_windows();
         Ok(r)
+    }
+
+    /// A fleet command (render.windows.fleet_commands: `fc` followed by `call`) run in the
+    /// simulation. Returns the command's reply.
+    pub fn fleet_command(&mut self, call: &str) -> Result<String, String> {
+        self.log.push(format!("fleet command: {call}"));
+        self.fleet_run(&format!("local fc = require('render.windows.fleet_commands') return tostring(fc{call})"))
     }
 
     /// What a map pick is to a command: its kind and save id.
@@ -199,6 +226,8 @@ impl App {
     /// (render.windows.fleet_commands.target(FID, ORDER, KIND, ID)); nothing under it disarms.
     /// Whether the click was taken.
     pub fn fleet_target(&mut self, hit: Option<Pickable>) -> Result<bool, String> {
+        // a right click's order selector closed by a click elsewhere (rightclick.rs)
+        self.fleet_autoclose(None);
         let Some((fid, order)) = self.fleet.armed.take() else { return Ok(false) };
         if let Some((kind, id)) = hit.and_then(|h| self.fleet_target_of(h)) {
             self.fleet_command(&format!(".target({fid}, {order:?}, {kind:?}, {id})"))?;
@@ -219,7 +248,7 @@ impl App {
     /// ship_view, in the game's order (later ones over earlier ones).
     pub fn fleet_items(&mut self, w: u32, h: u32) -> Result<Vec<GuiItem>, String> {
         let fleet = self.fleet_view_id();
-        if fleet.is_none() && self.fleet.ship.is_none() {
+        if fleet.is_none() && self.fleet.ship.is_none() && self.fleet.menu.is_none() && self.fleet.popup.is_none() {
             return Ok(Vec::new());
         }
         let mut calls = Vec::new();
@@ -233,10 +262,23 @@ impl App {
         if let Some((fid, name)) = &self.fleet.armed {
             calls.push(format!("armed = {{ {fid}, {name:?} }},"));
         }
-        let source = self.fleet_world_query(&format!("return fd.serialize({{ {} }})", calls.join(" ")))?;
+        let source = if calls.is_empty() { "return {}".to_string() } else { self.fleet_world_query(&format!("return fd.serialize({{ {} }})", calls.join(" ")))? };
+        let menu = self.fleet.menu.clone();
+        let popup = self.fleet.popup.clone();
         let lua = &self.runtime.lua;
         let read = || -> mlua::Result<Vec<GuiItem>> {
             let data: Table = lua.load(&source).set_name("fleet windows' data").eval()?;
+            // a right click's order selector (at the click) and popup (rightclick.rs)
+            if let Some(((x, y), src)) = &menu {
+                let m: Table = lua.load(src.as_str()).set_name("order selector").eval()?;
+                m.set("at", vec![*x, *y])?;
+                data.set("order_menu", m)?;
+            }
+            if let Some(src) = &popup {
+                let p: Table = lua.load(src.as_str()).set_name("order popup").eval()?;
+                let v: mlua::Value = p.get("popup")?;
+                data.set("order_popup", v)?;
+            }
             lua.globals().set("RENDER_FLEET_WINDOWS", data)?;
             let t: Table = lua
                 .load(format!(

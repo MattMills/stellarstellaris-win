@@ -72,7 +72,8 @@ function draws.special_projects(country, date)
     end
     local today = days(date)
     for _, p in ipairs(world.fields(events, "special_project")) do
-        if type(p) == "table" then
+        -- (a species modification has no project type: ShouldAbort and ShouldFail draw nothing [I])
+        if type(p) == "table" and world.field(p, "convert_to") == nil then
             local status = world.field(p, "status")
             if not (type(status) == "string" and status:find("abort")) then
                 skip(2, "abort")

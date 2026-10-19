@@ -126,7 +126,11 @@ impl Win {
         let (adapter, device, queue) =
             pollster::block_on(render::open_device(&self.instance, self.backend, self.want.as_deref(), Some(&surface)))?;
         eprintln!("rendering on: {}", render::describe(&adapter.get_info()));
+        // everything here is in physical pixels (the window's size, the surface, the cursor's
+        // positions, the GUI's layout): the display's scaling (Windows at 125 % or 150 %) changes
+        // no coordinate, only the size winit gives a window moved to another monitor (Resized)
         let size = window.inner_size();
+        eprintln!("window: {}x{} pixels, display scale {}", size.width, size.height, window.scale_factor());
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
             .ok_or("the surface is not supported by the adapter")?;
@@ -331,6 +335,9 @@ impl ApplicationHandler for Win {
                     }
                 }
             }
+            // the window moved to a monitor of another scaling: winit resizes it to keep its
+            // logical size and a Resized follows; the pixels stay the cursor's and the GUI's
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => eprintln!("window: display scale {scale_factor}"),
             WindowEvent::RedrawRequested => {
                 if let Err(e) = self.redraw(event_loop) {
                     self.fail(event_loop, e);

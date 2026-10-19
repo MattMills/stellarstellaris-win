@@ -6,8 +6,8 @@
 //!
 //! Actions (a button's, App::act): `view:contacts` opens Contacts; `diplo:<what>[:<arg>]`:
 //! `close`, `select:ID` (an empire's row), `country:ID` (its diplomacy), `tab:NAME`,
-//! `sort:NAME`, `community`, `federation:ID`, `war:ID`, `none` (a window's background: takes
-//! the click).
+//! `sort:NAME`, `community`, `federation:ID`, `war:ID`, `peace:OPTION` (a war's peace option
+//! selected), `peace_send`, `none` (a window's background: takes the click).
 
 use stellar_sim::mlua::{self, Table};
 use stellar_sim::Runtime;
@@ -47,17 +47,25 @@ pub struct State {
     /// Contacts' filters the player has unchecked (CGalaxyView's checkboxes: all checked at Setup)
     pub filters_off: std::collections::BTreeSet<String>,
     /// a country's diplomacy: its actions (render.windows.diplomacy_actions.list, a Lua chunk) for
-    /// that country, the action picked (ShowActionView), the text after a proposal
+    /// that country, the action picked (ShowActionView; a war's peace option), the text after a
+    /// proposal
     pub actions: Option<(u32, String)>,
     pub action: Option<String>,
     pub message: Option<String>,
+    /// a leave awaiting the game's yes/no popup (CPopupMessageYesNo): `leave_federation` or
+    /// `leave_community`
+    pub confirm: Option<String>,
+    /// the windows' lists scrolled (rows skipped, by list name), and their places and rows as last
+    /// laid out (name, rect, rows, rows shown)
+    pub scroll: std::collections::BTreeMap<String, usize>,
+    pub lists: Vec<(String, [f32; 4], usize, usize)>,
 }
 
-type Snap = (Option<Open>, Option<u32>, Option<String>, Option<String>, std::collections::BTreeSet<String>, Option<String>, Option<String>);
+type Snap = (Option<Open>, Option<u32>, Option<String>, Option<String>, std::collections::BTreeSet<String>, Option<String>, Option<String>, Option<String>);
 
 impl State {
     fn snap(&self) -> Snap {
-        (self.open.clone(), self.selected, self.tab.clone(), self.sort.clone(), self.filters_off.clone(), self.action.clone(), self.message.clone())
+        (self.open.clone(), self.selected, self.tab.clone(), self.sort.clone(), self.filters_off.clone(), self.action.clone(), self.message.clone(), self.confirm.clone())
     }
 
     /// Does a `view:contacts` or `diplo:...` action on the windows' state; whether anything
@@ -77,8 +85,15 @@ impl State {
                 return Ok(before != self.snap());
             }
             // Escape: the picked action's view first (its Cancel), then the window
+            // the popup's No (DeclineButton): the leave not done
+            if rest == "confirm_no" {
+                self.confirm = None;
+                return Ok(before != self.snap());
+            }
             if rest == "escape" {
-                if self.action.is_some() {
+                if self.confirm.is_some() {
+                    self.confirm = None;
+                } else if self.action.is_some() {
                     self.action = None;
                 } else {
                     self.open = None;
@@ -138,19 +153,34 @@ impl State {
             ("diplo", "war") => {
                 self.open = Some(Open::War(id(arg)?));
                 self.tab = None;
+                self.action = None;
+                self.message = None;
+            }
+            // the war overview's peace options: a click selects one, again unselects it
+            // (OnClickOfferPeaceOption); kept in `action`
+            ("diplo", "peace") => {
+                let o = arg.map(String::from);
+                self.action = if self.action == o { None } else { o };
             }
             _ => return Err(format!("unknown diplomacy action {action}")),
+        }
+        // another window: no popup left over
+        if self.open != before.0 {
+            self.confirm = None;
         }
         Ok(before != self.snap())
     }
 
     /// The open window laid out for a screen of `width` x `height` (none: nothing), in the front
     /// end's runtime, and the flags among its items: (item index, country id).
-    pub fn items(&self, runtime: &Runtime, width: u32, height: u32, galaxy: &Galaxy, observe: bool) -> Result<(Vec<GuiItem>, Vec<(usize, u32)>), String> {
-        let Some(open) = &self.open else { return Ok((Vec::new(), Vec::new())) };
-        let read = || -> mlua::Result<(Vec<GuiItem>, Vec<(usize, u32)>)> {
+    pub fn items(&mut self, runtime: &Runtime, width: u32, height: u32, galaxy: &Galaxy, observe: bool) -> Result<(Vec<GuiItem>, Vec<(usize, u32)>), String> {
+        // (no window open: the entry points only, the federation and community buttons and the
+        // war badges, as window "none")
+        let open = self.open.clone();
+        type Lists = Vec<(String, [f32; 4], usize, usize)>;
+        let read = || -> mlua::Result<(Vec<GuiItem>, Vec<(usize, u32)>, Lists)> {
             let lua = &runtime.lua;
-            let (window, id) = open.name();
+            let (window, id) = open.as_ref().map(Open::name).unwrap_or(("none", -1));
             let s = lua.create_table()?;
             s.set("window", window)?;
             s.set("id", id)?;
@@ -175,18 +205,34 @@ impl State {
             if let Some(m) = &self.message {
                 s.set("message", m.as_str())?;
             }
-            if let (Some((cid, chunk)), Open::Country(id)) = (&self.actions, open) {
+            if let Some(c) = &self.confirm {
+                s.set("confirm", c.as_str())?;
+            }
+            if let (Some((cid, chunk)), Some(Open::Country(id))) = (&self.actions, &open) {
                 if cid == id {
                     s.set("actions", chunk.as_str())?;
                 }
             }
+            let sc = lua.create_table()?;
+            for (k, v) in &self.scroll {
+                sc.set(k.as_str(), *v)?;
+            }
+            s.set("scroll", sc)?;
             lua.globals().set("RENDER_DIPLO_STATE", s)?;
             lua.globals().set("RENDER_DIPLO_DATA", galaxy.diplomacy.as_str())?;
             let t: Table = lua
                 .load(format!(
-                    "local items, report, flags = require('render.windows.diplomacy').build(RENDER_GAME_DIR, RENDER_GFX, {{ width = {width}, height = {height} }}, RENDER_TEXTURE_SIZE, RENDER_LOC, RENDER_DIPLO_STATE, RENDER_DIPLO_DATA) return {{ items = items, report = report, flags = flags }}"
+                    "local items, report, flags, lists = require('render.windows.diplomacy').build(RENDER_GAME_DIR, RENDER_GFX, {{ width = {width}, height = {height} }}, RENDER_TEXTURE_SIZE, RENDER_LOC, RENDER_DIPLO_STATE, RENDER_DIPLO_DATA) return {{ items = items, report = report, flags = flags, lists = lists }}"
                 ))
                 .eval()?;
+            // the lists laid out: { name = { x, y, w, h, rows, shown } }
+            let mut lists = Vec::new();
+            if let Some(l) = t.get::<Option<Table>>("lists")? {
+                for p in l.pairs::<String, Table>() {
+                    let (k, v) = p?;
+                    lists.push((k, [v.get(1)?, v.get(2)?, v.get(3)?, v.get(4)?], v.get::<usize>(5)?, v.get::<usize>(6)?));
+                }
+            }
             let items = gui::read_items(t.get("items")?)?;
             // the flags: element path -> country id
             let mut by_path = std::collections::HashMap::new();
@@ -204,10 +250,29 @@ impl State {
                     _ => None,
                 })
                 .collect();
-            Ok((items, flags))
+            Ok((items, flags, lists))
         };
-        read().map_err(|e| format!("render.windows.diplomacy: {e}"))
+        let (items, flags, lists) = read().map_err(|e| format!("render.windows.diplomacy: {e}"))?;
+        self.lists = lists;
+        Ok((items, flags))
     }
+}
+
+/// The wheel over a diplomacy window's list (Contacts' empires, a country's actions): a row a
+/// notch (> 0 up), within the rows it has; whether it took the wheel.
+pub fn wheel(app: &mut crate::app::App, notches: f32, at: Option<(f32, f32)>) -> bool {
+    let Some((x, y)) = at else { return false };
+    let hit = app.diplomacy.lists.iter().find(|(_, r, _, _)| x >= r[0] && x < r[0] + r[2] && y >= r[1] && y < r[1] + r[3]).cloned();
+    let Some((name, _, rows, shown)) = hit else { return false };
+    let max = rows.saturating_sub(shown);
+    let cur = app.diplomacy.scroll.get(&name).copied().unwrap_or(0);
+    let step = notches.round() as i64;
+    let next = (cur as i64 - step).clamp(0, max as i64) as usize;
+    if next != cur {
+        app.diplomacy.scroll.insert(name, next);
+        app.relayout();
+    }
+    true
 }
 
 /// Contacts' command in the simulation (render-buttons-1's views.rs: render.windows.contacts's
@@ -244,7 +309,11 @@ fn list_actions(app: &mut crate::app::App, id: u32) {
 /// - `diplo:zoom:ID` (Contacts' zoom_to_capital_button, the diplomacy view's to_to_home_world:
 ///   CGalaxyViewEmpireProfile::OnEmpireZoomToCapital): the camera to the capital's system;
 /// - `diplo:action_confirm` (the action view's confirm_button): the picked action proposed to the
-///   country (render.windows.diplomacy_actions.apply), the list made again.
+///   country (render.windows.diplomacy_actions.apply), the list made again;
+/// - `diplo:peace_send` (the war overview's send): the selected peace offered
+///   (render.windows.diplomacy_peace.apply), the window closed;
+/// - `diplo:member:leave_federation|join_community|leave_community` (the federation view's leave
+///   button, the community view's join_leave_button): render.windows.diplomacy_membership.
 pub fn act(app: &mut crate::app::App, a: &str) -> Result<(), String> {
     if let Some(id) = a.strip_prefix("diplo:zoom:") {
         let id: u32 = id.parse().map_err(|_| format!("bad action {a}"))?;
@@ -260,27 +329,103 @@ pub fn act(app: &mut crate::app::App, a: &str) -> Result<(), String> {
         }
         return Ok(());
     }
+    if let Some(what) = a.strip_prefix("diplo:inspect:") {
+        // an object of the world as the save writes it, to the log (the tests' comparisons with
+        // the game's saves): `diplo:inspect:KIND:ID`
+        let (kind, id) = what.split_once(':').ok_or(format!("bad action {a}"))?;
+        let out = world_command(app, &["inspect", kind, id])?;
+        let note: String = app
+            .runtime
+            .lua
+            .load(format!("local t = (loadstring or load)({out:?})() return tostring(t.note or '')"))
+            .eval()
+            .map_err(|e| format!("diplomacy: {e}"))?;
+        app.log.push(format!("inspect {kind} {id}: {}", note.split_whitespace().collect::<Vec<_>>().join(" ")));
+        return Ok(());
+    }
+    // the popup's Yes (AgreeButton): the leave it asked about done
+    let confirmed = if a == "diplo:confirm_yes" { app.diplomacy.confirm.take().map(|v| format!("diplo:member:{v}")) } else { None };
+    let a = confirmed.as_deref().unwrap_or(a);
+    if a == "diplo:confirm_yes" {
+        // (no popup open)
+        return Ok(());
+    }
+    if let Some(verb) = a.strip_prefix("diplo:member:") {
+        // Leave Federation, the community's Join / Leave (render.windows.diplomacy_membership). A
+        // leave first asks with the game's yes/no popup (OnLeaveFederation, OnJoinLeave: its Yes
+        // posts the command); Join is posted at once
+        let Some(me) = player(app) else { return Ok(()) };
+        let verb = match verb {
+            "leave_federation" | "join_community" | "leave_community" => verb,
+            _ => return Err(format!("bad action {a}")),
+        };
+        if verb != "join_community" && confirmed.is_none() {
+            app.diplomacy.confirm = Some(verb.to_string());
+            app.relayout();
+            return Ok(());
+        }
+        let out = world_command(app, &[verb, &me.to_string()])?;
+        let note: String = app
+            .runtime
+            .lua
+            .load(format!("local t = (loadstring or load)({out:?})() return tostring(t.note or '')"))
+            .eval()
+            .map_err(|e| format!("diplomacy: {e}"))?;
+        app.log.push(format!("diplomacy: {verb}: {note}"));
+        app.relayout();
+        return Ok(());
+    }
+    if a == "diplo:peace_send" {
+        // the war overview's Send Offer (CWarOverview::OnOfferPeaceSendOffer): the offer posted,
+        // the recipient's answer, the window closed
+        let (Some(Open::War(id)), Some(opt), Some(me)) = (app.diplomacy.open.clone(), app.diplomacy.action.clone(), player(app)) else {
+            return Ok(());
+        };
+        let (me, id_s) = (me.to_string(), id.to_string());
+        let out = world_command(app, &["peace", &id_s, &opt, &me])?;
+        let logged: String = app
+            .runtime
+            .lua
+            .load(format!(
+                "local t = (loadstring or load)({out:?})() return (t.accepted == nil and '' or (t.accepted and 'accepted' or 'refused')) .. ' ' .. tostring(t.acceptance or '') .. ' (' .. tostring(t.reasons or '') .. ') ' .. tostring(t.phrase or '') .. ' ' .. tostring(t.ran or '') .. ' ' .. tostring(t.note or '')"
+            ))
+            .eval()
+            .map_err(|e| format!("diplomacy: {e}"))?;
+        app.log.push(format!("diplomacy: peace ({opt}) offered in war {id}: {logged}"));
+        app.diplomacy.open = None;
+        app.diplomacy.action = None;
+        app.relayout();
+        return Ok(());
+    }
     if a == "diplo:action_confirm" {
         let (Some(Open::Country(id)), Some(key), Some(me)) = (app.diplomacy.open.clone(), app.diplomacy.action.clone(), player(app)) else {
             return Ok(());
         };
         let (me, id_s) = (me.to_string(), id.to_string());
         let out = world_command(app, &["propose", &key, &me, &id_s])?;
-        let note: Option<String> = app
+        // the answer: the recipient's reply phrase (accept or refuse), else what was not done; the
+        // log has the acceptance's terms
+        let (shown, logged): (String, String) = app
             .runtime
             .lua
-            .load(format!("local t = (loadstring or load)({out:?})() return t.done and '' or (t.note or 'not done')"))
+            .load(format!(
+                "local t = (loadstring or load)({out:?})() return t.phrase or (t.done and '' or (t.note or 'not done')), \n                 (t.accepted == nil and '' or (t.accepted and 'accepted' or 'refused')) .. ' ' .. tostring(t.total or '') .. ' (' .. tostring(t.reasons or '') .. ') ' .. tostring(t.note or '')"
+            ))
             .eval()
             .map_err(|e| format!("diplomacy: {e}"))?;
-        app.log.push(format!("diplomacy: {key} proposed to {id}: {}", note.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| "done".into())));
+        app.log.push(format!("diplomacy: {key} proposed to {id}: {logged}"));
         app.diplomacy.action = None;
-        app.diplomacy.message = note.filter(|n| !n.is_empty());
+        app.diplomacy.message = Some(shown).filter(|n| !n.is_empty());
         list_actions(app, id);
         app.relayout();
         return Ok(());
     }
     let was = app.diplomacy.open.clone();
     if app.diplomacy.act(a)? {
+        // another window: its lists from their top
+        if app.diplomacy.open != was {
+            app.diplomacy.scroll.clear();
+        }
         // Contacts is a left bar view: one view at a time (ToggleTopBarView)
         if app.diplomacy.open == Some(Open::Contacts) && was != Some(Open::Contacts) {
             app.close_view();
@@ -323,5 +468,40 @@ mod tests {
         assert_eq!(s.open, None);
         assert!(s.act("diplo:country:x").is_err());
         assert!(s.act("diplo:what").is_err());
+    }
+
+    #[test]
+    fn leave_popup_cancelled() {
+        let mut s = State::default();
+        s.act("diplo:federation:1").unwrap();
+        // (App::act sets it on Leave Federation's click)
+        s.confirm = Some("leave_federation".into());
+        // Escape closes the popup first, then the window
+        assert!(s.act("diplo:escape").unwrap());
+        assert_eq!((s.confirm.clone(), s.open.clone()), (None, Some(Open::Federation(1))));
+        s.confirm = Some("leave_federation".into());
+        assert!(s.act("diplo:confirm_no").unwrap());
+        assert_eq!(s.confirm, None);
+        // another window drops it
+        s.confirm = Some("leave_community".into());
+        s.act("diplo:community").unwrap();
+        assert_eq!(s.confirm, None);
+    }
+
+    #[test]
+    fn peace_option_toggles() {
+        let mut s = State::default();
+        assert!(s.act("diplo:war:0").unwrap());
+        assert!(s.act("diplo:peace:status_quo").unwrap());
+        assert_eq!(s.action.as_deref(), Some("status_quo"));
+        // another option replaces it; the same one again unselects it
+        assert!(s.act("diplo:peace:surrender").unwrap());
+        assert_eq!(s.action.as_deref(), Some("surrender"));
+        assert!(s.act("diplo:peace:surrender").unwrap());
+        assert_eq!(s.action, None);
+        // a war opened again starts with none selected
+        s.act("diplo:peace:force_demands").unwrap();
+        s.act("diplo:war:0").unwrap();
+        assert_eq!(s.action, None);
     }
 }

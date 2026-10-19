@@ -720,7 +720,7 @@ frame from `headless/view.sh` with the GUI off, the renderer's from the same com
 | 2 | system backdrop: the sky box | done | (the galaxy view uses the `default` world's sky and post effects: item 5) |
 | 3 | stars: surface, glow, corona particles, the star's light on planets | done for the A star of system 401 | the lava patches a little purple (cause not found); the particles' motion (a still snapshot); the other star classes, black holes, neutron stars and pulsars are not checked |
 | 4 | planets: atmospheres, gas giants, rings, asteroid belts, black holes, special stars | done for what the player knows (systems 401, 142, 238, 476) | the planets' spin (their idle animation: the bands and continents sit elsewhere); city lights; the gas giants' atmosphere halo a little brighter on the dark side; black holes, pulsars and neutron stars drawn from their entities but not checked (the player knows none) |
-| 5 | galaxy: terra incognita, borders, hyperlanes, star icons, the core, post effects, the map's names and flags | done at the default camera, a wide view and the whole galaxy (`observe`) | the dust's and nebulae's slow turning (GALAXY_DUST_ROTATION_SPEED); the nebulae's places (InitNebulas); the star labels' icons (section 12); nebula names; from far the territories' coloured edge bands are thinner than the game's (cause not found). The whole galaxy from 2000 of the game's world (`observe`): mean colour (42.5, 36.9, 33.8) against the game's (40.9, 35.2, 32.5); the stars match the game's place, colour and size |
+| 5 | galaxy: terra incognita, borders, hyperlanes, star icons, the core, post effects, the map's names and flags | done at the default camera, a wide view and the whole galaxy (`observe`) | the dust's and nebulae's slow turning (GALAXY_DUST_ROTATION_SPEED); the nebulae's places (InitNebulas); the star labels' icons (section 12); nebula names; the territories' rings weaker where the renderer's dust is thinner than the game's (the dust carries the border colour; its placement is [I]): the edge bands' width matches (below). The whole galaxy from 2000 of the game's world (`observe`): mean colour (42.5, 36.9, 33.8) against the game's (40.9, 35.2, 32.5); the stars match the game's place, colour and size |
 | 6 | ships and stations: empire colours, engine glows, turrets, idle animations | partial | empire colours, the ship shader and lights, turrets and attached entities, additive engine glows: done; idle animations (skeletal .anim) and engine trails not drawn; ships a little small (SHIP_SCALE fitted) |
 
 **The post effects** (`sim/render/src/post.wgsl`, `render.rs`) **[V]**: the passes of
@@ -839,10 +839,13 @@ galaxy has no star class; the frames agree):
   shows around the home system. Confirmed in the code: CGraphicalMap::Render calls
   CBordersGraphics::Render with pass 0 (BorderSDF into the border target, then BorderCentroid,
   the flags, on the frame's target), then the galaxy, then pass 1, which draws only the StarPin
-  effect (the slots: +0x98 BorderCentroid, +0xf0 BorderSDF, +0xc0 StarPin). From far the game's
-  coloured edge bands look thicker than the renderer's with the same SDF formula: not explained
-  yet (the border target's resolution, or the dust drawn into the galaxy's downsampled target,
-  g_nGfxGalaxyDownsample, and stretched, are the candidates).
+  effect (the slots: +0x98 BorderCentroid, +0xf0 BorderSDF, +0xc0 StarPin). The edge bands'
+  width matches the game's from far (2210.01.01, map distance 500, 900 and 1300 over the galaxy's
+  centre with `observe` and `gui off`: the Royal T'Jell States' band covers 3734 / 3757, 1786 /
+  1787 and 852 / 839 pixels, game / here, of the same colour; the player's ring at 300 .. 1000 as
+  wide, about 10 pixels at 500). What differs is the ring's strength: the dust carries it, and
+  where the renderer has less dust than the game (its placement is [I]) the ring is paler (at 300
+  above the home system the game's dust is 2c2922, the renderer's 16191a).
 - **Dust** (galaxy_dust.shader) **[V]** shader, **[I]** placement: a cloud of `dust.dds` at every
   system and int(0.1 R) at random in the core's disc, at radius r x R and angle 2 pi r' (uniform
   in the radius: denser toward the centre) **[V]** (R the core's radius in the game's world, below),
@@ -1220,6 +1223,7 @@ freed when the device is polled).
   Names from the save are localised by render.names: the name block's key (or literal), its
   `$VAR$` variables, the engine's `%ADJECTIVE%` and `%ACRONYM%` (initials made up to three letters
   from the last word: "Uthabulan Order" UOR); a text wider than its box is cut with " ...".
+- **Tooltips** are drawn: docs/tooltips.md (the window, when and where, the texts, a window's own).
 - **Tooltips: the hook** (`app.rs`): `App::hovered` keeps what the cursor is over (a GUI element's
   path or a pickable thing on the map) and since when; `App::tooltip(rest)` asks a `Tooltips`
   implementation (`text(target, date)`) once the cursor has rested. The next phase implements it

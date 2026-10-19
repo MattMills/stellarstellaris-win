@@ -511,7 +511,16 @@ function move_order.is_done(o, fid, f)
         end
         if ok and m.is_moving and m.is_moving(fid) then return false end
     end
-    return arrived_at(coord(world.field(mm_of(f), "coordinate")), t)
+    local here = coord(world.field(mm_of(f), "coordinate"))
+    if arrived_at(here, t) then
+        return true
+    end
+    -- a move from another system that ends further out (the movement idle off its point): the
+    -- last leg again, in the system [I]
+    if m and m.move_to and t and here and here.origin == t.origin and not (m.is_moving and m.is_moving(fid)) then
+        m.move_to(fid, { x = t.x, y = t.y, origin = t.origin })
+    end
+    return false
 end
 function move_order.tick() end
 function move_order.finish() end
@@ -731,8 +740,18 @@ function return_order.finish(o)
     orders.clear_sub_order(o)
 end
 
--- the orders the engine does not run yet (combat, colonization, archaeology): kept, never done
-local KEPT = { aggressive_stance_fleet_order = true, colonize_planet_order = true,
+-- follow_order (CFollowFleetOrder): engine.fleets.follow (the right click on a fleet)
+TYPES.follow_order = require("engine.fleets.follow").order
+
+-- colonize_planet_order (CColonizePlanetFleetOrder): engine.fleets.colonize
+TYPES.colonize_planet_order = require("engine.fleets.colonize").order_type
+-- land_armies_order (CLandArmiesFleetOrder): engine.fleets.armies
+TYPES.land_armies_order = require("engine.fleets.armies").order_type
+-- upgrade_design_at_orbitable_fleet_order (CUpgradeDesignAtOrbitableFleetOrder): engine.fleets.upgrade
+TYPES.upgrade_design_at_orbitable_fleet_order = require("engine.fleets.upgrade").order_type
+
+-- the orders the engine does not run yet (combat, archaeology): kept, never done
+local KEPT = { aggressive_stance_fleet_order = true,
                excavate_archaeological_site_fleet_order = true }
 
 local function T_of(o)
@@ -1037,7 +1056,18 @@ function orders.survey_system(fid, system, opts)
     end
     local here = coord(world.field(mm_of(f), "coordinate"))
     local x, y = 0, 0
-    if here and here.origin == system then x, y = here.x, here.y end
+    if here and here.origin == system then
+        x, y = here.x, here.y
+    elseif here then
+        -- from outside: where the fleet will come in (CFTLJump::CalcFTLEnterSystemPoint,
+        -- engine.fleets.path.enter_point) [V: the game's queue from the galaxy view starts with
+        -- Toarus I, the body nearest the hyperlane's entry from Ithni Zerak, not the star]
+        local okp, path = pcall(require, "engine.fleets.path")
+        if okp and path.enter_point then
+            local ok, e = pcall(path.enter_point, path.coord(path.raw(here.x), path.raw(here.y), here.origin), system)
+            if ok and e then x, y = e.x / ONE, e.y / ONE end
+        end
+    end
     local n = 0
     while #left > 0 do
         local best, bd

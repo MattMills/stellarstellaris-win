@@ -153,6 +153,10 @@ pub enum Shading {
     /// a hyperlane exit's arrow (PixelPdxMeshNavigationButton: BlendStateAlphaBlend, no depth
     /// write): the texture's first of five frames, unlit
     Button,
+    /// a portrait's part (PixelPdxMeshPortrait: BlendStateAlphaBlendWriteAlpha,
+    /// RasterizerStateNoCulling, DepthStencilNoZ): its diffuse as it is, unlit (the character's
+    /// light is painted in its texture), blended by its alpha [the depth test kept: I]
+    Portrait,
 }
 
 impl Shading {
@@ -167,6 +171,7 @@ impl Shading {
             Shading::Ring => 6.0,
             Shading::Additive => 7.0,
             Shading::Button => 8.0,
+            Shading::Portrait => 9.0,
         }
     }
 }
@@ -1257,7 +1262,7 @@ pub fn add_gui(
             }
         }
         match item {
-            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action, tint, disabled, clip } => {
+            GuiItem::Sprite { path, sprite, texture, frame, frames, x, y, w, h, border, kind, button, action, tint, disabled, clip, .. } => {
                 // a disabled button's quads greyed (map.wgsl fs_quad mode 4)
                 let quad = |r: [f32; 4], uv: [f32; 4]| {
                     let mut q = screen_quad(r, uv, *tint);
@@ -1560,7 +1565,7 @@ fn clip_since(batches: &mut [Batch], gui: &mut Gui, mark: (usize, usize, usize, 
 
 /// Coloured spans broken into lines no wider than `w`: at spaces (a word wider than the line
 /// stays whole on its own line) and at new lines.
-fn wrap_spans_font(f: &Font, spans: &[(String, [f32; 3])], w: f32) -> Vec<Vec<(String, [f32; 3])>> {
+pub(crate) fn wrap_spans_font(f: &Font, spans: &[(String, [f32; 3])], w: f32) -> Vec<Vec<(String, [f32; 3])>> {
     let mut lines: Vec<Vec<(String, [f32; 3])>> = vec![Vec::new()];
     let mut used = 0.0;
     for (s, c) in spans {
