@@ -158,7 +158,7 @@ Each product records the files it was built from, so a change invalidates only w
 ## 5. Steps
 1. The `Vfs` in Rust plus `source.lua` on top of it; the parse cache. No behaviour change except mods now reaching every reader. Check: the definition counts and the scriptcheck numbers are unchanged without mods. (PR #99)
 2. Fix the listing differences: folders that only a mod has, the game's depth per folder, events at depth 0, localisation from all of `localisation/`. (PR #99)
-3. The dependency index and the per-product reloads (3.3), triggered by hand first (a console command, as the game's `reload`).
-4. The watcher and the change queue.
+3. The dependency index and the per-product reloads (3.3), triggered by hand first (a console command, as the game's `reload`).  (PR #99: F11)
+4. The watcher and the change queue. (PR #99)
 5. The renderer's Rust caches on the `Vfs` (textures, meshes, fonts, particles).
 6. Match mode and the load-log diff against the game.
