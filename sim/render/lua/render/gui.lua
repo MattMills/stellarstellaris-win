@@ -115,9 +115,38 @@ end
 
 -- the window `name` of a .gui file (a containerWindowType or windowType at its top), and the
 -- file's scope
+-- every scripted variable defined anywhere in a file, the first definition of each: what a name
+-- not in its element's scope falls back to (the game reads a .gui's @variables file-wide in file
+-- order: paragon_ui_types.gui defines @horizontal_slim_title_pos_x inside one container and uses
+-- it in later ones)
+local deep_vars = {}
+local function file_vars(file, tree)
+    local t = deep_vars[file]
+    if t then
+        return t
+    end
+    t = {}
+    local function walk(block)
+        for _, e in ipairs(block) do
+            if e.op and e.key and type(e.value) == "table" then
+                if e.value.text ~= nil then
+                    if e.key.text:sub(1, 1) == "@" and t[e.key.text] == nil then
+                        t[e.key.text] = e.value.text
+                    end
+                else
+                    walk(e.value)
+                end
+            end
+        end
+    end
+    walk(tree)
+    deep_vars[file] = t
+    return t
+end
+
 function gui.find(game_dir, file, name)
     local tree = tree_of(game_dir, file)
-    local scope = scope_of(tree, nil)
+    local scope = setmetatable(scope_of(tree, nil), { __index = file_vars(file, tree) })
     local found
     local function scan(block)
         for _, e in ipairs(block) do
