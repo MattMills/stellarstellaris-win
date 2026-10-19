@@ -74,6 +74,17 @@ return function(eval)
         return nil
     end
     local bypass_system
+    -- a country's capital system: its `capital` colony's carrier's system (R.capital_system's walk;
+    -- carrier_of's two values kept: `col and f()` would keep only the first)
+    local function capital_system(c)
+        local r = rt()
+        local o = r and obj("country", c)
+        local col = o and ref(world.field(o, "capital"))
+        if not col then return nil end
+        local kind, id = r.carrier_of("colony", col)
+        if not kind then return nil end
+        return r.system_of(kind, id)
+    end
     local function system_of(sc)
         local r = rt()
         if not r or sc == nil or sc == NONE then return nil end
@@ -81,7 +92,7 @@ return function(eval)
         if sc.kind == "bypass" then
             return bypass_system(sc.id)
         elseif sc.kind == "country" then
-            return r.capital_system(sc.id)
+            return capital_system(sc.id)
         elseif sc.kind == "ambient_object" or sc.kind == "debris" then
             local o = obj(sc.kind, sc.id)
             local c = o and world.field(o, "coordinate")
@@ -307,13 +318,14 @@ return function(eval)
             local c = obj("country", cid)
             local t = c and unq(world.field(c, "type"))
             if t == "primitive" then
-                local sid = r.capital_system(cid)
+                local sid = capital_system(cid)
                 if sid and in_border(sc, sid) then
                     local ok = true
                     if observed then
                         ok = false
                         local col = ref(world.field(c, "capital"))
-                        local kind, pid = col and r.carrier_of("colony", col)
+                        local kind, pid
+                        if col then kind, pid = r.carrier_of("colony", col) end
                         local f = kind == "planet" and ref(world.field(world.object("planet", pid) or {}, "shipclass_orbital_station"))
                         if f and r.fleet_owner(f) == watcher then ok = true end
                     end
@@ -639,12 +651,13 @@ return function(eval)
     end
     -- num_neighbor_systems = { max_distance = n limit = { ... } } <op> n: the systems within n jumps
     -- (the scope's system's) the limit holds for
-    TRIG["num_neighbor_systems"] = function(e, ctx)
+    local function neighbor_count(block, ctx)
         local r = rt()
         local sid = system_of(ctx.this)
-        if not r or not sid or e.value.text then return false end
-        local maxd = tonumber(eval.value(param(e.value, "max_distance") and select(2, param(e.value, "max_distance")).value or { text = "1" }, ctx)) or 1
-        local limit = param(e.value, "limit")
+        if not r or not sid or type(block) ~= "table" or block.text then return nil end
+        local _, mx = param(block, "max_distance")
+        local maxd = mx and tonumber(eval.value(mx.value, ctx, mx)) or 1
+        local limit = param(block, "limit")
         local dist, queue = { [sid] = 0 }, { sid }
         local i, n = 1, 0
         while queue[i] do
@@ -660,6 +673,11 @@ return function(eval)
                 end
             end
         end
+        return n
+    end
+    TRIG["num_neighbor_systems"] = function(e, ctx)
+        local n = neighbor_count(e.value, ctx)
+        if not n then return false end
         local _, cx = param(e.value, "count")
         if cx then return compare(n, cx.op, eval.value(cx.value, ctx, cx)) end
         return n > 0
@@ -736,14 +754,15 @@ return function(eval)
     end
     -- count_starbase_modules / count_starbase_buildings = { type include_being_constructed count }
     -- (a country, a system, a starbase): its starbases' modules (buildings) of the type, or all
+    local item_counts = {}
     for _, spec in ipairs({ { "count_starbase_modules", "modules", "module" }, { "count_starbase_buildings", "buildings", "building" } }) do
         local key, kind = spec[2], spec[3]
-        TRIG[spec[1]] = function(e, ctx)
+        local function count_items(block, ctx)
             local r = rt()
-            if not r or e.value.text then return false end
+            if not r or type(block) ~= "table" or block.text then return nil end
             sync()
-            local ty = param(e.value, "type")
-            local building = param(e.value, "include_being_constructed") == "yes"
+            local ty = param(block, "type")
+            local building = param(block, "include_being_constructed") == "yes"
             local n = 0
             for _, sb in ipairs(starbases_of(ctx.this)) do
                 for _, k in ipairs(r.starbase_items(sb, key)) do
@@ -755,6 +774,12 @@ return function(eval)
                     end
                 end
             end
+            return n
+        end
+        item_counts[spec[1]] = count_items
+        TRIG[spec[1]] = function(e, ctx)
+            local n = count_items(e.value, ctx)
+            if not n then return false end
             local _, cx = param(e.value, "count")
             if not cx then return n > 0 end
             return compare(n, cx.op, eval.value(cx.value, ctx, cx))
@@ -916,14 +941,45 @@ return function(eval)
         local s = obj("sector", ctx.this.id)
         return s ~= nil and unq(world.field(s, "type")) == e.value.text
     end
-    -- governors_skill_in_system <op> n (a system): the skill of its sector's governor [I]
+    -- governors_skill_in_system = { limit = { <leader triggers> } value <op> n } | <op> n (a system):
+    -- the base skill (`level`, without bonus_skill_level) of its colonies' governors (the colony's
+    -- `governor` [V: the 2212 save]) the limit holds for, summed (CGovernorsSkillInSystemTrigger::
+    -- GetTriggerValue 0x3c39ca0: CGalacticObject::ForEachColony, the limit evaluated per governor
+    -- [V the walk; I the sum])
+    local function governors_skill(block, ctx)
+        if ctx.this == NONE or ctx.this.kind ~= "system" then return nil end
+        sync()
+        local limit = type(block) == "table" and not block.text and param(block, "limit") or nil
+        local total = 0
+        local s = obj("system", ctx.this.id)
+        local cols = {}
+        for _, v in ipairs(world.list(s and world.field(s, "colonies"))) do cols[#cols + 1] = tonumber(v) end
+        if #cols == 0 then
+            for _, v in ipairs(s and world.fields(s, "planet") or {}) do
+                local col = world.planet_colony[tonumber(v)]
+                if col then cols[#cols + 1] = col end
+            end
+        end
+        for _, col in ipairs(cols) do
+            local c = obj("colony", col)
+            local g = c and ref(world.field(c, "governor"))
+            local l = g and obj("leader", g)
+            if l and (type(limit) ~= "table" or eval.trigger(limit, I.push(ctx, S("leader", g)))) then
+                total = total + (tonumber(world.field(l, "level")) or 0)
+            end
+        end
+        return total
+    end
     TRIG["governors_skill_in_system"] = function(e, ctx)
-        if ctx.this.kind ~= "system" then return false end
-        local sec = ref(system_field(ctx.this, "sector"))
-        local s = sec and obj("sector", sec)
-        local g = s and ref(world.field(s, "governor"))
-        local l = g and obj("leader", g)
-        return num_compare(l and tonumber(world.field(l, "skill")) or 0, e, ctx)
+        if e.value.text then
+            local n = governors_skill(nil, ctx)
+            return n ~= nil and num_compare(n, e, ctx)
+        end
+        local n = governors_skill(e.value, ctx)
+        if not n then return false end
+        local _, vx = param(e.value, "value")
+        if not vx then return n > 0 end
+        return compare(n, vx.op, eval.value(vx.value, ctx, vx))
     end
 
     -- bypasses
@@ -1200,14 +1256,14 @@ return function(eval)
     end
     -- total_system_workforce_with_job_tag = { tags = { } limit = { } value } (a system): the
     -- workforce of its colonies' jobs carrying every tag, the colonies the limit holds for [I]
-    TRIG["total_system_workforce_with_job_tag"] = function(e, ctx)
+    local function workforce_total(block, ctx)
         local r = rt()
-        if not r or ctx.this.kind ~= "system" or e.value.text then return false end
+        if not r or ctx.this.kind ~= "system" or type(block) ~= "table" or block.text then return nil end
         sync()
         local tags = {}
-        local tb = param(e.value, "tags")
+        local tb = param(block, "tags")
         for _, v in ipairs(world.list(type(tb) == "table" and tb or nil)) do tags[#tags + 1] = unq(v) end
-        local limit = param(e.value, "limit")
+        local limit = param(block, "limit")
         local defs = require("engine.defs")
         local total = 0
         local s = obj("system", ctx.this.id)
@@ -1228,6 +1284,11 @@ return function(eval)
                 end
             end
         end
+        return total
+    end
+    TRIG["total_system_workforce_with_job_tag"] = function(e, ctx)
+        local total = workforce_total(e.value, ctx)
+        if not total then return false end
         local _, vx = param(e.value, "value")
         if not vx then return total > 0 end
         return compare(total, vx.op, eval.value(vx.value, ctx, vx))
@@ -1247,7 +1308,7 @@ return function(eval)
         if not r or not t or t.kind ~= "system" then return false end
         sync()
         local owner = r.system_owner(ctx.this.kind == "system" and ctx.this.id or t.id)
-        local cap = owner and r.capital_system(owner)
+        local cap = owner and capital_system(owner)
         if not cap then return false end
         local function relay(sid)
             for _, m in ipairs(r.system_list(sid, "megastructures")) do
@@ -1824,6 +1885,32 @@ return function(eval)
             end
         elseif ctx.this.kind == "fleet" then
             engine({ type = "spawn_debris", fleet = ctx.this.id, country = t.id, ships = r.fleet_ships(ctx.this.id), destroy = true })
+        end
+    end
+
+    -- -----------------------------------------------------------------------------------------
+    -- values (complex_trigger_modifier's `trigger = <name> parameters = { }`: eval.TVAL, e.value the
+    -- parameter block): the number each trigger compares
+
+    if eval.TVAL then
+        eval.TVAL["count_starbase_modules"] = function(ctx, e) return item_counts["count_starbase_modules"](e.value, ctx) end
+        eval.TVAL["count_starbase_buildings"] = function(ctx, e) return item_counts["count_starbase_buildings"](e.value, ctx) end
+        eval.TVAL["num_neighbor_systems"] = function(ctx, e) return neighbor_count(e.value, ctx) end
+        eval.TVAL["total_system_workforce_with_job_tag"] = function(ctx, e) return workforce_total(e.value, ctx) end
+        eval.TVAL["governors_skill_in_system"] = function(ctx, e) return governors_skill(e.value, ctx) end
+        eval.TVAL["num_galaxy_systems"] = function()
+            sync()
+            return #all("system")
+        end
+        -- check_modifier_value (`modifier`): the scope's modifier value, as the trigger reads it
+        -- (E.modifier, the graph brought up to date first: engine.script.objects.fresh)
+        eval.TVAL["check_modifier_value"] = eval.TVAL["check_modifier_value"] or function(ctx, e)
+            local name = type(e.value) == "table" and param(e.value, "modifier")
+            if not name or type(name) ~= "string" or ctx.this == NONE or not (E and E.modifier) then return nil end
+            sync()
+            local objects = require("engine.script.objects")
+            if objects.fresh then objects.fresh() end
+            return E.modifier(ctx.this.kind, ctx.this.id, name) or 0
         end
     end
 end
