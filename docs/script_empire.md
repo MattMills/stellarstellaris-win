@@ -129,20 +129,20 @@ event scopes) unless the comment says otherwise.
   `set_leader`, `return_leader_from_exile`, `kill_exiled_leader`), a country's saved leaders
   (`create_saved_leader`, `activate_saved_leader`, `remove_saved_leader`), `clone_leader`;
   `kill_leader` with its class and ability parameters (`empire_effects.lua`, replacing
-  `eval.lua`'s). `refresh_leader_pool` is reported: the pool's generation is not modelled.
+  `eval.lua`'s). `refresh_leader_pool` kills the pool leaders and makes new ones (LEADER_POOL_SIZE internal, EXTERNAL_LEADER_POOL_SIZE from candidate countries) [I: through the objects area's leaders.create, so its draw order is not the game's].
 - **Species** (`empire_species.lua`): the homeworld, portrait, identity (`base_ref`),
   `change_species_characteristics`, `rename_species` (an entry or a list of
-  `common/species_names`; `name = random` reported), `mutate_species` (its two draws and rules),
+  `common/species_names`; `name = random`: RandomizeName over the class's unused entries), `mutate_species` (its two draws and rules),
   `modify_species` (an identical species reused, else a new one), `change_species` per scope, the
   built, founder and dominant species (the rights copied), `merge_species`, the species rights
   (`last_changed_value` first; the `last_changed_*` dates are the cooldowns' ends).
-  `integrate_species` and `modify_species`' `add_random_species_trait` are reported, not modelled;
+  `integrate_species` (HandleSubSpeciesIntegration: the budgeted pop moves, leaders and armies by
+  share, the step / complete on_actions), `modify_species`' `add_random_species_trait`;
   `refresh_species_rights` writes nothing [I].
 
-## Left to other areas
+## The galactic council
 
-The galactic community's council belongs to the diplomacy area:
-`add_imperial_authority`, `add_permanent_councillor`, `remove_permanent_councillor`,
-`add_to_galactic_council`, `remove_from_galactic_council`, `increase_council_size`,
-`decrease_council_size`, `set_council_size`, `set_council_veto`, `set_council_emergency_measures`,
-`set_emperor_can_change_council_members`, and the federation's `set_free_migration`.
+`empire_council.lua`: membership (AddMember, AddToCouncil: their draws and on_actions), permanent
+seats, the council's size, veto and emergency measures, the emperor's flag, imperial authority,
+and the federation's `set_free_migration` (the progression setting and the manual pacts it
+clears).
