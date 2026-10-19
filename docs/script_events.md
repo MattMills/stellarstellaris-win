@@ -57,6 +57,38 @@ A galactic object's storm is its `storm` (an id, 4294967295 for none); the save'
 - **Relics:** `add_relic`, `remove_relic` and `steal_relic` edit the country's `relics` list and set `last_received_relic` / `last_lost_relic` (CCountry::AddRelic / RemoveRelic [V]).
 - **Astral action cooldowns:** the country's `astral_actions_usage_states_array = { <action> = { ... next_usable_date } }` (SAstralActionUsageState::WriteMembers [V]).
 
+## The effects that make, finish or remove objects (handlers/events_create.lua)
+
+- **Missions** (NMissionUtil):
+  - `enable_mission` makes one: `mission`, the effect's `scope`, `status = active`, the scope's country as `operator`, no issuer, a `location` for a type with `location = yes`. The id goes into the country's `events = { missions = { ids } }`, then the type's `on_start` runs. This matches the game's console run of the same effect.
+  - `stop_mission` sets the status, runs `on_success` or `on_cancel` and then `on_stop` (this = the operator, prev = the issuer, from = the mission's scope, as 99_README_MISSIONS.txt gives them), and takes the mission out.
+  - `add_mission_counter` / `set_mission_counter` keep `counter = { <key> = n }`, clamped to the type's max; a mission whose counters all reach their max succeeds [I].
+  - `cancel_contract` refunds the type's `cost` to the issuer.
+- **Special projects:**
+  - `complete_special_project` takes the projects of the type (at the location) out with their research, sets the country's `last_completed_special_project`, and runs each one's `on_success` in its saved scope.
+  - `enable_patron_first_contact_project` enables the project through engine/script/creation.lua's applier and puts the patron relation (`patron_relations`) in progress.
+- **Arc sites:**
+  - `create_archaeological_site` makes a site at the scope's spatial object: `location = { type id }`, the first stage's difficulty, ARCHAEOLOGY_DISCOVERY_DAYS. `random` picks among the types with weight whose potential holds [I].
+  - `finish_current_stage` / `finish_site` complete stages (`completed = { index }`) and fire the stage's event for the excavator's country when `yes`.
+- **Cosmic storms:**
+  - `create_cosmic_storm` writes the fields the game's own run writes: type, start position, radii, `activated = no`, a cluster over the systems within the minimum radius. The storm manager's path, name and colour are not modelled.
+  - Storm influence fields are created and destroyed by their center system (the game's own run wrote `center = 4294967295` from a planet scope [I]).
+  - `recalculate_storm_influence_field` (not in the package: another area's list, done here) writes the field's systems.
+- **Astral rifts:**
+  - `spawn_astral_rift` matches the game's run: `status = waiting_for_explorer`, `event_choice = "astral_rift.1"`, days_left 90, the system as the coordinate's origin, the init_effect, on_astral_rift_spawned.
+  - `finish_astral_rift` sets the status and counts the explorer's `astral_rifts_completed` [I].
+  - `set_next_astral_rift_event` writes the save's `event_choice`, `on_roll_failed`, `fail_probability` [V].
+  - `fill_astral_rift_event_pool`, `perform_astral_action_unlock_check` [I].
+- **The grand archive:**
+  - `unlock_exhibit` makes an exhibit of the category, up to GRAND_ARCHIVE_EXHIBITS_COUNT.
+  - `give_specimen`, `steal_specimens` fill a free exhibit of the specimen's category and set `last_acquired_exhibit`, then on_specimen_acquired.
+  - `remove_specimen` empties the exhibit.
+  
+  The exhibit's own field names are [I]; the game's 2210 country has no grand archive, so its run of `give_specimen` made nothing.
+- **Anomalies:** `spawn_random_anomaly` picks a category by its spawn_chance on the planet (one draw [I]) and writes it as add_anomaly does.
+- **Events:** `bypass_event` and `pop_faction_event` fire as `country_event` does.
+- **Relics:** `add_relic` / `remove_relic` fire on_relic_received / on_relic_lost [I].
+
 ## The checker's examples that cannot act
 
 These rows stay `silent` or `refused` because the docs mod's use names something the 2210 save does
@@ -67,7 +99,24 @@ not have; the game does nothing for them either:
 - `set_event_locked = no` on a fleet that is not locked.
 - An approach of another situation type: set_situation_approach.
 - A fleet with no observation mission: add_mission_progress.
-- A country scope: add_anomaly.
+- A country scope: add_anomaly, spawn_random_anomaly.
+- A mission the country does not have: add_mission_counter, set_mission_counter.
+- A project the country does not have: complete_special_project, abort_special_project.
+- `from` missing: create_cosmic_storm, destroy_cosmic_storm_influence_field.
+- An unset event target: fleet_action_research_special_project.
+- No grand archive: give_specimen, remove_specimen, steal_specimens.
+
+Part 2's probe (`/root/ce/p4.txt`, `p5.txt`) runs the same effects with real targets, and each one acts:
+- a mission enabled, then counted to success, and another one stopped;
+- a gravity storm created (last_created_cosmic_storm);
+- an influence field created and destroyed;
+- a rift spawned, given its next event and finished;
+- the rift pool filled;
+- an exhibit unlocked, then a specimen given and removed;
+- a site created, then finished stage by stage (`completed = { 0 1 2 3 4 }`);
+- a patron state set;
+- a random anomaly spawned (AIANOM_LUMP_CAT);
+- a special project enabled, then completed.
 
 `/root/ce/probe.sh` on .24 runs them with real targets in the coverage save below. Each one acts:
 - the approach switched;

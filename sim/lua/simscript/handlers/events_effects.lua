@@ -207,6 +207,9 @@ return function(eval, M)
         end
         world.append_value(b, key, true)
         set_quoted(c, "last_received_relic", key)
+        -- on_relic_received, this = the country [I: fired by AddRelic]
+        local cid = M.country_id_of and M.country_id_of(c)
+        if cid and M.on_action then M.on_action("on_relic_received", S("country", cid)) end
         return true
     end
     function M.remove_relic(c, key)
@@ -216,6 +219,9 @@ return function(eval, M)
             if x.text and unq(x.text) == key then
                 world.remove_value(b, x.text)
                 set_quoted(c, "last_lost_relic", key)
+                -- on_relic_lost, this = the country [I: fired by RemoveRelic]
+                local cid = M.country_id_of and M.country_id_of(c)
+                if cid and M.on_action then M.on_action("on_relic_lost", S("country", cid)) end
                 return true
             end
         end
@@ -428,8 +434,8 @@ return function(eval, M)
         local sc = tx and target(tx.value.text, ctx, tx)
         if sc and sc.kind == "cosmic_storm" and world.object("cosmic_storm", sc.id) then
             world.set(g, "storm", sc.id)
-            local ok, oa = pcall(require, "simscript.on_actions")
-            if ok and oa.fire then pcall(oa.fire, "on_cosmic_storm_entered_system", eval.new_ctx(S("system", ctx.this.id), sc)) end
+            -- on_storm_entered_system: this = the system, from = the storm
+            if M.on_action then M.on_action("on_storm_entered_system", S("system", ctx.this.id), sc) end
         end
     end
     EFF["unset_cosmic_storm"] = function(e, ctx)

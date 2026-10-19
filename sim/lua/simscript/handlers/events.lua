@@ -128,6 +128,13 @@ return function(eval)
         return nil
     end
     M.country_of = country_of
+    -- a country block's id
+    function M.country_id_of(c)
+        for _, id in ipairs(world.all("country")) do
+            if world.object("country", id) == c then return id end
+        end
+        return nil
+    end
     -- the scope a statement's value names (`= root`, `= event_target:x`)
     local function target(text, ctx, e)
         if not text then return nil end
@@ -923,4 +930,5 @@ return function(eval)
     end
 
     require("simscript.handlers.events_effects")(eval, M)
+    require("simscript.handlers.events_create")(eval, M)
 end
