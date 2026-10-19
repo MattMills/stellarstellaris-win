@@ -577,7 +577,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                     items[#items + 1] = {
                         kind = "sprite", path = path, sprite = tex, texture = tex, sprite_kind = "spriteType",
                         frame = 1, frames = 1, x = x, y = y, w = w, h = h, button = button,
-                        tint = opts.tints and opts.tints[path] or nil,
+                        tint = opts.tints and opts.tints[path] or nil, disabled = is_disabled(path) or nil,
                     }
                     report.sprites = report.sprites + 1
                 else

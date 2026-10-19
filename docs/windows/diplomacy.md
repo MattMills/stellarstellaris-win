@@ -14,8 +14,11 @@ the renderer is here.
   bar's button, a toggle as CInGameIdler::ToggleTopBarView), `diplo:close`, `diplo:select:ID`,
   `diplo:country:ID`, `diplo:tab:NAME`, `diplo:sort:METHOD[:desc]`, `diplo:community`,
   `diplo:federation:ID`, `diplo:war:ID`, `diplo:peace:OPTION`, `diplo:peace_send`,
-  `diplo:member:VERB`, `diplo:none` (a window's background takes the click).
-  Escape closes the window first. `App::action` does an action as its click does.
+  `diplo:member:VERB` (a leave first opens its yes/no popup), `diplo:confirm_yes`, `diplo:confirm_no`,
+  `diplo:inspect:KIND:ID` (an object to the log, for the tests), `diplo:none` (a window's background
+  takes the click).
+  Escape closes a popup first, then a picked action, then the window. `App::action` does an action
+  as its click does.
 - `lua/render/windows/diplomacy_data.lua`: what the windows read of the world (every country, the
   player's relation to each and theirs to the player, intel, opinion where the engine computes it,
   attitudes, federations, wars, the community), made where the world is (`render.galaxy`
@@ -123,9 +126,20 @@ the renderer is here.
   @xp_to_level_N), the XP gain (cohesion x FEDERATION_COHESION_TO_XP 0.1: -3.50 at -35), the
   cohesion bars (progress bars: the positive one filled to cohesion / 100, the negative one to 1 -
   |cohesion| / 100), the envoys; a level_item per level of the type with its perks' icons
-  (gfx/interface/icons/federation/federation_perks/<perk>.dds **[I]**). Not computed: the monthly
-  cohesion growth (a modifier total), the members' diplomatic weight and envoys, the president's
-  portrait.
+  (gfx/interface/icons/federation/federation_perks/<perk>.dds **[I]**, drawn at the texture's
+  42 x 42, 21 right of and 3 under the grid's slot as the game's frame has them, greyed on a locked
+  level). The Members tab (federation_member_entry): flag, name, "Player Empire" or the AI's
+  personality, economy / fleet / technology ("$VALUE|0W$", C's %.0f: 252.5 shows 252), their
+  opinion of us (+20 in the game's frame), the ethics' icons; the sort above (§8). Not computed:
+  the monthly cohesion growth (a modifier total; -1.07 in the game), the members' diplomatic
+  weight and envoys (196 and 210, 0 and 0 in the game), the president's portrait, the opposing
+  ethics' marks.
+- Texts filled with values (`ctx.fmt`): the values go in first, then the text's other `$KEY$`
+  references are resolved. Resolving first turned a value named like a key into that key's text
+  (FEDERATION_VIEW_TYPE's TYPE showed "Type", the law's NAME "Name", the XP's TOTAL "Total").
+- The yes/no popups of a leave (popup.gui yes_no_popup_window, centred): the description wrapped
+  (render.windows.events' wrap, with its text icons) and the window grown to it, its top kept:
+  max(180, 146 + lines x 16) **[I: fitted to the game's two frames]**.
 
 ## 5. War overview (interface/waroverview.gui, CWarOverview)
 
@@ -208,6 +222,23 @@ Same commands on both (autosave_2212.07.01, 1600 x 900, the game by `headless/vi
   greyed with "Auto" and the check. Sending: Achieve War Goals refused (-243); on
   war_dgoal_2212.sav Surrender accepted (1000), wg_humiliation's on_accept, on_war_won /
   on_war_lost (the game's "Defeated by ..." event shows) and on_war_ended run, the war gone.
+- The federation view against the game's frames of fed_2212.sav (g9_federation.png, g10_fed.png,
+  g10_members.png, g16_name1/2.png, g16_econ.png): the general info, the levels grid, the members'
+  rows and their order by each click, the Leave popup (g11_click.png). Leave Federation's result
+  against the game's save after Yes and a day (the `open_diplomacy inspect KIND ID` command prints
+  an object as the save writes it): the same members, cohesion (-100), truce, relations and
+  opinion modifier; federation 1 gone.
+- The community against the game's frames of war_gc_2212.sav (g8_community.png, g13_popup.png,
+  g15_before/after.png) and its saves after Leave and after Join (join_2212.sav: the game's own
+  save after Leave with left_galactic_community taken out): the same members, influence, timed
+  modifier, flag and opinion_fellow_galcom_member modifiers. This needed the script layer's
+  has_opinion_modifier trigger (simscript/handlers/diplomacy.lua; engine/ethics/script.lua had it
+  only while the ethics evaluate) and the commands' script effects applied at once
+  (simscript.eval.sync after each on_action and effect run).
+- In a real window (winshot under Xvfb, the save loaded from Load Game): the federation opened from
+  its button, Members, Name, Leave, Yes (the view and the button gone); the community opened from
+  its button, Leave, Yes (the non-member view, Join greyed); the war opened from its badge, the
+  greyed Surrender not taking the click, Settle Status Quo selected, Send (refused at -118).
 
 ## 8. The buttons
 
@@ -219,7 +250,8 @@ diplomacy_actions.lua`; `peace` (a war's peace offer) in `diplomacy_peace.lua`;
 `leave_federation`, `join_community`, `leave_community` in `diplomacy_membership.lua`. The command
 protocol's `open_diplomacy action KEY`, `confirm`, `filter NAME`, `zoom ID`, `select ID`, `tab
 NAME`, `sort NAME`, `peace OPTION` (force_demands, status_quo, surrender), `peace_send`, `member
-VERB` do the same as the clicks.
+VERB`, `confirm_yes`, `confirm_no` do the same as the clicks; `inspect KIND ID` (KIND `top` for a
+top-level block) replies with the object as the save writes it.
 
 | window | element | the game | here |
 |---|---|---|---|
@@ -240,16 +272,17 @@ VERB` do the same as the clicks.
 | Diplomacy | Cancel | CancelAction: the list again | wired |
 | Diplomacy | Confirm | the action proposed (CDiploActionProposeCommand); an AI recipient accepts when its acceptance is above 0 | wired: the acceptance computed (section 9), the reply phrase in the bubble; accepted: the pacts (both sides; a defensive pact clears a non-aggression pact and a guarantee), the embassy (both sides), a guarantee, borders, rivalries, the embassy recalled, the pacts broken, an insult (opinion_insult on the recipient's opinion of us, through the engine's add_opinion_modifier: +27 to -173 on the test save); then the type's on_accept effect and the pacts' on_sign_* on_actions through the script layer; federation joins and associations, subjugation, trade deals [not done here] |
 | Diplomacy | the AI's acceptance icons | frame 2 accepts, 3 with the favors held, 1 refuses; for diplo_view_acceptance_icon actions and an AI recipient | wired where the acceptance is computed (section 9) |
+| Main view | the federation button (alliance_button_window), the community button (galactic_community_button_window), the war badges (waroverview_list) | OpenAllianceView, the community view, ShowForWar; each shown when there is one (a federation of the player's, a formed community, a war of the player's) | wired: drawn where the game's frames have them, the buttons toggle their view, a badge opens its war (its flags and both sides' exhaustion); the community button's unread count and vote balance hidden without a resolution [I] |
 | Community | close, Escape; the tabs | Hide; Community, Senate Floor (disabled for a non-member), Resolutions | wired |
-| Community | Join / Leave | CJoinCommunityCommand (100 influence; not within 7200 days of leaving: left_galactic_community) / CLeaveCommunityCommand (sprawl x 0.5 influence, 100..500; not the custodian), after a yes/no popup | wired (`diplomacy_membership.lua`): the cost paid, `members` (and the council, the emissaries) changed, left_galactic_community for 7200 days, on_add_community_member / on_remove_community_member run; the popup and the new member's communications [not done here] |
+| Community | Join / Leave | CJoinCommunityCommand (100 influence; not within 7200 days of leaving: left_galactic_community) / CLeaveCommunityCommand (sprawl x 0.5 influence, 100..500; not the custodian), after a yes/no popup | wired (`diplomacy_membership.lua`): the cost paid, `members` (and the council, the emissaries) changed, left_galactic_community for 7200 days, on_add_community_member / on_remove_community_member run (galcom.60 / galcom.61 add or remove opinion_fellow_galcom_member both ways, galcom_form_nay set); Leave asks with the game's yes/no popup (CONFIRM_LEAVE). Checked against the game's saves after Leave and after Join: the same members, influence (-100), timed modifier, flag and opinion modifiers. Not done: the new member's communications |
 | Community | Select a Leader | the delegate's leader selection (CAssignOfficialWindow) | not done |
 | Community | resolutions, votes, the senate floor | CProposeResolutionCommand, the decisions (support, oppose, abstain, veto, ...) | not done: the test save's community has no resolution proposed and 718 days of recess |
 | Federation | close, the tabs (Levels, Members, Fleets, Laws) | Hide, SwitchToTab | wired |
-| Federation | the members' sort buttons | OnSetSortType: by the button, the same one again reverses | wired for name, economy, fleet, technology (the others by name [I]) |
-| Federation | Leave Federation | a yes/no popup, CLeaveFederationAction (auto-accepted; requires_actor_peace) | wired (`diplomacy_membership.lua`): out of `members` and its envoys, its `federation` gone, cohesion -100, each remaining member a truce (alliance) and opinion_broke_federation towards it; with fewer than 2 members left the federation ends (the game at the next day's tick, here at once [I]). Not done: the popup, a new leader by the succession law, Ask to Leave |
+| Federation | the members' sort buttons | OnSetSortType: by the button, the same one again reverses | wired: by default economy, descending [I]; another button sorts by it descending, the same again ascending (the game's frames after Name once and twice); name, economy, fleet, technology, opinion (diplomacy, envoys, ethics by name [I]) |
+| Federation | Leave Federation | a yes/no popup, CLeaveFederationAction (auto-accepted; requires_actor_peace) | wired (`diplomacy_membership.lua`): out of `members` and its envoys, its `federation` gone, cohesion -100, with each remaining member the relations' `alliance` gone, a truce (alliance, an empty name) and opinion_broke_federation (-200) towards it; with fewer than 2 members left the federation ends (the game at the next day's tick, here at once [I]); first the game's yes/no popup (POPUP_LEAVE_FEDERATION_TITLE / _DESC). Checked against the game's save after Leave and a day. Not done: a new leader by the succession law, Ask to Leave |
 | Federation | rename, type, laws' votes, Select a Leader | CRenameAllianceCommand, CVoteForFederationTypeAction / LawAction (a vote), the leader selection | not done |
 | War | close | Hide | wired |
-| War | the peace options | OnClickOfferPeaceOption: one selected, the same again unselects; disabled when invalid | wired |
+| War | the peace options | OnClickOfferPeaceOption: one selected, the same again unselects; disabled when invalid | wired (the option's window takes the click; an invalid one none) |
 | War | Send Offer | the offer proposed, the window closed; an AI accepts above 0 | wired (`diplomacy_peace.lua`): accepted, the winner's war goal `on_accept` (status quo: both goals' `on_status_quo`, on_status_quo), on_war_won / on_war_lost, a truce between every attacker and defender (the war's name, truce_type war), the war out of the relations' `wars`, on_war_ended, the war removed; a refused status quo gives opinion_status_quo_not_accepted [I: its direction]. Not done: claims ceded, the opinion between the main participants, the effects the script layer does not have (set_subject_of) |
 | War | set war goal, the battle log's headers | CWarGoalsView, SortBattles (stable, ascending first) | not done (no battles in the test save) |
 

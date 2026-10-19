@@ -97,9 +97,25 @@ local function width(m, s)
 end
 M.width = width
 
+-- a text icon's span (£name£: GFX_text_<name>, else GFX_resource_<name>, as render.gui's texts)
+-- for the renderer ("\1texture\1frames\1frame") and its width (the frame's, else 18 [I]), or nil
+local function icon_span(db, key, texture_size)
+    local sp = db.sprites["GFX_text_" .. key] or db.sprites["GFX_resource_" .. key]
+    if sp and sp.sheet and db.sprites[sp.sheet] then
+        sp = { texture = db.sprites[sp.sheet].texture, frames = db.sprites[sp.sheet].frames, frame = sp.default_frame }
+    end
+    if not (sp and sp.texture) then
+        return nil
+    end
+    local tw = texture_size and texture_size(sp.texture)
+    local iw = tw and tw / math.max(1, sp.frames or 1) or 18
+    return "\1" .. sp.texture .. "\1" .. (sp.frames or 1) .. "\1" .. (sp.frame or 1), iw
+end
+
 -- a text's spans (loc.spans: { text, colour } and { icon }) cut into lines no wider than `w`: at
--- the spaces, a new line at "\n" -> lines of { { text, colour } }
-local function wrap(loc, text, font, w, db, base)
+-- the spaces, a new line at "\n"; an icon its own span (texture_size gives its width) -> lines of
+-- { { text, colour } }
+local function wrap(loc, text, font, w, db, base, texture_size)
     local m = metrics(font)
     local spans = loc and loc.spans(text) or { { text = text } }
     local lines, line, used = {}, {}, 0
@@ -108,7 +124,7 @@ local function wrap(loc, text, font, w, db, base)
     end
     local function push(t, c)
         local last = line[#line]
-        if last and last.colour == c then
+        if last and last.colour == c and not last.icon then
             last.text = last.text .. t
         else
             line[#line + 1] = { text = t, colour = c }
@@ -124,7 +140,16 @@ local function wrap(loc, text, font, w, db, base)
         line, used = {}, 0
     end
     for _, s in ipairs(spans) do
-        if s.text then
+        if s.icon then
+            local t, iw = icon_span(db, s.icon, texture_size)
+            if t then
+                if used > 0 and used + iw > w then
+                    newline()
+                end
+                line[#line + 1] = { text = t, colour = base, icon = true }
+                used = used + iw
+            end
+        elseif s.text then
             local c = colour(s)
             local first = true
             for part in (s.text .. "\n"):gmatch("([^\n]*)\n") do

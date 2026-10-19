@@ -52,17 +52,20 @@ pub struct State {
     pub actions: Option<(u32, String)>,
     pub action: Option<String>,
     pub message: Option<String>,
+    /// a leave awaiting the game's yes/no popup (CPopupMessageYesNo): `leave_federation` or
+    /// `leave_community`
+    pub confirm: Option<String>,
     /// the windows' lists scrolled (rows skipped, by list name), and their places and rows as last
     /// laid out (name, rect, rows, rows shown)
     pub scroll: std::collections::BTreeMap<String, usize>,
     pub lists: Vec<(String, [f32; 4], usize, usize)>,
 }
 
-type Snap = (Option<Open>, Option<u32>, Option<String>, Option<String>, std::collections::BTreeSet<String>, Option<String>, Option<String>);
+type Snap = (Option<Open>, Option<u32>, Option<String>, Option<String>, std::collections::BTreeSet<String>, Option<String>, Option<String>, Option<String>);
 
 impl State {
     fn snap(&self) -> Snap {
-        (self.open.clone(), self.selected, self.tab.clone(), self.sort.clone(), self.filters_off.clone(), self.action.clone(), self.message.clone())
+        (self.open.clone(), self.selected, self.tab.clone(), self.sort.clone(), self.filters_off.clone(), self.action.clone(), self.message.clone(), self.confirm.clone())
     }
 
     /// Does a `view:contacts` or `diplo:...` action on the windows' state; whether anything
@@ -82,8 +85,15 @@ impl State {
                 return Ok(before != self.snap());
             }
             // Escape: the picked action's view first (its Cancel), then the window
+            // the popup's No (DeclineButton): the leave not done
+            if rest == "confirm_no" {
+                self.confirm = None;
+                return Ok(before != self.snap());
+            }
             if rest == "escape" {
-                if self.action.is_some() {
+                if self.confirm.is_some() {
+                    self.confirm = None;
+                } else if self.action.is_some() {
                     self.action = None;
                 } else {
                     self.open = None;
@@ -154,17 +164,23 @@ impl State {
             }
             _ => return Err(format!("unknown diplomacy action {action}")),
         }
+        // another window: no popup left over
+        if self.open != before.0 {
+            self.confirm = None;
+        }
         Ok(before != self.snap())
     }
 
     /// The open window laid out for a screen of `width` x `height` (none: nothing), in the front
     /// end's runtime, and the flags among its items: (item index, country id).
     pub fn items(&mut self, runtime: &Runtime, width: u32, height: u32, galaxy: &Galaxy, observe: bool) -> Result<(Vec<GuiItem>, Vec<(usize, u32)>), String> {
-        let Some(open) = &self.open else { return Ok((Vec::new(), Vec::new())) };
+        // (no window open: the entry points only, the federation and community buttons and the
+        // war badges, as window "none")
+        let open = self.open.clone();
         type Lists = Vec<(String, [f32; 4], usize, usize)>;
         let read = || -> mlua::Result<(Vec<GuiItem>, Vec<(usize, u32)>, Lists)> {
             let lua = &runtime.lua;
-            let (window, id) = open.name();
+            let (window, id) = open.as_ref().map(Open::name).unwrap_or(("none", -1));
             let s = lua.create_table()?;
             s.set("window", window)?;
             s.set("id", id)?;
@@ -189,7 +205,10 @@ impl State {
             if let Some(m) = &self.message {
                 s.set("message", m.as_str())?;
             }
-            if let (Some((cid, chunk)), Open::Country(id)) = (&self.actions, open) {
+            if let Some(c) = &self.confirm {
+                s.set("confirm", c.as_str())?;
+            }
+            if let (Some((cid, chunk)), Some(Open::Country(id))) = (&self.actions, &open) {
                 if cid == id {
                     s.set("actions", chunk.as_str())?;
                 }
@@ -310,14 +329,41 @@ pub fn act(app: &mut crate::app::App, a: &str) -> Result<(), String> {
         }
         return Ok(());
     }
+    if let Some(what) = a.strip_prefix("diplo:inspect:") {
+        // an object of the world as the save writes it, to the log (the tests' comparisons with
+        // the game's saves): `diplo:inspect:KIND:ID`
+        let (kind, id) = what.split_once(':').ok_or(format!("bad action {a}"))?;
+        let out = world_command(app, &["inspect", kind, id])?;
+        let note: String = app
+            .runtime
+            .lua
+            .load(format!("local t = (loadstring or load)({out:?})() return tostring(t.note or '')"))
+            .eval()
+            .map_err(|e| format!("diplomacy: {e}"))?;
+        app.log.push(format!("inspect {kind} {id}: {}", note.split_whitespace().collect::<Vec<_>>().join(" ")));
+        return Ok(());
+    }
+    // the popup's Yes (AgreeButton): the leave it asked about done
+    let confirmed = if a == "diplo:confirm_yes" { app.diplomacy.confirm.take().map(|v| format!("diplo:member:{v}")) } else { None };
+    let a = confirmed.as_deref().unwrap_or(a);
+    if a == "diplo:confirm_yes" {
+        // (no popup open)
+        return Ok(());
+    }
     if let Some(verb) = a.strip_prefix("diplo:member:") {
-        // Leave Federation, the community's Join / Leave (render.windows.diplomacy_membership); the
-        // game's yes/no popup before a leave is not shown [not done here]
+        // Leave Federation, the community's Join / Leave (render.windows.diplomacy_membership). A
+        // leave first asks with the game's yes/no popup (OnLeaveFederation, OnJoinLeave: its Yes
+        // posts the command); Join is posted at once
         let Some(me) = player(app) else { return Ok(()) };
         let verb = match verb {
             "leave_federation" | "join_community" | "leave_community" => verb,
             _ => return Err(format!("bad action {a}")),
         };
+        if verb != "join_community" && confirmed.is_none() {
+            app.diplomacy.confirm = Some(verb.to_string());
+            app.relayout();
+            return Ok(());
+        }
         let out = world_command(app, &[verb, &me.to_string()])?;
         let note: String = app
             .runtime
@@ -422,6 +468,24 @@ mod tests {
         assert_eq!(s.open, None);
         assert!(s.act("diplo:country:x").is_err());
         assert!(s.act("diplo:what").is_err());
+    }
+
+    #[test]
+    fn leave_popup_cancelled() {
+        let mut s = State::default();
+        s.act("diplo:federation:1").unwrap();
+        // (App::act sets it on Leave Federation's click)
+        s.confirm = Some("leave_federation".into());
+        // Escape closes the popup first, then the window
+        assert!(s.act("diplo:escape").unwrap());
+        assert_eq!((s.confirm.clone(), s.open.clone()), (None, Some(Open::Federation(1))));
+        s.confirm = Some("leave_federation".into());
+        assert!(s.act("diplo:confirm_no").unwrap());
+        assert_eq!(s.confirm, None);
+        // another window drops it
+        s.confirm = Some("leave_community".into());
+        s.act("diplo:community").unwrap();
+        assert_eq!(s.confirm, None);
     }
 
     #[test]

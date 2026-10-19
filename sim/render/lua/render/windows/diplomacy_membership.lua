@@ -42,12 +42,16 @@ local function today()
     return (tostring(world.meta and world.meta.date or ""):gsub('"', ""))
 end
 
--- CGameState::CreateNewTruce(a, b, type): a truce object and each relation's `truce`
+-- CGameState::CreateNewTruce(a, b, type): a truce object (an empty name, as the game's save of a
+-- federation left has it) and each relation's `truce`
 local function truce(a, b, kind)
     local A = require("render.windows.diplomacy_actions")
     local tid = world.next_index("truce")
     local t = {}
     world.create("truce", tid, t)
+    local name = {}
+    world.append(name, "key", "", true)
+    world.append(t, "name", name)
     world.append(t, "start_date", today(), true)
     world.set(t, "truce_type", kind)
     for _, p in ipairs({ { a, b }, { b, a } }) do
@@ -79,8 +83,9 @@ end
 
 -- CLeaveFederationAction::ExecuteAccept @2654c60 (auto-accepted): CFederation::RemoveMember (out of
 -- `members`, its envoys out of `envoy`, its `federation` key gone, cohesion
--- FEDERATION_LEAVE_COHESION_PENALTY), then each remaining member a truce (alliance) and
--- opinion_broke_federation towards the leaver. The federation ends (CFederation::ToBeKilled) with fewer
+-- FEDERATION_LEAVE_COHESION_PENALTY), then with each remaining member: the relations' `alliance`
+-- gone, a truce (alliance), opinion_broke_federation towards the leaver (-200). Checked against the
+-- game's save after Leave on fed_2212.sav. The federation ends (CFederation::ToBeKilled) with fewer
 -- than 2 members: the game at the next day's tick, here at once [I: the simulation has no federation
 -- tick]. A new leader by the succession law when the leader leaves 3 or more [not done here], the
 -- proposed votes' voters and the ship designs passed back [not done here].
@@ -110,7 +115,11 @@ function Mb.leave_federation(game_dir, player)
     remove_key(c, "federation")
     local rest = ids(world.field(fed, "members"))
     local fx = effects()
+    local A = require("render.windows.diplomacy_actions")
     for _, m in ipairs(rest) do
+        -- the relations' `alliance` gone both ways (the game's save)
+        remove_key(A.relation(player, m), "alliance")
+        remove_key(A.relation(m, player), "alliance")
         truce(player, m, "alliance")
         if fx.add_opinion_modifier then
             pcall(fx.add_opinion_modifier, { kind = "country", id = m, who = player, modifier = "opinion_broke_federation" })
@@ -225,6 +234,8 @@ function Mb.join_community(game_dir, player)
     if ok and okev then
         for _, name in ipairs(first and { "on_galactic_community_formed", "on_add_community_member" } or { "on_add_community_member" }) do
             local okr, err = pcall(events.on_action, name, eval.S("country", player), eval.new_ctx(eval.S("country", player), eval.S("country", player)))
+            -- its queued engine effects applied now (simscript.eval.sync), as the game applies them at once
+            if eval.sync then pcall(eval.sync) end
             run[#run + 1] = name .. (okr and "" or (" failed: " .. tostring(err)))
         end
     end
@@ -264,6 +275,8 @@ function Mb.leave_community(game_dir, player)
     local okev, events = pcall(require, "simscript.events")
     if ok and okev then
         local okr, err = pcall(events.on_action, "on_remove_community_member", eval.S("country", player), eval.new_ctx(eval.S("country", player), eval.S("country", player)))
+        -- its queued engine effects applied now (simscript.eval.sync), as the game applies them at once
+        if eval.sync then pcall(eval.sync) end
         run[#run + 1] = "on_remove_community_member" .. (okr and "" or (" failed: " .. tostring(err)))
     end
     return serialize({ ok = true, done = true, note = "left, -" .. leave .. " influence; ran " .. table.concat(run, ", ") })
