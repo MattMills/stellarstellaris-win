@@ -115,9 +115,38 @@ end
 
 -- the window `name` of a .gui file (a containerWindowType or windowType at its top), and the
 -- file's scope
+-- every scripted variable defined anywhere in a file, the first definition of each: what a name
+-- not in its element's scope falls back to (the game reads a .gui's @variables file-wide in file
+-- order: paragon_ui_types.gui defines @horizontal_slim_title_pos_x inside one container and uses
+-- it in later ones)
+local deep_vars = {}
+local function file_vars(file, tree)
+    local t = deep_vars[file]
+    if t then
+        return t
+    end
+    t = {}
+    local function walk(block)
+        for _, e in ipairs(block) do
+            if e.op and e.key and type(e.value) == "table" then
+                if e.value.text ~= nil then
+                    if e.key.text:sub(1, 1) == "@" and t[e.key.text] == nil then
+                        t[e.key.text] = e.value.text
+                    end
+                else
+                    walk(e.value)
+                end
+            end
+        end
+    end
+    walk(tree)
+    deep_vars[file] = t
+    return t
+end
+
 function gui.find(game_dir, file, name)
     local tree = tree_of(game_dir, file)
-    local scope = scope_of(tree, nil)
+    local scope = setmetatable(scope_of(tree, nil), { __index = file_vars(file, tree) })
     local found
     local function scan(block)
         for _, e in ipairs(block) do
@@ -163,6 +192,8 @@ end
 --   opts.progress: element path -> 0..1 (a progressbarType's state: progress.shader draws its
 --                 textureFile1 where u <= the state, its textureFile2 after; an item's `clip` is
 --                 the { u0, u1 } of its frame drawn, its rectangle cut the same)
+--   opts.tooltips: element path -> its tooltip (a text or a localisation key; else the .gui's
+--                  pdx_tooltip, tooltip or tooltipText): render.tooltip shows it (docs/tooltips.md)
 --   opts.parent: the rectangle the window is laid out in (else the screen)
 --   opts.prefix: a path prefix for the window's elements (else "")
 --   opts.texture_size(path) -> w, h (the renderer's: the texture's pixels)
@@ -319,6 +350,15 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                         end
                     else
                         sp = db.sprites["GFX_text_" .. key] or db.sprites["GFX_resource_" .. key]
+                        -- a pop job's (£job_x£, [x.GetIcon]): GFX_job_x, else its icon file
+                        -- (gfx/interface/icons/jobs) [I]
+                        if not sp and key:sub(1, 4) == "job_" then
+                            sp = db.sprites["GFX_" .. key]
+                            local tex = "gfx/interface/icons/jobs/" .. key .. ".dds"
+                            if not sp and opts.texture_size and opts.texture_size(tex) then
+                                sp = { texture = tex, frames = 1, kind = "spriteType" }
+                            end
+                        end
                     end
                     if sp and sp.sheet and db.sprites[sp.sheet] then
                         sp = { texture = db.sprites[sp.sheet].texture, frames = db.sprites[sp.sheet].frames, frame = sp.default_frame }
@@ -548,7 +588,7 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                     items[#items + 1] = {
                         kind = "sprite", path = path, sprite = tex, texture = tex, sprite_kind = "spriteType",
                         frame = 1, frames = 1, x = x, y = y, w = w, h = h, button = button,
-                        tint = opts.tints and opts.tints[path] or nil,
+                        tint = opts.tints and opts.tints[path] or nil, disabled = is_disabled(path) or nil,
                     }
                     report.sprites = report.sprites + 1
                 else
@@ -574,6 +614,17 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                     end
                 end
                 local item = sprite_item(path, sprite, frame, x, y, dw, dh, button)
+                -- its tooltip: the window's own (opts.tooltips), else the .gui's key (pdx_tooltip,
+                -- tooltip, tooltipText), localised when shown (render.tooltip)
+                if item then
+                    item.tooltip = opts.tooltips and opts.tooltips[path] or field("pdx_tooltip") or field("tooltip")
+                        or field("tooltipText")
+                    -- a button with a shortcut adds its key (CTooltipManager: "Hotkey: X"), after a \2
+                    local sc = kind ~= "icontype" and (field("shortcut") or field("shortCut"))
+                    if sc and sc ~= "" then
+                        item.tooltip = (item.tooltip or "") .. "\2" .. sc
+                    end
+                end
                 -- a checkbox's frame is its state: no hover or pressed frames (the game's frame:
                 -- an unticked box stays unticked under the pointer)
                 if item and kind == "checkboxtype" then
@@ -591,7 +642,22 @@ function gui.layout(game_dir, db, file, window_name, screen, opts)
                 -- view's list headers: left, after the expand icon)
                 local bs = field("borderSize")
                 local bx = type(bs) == "table" and number(get(bs, "x"), vars) or 0
-                text_item(path .. "/text", field("buttonFont") or field("font"), text, x + bx, y, lw - 2 * bx, lh,
+                -- its text_offset: the text moved by it, centred in the sprite's frame unscaled (the
+                -- game's frames of settings_view's tabs: -4 moves the label 5 px up; its sub tabs at
+                -- scale 0.75 with -30, -12: 1 px right, 5 px up) [I: only with a text_offset]
+                local tx, ty = 0, 0
+                local to = field("text_offset")
+                if type(to) == "table" then
+                    tx, ty = number(get(to, "x"), vars) or 0, number(get(to, "y"), vars) or 0
+                    local fw, fh
+                    if sprite then
+                        fw, fh = frame_size(sprite)
+                    end
+                    if fw and scale ~= 1 then
+                        lw, lh = fw, fh
+                    end
+                end
+                text_item(path .. "/text", field("buttonFont") or field("font"), text, x + bx + tx, y + ty, lw - 2 * bx, lh,
                     (field("format") or "center"):lower(), "center", field("text_color_code"))
                 if is_disabled(path) then
                     for _, s in ipairs(items[#items].spans) do

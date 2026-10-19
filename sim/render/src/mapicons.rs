@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use stellar_sim::mlua::{self, Table};
 
-use crate::app::{si_number, App, MapView};
+use crate::app::{si_number, App, HoverTarget, MapView};
 use crate::gui::{self, GuiItem};
 use crate::math::V3;
 use crate::scene::{self, Pickable};
@@ -411,6 +411,7 @@ impl App {
         let font = map.fonts.as_ref().and_then(|f| f.get("cg_16b"));
         let widths: Vec<f32> = names.iter().map(|n| font.map_or(8.0 * n.len() as f32, |f| f.width(n)).min(176.0)).collect();
         let empty = SystemIcons::default();
+        let hovered = self.hovered_system();
         let mut specs = Vec::new();
         let mut anchors = Vec::new();
         let mut owners = Vec::new();
@@ -470,6 +471,14 @@ impl App {
                     }
                     spec.actions.push((format!("{p}/{bg}"), format!("map:slide:{i}")));
                 }
+            }
+            // the hover marker (CGalacticObjectMapIcon::UpdateHoverIndicator [V]: hover_indicator,
+            // GFX_map_icon_system_enter at (-35, -23), the hexagon and the eye about the star,
+            // shown while the system is hovered; the game's frames: at the star, not its name)
+            // [I: the sprite's variants by the selected fleets' orders (system_enter_cant,
+            // system_goto_cant_has_intel, the jump drives') and idler+0xe88 not done]
+            if hovered == Some(i) {
+                only.push("hover_indicator".into());
             }
             spec.only = Some(only);
             spec.prefix = Some(prefix.clone());
@@ -980,5 +989,16 @@ impl App {
         self.log.push(format!("system camera: fitted again to the system's radius {size} (was {fitted})"));
         self.relayout();
         true
+    }
+}
+
+impl App {
+    /// The galaxy's system under the cursor (CInGameIdler's hovered system, idler+0xaa4: the star
+    /// the ray picks; not its name nor a label's part): its star label's hover marker.
+    pub(crate) fn hovered_system(&self) -> Option<usize> {
+        match (&self.hovered, self.view) {
+            (Some((HoverTarget::Map(Pickable::System(i)), _)), MapView::Galaxy) => Some(*i),
+            _ => None,
+        }
     }
 }

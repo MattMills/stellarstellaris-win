@@ -188,8 +188,9 @@ left; `cmpall.sh` on 10.5.0.24):
   gender buttons, randomize buttons (the list's first names [I]).
 - **Homeworld** [V]: names, starting system drop-down (Random and the `custom_empire`
   initializers), the classes' places, the selection ring's window moved to the chosen one, the
-  details (class, climate `wet` "(Wet Climate)", description, preference trait). The planets are 3D
-  in the game: not drawn.
+  details (class, climate `wet` "(Wet Climate)", description, preference trait). The planets are
+  3D: each class's entity (empire_preview.planet_entity) in its button's 100 x 100 render target
+  (portraits.rs's planet insets) [V: g_ed7.png].
 - **Flag** [V]: categories with a FLAG_CATEGORY_ name, emblems, the colour slots (1, 2 and the map's
   5, 6), the palette (`flags/colors.txt`), the backgrounds in greys.
 - **City & Room** [V]: the city sets over the home world's landscape
@@ -197,8 +198,14 @@ left; `cmpall.sh` on 10.5.0.24):
   the room tab: the room selector's game_setup rooms (asset_selectors/room_textures.txt) [V: the
   frame shows the same rooms in the same order; the game draws them over black, here over the panel].
 - **Shipsets** [V layout]: Biological (cultures with `bio_ship`) and Mechanical groups, the chosen
-  set's description, the ship class spinner, the ship colours. The ship and the thumbnails are 3D:
-  not drawn.
+  set's description, the ship class spinner and its description (SHIP_SIZE_SELECTOR_LOC:
+  SHIP_GRAPHICS_<SIZE>_DESC), the ship colours. The ship is 3D: the set's ship of the spinner's size
+  with the size's default sections (render.system.default_sections: per section slot the first
+  template of that size and slot) [I: the game's choice not traced], broadside, 0.22 of the
+  3d_view's 1254 width at its centre, over the ship designer's sky (gfx/map/sky_rim), cut to the
+  window (`...|main|CX|CY|VW` insets); each set's thumbnail the same ship on its button
+  (ship_design_entry_bg), a biological set the first size made for it (mauler_stage_1:
+  system.browser_size) [V: g_ed10.png; the thumbnails' and the ship's colours differ].
 - **Ruler Appearance** [V]: name, sex (male, female for a gendered species), titles, the portrait
   spinners, biography.
 - **Ruler Traits** [V]: the class spinner, the starting traits of the class with their icons
@@ -209,8 +216,9 @@ letters, digits, space, `-`, `'`, `.`, `,`; Shift for capitals; Backspace, Retur
 
 ## 5. Not done
 
-- The Homeworld editor's planets and the Shipsets editor's ship and thumbnails (3D in the game;
-  the preview's ruler, species portraits, home world and ship are drawn: docs/windows/portraits.md).
+- The Shipsets editor: the biological sets' own ship sizes in the spinner, the ships' colours
+  (the game's thumbnails show each culture's own), the Mechanical list's order (the game: Humanoid,
+  Machine, Mammalian), the view's rotation and zoom.
 - The secondary species' editors, the advisor editor, nomadic empires (the nomad toggle, arkships).
 - The right column of DLC icons and *Recommended DLC* (the selection screen's, ng-flow's).
 - Tooltips (the errors show in the menu's tooltips in the game), the list scrollbars and wheel.

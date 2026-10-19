@@ -233,8 +233,8 @@ the data guarded). The wheel scrolls the leaders' list (its `wheel`).
 | leaders | All / class tabs | ShowLeaders: the class filter | wired (state) |
 | leaders | a row | the leader selected | wired (state) |
 | leaders | section headers (minus / plus) | the section collapsed / expanded | wired (state) |
-| leaders | Hire | ShowRecruitLeaderDialog, then CRecruitLeaderCommand: the class's cost (leader_cost by level, its category's modifiers) paid, pool -> owned_leaders, recruitment_date, on_leader_hired | wired (command; the dialog not drawn) |
-| leaders | Dismiss | ShowFireLeaderDialog, then CFireLeaderCommand (not the ruler) | wired (command; disabled for the ruler; no dialog) |
+| leaders | Hire | ShowRecruitLeaderDialog (CRecruitLeaderDialog: standard_dialog, RECRUIT_LEADER_TITLE / _DESC with the cost and upkeep; at or over the class's cap the AT_CAP / ALREADY_OVER_CAP texts and Hire Anyway), then CRecruitLeaderCommand: the class's cost (leader_cost by level, its category's modifiers) paid, pool -> owned_leaders, recruitment_date, on_leader_hired | wired (dialog; command) [V window] |
+| leaders | Dismiss | ShowFireLeaderDialog (CFireLeaderDialog: FIRE_LEADER_TITLE / _DESC), then CFireLeaderCommand (not the ruler) | wired (dialog; command; disabled for the ruler) [V window] |
 | leaders | Assign | the job list, CAssignLeaderCommand (section 15) | wired (list; command `assign`); disabled when the leader has no place, as for every leader of the 2210 save |
 | leaders | the list | the wheel scrolls it | wired (wheel) |
 | leaders | a card's rename_leader / rename_leader_title | CLeaderRenameDialog, CRulerRenameDialog, CCouncilPositionRenameDialog | wired (dialog; command `rename`) |
@@ -249,7 +249,7 @@ the data guarded). The wheel scrolls the leaders' list (its `wheel`).
 | council | an available agenda | the agenda chosen (council_agenda, progress 0) | wired (command), the list closed |
 | council | an unavailable agenda | disabled | disabled |
 | council | Launch (activate_council_agenda_button) | CFinishAgendaCommand: finish_modifier for 3600 days, `effect`, the cooldown, no agenda | wired (command `launch`; shown when IsAgendaFinished) |
-| council | early launch | CEarlyFinishAgendaCommand | disabled as the game's here |
+| council | early launch | CEarlyFinishAgendaCommand: unity = the game rule council_agenda_early_activation_cost (its script value's formula), then FinishAgenda | wired (command `launch_early`; enabled when the unity covers it) |
 | council | a position's name, a card's name / title | CCouncilPositionRenameDialog, the leader's dialog | wired (dialog; command `rename`) |
 | council | a councillor's card | the assign widget | not done |
 | edicts | Council / Factions tabs | the other views | wired |
@@ -267,7 +267,7 @@ the data guarded). The wheel scrolls the leaders' list (its `wheel`).
 | species | Reset To Empire Default | the species' own rights removed | wired (command) |
 | species | Set as Default | CSetDefaultSpeciesCommand: the country's `default_species = { BASE = SPECIES }`, built_species_ref | wired (command; disabled on a group's default, both species of the 2210 save) |
 | species | home planet button | OnHomePlanet | wired (`select:planet`) |
-| species | Create / Modify Template, Apply This Template | species_mod_window, species_mod_apply_window (section 14) | wired (windows; commands); disabled in the 2210 save (no tech_gene_tailoring) |
+| species | Create / Modify Template, Apply This Template | species_mod_window, species_mod_apply_window (section 14); Research Project starts the genetic modification project (section 16) | wired (windows; commands) [V window, fixture save]; disabled in the 2210 save (no tech_gene_tailoring) |
 
 Costs and effects (wire-empire-2). A cost is the definition's economic unit as the simulation's
 economy reads it: `economy.template` of the `resources` block, its `cost` table with its
@@ -282,7 +282,13 @@ formula without the modifiers. Effects run in the simulation's script layer (`si
 `simscript.events.on_action` (on_edict_activated, on_policy_changed, on_leader_hired,
 on_leader_assigned, on_agenda_finished, on_pre/on_post_government_changed). Species rights stamp
 `last_changed_<right>` with the unlock date and refuse a locked right (CanChangeSpeciesRight).
-Not done: a hired leader's replacement in the pool; the early agenda launch.
+The pool gets no replacement for a hired leader (HireNewLeader makes none [V commands.md]), as
+here. The early launch's cost is the script value council_agenda_early_activation_cost's formula
+(`empire_commands.early_cost`): the size over 100 + 10 rounded up to 10, x 2000, x the curve of the
+progress, to the nearest 100, x (1 + council_agenda_early_activation_cost_mult); the script layer has
+no `council_agenda_progress_percent` trigger, so the formula is used in the command too.
+A reform to an authority with elections sets `next_election` its term on [I: no variance]; 2240.01.01
+after the fixture save's reform to Oligarchic [V window].
 
 Open [I]: the game's frame of the 2210 save shows the agenda (progress 7008, cost 7000 by GetCost
 2323c30 with the size under EMPIRE_SIZE_BASE) without its Launch button; here IsAgendaFinished
@@ -326,11 +332,13 @@ cornered texture (stretched here), the RandomizeButton (hidden in all these dial
   save [V frame]); `ok` (Reform) disabled unless CChangeGovernmentCommand::IsValid's checks hold
   (unity, the cooldown `government_date`, the authority, each civic, the civics that cannot be
   removed): disabled in the 2210 save (government_date 2220.07.21) [V frame].
+- Checked in a real window on the fixture save (section 16): Dictatorial to Oligarchic, 560 unity
+  paid, the type Plutocratic Oligarchy and the ruler's title High Commissioner after [V window].
 - The rules are the empire creator's (`render.creator_rules`: requirements, triggers) [I where its
   triggers are]; the government type is its GenerateType rule (the first possible) [I: weights].
 - Command `reform AUTH TYPE CIVICS` (the simulation): IsValid's unity and cooldown again; unity paid,
   authority, civics (origin kept), type, `government_date` = now + 20 years, the ruler's custom titles
-  cleared, on_pre/on_post_government_changed. Not exercised in a window (the save's cooldown).
+  cleared, on_pre/on_post_government_changed.
 
 ## 14. Species templates (`species_mod_window.gui`, `species_mod_apply_window.gui`)
 
@@ -343,13 +351,16 @@ cornered texture (stretched here), the RandomizeButton (hidden in all these dial
   trait points and picks left. Save (`create_template SRC TRAITS 0`), Apply (`... 1`), Update and
   Delete (a template with no pops). The command copies the source species into species_db with the
   traits and `base_ref`, adds it to `species_templates_ref` and copies the source's rights [I: the new
-  id is the store's next index]. The names are the source's (not editable here).
-- Apply This Template (CanApplyTemplate) opens the apply window: the template, the species of its base
-  on the owned colonies with their colonies (checkboxes; all_selected), the pops chosen, the cost
-  [I: NSpecies' defines per pop]. Research Project (`apply_template`) is not done: the game starts a
-  species modification special project whose save shape is not known.
-- Both are disabled in the 2210 save (no tech_gene_tailoring) [V frame], so neither window has been
-  seen in a real window.
+  id is the store's next index]. The name, adjective and plural boxes are edit boxes (a click gives
+  one the keyboard: the species view's `text_focus` / `text_key`, Tab to the next, RETURN leaves it);
+  a changed box's text becomes the template's literal name, an unchanged one keeps the source's.
+- Apply This Template (CanApplyTemplate: also not while a modification runs in its research) opens
+  the apply window: the template, the species of its base on the owned colonies with their traits and
+  under each its colonies (checkboxes per species and per colony; all_selected), the pops chosen, the
+  cost in society research (engineering for robots) from engine.species_mod's formula, Research
+  Project enabled by CanApplyTemplateToColonies (section 16).
+- Both are disabled in the 2210 save (no tech_gene_tailoring) [V frame]; on the fixture save both
+  windows were used [V window].
 
 ## 15. The leaders' job list (`assign_job_list_container`)
 
@@ -363,4 +374,44 @@ leaders_view_job_gridbox_entry per place; a click runs `assign LEADER planet|shi
 left: governor / ship leader cleared; `location = { type assignment id position }`; the class's
 assignment_cooldown; on_leader_assigned) and closes the list. The Galactic Community's and
 federations' places are not listed [not done]. In the 2210 save no leader has a place, so Assign is
-disabled for all, as in the game [I: per jobs.md].
+disabled for all, as in the game [I: per jobs.md]. On the 2220 save: Voyl dismissed (the capital
+ungoverned), Farshore's list showed "Planetary Positions (1): Uthab"; assigned there, Typhoon was
+left without a leader and his list then showed "Fleet Positions (1): Typhoon" [V window].
+
+## 16. The genetic modification project (engine/species_mod.lua)
+
+The game's species modification special project, in the simulation (shared notes:
+`empire_re/species_mod_project.md`, the 4.5.2 Linux build's code).
+- Start (`apply_template TEMPLATE SPECIES/COLONY,...`, CCreateSpeciesModSpecialProjectCommand):
+  IsValid (no modification in the same research area, every pair an owned colony with a sapient
+  species of the template's base, pops chosen), then `events.special_project = { id days_left=30
+  coordinate carrier status=in_progress convert_to species = { { species planet } } }` (id from
+  next_special_project_id) and a queue item `{ special_project=ID date }` before the area's first
+  technology (society, engineering for robots) [V: the save text of a run, the RE's shape].
+- Cost (NSpeciesModification::CalcCost): base (1500; robots 750) + per pair floor(Δtraits x pops /
+  100) x 10 (robots 20) + pops x 5 / 100 (robots 10), x 0.25 for a country no human plays, x (1 +
+  modify_species_cost_mult); Δtraits counts the traits one species has and the other not (a planet
+  preference 3, else |cost|, 1 for 0). Recomputed each day from the pops.
+- Progress: the research queue's monthly points (engine.research's area_day) while the project can
+  progress; a month it cannot, it holds nothing back. Done when the progress reaches the cost,
+  checked daily; completed after the country's three areas.
+- Failure (CCountryEventManager::DailyUpdateSerial): a project that cannot progress counts days_left
+  down and fails (status failed), out of the queue and the events. Its days draw nothing from the
+  generator [I: no project type].
+- Completion (OnSuccessSpeciesModification): one draw; per pair with an owned colony: the default
+  species, the leaders and armies of the species by the colony's share, the colony's pop groups of
+  the species moved (last first) into the template's group of the same category
+  (pops.move_size, GROWTH_CAT_SPECIES_MOD), the founder species, on_modification_complete; then
+  on_modification_completion, the flag has_modified_species (not robots), the project out of the
+  events. Not done: the colony ships' species, the completion message, uplifts.
+- Checked with the simulation's run example on the fixture save (STELLAR_LUA_BEFORE starting a
+  project on the founder species' 2987 pops of the capital, its progress set near the cost of
+  2839.35): on 2220.01.02's research the 2987 pops moved to the template, the founder and default
+  species and the 6 leaders changed, the flag set, the project gone [V run]; a project whose pairs
+  hold no pops failed the next day [V run]. In the window: the apply window showed 2.9K pops and a
+  cost of 2.8K society research, Research Project started project 1 (2839.35, 2987 pops) and was
+  disabled after (ALREADY_MODIFYING) [V window].
+
+Real-window checks (this section and sections 13 to 15) used a fixture of the standard headless run's
+autosave_2220.01.01.sav, country 0 given tech_gene_tailoring and government_date 2200.01.01, loaded
+through STELLAR_SAVE; Xvfb :88 with /root/emp3/winshot88.sh on .24.

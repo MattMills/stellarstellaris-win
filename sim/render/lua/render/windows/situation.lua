@@ -140,7 +140,7 @@ local function entries(ctx, data)
             out[#out + 1] = {
                 kind = "first_contact", key = tostring(f.id), category = "first_contacts", name = f.name, title = "",
                 icon = "GFX_category_first_contact", picture = v.picture, desc = v.desc, view = v,
-                days_left = f.days_left, difficulty = f.difficulty, leader = f.leader, location = f.location,
+                days_left = f.days_left, difficulty = f.difficulty_shown or f.difficulty, leader = f.leader, location = f.location,
             }
         end
     end
@@ -232,7 +232,7 @@ function M.build(ctx, data, state)
     -- the header's buttons: `track` (the pin, GFX_button_track_project) and `goto` (the focus);
     -- with goto hidden the pin takes its place (CSituationLog::UpdateTrackButtonPosition): an
     -- event chain shows the pin alone, a first contact both [I: by the frames]
-    local positions = {}
+    local positions, progress = {}, {}
     if not selected then
         hide["goto"] = true
         hide.track = true
@@ -271,12 +271,17 @@ function M.build(ctx, data, state)
             return "§Y" .. name .. "§!"
         end)
         text[fc .. "/requirements"] = loc and loc.resolve(raw) or raw
-        -- the roll's time bar: nearly empty in the game's frame (its fill not drawn) [I]
-        hide.progress_bar = true
-        text[tc .. "/time_left"] = "§Y" .. tostring(selected.days_left or 0) .. "§!"
-        -- the difficulty: the save's (the game's frame shows 7 for the save's 5: its modifiers are
-        -- not applied) [I]
-        text[dc .. "/difficulty_type_value"] = "§R" .. tostring(selected.difficulty or 0) .. "§!"
+        -- the roll's time bar: the days run of FIRST_CONTACT_DISCOVERY_DAYS (80; at 80 left only its
+        -- start cap, as the game's frame), the days left with the time icon after them
+        progress[tc .. "/progress_bar"] = math.max(0, math.min(1, (80 - (selected.days_left or 0)) / 80))
+        text[tc .. "/time_left"] = "§Y" .. tostring(selected.days_left or 0) .. "§! £time£"
+        -- the difficulty shown (events_data) in its tier's colour and icon (NGuiUtil::
+        -- MapDifficultyToEnum: 0 easy, 1 normal, 2 hard, more hell; GetDifficultyColor: G Y H R;
+        -- GetDifficultySprite: FIRSTCONTACT_DIFFICULTY_SPRITE_NAME_ROOT .. "_" .. the tier)
+        local d = selected.difficulty or 0
+        local tier = d <= 0 and 1 or math.min(d, 3) + 1
+        text[dc .. "/difficulty_type_value"] = "§" .. ({ "G", "Y", "H", "R" })[tier] .. tostring(d) .. "§!"
+        sprites[dc .. "/difficulty_type_icon"] = "GFX_firstcontact_difficulty_" .. ({ "easy", "normal", "hard", "hell" })[tier]
         text[fc .. "/view_site"] = "SHOW_FIRST_CONTACT"
     end
     -- (the description is drawn wrapped below)
@@ -320,7 +325,7 @@ function M.build(ctx, data, state)
     end
     local wi, wr = gui.layout(ctx.game_dir, db, FILE, "situation_log", ctx.screen, {
         texture_size = ctx.texture_size, loc = loc, hide = hide, text = text, sprites = sprites,
-        positions = positions, sizes = sizes,
+        positions = positions, sizes = sizes, progress = progress,
         actions = {
             [root] = "view_set:noop=",
             [root .. "/close"] = "view_close",

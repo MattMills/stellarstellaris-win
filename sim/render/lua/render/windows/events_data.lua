@@ -707,6 +707,12 @@ function M.command(verb, a, b)
         end
         return "modifiers " .. table.concat(out, " ")
     end
+    -- modifier KIND:ID NAME: a scope's modifier value (the simulation's, engine.interface E.modifier)
+    if verb == "modifier" then
+        local kind, id = tostring(a):match("^(%a+):(%d+)$")
+        local v = kind and _G.E and _G.E.modifier and _G.E.modifier(kind, tonumber(id), b)
+        return string.format("modifier %s %s %s", tostring(a), tostring(b), tostring(v))
+    end
     if verb == "stock" then
         local c = world.object("country", player())
         local r = world.path(c or {}, "modules", "standard_economy_module", "resources")
@@ -792,8 +798,25 @@ local function first_contacts(pid, game_dir)
                 local ok, v = pcall(event_entry, game_dir, { id = -1, event = text(world.field(ev, "event_id")), roots = save_scope(world.field(ev, "scope")) }, pid)
                 view = ok and v or nil
             end
+            -- the difficulty shown (CSituationLogSubviewFirstContact::UpdateDifficulty): the stage's
+            -- (CFirstContact::GetCurrentStageDifficulty: the save's difficulty + the contact's
+            -- country's intel_encryption_add x (1 + intel_encryption_mult), CalcTargetDiscoveryMalus)
+            -- less the owner's intel_decryption_add x (1 + _mult) (CalcDiscoveryBonus), at least 0
+            -- [I: the modifier types 0x17f..0x182 taken for these four]
+            local function mod(cid, name)
+                local E = _G.E
+                local v = cid and E and E.modifier and E.modifier("country", cid, name)
+                return tonumber(v) or 0
+            end
+            local function scaled(cid, name)
+                return math.floor(mod(cid, name .. "_add") * (1 + mod(cid, name .. "_mult")))
+            end
+            local base = tonumber(world.field(b, "difficulty")) or 0
+            local target, owner = tonumber(world.field(b, "country")), tonumber(world.field(b, "owner"))
+            local shown = math.max(0, base + scaled(target, "intel_encryption") - scaled(owner, "intel_decryption"))
             out[#out + 1] = {
                 id = e.id, name = name_block(world.field(b, "name")), country = tonumber(world.field(b, "country")),
+                difficulty_shown = shown,
                 status = text(world.field(b, "status")), stage = text(world.field(b, "stage")),
                 clues = tonumber(world.field(b, "clues")) or 0, difficulty = tonumber(world.field(b, "difficulty")) or 0,
                 days_left = tonumber(world.field(b, "days_left")) or 0, location = tonumber(world.field(b, "location")),

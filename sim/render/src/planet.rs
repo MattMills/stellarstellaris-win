@@ -41,6 +41,9 @@ pub struct State {
     /// the colonize window opened from a fleet's Colonize Planet (OpenColoniseView with the fleet
     /// as its filter: that fleet alone listed)
     pub colonize_fleet: Option<u32>,
+    /// the population tab's open pop categories (their display category keys:
+    /// CPlanetViewPopCategoryEntry::ToggleOpen)
+    pub expanded: Vec<String>,
 }
 
 impl State {
@@ -114,6 +117,10 @@ pub fn act(app: &mut crate::app::App, action: &str) -> Result<(), String> {
     match verb {
         "tab" => {
             app.planet_view.side = None;
+            // (the assign widget closes with a tab change)
+            if app.planet_view.dialog.as_deref() == Some("governor") {
+                app.planet_view.dialog = None;
+            }
             app.open_planet(id, arg)?;
         }
         "colonize" => app.planet_view.colonize = Some(id),
@@ -170,6 +177,13 @@ pub fn act(app: &mut crate::app::App, action: &str) -> Result<(), String> {
             "escape" => return act(app, "planet:dialog_close"),
             _ => {}
         },
+        "expand" => {
+            if let Some(i) = app.planet_view.expanded.iter().position(|c| c == arg) {
+                app.planet_view.expanded.remove(i);
+            } else {
+                app.planet_view.expanded.push(arg.to_string());
+            }
+        }
         "source" => {
             let sid = arg.parse::<u32>().ok();
             app.planet_view.source = if app.planet_view.source == sid { None } else { sid };
@@ -210,6 +224,10 @@ pub fn act(app: &mut crate::app::App, action: &str) -> Result<(), String> {
                 app.planet_view.source = None;
                 app.planet_view.source_fleet = None;
                 app.planet_view.colonize_fleet = None;
+            }
+            // a leader picked in the assign widget closes it (CAssignLeaderWidgetView)
+            if (arg.starts_with("governor:") || arg.starts_with("hire_governor:")) && app.planet_view.last.starts_with("ok") {
+                app.planet_view.dialog = None;
             }
         }
         _ => app.log.push(format!("  planet view: {action}: not done")),
@@ -293,6 +311,7 @@ pub fn set_extras(front: &Runtime, view: &State) -> Result<(), String> {
         t.set("source", view.source)?;
         t.set("source_fleet", view.source_fleet)?;
         t.set("colonize_fleet", view.colonize_fleet)?;
+        t.set("expanded", view.expanded.clone())?;
         Ok(())
     };
     set().map_err(|e| format!("planet view: {e}"))

@@ -32,9 +32,14 @@ local function number_and_curve(v)
     return tonumber(n), curve ~= "" and curve or nil
 end
 
--- a block of numbers ({ 4.510 0.000 }, { 0.240,size_grow 0.160 }) -> { 4.51, 0, curve = ... }
+-- a block of numbers ({ 4.510 0.000 }, { 0.240,size_grow 0.160 }) -> { 4.51, 0, curve = ... }; a
+-- number alone (life=2.000, size=50.000,grow) -> { 2, 0 }, { 50, 0, curve = "grow" }
 local function numbers(b)
     local out = {}
+    if type(b) == "string" then
+        local n, c = number_and_curve(b)
+        return { n or 0, 0, curve = c }
+    end
     for _, t in ipairs(type(b) == "table" and b or {}) do
         if t.text then
             local n, c = number_and_curve(t.text)

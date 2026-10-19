@@ -129,19 +129,56 @@ function localisation.raw(key)
     return localisation.texts[key]
 end
 
--- a text with its $KEY$ references resolved (to a depth of 8); keys that are not keys stay
+-- the scripted localisations (common/scripted_loc `defined_text`, render/scripted_loc.lua):
+-- name -> the key chosen for the current scope (set by a view from what its extract evaluated),
+-- and name -> the text's `default`
+localisation.scripted, localisation.scripted_default = {}, {}
+
+-- a text with its $KEY$ references (to a depth of 8) and its [Name] scripted localisations
+-- (CScriptedLocalisation: the key whose trigger holds, else the default) resolved; keys and names
+-- that are neither stay
 local function resolve(text, depth)
-    if depth > 8 or not text:find("$", 1, true) then
+    if depth > 8 then
         return text
     end
-    return (text:gsub("%$([^$\n]+)%$", function(ref)
-        local key = ref:match("^([^|]+)") or ref
-        local t = localisation.texts[key]
-        if t then
-            return resolve(t, depth + 1)
-        end
-        return nil
-    end))
+    if text:find("$", 1, true) then
+        text = text:gsub("%$([^$\n]+)%$", function(ref)
+            local key = ref:match("^([^|]+)") or ref
+            local t = localisation.texts[key]
+            if t then
+                return resolve(t, depth + 1)
+            end
+            return nil
+        end)
+    end
+    if text:find("[", 1, true) then
+        -- a pop job's commands (CPopJobType: [technician.GetName], .GetNamePlural, .GetIcon): its
+        -- name keys job_X / job_X_plural, its icon £job_X£ [I: the swappable names (a gestalt's
+        -- or a swap_type's) not chosen]
+        text = text:gsub("%[([%w_]+)%.(Get%w+)%]", function(job, cmd)
+            local key = "job_" .. job
+            if not localisation.texts[key] then
+                return nil
+            end
+            if cmd == "GetName" then
+                return resolve(localisation.texts[key], depth + 1)
+            elseif cmd == "GetNamePlural" then
+                return resolve(localisation.texts[key .. "_plural"] or localisation.texts[key], depth + 1)
+            elseif cmd == "GetIcon" then
+                return "\194\163" .. key .. "\194\163"
+            end
+            return nil
+        end)
+        text = text:gsub("%[([%w_]+)%]", function(name)
+            local key = localisation.scripted[name] or localisation.scripted_default[name]
+            local t = key and localisation.texts[key]
+            if t then
+                return resolve(t, depth + 1)
+            end
+            return nil
+        end)
+    end
+    return text
 end
 localisation.resolve = function(text)
     return resolve(text, 0)

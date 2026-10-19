@@ -577,6 +577,59 @@ function economy.monthly()
     return economy.last_month
 end
 
+-- economy.write_current_month(): every country's budget, computed from the world as it is, written
+-- as its `budget = { current_month = { income expenses balance } }` (per category, per resource),
+-- what the views read (the top bar's incomes, the research areas'). A new game has none: the game's
+-- day-0 save holds empty budgets, its first day's (CCountryBudget's daily update) the month's [I:
+-- the trade_* tables, the month-to-date parts not written]
+function economy.write_current_month()
+    local before = economy.before_growth
+    economy.before_growth = false
+    economy.compute()
+    economy.before_growth = before
+    local function put(block, cats)
+        world.replace(block, {})
+        local names = {}
+        for cat in pairs(cats) do names[#names + 1] = cat end
+        table.sort(names)
+        for _, cat in ipairs(names) do
+            local rs = {}
+            for r, v in pairs(cats[cat]) do
+                if math.abs(v) > 1e-9 then rs[#rs + 1] = r end
+            end
+            if #rs > 0 then
+                table.sort(rs)
+                local cb = world.child(block, cat)
+                for _, r in ipairs(rs) do
+                    world.set(cb, r, math.floor(cats[cat][r] * 100000 + 0.5) / 100000)
+                end
+            end
+        end
+    end
+    for _, country in ipairs(world.all("country")) do
+        local c = world.object("country", country)
+        local b = budgets[country]
+        if c and b then
+            local cm = world.child(world.child(c, "budget"), "current_month")
+            put(world.child(cm, "income"), b.income)
+            put(world.child(cm, "expenses"), b.expenses)
+            local balance = {}
+            for side, sign in pairs({ income = 1, expenses = -1 }) do
+                for cat, res in pairs(b[side]) do
+                    balance[cat] = balance[cat] or {}
+                    for r, v in pairs(res) do
+                        balance[cat][r] = (balance[cat][r] or 0) + sign * v
+                    end
+                end
+            end
+            put(world.child(cm, "balance"), balance)
+        end
+    end
+    -- (research.month's copies of the save's budgets read again)
+    local research = package.loaded["engine.research"]
+    if research then research.save_budgets = nil end
+end
+
 -- ---------------------------------------------------------------------------------------------
 -- the check against the save's budget.current_month
 

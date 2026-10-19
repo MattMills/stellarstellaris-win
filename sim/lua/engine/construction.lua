@@ -361,7 +361,7 @@ end
 -- CArmy::MoveToOrbit (0x22305e0 Linux): the transport ship (the army's name), a new transport
 -- fleet in orbit of the planet (CPlanet::EnterOrbit: three draws), AddShip (two draws), and one
 -- draw more [I] (the profile: five a transport)
-local function move_to_orbit(aid, a, country, planet, date)
+local function move_to_orbit(aid, a, country, planet, date, join)
     local C = create()
     local design = latest_design(country, "shipclass_transport")
     if not design then
@@ -373,6 +373,12 @@ local function move_to_orbit(aid, a, country, planet, date)
                         name = C.copy(world.field(a, "name")), army = aid, named_by = "army" }
     if not sid then
         return nil, "no ship"
+    end
+    -- a transport fleet given to join (the planet view's Embark All: one fleet for its armies [I])
+    if join and world.object("fleet", join) then
+        C.add_ship(join, sid)
+        draw()
+        return sid, join
     end
     local fid = C.fleet{ country = country, ship_class = "shipclass_transport", civilian = false, coordinate = at }
     local f = world.object("fleet", fid)
@@ -394,6 +400,8 @@ local function move_to_orbit(aid, a, country, planet, date)
     draw()
     return sid, fid
 end
+
+construction.move_to_orbit = function(...) return move_to_orbit(...) end
 
 -- CBuildableArmy::OnFinished
 local function finish_army(b, date)
@@ -425,8 +433,14 @@ local function finish_army(b, date)
     draw()
     on_action("on_army_recruited", colony_scope(colony), { "army", aid })
     local sid, fid
-    if defensive then
+    -- NPlanetArmies::AddOrEmbark: a defensive army, or any with the planet's Deploy In Orbit off
+    -- (deploy_armies_in_orbit = no), joins the colony and its army list (NPlanetArmies::Add)
+    if defensive or (p and world.field(p, "deploy_armies_in_orbit") == "no") then
         world.append(a, "colony", colony)
+        local cb = world.object("colony", colony)
+        if cb then
+            world.append_value(world.child(cb, "army"), aid)
+        end
     else
         local why
         sid, fid = move_to_orbit(aid, a, country, planet, date)

@@ -207,6 +207,8 @@ local function run_goal(game_dir, wobj, side_key, name, run)
         return
     end
     local okr, err = pcall(eval.effect, block, eval.new_ctx(eval.S("country", actor), eval.S("country", target)))
+    -- its queued engine effects applied now (simscript.eval.sync), as the game applies them at once
+    if eval.sync then pcall(eval.sync) end
     run[#run + 1] = key .. "." .. name .. (okr and "" or (" failed: " .. tostring(err)))
 end
 
@@ -215,6 +217,8 @@ local function on_action(name, scope, from, run)
     local okev, events = pcall(require, "simscript.events")
     if ok and okev then
         local okr, err = pcall(events.on_action, name, eval.S("country", scope), eval.new_ctx(eval.S("country", from), eval.S("country", scope)))
+        -- its queued engine effects applied now (simscript.eval.sync), as the game applies them at once
+        if eval.sync then pcall(eval.sync) end
         run[#run + 1] = name .. (okr and "" or (" failed: " .. tostring(err)))
     end
 end

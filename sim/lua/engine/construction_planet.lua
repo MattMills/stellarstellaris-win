@@ -264,4 +264,43 @@ function cp.daily(date)
     end
 end
 
+-- ---------------------------------------------------------------------------------------------
+-- armies: embarking (CMoveArmyToOrbitCommand -> CArmy::MoveToOrbit): each army that can (on the
+-- colony, not defensive) leaves the colony's list and gets a transport ship (engine.construction's
+-- move_to_orbit); the first makes the transport fleet in orbit, the others join it [I]: the game
+-- also joins a suitable transport fleet already in orbit
+
+function cp.embark(cid, aids, date)
+    local c = world.object("colony", cid)
+    local pid = world.colony_planet and world.colony_planet[cid]
+    local p = pid and world.object("planet", pid)
+    local country = p and tonumber(world.field(p, "owner"))
+    if not (c and country) then
+        return 0, "no colony"
+    end
+    local construction = require("engine.construction")
+    local fleet, n = nil, 0
+    for _, aid in ipairs(aids) do
+        local a = world.object("army", aid)
+        local t = a and unq(world.field(a, "type"))
+        local def = t and defs.get("common/armies", t)
+        local defensive = def and defs.field(def.block, "defensive") == "yes"
+        if a and not defensive and tonumber(world.field(a, "colony")) == cid then
+            local sid, fid = construction.move_to_orbit(aid, a, country, pid, date, fleet)
+            if sid then
+                world.remove_value(world.field(c, "army"), tostring(aid))
+                world.remove_value(world.field(c, "army"), aid)
+                local e = world.entry(a, "colony")
+                if e then
+                    world.remove_entry(a, e)
+                end
+                world.set(a, "ship", sid)
+                fleet = fleet or fid
+                n = n + 1
+            end
+        end
+    end
+    return n, fleet
+end
+
 return cp

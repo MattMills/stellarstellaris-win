@@ -237,8 +237,8 @@ pub struct App {
     /// the planet view's state: the planet and the tab shown (planet.rs)
     pub planet_view: crate::planet::State,
     /// what the windows were laid out for: the size, view, selection, snapshot, GUI shown, paused,
-    /// star names' zoom, observing
-    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool, u64)>,
+    /// star names' zoom, observing, the galaxy's hovered star
+    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool, u64, Option<usize>)>,
     /// the player holds the camera (a drag, a turn); the plane's point a drag holds; what the
     /// camera follows; the systems' cameras as they were left; the last system shown
     holding: bool,
@@ -248,6 +248,8 @@ pub struct App {
     last_system: Option<usize>,
     /// what the cursor is over, since when (the tooltips' hook: [`Tooltips`])
     pub hovered: Option<(HoverTarget, Instant)>,
+    /// the tooltip drawn (tooltip.rs)
+    pub tip: crate::tooltip::Tip,
     /// the tooltips' text (a later phase: cached through the modifier graph); none yet
     pub tooltips: Option<Box<dyn Tooltips>>,
     hover: Option<String>,
@@ -369,6 +371,7 @@ impl App {
             saved_system_cameras: HashMap::new(),
             last_system: None,
             hovered: None,
+            tip: Default::default(),
             tooltips: None,
             hover: None,
             pressed: None,
@@ -556,6 +559,11 @@ impl App {
         let mut changed = false;
         // a system's camera fitted to a stand-in (its data not come yet) fitted again (mapicons.rs)
         changed |= self.refit_system_camera();
+        // a tooltip due or gone (tooltip.rs): the scene built again
+        if self.screen == Screen::Map && crate::tooltip::due(self) {
+            self.scene = None;
+            changed = true;
+        }
         // the clock's commands of the last frame's input
         for c in std::mem::take(&mut self.commands) {
             let r = match c {
@@ -1424,7 +1432,7 @@ impl App {
             let (w, h) = self.size;
             let states = self.states();
             if self.screen == Screen::Map {
-                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0), m.observe, self.fleet.key()));
+                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0), m.observe, self.fleet.key(), self.hovered_system()));
                 if key != self.overlay_key {
                     let t = Instant::now();
                     self.overlay_items = self.selection_windows();
@@ -1442,7 +1450,12 @@ impl App {
                     self.overlay_key = key;
                 }
             }
-            let overlay = scene::Overlay { selected: self.selected, items: self.overlay_items.clone(), labels: self.overlay_labels.clone() };
+            // the tooltip over the windows (tooltip.rs)
+            let mut items = self.overlay_items.clone();
+            if self.screen == Screen::Map {
+                items.extend(crate::tooltip::items(self));
+            }
+            let overlay = scene::Overlay { selected: self.selected, items: items, labels: self.overlay_labels.clone() };
             let scene = match self.screen {
                 Screen::Map if self.view == MapView::Model => {
                     let cam = self.system_camera.ok_or("no camera")?;
@@ -1480,7 +1493,7 @@ impl App {
             }
             // the Situation Log's trackers on the galaxy (events.rs)
             if let (Screen::Map, Some(map)) = (self.screen, self.map.as_mut()) {
-                crate::events::draw_trackers(&mut scene, &self.runtime, map, self.view, &self.game_dir);
+                crate::events::draw_trackers(&mut scene, &self.runtime, map, self.view, self.camera.as_ref(), &self.game_dir);
             }
             self.scene = Some(std::sync::Arc::new(scene));
             // a new scene, whoever asked for it (a hit test builds it too)
@@ -1537,15 +1550,30 @@ impl App {
         if self.screen == Screen::Map && crate::mainbars::hover(self, x, y) {
             self.relayout();
         }
-        let hover = self.button_at(x, y)?.map(|b| b.0);
+        let hit = self.button_at(x, y)?;
+        // a map label (its button selects its thing) has its thing's tooltip (tooltip.rs)
+        let label = hit.as_ref().filter(|(p, _)| p.starts_with("/label/")).and_then(|(_, a)| a.as_deref().and_then(crate::mainbars::pickable));
+        let hover = hit.map(|b| b.0);
         // the tooltips' hook: the element or the thing on the map under the cursor
         let target = match &hover {
+            Some(_) if label.is_some() => label.map(HoverTarget::Map),
             Some(path) => Some(HoverTarget::Element(path.clone())),
-            None if self.screen == Screen::Map => self.scene()?.pick_at(x, y, 6.0).map(HoverTarget::Map),
+            // an element with a tooltip that takes no clicks (tooltip.rs), else the map's thing
+            None if self.screen == Screen::Map => match crate::tooltip::element_at(self, x, y) {
+                Some(p) => Some(HoverTarget::Element(p)),
+                None => self.scene()?.pick_at(x, y, 6.0).map(HoverTarget::Map),
+            },
             None => None,
         };
         if self.hovered.as_ref().map(|h| &h.0) != target.as_ref() {
+            // a star hovered or left on the galaxy: its label's hover marker (mapicons.rs; the
+            // labels' key has the hovered system)
+            let before = self.hovered_system();
             self.hovered = target.map(|t| (t, Instant::now()));
+            if self.hovered_system() != before && hover == self.hover {
+                self.scene = None;
+                return Ok(true);
+            }
         }
         if hover != self.hover {
             self.hover = hover;
@@ -2174,6 +2202,20 @@ impl App {
                     }
                     if let Some(a) = creator_key(key, self.controls.mods().shift).and_then(|a| crate::planet::typed(&self.planet_view, &a)) {
                         crate::planet::act(self, &a)?;
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        // the starbase window's rename dialog takes the keyboard too (starbase.rs typed)
+        if self.screen == Screen::Map && self.starbase.dialog.as_deref().is_some_and(|d| d.starts_with("rename:")) {
+            if let Input::Key { key, down, .. } = input {
+                if !matches!(key.as_str(), "shift" | "ctrl" | "alt") {
+                    if !*down {
+                        return Ok(false);
+                    }
+                    if let Some(a) = creator_key(key, self.controls.mods().shift).and_then(|a| crate::starbase::typed(&self.starbase, &a)) {
+                        crate::starbase::act(self, &a)?;
                         return Ok(true);
                     }
                 }

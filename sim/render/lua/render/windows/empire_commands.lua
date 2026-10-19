@@ -454,13 +454,51 @@ function M.agenda_cost(key)
     return base * (1 + 0.001 * over)
 end
 
+-- the early launch's unity cost (game rule council_agenda_early_activation_cost, script value
+-- council_agenda_early_activation_cost and its _curve in 01_script_values_paragon.txt): the size over
+-- 100 (at least 0) + 10, up to the next 10, x 2000, x the curve of the progress p (0..1):
+-- min(1, 0.008 + 1 / ((30 p)^5 / 100000 + 1.008)), to the nearest 100, x (1 +
+-- council_agenda_early_activation_cost_mult)
+function M.early_cost(size, p, mod_mult)
+    local v = math.ceil((math.max(0, size - 100) + 10) * 0.1) * 10 * 2000
+    local curve = math.min(1, 0.008 + 1 / ((30 * p) ^ 5 / 100000 + 1.008))
+    v = math.floor(v * curve / 100 + 0.5) * 100
+    return v * (1 + (mod_mult or 0))
+end
+
+-- the agenda launched early (CEarlyFinishAgendaCommand: the cost affordable and not negative; paid in
+-- unity, then FinishAgenda, on_agenda_finished_early). The cost is M.early_cost, as the view shows it
+-- (the script value's trigger council_agenda_progress_percent is not in the script layer: its value
+-- there would be 0 [I])
+function C.launch_early()
+    local c, cid = country()
+    local gov = world.field(c, "government")
+    local key = strip(world.field(gov, "council_agenda"))
+    if not key or key == "" or key == "none" then
+        return "no agenda"
+    end
+    local base = M.agenda_cost(key)
+    local p = base > 0 and (tonumber(world.field(gov, "council_agenda_progress")) or 0) / base or 0
+    local cost = M.early_cost(tonumber(world.field(c, "empire_size")) or 0, p, modifiers(cid).council_agenda_early_activation_cost_mult)
+    if cost < 0 then
+        return "no early launch"
+    end
+    local ok = can_pay(c, { unity = cost })
+    if not ok then
+        return "not enough unity (" .. cost .. ")"
+    end
+    pay_table(c, { unity = cost })
+    on_action("on_agenda_finished_early", "country", cid)
+    return "paid unity " .. cost .. "; " .. C.launch({ force = true })
+end
+
 -- the agenda launched (CFinishAgendaCommand → CGovernment::FinishAgenda): its finish_modifier as a
 -- timed modifier for COUNCIL_AGENDA_FINISH_MODIFIER_DURATION × (1 +
 -- council_agenda_finishing_effect_duration_mult) days, its `effect` run, a cooldown entry
 -- (council_agenda_cooldowns: the end date in start_date, COUNCIL_AGENDA_COOLDOWN or the agenda's
 -- agenda_cooldown days), no agenda and progress 0; on_agenda_finished. The view offers it only when
 -- the progress has reached the cost (CGovernment::IsAgendaFinished)
-function C.launch()
+function C.launch(args)
     local c, cid = country()
     local gov = world.field(c, "government")
     local key = strip(world.field(gov, "council_agenda"))
@@ -468,7 +506,7 @@ function C.launch()
         return "no agenda"
     end
     local progress = tonumber(world.field(gov, "council_agenda_progress")) or 0
-    if progress < M.agenda_cost(key) then
+    if progress < M.agenda_cost(key) and not (args and args.force) then
         return "not finished"
     end
     local d, file = def("common/council_agendas", key)
@@ -628,6 +666,16 @@ function C.reform(args)
         world.set(gov, "type", '"' .. gtype .. '"')
     end
     world.set(c, "government_date", '"' .. add_days(today(), 20 * 360) .. '"')
+    -- (an authority change: UpdateNextElectionDate; the authority's election_term_years on, none
+    -- without elections [I: the term's variance not drawn])
+    local ad = def("common/governments/authorities", auth)
+    local term = tonumber(ad and world.field(ad, "election_term_years")) or 0
+    local e = world.entry(c, "next_election")
+    if term > 0 then
+        world.set(c, "next_election", '"' .. add_days(today(), term * 360) .. '"')
+    elseif e then
+        world.remove_entry(c, e)
+    end
     for _, k in ipairs({ "ruler_title", "ruler_title_female", "heir_title", "heir_title_female" }) do
         local e = world.entry(gov, k)
         if e then
@@ -933,7 +981,7 @@ end
 -- CCountry::AddSpeciesTemplate): a new species_db entry, the source's with the edited traits and
 -- `base_ref` its base; its id in the country's species_templates_ref; its rights a copy of the
 -- source's (a species_rights entry). Returns its id
-local function new_template(c, src, traits)
+local function new_template(c, src, traits, names)
     local so = world.object("species", src)
     if not so then
         return nil, "no such species"
@@ -944,6 +992,14 @@ local function new_template(c, src, traits)
         world.append(tb, "trait", t, true)
     end
     set_block(block, "traits", tb)
+    -- (the editor's names: a box changed, a literal name; `-` the source's kept)
+    local R = require("render.windows.rename")
+    for i, k in ipairs({ "name", "adjective", "plural" }) do
+        local v = names and names[i]
+        if v and v ~= "-" and v ~= "~" then
+            set_block(block, k, literal(R.dec(v)))
+        end
+    end
     world.set(block, "base_ref", tonumber(world.field(so, "base_ref")) or src)
     -- (the new species' id: the store's next index [I: the game's id generation])
     local id = world.next_index("species")
@@ -980,7 +1036,7 @@ end
 -- Save / Apply in the template editor: args SOURCE TRAITS APPLY
 function C.create_template(args)
     local c = country()
-    local id, why = new_template(c, tonumber(args[1]), trait_list(args[2]))
+    local id, why = new_template(c, tonumber(args[1]), trait_list(args[2]), { args[4], args[5], args[6] })
     if not id then
         return why
     end
@@ -991,7 +1047,7 @@ end
 function C.update_template(args)
     local c = country()
     local old = tonumber(args[1])
-    local id, why = new_template(c, old, trait_list(args[2]))
+    local id, why = new_template(c, old, trait_list(args[2]), { args[3], args[4], args[5] })
     if not id then
         return why
     end
@@ -1006,11 +1062,23 @@ function C.delete_template(args)
     return "template " .. args[1] .. " deleted"
 end
 
--- Research Project in the apply window (CCreateSpeciesModSpecialProjectCommand): the game starts a
--- species modification special project whose pops change when it completes; that project is not
--- modelled here [not done: its save shape is not known]
+-- Research Project in the apply window (CCreateSpeciesModSpecialProjectCommand): args TEMPLATE
+-- SPECIES/COLONY,... ; the species modification project started (engine.species_mod: its special
+-- project and queue item; the research's monthly points, its completion changing the pops)
 function C.apply_template(args)
-    return "not done: the species modification project for template " .. tostring(args[1]) .. " (species " .. tostring(args[2]) .. ") is not modelled"
+    local _, cid = country()
+    local template = tonumber(args[1])
+    local pairs = {}
+    for sp, col in tostring(args[2] or ""):gmatch("(%d+)/(%d+)") do
+        pairs[#pairs + 1] = { tonumber(sp), tonumber(col) }
+    end
+    local sm = require("engine.species_mod")
+    local id, why = sm.start(cid, template, pairs)
+    if not id then
+        return "not valid: " .. tostring(why)
+    end
+    local cost, pops = sm.cost(cid, template, pairs)
+    return string.format("species modification project %d started: %s research %.2f, %d pops", id, sm.area(template), cost, pops)
 end
 
 return M

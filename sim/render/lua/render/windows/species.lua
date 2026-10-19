@@ -116,6 +116,27 @@ function M.data(cid, state)
             end
         end
     end
+    -- the species modifications running (events' special projects with convert_to; their research's
+    -- queue item for the progress): one per research area (ALREADY_MODIFYING)
+    d.projects = {}
+    local queue_progress = {}
+    for _, area in ipairs({ "society", "engineering" }) do
+        for _, item in ipairs(world.blocks(world.path(c, "tech_status", area .. "_queue"))) do
+            local sid = tonumber(world.field(item, "special_project"))
+            if sid then
+                queue_progress[sid] = tonumber(world.field(item, "progress")) or 0
+            end
+        end
+    end
+    for _, p in ipairs(world.fields(world.field(c, "events"), "special_project") or {}) do
+        if type(p) == "table" and world.field(p, "convert_to") ~= nil and C.strip(world.field(p, "status")) == "in_progress" then
+            local t = tonumber(world.field(p, "convert_to"))
+            local so = world.object("species", t)
+            local cls = so and C.strip(world.field(so, "class"))
+            local id = tonumber(world.field(p, "id"))
+            d.projects[#d.projects + 1] = { id = id, template = t, class = cls, progress = queue_progress[id] or 0 }
+        end
+    end
     local default = world.field(mod, "default")
     d.default_rights = default and rights_of(default) or {}
     d.facts = C.facts(world, c)
@@ -376,7 +397,7 @@ function M.build(ctx, d, state)
         -- Create / Modify Template and Apply This Template (CanCreateTemplateFrom,
         -- CanApplyTemplate: render.windows.species_mod)
         if SM.can_create(ctx, d, selected) then
-            named.modify_button = SM.open_editor(selected)
+            named.modify_button = SM.open_editor(ctx, selected)
         else
             disabled[S .. "modify_button"] = true
         end
@@ -518,7 +539,10 @@ function M.command(...)
 end
 
 -- Escape (views.rs): the side windows in these state keys close first, else the view closes
-M.escape_keys = { "rights", "sm", "sm_traits", "sm_pos", "sm_neg", "sm_apply", "sm_off" }
+M.escape_keys = { "rights", "sm", "sm_traits", "sm_pos", "sm_neg", "sm_apply", "sm_off", "sm_name", "sm_adjective", "sm_plural", "sm_focus" }
+-- views.rs: the template editor's name boxes take the keyboard (render.windows.species_mod)
+M.text_focus = SM.text_focus
+M.text_key = SM.text_key
 -- (the template windows first, then the rights popup: their close buttons' ESCAPE)
 function M.escape(state)
     if state.sm or state.sm_apply then

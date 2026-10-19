@@ -879,6 +879,7 @@ function planet.build(ctx, sel, items, report)
         }
     end
     v:portrait(r, first)
+    v:governor_card(r)
     -- the colonize window, over the planet view
     if st.colonize and d and d.colonizable then
         v:colonize_window()
@@ -1359,6 +1360,16 @@ function View:armies()
     text[D .. "/armies_stats_window/garrison_power"] = self:F("GARRISON_POWER_INFO", { VALUE = math.floor((colony.military_strength or 0) + 0.5) })
     text[D .. "/armies_stats_window/garrison_assault_power"] = self:F("GARRISON_ASSAULT_POWER_INFO", { VALUE = math.floor((colony.assault_strength or 0) + 0.5) })
     text[D .. "/armies_list_window/armies_count"] = self:F("PLANET_VIEW_ARMIES_COUNT", { VALUE = #colony.armies })
+    -- Embark All (CanEmbarkAll: an army that can embark)
+    local any = false
+    for _, a in ipairs(colony.armies) do
+        any = any or not a.defensive
+    end
+    if self.mine and any then
+        self.actions[D .. "/armies_list_window/embark_all_button"] = "planet:cmd:embark_all"
+    else
+        self:disable(D .. "/armies_list_window/embark_all_button")
+    end
     if #colony.armies > 0 then
         hide[D .. "/armies_list_window/planet_armies/no_armies"] = true
     end
@@ -1395,6 +1406,10 @@ function View:armies()
                 hd[E .. "/disband_army"] = true
             else
                 self.actions[E .. "/disband_army"] = "planet:dialog:disband:" .. a.id
+                -- the row: CMoveArmyToOrbitCommand (an army that can embark: not defensive)
+                if not a.defensive then
+                    self.actions[E .. "/background"] = "planet:cmd:embark:" .. a.id
+                end
             end
             local species = a.species and self.species_names[a.species]
             if not species then
@@ -1641,14 +1656,44 @@ function View:management()
     end
     self.sprites[SI .. "/sector_action_button"] = not d.sector_type and "GFX_button_sector_new"
         or (colony.id ~= nil and d.sector_capital == colony.id and "GFX_button_sector_delete" or "GFX_button_move_sector_capital")
+    -- the sector's button (OnSectorActionClick): delete its sector (a confirm), move its capital
+    -- here (a confirm), or a new sector; the edit button: the sector editor's auto-expand **[I]**
+    -- (the editor itself: not done); the sector view (ToggleTopBarView(sectors): the empire view's
+    -- planets and sectors)
+    if self.mine then
+        if not d.sector_type then
+            self.actions[SI .. "/sector_action_button"] = "planet:cmd:sector_create"
+        elseif d.sector_capital == colony.id then
+            -- (the core sector's too: the popup, then CDeleteSectorCommand refuses it,
+            -- CANNOT_DELETE_CORE_SECTOR; the game's frames show the button enabled)
+            self.actions[SI .. "/sector_action_button"] = "planet:dialog:sector_delete"
+        else
+            self.actions[SI .. "/sector_action_button"] = "planet:dialog:sector_move_capital"
+        end
+        if d.sector_type then
+            self.actions[SI .. "/sector_edit_button"] = "planet:dialog:sector_edit"
+        end
+    end
+    self.actions[SI .. "/open_sector_view"] = "view:empire"
     -- ascension
     local AI = M .. "/management_side_window/ascension_info"
-    text[AI .. "/ascension_tier"] = self:L("PLANET_ASCENSION_NONE")
-    text[AI .. "/ascension_text"] = self:L("PLANET_ASCENSION_TEXT_DESC") .. "\n\n" .. self:L("PLANET_ASCENSION_TEXT_NONE")
-    self.frames[AI .. "/ascension_tier_icon"] = (colony.ascension_tier or 0) + 1
-    -- enabled when the colony can rise a tier (CColony::CanIncreaseAscensionTier) **[I]** not
-    -- at 2210's capital
-    self:disable(AI .. "/upgrade_ascension_tier_button")
+    local asc = d.ascension or { tier = colony.ascension_tier or 0 }
+    text[AI .. "/ascension_tier"] = asc.tier > 0 and self:F("PLANET_ASCENSION_TIER", { TIER = asc.tier }) or self:L("PLANET_ASCENSION_NONE")
+    -- (a tier's effects: PLANET_ASCENSION_MODIFIER_SCALE 0.10 of the designation's, and
+    -- PLANET_ASCENSION_SPRAWL_MODIFIER -0.05 of the planet's sprawl, a tier)
+    local more_text = asc.tier > 0 and self:F("PLANET_ASCENSION_TEXT", {
+        DESIGNATION_MOD = "+" .. (asc.tier * 10) .. "%", SPRAWL_MOD = "-" .. (asc.tier * 5) .. "%",
+    }) or self:L("PLANET_ASCENSION_TEXT_NONE")
+    text[AI .. "/ascension_text"] = self:L("PLANET_ASCENSION_TEXT_DESC") .. "\n\n" .. more_text
+    self.frames[AI .. "/ascension_tier_icon"] = asc.tier + 1
+    -- enabled when the colony can rise a tier (CColony::CanIncreaseAscensionTier: the cap from the
+    -- ascension perk points, the cost affordable, controlled); its click: a confirm
+    -- (PLANET_ASCENSION_TIER_UPGRADE), then CIncreasePlanetaryAscensionTierCommand
+    if self.mine and asc.can then
+        self.actions[AI .. "/upgrade_ascension_tier_button"] = "planet:dialog:ascend"
+    else
+        self:disable(AI .. "/upgrade_ascension_tier_button")
+    end
     self.later[#self.later + 1] = function(r)
         if features then
             self:deposits(r)
@@ -1863,15 +1908,23 @@ function View:population()
         c.jobs[#c.jobs + 1] = j
         c.amount = c.amount + math.max(0, j.assigned)
     end
+    -- the categories open (CPlanetViewPopCategoryEntry::ToggleOpen: planet.rs `expanded`)
+    local open = {}
+    for _, k in ipairs(RENDER_PLANET and RENDER_PLANET.expanded or {}) do
+        open[k] = true
+    end
     self.later[#self.later + 1] = function(r)
         local lr = r.rects[PW .. "/pop_categories_list"]
         local sp = list_of(self.ctx.game_dir, "planet_view", { "population_window", "pop_categories_list" })
-        local h = 128
         self:stack(lr, sp, #cats, function(i, x, y)
-            if y + h > lr.y + lr.h + 1 then
+            -- an open category: its header and a planet_job_entry a job (120, spacing 2) **[I]**
+            -- the game's frames: Elites with one job 30 + 122 + 4
+            local c = cats[i]
+            local h = open[c.display] and (30 + #c.jobs * 122 + 4) or 128
+            if y + math.min(h, 128) > lr.y + lr.h + 1 then
                 return nil
             end
-            self:pop_category(cats[i], PW .. "/cats/" .. i, x, y, h)
+            self:pop_category(c, PW .. "/cats/" .. i, x, y, h, open[c.display])
             return h
         end)
         local LR = r.rects[PW .. "/strata_summary_side_window/strata_summary/strata_piechart_window/strata_list"]
@@ -1892,10 +1945,23 @@ function View:plural(cat)
     return cat
 end
 
-function View:pop_category(c, p, x, y, h)
+function View:pop_category(c, p, x, y, h, open)
     local E = p .. "/planet_pop_category_entry"
+    if open then
+        return self:pop_category_open(c, p, E, x, y, h)
+    end
+    -- a click on the header opens it (ToggleOpen)
+    -- (the header's strip and its arrow over the background take the click too)
+    local acts = {
+        [E .. "/pop_category_info"] = "planet:expand:" .. c.display,
+        [E .. "/pop_category_collapsed_info"] = "planet:expand:" .. c.display,
+        [E .. "/pop_category_collapsed_info/strata_header_arrow"] = "planet:expand:" .. c.display,
+    }
+    for k, v in pairs(self.actions) do
+        acts[k] = acts[k] or v
+    end
     local r = self:entry("planet_pop_category_entry", p, x, y, 1123, h, {
-        sizes = { [E] = { 1123, h } },
+        sizes = { [E] = { 1123, h } }, actions = acts,
         text = {
             [E .. "/pop_category_collapsed_info/pop_category_name"] = self:plural(c.display),
             [E .. "/pop_strata_icon_total_container/category_amount"] = short(c.amount),
@@ -1924,13 +1990,273 @@ function View:pop_category(c, p, x, y, h)
             self.retexture[J .. "/job_icon"] = j.icon
             local pct = j.max_workforce > 0 and math.floor(100 * math.max(0, j.workforce) / math.max(j.max_workforce, 1) + 0.5) or 100
             self.icon_frames[J .. "/workforce_bar/bar_icon"] = math.max(1, math.min(100, pct))
+            if self.mine then
+                self.actions[J] = "planet:cmd:favorite_job:" .. j.type
+            end
             self:entry("planet_job_type_entry", jp, jx, box.y, jw, 74, {
                 text = { [J .. "/amount"] = short(j.assigned) },
                 hide = {
-                    [J .. "/favorite_icon"] = true,
+                    [J .. "/favorite_icon"] = not (self.d.colony.favorite_jobs or {})[j.type] or nil,
                     [J .. "/downprio_icon"] = not (j.limit >= 0 and j.limit < j.max_workforce) or nil,
                 },
             })
+        end
+    end
+end
+
+
+-- ---------------------------------------------------------------------------------------------
+-- an open pop category (CPlanetViewPopCategoryEntry with its flag bit 0): the header's small strata
+-- icon and amount, a planet_job_entry a job in jobs_list (CPlanetViewJobEntry): its icon (a click
+-- favourites it), name, workforce/max, the workforce grid (20 cells; a click sets the limit), the
+-- limit's slider, - and + (CChangeJobWorkforceLimitCommand)
+
+local WF_CELLS = 20
+
+function View:pop_category_open(c, p, E, x, y, h)
+    -- (the header's strip and its arrow over the background take the click too)
+    local acts = {
+        [E .. "/pop_category_info"] = "planet:expand:" .. c.display,
+        [E .. "/pop_category_collapsed_info"] = "planet:expand:" .. c.display,
+        [E .. "/pop_category_collapsed_info/strata_header_arrow"] = "planet:expand:" .. c.display,
+    }
+    for k, v in pairs(self.actions) do
+        acts[k] = acts[k] or v
+    end
+    local r = self:entry("planet_pop_category_entry", p, x, y, 1123, h, {
+        sizes = { [E] = { 1123, h }, [E .. "/pop_category_info"] = { 1123, 30 } }, actions = acts,
+        text = {
+            [E .. "/pop_category_collapsed_info/pop_category_name"] = self:plural(c.display),
+            [E .. "/pop_strata_icon_collapsed_container/collapsed_category_pops_amount"] = short(c.amount),
+        },
+        hide = {
+            [E .. "/pop_strata_icon_total_container"] = true, [E .. "/pop_category_collapsed_production_info"] = true,
+            [E .. "/pop_category_info/job_types_box"] = true,
+        },
+        frames = { [E .. "/pop_category_collapsed_info/strata_header_arrow"] = 2 },
+    })
+    self.retexture[E .. "/pop_strata_icon_collapsed_container/collapsed_category_icon"] = c.icon
+    local lr = r.rects[E .. "/pop_category_jobs/jobs_list"]
+    if not lr then
+        return
+    end
+    for k, j in ipairs(c.jobs) do
+        self:job_row(j, E .. "/jobs/" .. k, lr.x, lr.y + (k - 1) * 122)
+    end
+end
+
+-- the workforce cells: a cell the max's 20th (SetWorkforceSliderIndex: (i+1) * max / N); worked
+-- (frame 1), the bonus workforce's share of it (4), open up to the limit (2), the rest forbidden
+-- (3) **[I]** the frames' meanings: the game's frames, Politicians 200 + 20 bonus of 200, 18 worked
+-- and 2 bonus cells
+local function cell_frames(j)
+    local wf, max, bonus = math.max(0, j.workforce), math.max(0, j.max_workforce), math.max(0, j.bonus or 0)
+    local limit = j.limit >= 0 and j.limit or max
+    local per = math.max(max, 1) / WF_CELLS
+    local out = {}
+    for i = 1, WF_CELLS do
+        local t = i * per - 1e-6
+        if t <= wf - bonus then
+            out[i] = 1
+        elseif t <= wf then
+            out[i] = 4
+        elseif t <= limit then
+            out[i] = 2
+        else
+            out[i] = 3
+        end
+    end
+    return out, per, math.floor(math.min(limit, max) / per + 0.5)
+end
+
+function View:job_row(j, jp, x, y)
+    local J = jp .. "/planet_job_entry"
+    local X = J .. "/planet_job_expanded_info"
+    local W = X .. "/planet_job_workforce"
+    local frames, per, at = cell_frames(j)
+    local mine = self.mine
+    local acts = {}
+    for k, v in pairs(self.actions) do
+        acts[k] = v
+    end
+    if mine then
+        -- the job's icon favourites it; - and + by CalcNumWorkforceToDecrease / Increase: the max's
+        -- 20th, at least 1, at most the room (to 0 or to the max) (Shift: the whole room, Ctrl: 1
+        -- **[I]** not read here)
+        local max, limit = math.max(0, j.max_workforce), j.limit >= 0 and j.limit or math.max(0, j.max_workforce)
+        local up = math.max(1, math.min(math.max(max - limit, 1), max / WF_CELLS))
+        local down = math.max(1, math.min(math.max(limit, 1), max / WF_CELLS))
+        acts[X .. "/planet_job_icon_container"] = "planet:cmd:favorite_job:" .. j.type
+        acts[W .. "/job_workforce_decrease"] = "planet:cmd:workforce:" .. j.id .. ":-" .. math.floor(down + 0.5)
+        acts[W .. "/job_workforce_increase"] = "planet:cmd:workforce:" .. j.id .. ":" .. math.floor(up + 0.5)
+    end
+    local fav = (self.d.colony.favorite_jobs or {})[j.type]
+    local name = self.loc and self.loc.has("job_" .. j.type .. "_plural") and self.loc.get("job_" .. j.type .. "_plural") or self:L(j.type)
+    -- the job's icon at the header's small icon **[I]** (the big one: the game's frames show a
+    -- building there, not read)
+    self.retexture[J .. "/planet_job_collapsed_info/small_job_icon"] = j.icon
+    -- the slider at the limit's cell (job_workforce_slider_setting: "the position of the leftmost
+    -- slot")
+    local positions = { [W .. "/job_workforce_slider_setting"] = { 5 + at * 33 - 16, 14 } }
+    local r = self:entry("planet_job_entry", jp, x, y, 1111, 120, {
+        actions = acts, positions = positions,
+        text = {
+            [J .. "/planet_job_collapsed_info/job_text"] = name,
+            -- the workforce with its bonus (the game's 220/200: 200 + 20)
+            [W .. "/job_amount"] = col(j.workforce + (j.bonus or 0) > j.max_workforce and "G" or "W", math.floor(math.max(0, j.workforce) + (j.bonus or 0) + 0.5)) .. "/" .. math.max(0, j.max_workforce),
+            [X .. "/planet_job_production_info/upkeep_frame/upkeep"] = "",
+            [X .. "/planet_job_production_info/production_frame/production"] = "",
+        },
+        hide = {
+            [X .. "/planet_job_icon_container/favorite_icon"] = not fav or nil,
+            [X .. "/planet_job_icon_container/downprio_icon"] = not (j.limit >= 0 and j.limit < j.max_workforce) or nil,
+            [W .. "/job_automated_workforce_slider_setting"] = true,
+            [X .. "/planet_job_popgroups/hidden_popgroups_amount"] = true,
+            [X .. "/planet_job_popgroups/expand_popgroups_arrow"] = true,
+            [X .. "/planet_job_extended_popgroups"] = true,
+            [X .. "/planet_job_icon_container/job_icon"] = true,
+        },
+    })
+    local gr = r.rects[W .. "/workforce_box"]
+    if not gr then
+        return
+    end
+    for i = 1, WF_CELLS do
+        local cp = W .. "/cells/" .. i
+        local C = cp .. "/planet_view_workforce_entry"
+        local ca = {}
+        if mine then
+            -- a cell sets the limit to its end (SetWorkforceSliderIndex: absolute)
+            ca[C .. "/button"] = "planet:cmd:workforce_set:" .. j.id .. ":" .. math.floor(i * per + 0.5)
+        end
+        -- (16 px left of the grid's rectangle: the game's frames, the first cell at x 226)
+        self:entry("planet_view_workforce_entry", cp, gr.x - 16 + (i - 1) * 33, gr.y, 33, 24, {
+            grid = true, actions = ca, frames = { [C .. "/button"] = frames[i] },
+        })
+    end
+end
+
+
+-- ---------------------------------------------------------------------------------------------
+-- the governor (governor_window: CParagonPortraitContainer, paragon_portrait_container_horizontal_
+-- governor; left click CAssignLeaderWidgetView::Show, right click unassigns) and the assign
+-- widget (assign_leader_widget_view.gui: a leader_selection_entry a leader, its
+-- paragon_portrait_container_leader_assignment card; the country's leaders, then the pool)
+
+local PARAGON3 = "interface/paragon_ui_types.gui"
+
+-- cards through the leaders views' builder (render.windows.leaders_common), their items added to
+-- the view's
+function View:card(template, rect, leader, opts)
+    local LC = require("render.windows.leaders_common")
+    local b = require("render.windows.empire_common").builder(self.ctx)
+    local ok, err = pcall(LC.card, self.ctx, b, template, rect, leader, opts)
+    if not ok then
+        self.report.missing_sprites[#self.report.missing_sprites + 1] = "planet card: " .. tostring(err)
+    end
+    require("render.gui").merge(self.items, self.report, b.items, b.report)
+end
+
+function View:governor_card(r)
+    local rect = r.rects[P .. "/governor_window"]
+    if not rect then
+        return
+    end
+    self.governor_rect = rect
+    local action = self.mine and "planet:dialog:governor||planet:cmd:unassign_governor" or nil
+    if self.d.governor then
+        self:card("paragon_portrait_container_horizontal_governor", rect, self.d.governor, {
+            prefix = P .. "/governor_window",
+            named_actions = action and { character_portrait = action, leader_background = action, assign_character_button = action } or nil,
+        })
+    elseif action then
+        -- the empty slot **[I]** (the game's no_character_container): its area takes the click
+        local inv = self.ctx.db.sprites.GFX_invisible
+        if inv and inv.texture then
+            self.items[#self.items + 1] = {
+                kind = "sprite", path = P .. "/governor_window/empty", sprite = "GFX_invisible", texture = inv.texture,
+                sprite_kind = "spriteType", frame = 1, frames = inv.frames or 1, x = rect.x, y = rect.y, w = 112, h = 125,
+                button = { name = "governor", action = action },
+            }
+        end
+    end
+end
+
+local AFILE = "interface/assign_leader_widget_view.gui"
+local AV = "/assign_leader_widget_view"
+
+function View:assign_widget()
+    local L = self.d.leaders or { owned = {}, pool = {} }
+    -- at the portrait (CAssignLeaderWidgetView::Show(container, ...): the game's frames, its corner
+    -- at 187, 230 under the governor's card) **[I]** the rule
+    local gr = self.governor_rect
+    local r = self:lay("assign_leader_widget_view", {
+        file = AFILE,
+        positions = gr and { [AV] = { gr.x + 87, gr.y + 60 } } or nil,
+        -- (its header: the gui's own LEADER_ASSIGNMENT, "Select a Leader")
+        actions = { [AV .. "/close_button"] = "planet:dialog_close" },
+    })
+    local lr = r.rects[AV .. "/leader_options_container/container_list"]
+    if not lr then
+        return
+    end
+    -- the sections: Your Leaders, then Recruitable Leaders, each under its header
+    -- (topbar_leaders_view.gui collapsable_leader_container, as the leaders view lays it) **[I]**
+    -- its right-hand text (the classes' counts, the pool's refresh date) and its folding
+    local sections = { { key = "YOUR_LEADERS", rows = {} }, { key = "RECRUITABLE_LEADERS", rows = {} } }
+    -- (the ruler takes no job: CLeaderLocation::CanSetLeader)
+    for _, l in ipairs(L.owned) do
+        if not l.ruler then
+            local t = sections[1].rows
+            t[#t + 1] = { l = l, action = "planet:cmd:governor:" .. l.id }
+        end
+    end
+    for _, l in ipairs(L.pool) do
+        local t = sections[2].rows
+        t[#t + 1] = { l = l, pool = true, action = "planet:cmd:hire_governor:" .. l.id }
+    end
+    local h = 88
+    local y, bottom = lr.y, lr.y + lr.h
+    local LFILE = "interface/topbar_leaders_view.gui"
+    for si, sec in ipairs(sections) do
+        if y + 42 > bottom then
+            break
+        end
+        local hp = AV .. "/sections/" .. si
+        local HP = hp .. "/collapsable_leader_container/"
+        local title = self:L(sec.key)
+        self:lay("collapsable_leader_container", {
+            file = LFILE, prefix = hp, parent = { x = lr.x, y = y, w = 0, h = 0 },
+            hide = { [HP .. "expand_button"] = true, [HP .. "item_gridbox"] = true },
+            text = { [HP .. "unexpand_button"] = title, [HP .. "rhs_header_button_custom_text"] = "" },
+        })
+        y = y + 42
+        for i, row in ipairs(sec.rows) do
+            if y + h > bottom + 1 then
+                break
+            end
+            local p = AV .. "/rows/" .. si .. "_" .. i
+            local E = p .. "/leader_selection_entry"
+            -- a recruitable one's cost (in_player_pool_container's cost_text: COST and its resources)
+            local cost
+            if row.pool and row.l.cost then
+                local parts = {}
+                for res, v in pairs(row.l.cost) do
+                    if v ~= 0 then
+                        parts[#parts + 1] = "\194\163" .. res .. "\194\163 " .. math.floor(v + 0.5)
+                    end
+                end
+                table.sort(parts)
+                cost = self:L("COST") .. ": " .. table.concat(parts, " ")
+            end
+            -- the card, then the entry's button over it (the row takes the click)
+            self:card("paragon_portrait_container_leader_assignment", { x = lr.x, y = y, w = 645, h = h }, row.l, {
+                prefix = E, pool = row.pool, text = cost and { cost_text = cost } or nil,
+            })
+            self:entry("leader_selection_entry", p, lr.x, y, 645, h, {
+                file = AFILE, actions = { [E .. "/assign_trait_button"] = row.action },
+            })
+            y = y + h - 1
         end
     end
 end
@@ -1949,6 +2275,9 @@ end
 
 function View:dialog(kind, typed)
     local what, arg = kind:match("^([%w_]+):?(.*)$")
+    if what == "governor" then
+        return self:assign_widget()
+    end
     if what == "rename" then
         local P = "/rename_dialog"
         -- the edit box: the name typed, else the planet's (the game's box starts with it)
@@ -1983,6 +2312,35 @@ function View:dialog(kind, typed)
     elseif what == "disband" then
         title = self:L("DISBAND_TITLE")
         desc = self:L("DISBAND_DESC")
+    elseif what == "ascend" then
+        local asc = self.d.ascension or { tier = 0, cost = 0 }
+        title = self:L("PLANET_ASCENSION_TIER_UPGRADE")
+        desc = self:F("PLANET_ASCENSION_TIER_UPGRADE_CONFIRM_DESC", { PLANET = self.name, TIER = asc.tier + 1 })
+            .. "\n\194\163unity\194\163 " .. math.floor((asc.cost or 0) + 0.5)
+    elseif what == "sector_delete" then
+        title = self:L("DELETE_SECTOR_CONFIRM_NAME")
+        desc = self:L("DELETE_SECTOR_CONFIRM_DESC")
+    elseif what == "sector_move_capital" then
+        title = self:L("MOVE_SECTOR_CAPITAL_CONFIRM_NAME")
+        desc = self:F("MOVE_SECTOR_CAPITAL_CONFIRM_DESC", { RANGE = 4 })
+    elseif what == "sector_edit" then
+        -- the sector editor (sector_edit_view.gui) **[I]**: its auto-expand checkbox (the
+        -- toggle's command); adding and removing systems on the map: not done
+        local SV = "/sector_edit_view"
+        local r = self:lay("sector_edit_view", {
+            file = "interface/sector_edit_view.gui",
+            text = { [SV .. "/system_name"] = self:F("EDITING_SECTOR", {
+                SECTOR_NAME = self.d.sector_name and require("render.names").format(self.loc, self.d.sector_name) or "",
+            }) },
+            actions = { [SV .. "/close_button"] = "planet:dialog_close" },
+            hide = { [SV .. "/sector_edit_list_window"] = true },
+        })
+        local cr = r.rects[SV .. "/auto_expand_checkbox"]
+        if cr then
+            self:checkbox(SV .. "/auto_expand_checkbox", "GFX_checkbox_20_20_01", cr.x, cr.y, self.d.sector_auto_expand ~= false,
+                "planet:cmd:sector_auto_expand")
+        end
+        return
     else
         return
     end
@@ -3269,6 +3627,7 @@ function planet.data(game_dir, id, side)
                     d.sector_name = galaxy.name_block(world.field(sec, "name"))
                     d.sector_type = unquote(world.field(sec, "type"))
                     d.sector_capital = num(world.field(sec, "local_capital"))
+                    d.sector_auto_expand = world.field(sec, "auto_expand") ~= "no"
                 end
             end
         end
@@ -3297,6 +3656,14 @@ function planet.data(game_dir, id, side)
         }
         col.designation_icon = dfield(block_of(game_dir, "common/colony_types", col.designation or ""), "icon")
         col.manual_designation = unquote(world.field(c, "designation"))
+        -- the favourite jobs (CSetFavoriteJobCommand: the colony's `favorite_jobs`)
+        col.favorite_jobs = {}
+        for _, fb in ipairs(world.blocks(world.field(c, "favorite_jobs"))) do
+            local fj = unquote(world.field(fb, "job"))
+            if fj then
+                col.favorite_jobs[fj] = true
+            end
+        end
         -- the summary's automation button, the armies tab's checkboxes (planet.command flips them)
         local auto = world.field(c, "automation")
         col.automation = type(auto) == "table" and world.field(auto, "enabled") == "yes"
@@ -3405,6 +3772,7 @@ function planet.data(game_dir, id, side)
                 col.jobs[#col.jobs + 1] = {
                     id = tonumber(jid), type = t, workforce = wf, max_workforce = maxwf,
                     limit = num(world.field(j, "workforce_limit")) or -1, assigned = assigned,
+                    bonus = num(world.field(j, "bonus_workforce")) or 0,
                     category = cat, display = disp, rank = tonumber(dfield(cdefb, "rank")) or 0,
                     display_rank = tonumber(dfield(ddef, "rank")) or 0, display_index = cat_order[disp or ""] or 1e9,
                     icon = "gfx/interface/icons/jobs/job_" .. icon .. ".dds",
@@ -3544,6 +3912,47 @@ function planet.data(game_dir, id, side)
     end
     local ptechs = d.player and techs_of(world, world.object("country", d.player))
     d.can_terraform = (not d.star) and ptechs ~= nil and ptechs.tech_terraforming == true
+    -- the governor's card (CParagonPortraitContainer in governor_window), the leaders the assign
+    -- widget lists (CAssignLeaderExpandableContainer::PopulateItems: the country's recruited
+    -- leaders of a class that can govern, assigned ones too; the recruitment pool after them), the
+    -- ascension (CColony::CanIncreaseAscensionTier, CalcNextAscensionTierCost)
+    local okL, LC = pcall(require, "render.windows.leaders_common")
+    local oc = d.owner and world.object("country", d.owner)
+    if c and oc and okL then
+        local gid = d.colony and d.colony.governor
+        d.governor = gid and LC.leader_data(gid, oc) or nil
+        if d.owner == d.player then
+            d.leaders = { owned = {}, pool = {} }
+            local function governs(l)
+                local cdef = block_of(game_dir, "common/leader_classes", l.class or "")
+                return dfield(cdef, "can_govern_planet") == "yes"
+            end
+            for _, e in ipairs(world.list(world.field(oc, "owned_leaders"))) do
+                local l = LC.leader_data(tonumber(e), oc)
+                if l and governs(l) then
+                    d.leaders.owned[#d.leaders.owned + 1] = l
+                end
+            end
+            local okE, EC = pcall(require, "render.windows.empire_commands")
+            for _, e in ipairs(world.list(world.path(oc, "modules", "standard_leader_module", "leaders"))) do
+                local l = LC.leader_data(tonumber(e), oc)
+                if l and governs(l) then
+                    local okc, cost = pcall(function() return EC.leader_cost(d.owner, l.id) end)
+                    l.cost = okE and okc and cost or nil
+                    d.leaders.pool[#d.leaders.pool + 1] = l
+                end
+            end
+        end
+        -- the ascension (planet.ascension_of: its cost, cap, whether it can rise a tier)
+        d.ascension = planet.ascension_of(world, d.owner, cid)
+    end
+    -- the colony's armies that can embark (not defensive: CArmy::CanEmbark)
+    if d.colony then
+        for _, a in ipairs(d.colony.armies or {}) do
+            local adef = block_of(game_dir, "common/armies", a.type or "")
+            a.defensive = dfield(adef, "defensive") == "yes"
+        end
+    end
     if side and side ~= "" and c then
         d.side = side_of(game_dir, world, p, id, d, side)
     end
@@ -4075,6 +4484,19 @@ function more.workforce(world, x, a1, a2)
     return "ok job " .. a1 .. " workforce limit " .. v
 end
 
+-- a cell of the workforce grid: the job's limit set (absolute: SetWorkforceSliderIndex)
+function more.workforce_set(world, x, a1, a2)
+    local job = world.object("pop_jobs", tonumber(a1))
+    if not job then
+        return "invalid: no job " .. tostring(a1)
+    end
+    local max = tonumber(world.field(job, "max_workforce")) or 0
+    local v = math.max(0, math.min(max, tonumber(a2) or max))
+    world.set(job, "workforce_limit", v)
+    pcall(function() require("engine.jobs").update({ x.cid }) end)
+    return "ok job " .. a1 .. " workforce limit " .. v
+end
+
 function more.restore_jobs(world, x)
     local n = 0
     for _, jid in ipairs(world.list(world.field(x.c, "pop_jobs"))) do
@@ -4176,6 +4598,335 @@ function planet.colonize_fleet(planet_id, player, fleet_id)
 end
 
 planet.more_commands = more
+
+-- ---------------------------------------------------------------------------------------------
+-- wire-planet-3: the governor, the ascension, the armies' embarking, the sectors (RE:
+-- /root/wp/re_cmds.md on .24)
+
+local NO_ID3 = 4294967295
+
+-- CColony::CalcNextAscensionTierCost and CanIncreaseAscensionTier: { tier, cap, cost (unity), can }
+function planet.ascension_of(world, owner, cid)
+    local oc = world.object("country", owner)
+    local c = world.object("colony", cid)
+    if not (oc and c) then
+        return nil
+    end
+    local sum = 0
+    for _, x in ipairs(world.list(world.field(oc, "owned_planets"))) do
+        local xb = world.object("colony", tonumber(x))
+        sum = sum + (xb and tonumber(world.field(xb, "ascension_tier")) or 0)
+    end
+    local points = 0
+    local okT, T = pcall(require, "engine.traditions")
+    if okT and T.perk_points then
+        local ok, v = pcall(T.perk_points, owner)
+        points = ok and tonumber(v) or 0
+    end
+    local cap = math.max(points - 3 + 1, 0) + (points >= 8 and 4 or 0)
+    local M = 0
+    local okE, E = pcall(require, "engine.economy")
+    if okE and E.modifiers then
+        local ok, mods = pcall(E.modifiers, "colony", cid)
+        M = ok and mods and mods.planetary_ascension_cost_mult or 0
+    end
+    local tier = tonumber(world.field(c, "ascension_tier")) or 0
+    local cost = (tonumber(world.field(oc, "empire_size")) or 0) * 10 * (1 + sum * 0.6) * math.max(1 + M, 0.1)
+    local stock = tonumber(world.field(world.path(oc, "modules", "standard_economy_module", "resources"), "unity")) or 0
+    local pid = world.colony_planet and world.colony_planet[cid]
+    local p = pid and world.object("planet", pid)
+    local controlled = p and tonumber(world.field(p, "controller")) == owner
+    return { tier = tier, cap = cap, cost = cost, points = points, can = tier + 1 <= cap and controlled and stock >= cost }
+end
+
+local function empire_commands()
+    return require("render.windows.empire_commands")
+end
+
+-- the governor (CAssignLeaderCommand(leader, {9, colony}): CLeaderLocation::SetLeader): the slot's
+-- leader unset first (on_leader_unassigned), then the leader's old job left, its location, the
+-- colony's `governor`, the class's cooldown, on_leader_assigned (empire_commands' assign)
+function more.governor(world, x, a1)
+    local EC = empire_commands()
+    local lid = tonumber(a1)
+    local cur = tonumber(world.field(x.c, "governor"))
+    if cur == lid then
+        return "invalid: already the governor"
+    end
+    if cur then
+        EC.unassign(cur)
+        EC.on_action("on_leader_unassigned", "leader", cur)
+    end
+    local r = EC.C.assign({ tostring(lid), "planet", tostring(x.cid) })
+    return (tostring(r):match("^assigned") and "ok " or "invalid: ") .. tostring(r)
+end
+
+-- the portrait's right click: the governor unset (CAssignLeaderCommand(null, ...))
+function more.unassign_governor(world, x)
+    local cur = tonumber(world.field(x.c, "governor"))
+    if not cur then
+        return "invalid: no governor"
+    end
+    local EC = empire_commands()
+    EC.unassign(cur)
+    EC.on_action("on_leader_unassigned", "leader", cur)
+    return "ok governor " .. cur .. " unassigned"
+end
+
+-- a recruitable leader hired (HireNewLeader: its cost) and made the governor
+function more.hire_governor(world, x, a1)
+    local r = tostring(empire_commands().C.hire({ a1 }))
+    if not r:match("^hired") then
+        return "invalid: " .. r
+    end
+    return more.governor(world, x, a1)
+end
+
+-- CIncreasePlanetaryAscensionTierCommand: the cost paid (unity), ascension_tier + 1, one draw,
+-- on_colony_ascension_tier_increased
+function more.ascend(world, x)
+    local a = planet.ascension_of(world, x.owner, x.cid)
+    if not (a and a.can) then
+        return "invalid: cannot ascend (tier " .. tostring(a and a.tier) .. ", cap " .. tostring(a and a.cap) .. ")"
+    end
+    add_stock(x.owner, { unity = a.cost }, -1)
+    world.set(x.c, "ascension_tier", a.tier + 1)
+    local EC = empire_commands()
+    pcall(function() require("engine.script.objects").draw() end)
+    pcall(EC.on_action, "on_colony_ascension_tier_increased", "planet", x.pid)
+    return "ok ascension tier " .. (a.tier + 1) .. " for " .. math.floor(a.cost + 0.5) .. " unity"
+end
+
+-- CMoveArmyToOrbitCommand: an army (the entry), or all the colony's (Embark All)
+local function today3(world)
+    return tostring(world.meta and world.meta.date or ""):gsub('"', "")
+end
+function more.embark(world, x, a1)
+    local n = require("engine.construction_planet").embark(x.cid, { tonumber(a1) }, today3(world))
+    return n > 0 and ("ok embarked army " .. a1) or "invalid: the army cannot embark"
+end
+function more.embark_all(world, x)
+    local aids = {}
+    for _, a in ipairs(world.list(world.field(x.c, "army"))) do
+        aids[#aids + 1] = tonumber(a)
+    end
+    local n, fleet = require("engine.construction_planet").embark(x.cid, aids, today3(world))
+    return n > 0 and ("ok embarked " .. n .. " armies, fleet " .. tostring(fleet)) or "invalid: no army can embark"
+end
+
+-- ---------------------------------------------------------------------------------------------
+-- sectors: create (CCreateSectorCommand -> NSectorManager::CreateSector), delete
+-- (CDeleteSectorCommand: CSector::Clear), move the capital (CMoveSectorCapitalCommand)
+
+local function system_of_planet(world, pid)
+    local p = world.object("planet", pid)
+    return p and tonumber(world.path(p, "coordinate", "origin"))
+end
+
+local function lanes(world, sid)
+    local out = {}
+    for _, h in ipairs(world.blocks(world.field(world.object("galactic_object", sid), "hyperlane"))) do
+        out[#out + 1] = tonumber(world.field(h, "to"))
+    end
+    return out
+end
+
+local function sector_of(world, sid)
+    for _, id in ipairs(world.all("sectors")) do
+        local s = world.object("sectors", id)
+        for _, x in ipairs(world.list(world.field(s, "systems"))) do
+            if tonumber(x) == sid then
+                return id, s
+            end
+        end
+    end
+end
+
+local function system_owner(world, sid)
+    local g = world.object("galactic_object", sid)
+    for _, sb in ipairs(world.list(g and world.field(g, "starbases"))) do
+        local b = tonumber(sb) and tonumber(sb) ~= NO_ID3 and world.object("starbases", tonumber(sb))
+        if b then
+            return tonumber(world.field(b, "owner"))
+        end
+    end
+end
+
+-- the systems within `jumps` hyperlane jumps of a system: { [system] = jumps }
+local function within(world, from, jumps)
+    local seen, frontier = { [from] = 0 }, { from }
+    for j = 1, jumps do
+        local nf = {}
+        for _, s in ipairs(frontier) do
+            for _, t in ipairs(lanes(world, s)) do
+                if t and seen[t] == nil then
+                    seen[t] = j
+                    nf[#nf + 1] = t
+                end
+            end
+        end
+        frontier = nf
+    end
+    return seen
+end
+
+-- a new sector: not within 4 jumps of another sector capital (TOO_CLOSE_TO_ANOTHER_SECTOR_CAPITAL),
+-- the colony's system outside a sector; its systems the country's own outside a sector within the
+-- type's max_jumps (4) + sector_max_jumps_add **[I]** (the game scores the systems by the sector
+-- type's system_scores); type normal_sector, the planet's name, local_capital the colony,
+-- auto_expand, the country's sectors.owned
+function more.sector_create(world, x)
+    local home = system_of_planet(world, x.pid)
+    if not home then
+        return "invalid: no system"
+    end
+    if sector_of(world, home) then
+        return "invalid: already in a sector"
+    end
+    local near = within(world, home, 4)
+    for _, id in ipairs(world.all("sectors")) do
+        local s = world.object("sectors", id)
+        local cap = tonumber(world.field(s, "local_capital"))
+        local cpid = cap and world.colony_planet and world.colony_planet[cap]
+        local cs = cpid and system_of_planet(world, cpid)
+        if cs and near[cs] then
+            return "invalid: too close to another sector capital"
+        end
+    end
+    local M = {}
+    local okE, E = pcall(require, "engine.economy")
+    if okE and E.modifiers then
+        local ok, mods = pcall(E.modifiers, "country", x.owner)
+        M = ok and mods or {}
+    end
+    local reach = within(world, home, 4 + math.floor(M.sector_max_jumps_add or 0))
+    local systems = { home }
+    for sid in pairs(reach) do
+        if sid ~= home and system_owner(world, sid) == x.owner and not sector_of(world, sid) then
+            systems[#systems + 1] = sid
+        end
+    end
+    table.sort(systems, function(a, b) return (reach[a] or 0) < (reach[b] or 0) or ((reach[a] or 0) == (reach[b] or 0) and a < b) end)
+    local blk = {}
+    local nb = {}
+    local pname = world.field(x.p, "name")
+    for k, v in world.statements(type(pname) == "table" and pname or {}) do
+        world.append(nb, k, v)
+    end
+    world.append(blk, "name", nb)
+    local sl = {}
+    world.append(blk, "systems", sl)
+    world.append(blk, "local_capital", x.cid)
+    world.append(blk, "owner", x.owner)
+    world.append(blk, "auto_expand", "yes")
+    world.append(blk, "type", "normal_sector", true)
+    local objects = require("engine.script.objects")
+    local id = objects.create("sectors", blk)
+    local s = world.object("sectors", id)
+    for _, sid in ipairs(systems) do
+        world.append_value(world.child(s, "systems"), sid)
+        local g = world.object("galactic_object", sid)
+        if g then
+            world.set(g, "sector", id)
+        end
+    end
+    local oc = world.object("country", x.owner)
+    local secs = world.field(oc, "sectors")
+    if type(secs) ~= "table" then
+        world.append(oc, "sectors", {})
+        secs = world.field(oc, "sectors")
+    end
+    world.append_value(world.child(secs, "owned"), id)
+    return "ok sector " .. id .. " with " .. #systems .. " systems"
+end
+
+-- CDeleteSectorCommand: not a core sector; its systems out of it, out of the country's list
+function more.sector_delete(world, x)
+    local id, s = sector_of(world, system_of_planet(world, x.pid) or -1)
+    if not s then
+        return "invalid: no sector"
+    end
+    if tostring(world.field(s, "type")):gsub('"', "") == "core_sector" then
+        return "invalid: the core sector cannot be deleted"
+    end
+    for _, sid in ipairs(world.list(world.field(s, "systems"))) do
+        local g = world.object("galactic_object", tonumber(sid))
+        local e = g and world.entry(g, "sector")
+        if e then
+            world.remove_entry(g, e)
+        end
+    end
+    local oc = world.object("country", x.owner)
+    world.remove_value(world.path(oc, "sectors", "owned"), tostring(id))
+    world.remove_value(world.path(oc, "sectors", "owned"), id)
+    world.remove("sectors", id)
+    return "ok sector " .. id .. " deleted"
+end
+
+-- CMoveSectorCapitalCommand: the colony in the sector, not the country's capital, not its capital
+-- already; local_capital the colony (the systems not chosen again)
+function more.sector_move_capital(world, x)
+    local id, s = sector_of(world, system_of_planet(world, x.pid) or -1)
+    if not s then
+        return "invalid: no sector"
+    end
+    local oc = world.object("country", x.owner)
+    if tonumber(world.field(oc, "capital")) == x.cid then
+        return "invalid: the country's capital"
+    end
+    if tonumber(world.field(s, "local_capital")) == x.cid then
+        return "invalid: already the sector capital"
+    end
+    world.set(s, "local_capital", x.cid)
+    return "ok sector " .. id .. " capital " .. x.cid
+end
+
+-- CToggleAutoExpandSector (the sector editor's checkbox)
+function more.sector_auto_expand(world, x)
+    local id, s = sector_of(world, system_of_planet(world, x.pid) or -1)
+    if not s then
+        return "invalid: no sector"
+    end
+    local on = world.field(s, "auto_expand") ~= "no"
+    world.set(s, "auto_expand", on and "no" or "yes")
+    return "ok sector " .. id .. " auto_expand " .. (on and "no" or "yes")
+end
+
+-- CSetFavoriteJobCommand (CColony::SetFavoriteJob): one favourite a pop category, a toggle;
+-- `favorite_jobs = { { category job } }` **[I]** the save's layout
+function more.favorite_job(world, x, a1)
+    local defs = require("engine.defs")
+    local jd = defs.get("common/pop_jobs", a1)
+    local cat = jd and tostring(defs.field(jd.block, "category") or ""):gsub('"', "")
+    if not cat or cat == "" then
+        return "invalid: no job " .. tostring(a1)
+    end
+    local list = world.field(x.c, "favorite_jobs")
+    if type(list) ~= "table" then
+        world.append(x.c, "favorite_jobs", {})
+        list = world.field(x.c, "favorite_jobs")
+    end
+    local was
+    for _, b in ipairs(world.blocks(list)) do
+        local ec = tostring(world.field(b, "category") or ""):gsub('"', "")
+        if ec == cat then
+            was = tostring(world.field(b, "job") or ""):gsub('"', "")
+            world.remove_entry(list, b)
+        end
+    end
+    local r
+    if was == a1 then
+        r = "ok " .. a1 .. " no longer the " .. cat .. " favourite"
+    else
+        local b = {}
+        world.append(b, "category", cat, true)
+        world.append(b, "job", a1, true)
+        world.push(list, b)
+        r = "ok " .. a1 .. " the " .. cat .. " favourite"
+    end
+    pcall(function() require("engine.jobs").update({ x.cid }) end)
+    return r
+end
 
 function planet.command(game_dir, planet_id, verb, a1, a2, a3)
     local world = require("engine.world")
