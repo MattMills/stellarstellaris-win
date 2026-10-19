@@ -14,7 +14,7 @@ policies and edicts, ethics, civics and the government, pop factions and pop gro
 |---|---|
 | `sim/lua/simscript/handlers/empire.lua` | The helpers (scopes to countries, species, pop groups, leaders; the species rights entries; trait definitions), the lists of the empire's iterators and its scope links. It loads the two files below. |
 | `sim/lua/simscript/handlers/empire_triggers.lua` | The triggers. Numeric ones are also values (`trigger:<name>`, `eval.TVAL`). |
-| `sim/lua/simscript/handlers/empire_effects.lua` | The effects, and the `random_` / `ordered_` iterators over the empire's lists with their `weights` and `inverse` (the walker's own iterator in `eval.lua` reads neither). |
+| `sim/lua/simscript/handlers/empire_effects.lua` | The effects. (The iterators over the empire's lists are the walker's, `weights` and `inverse` included.) |
 
 The world is read and written through `engine.world`, the game's definitions through
 `engine.defs`. The save keys each keyword reads or writes are in its comment.

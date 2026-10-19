@@ -334,25 +334,34 @@ local function count_writes(world)
     end
 end
 
--- the statement of a file's tree at a line whose key is the keyword
+-- the blocks whose content is triggers, and those whose content is effects (the docs mod's
+-- events and scripted definitions use these; anything inside keeps its block's kind)
+local TRIGGER_CTX = { trigger = true, limit = true, potential = true, allow = true, possible = true }
+local EFFECT_CTX = { immediate = true, option = true, after = true, effect = true }
+
+-- the statement of a file's tree at a line whose key is the keyword, and whether it stands in a
+-- trigger block ("trigger") or an effect block ("effect") by its nearest such block
 local function node_at(tree, line, key)
-    local found
-    local function walk(block)
+    local found, found_ctx
+    local function walk(block, ctx)
         for _, e in ipairs(block) do
             if found then
                 return
             end
             if e.key and e.line == line and e.key.text:lower() == key then
-                found = e
+                found, found_ctx = e, ctx
                 return
             end
             if type(e.value) == "table" and e.value.text == nil then
-                walk(e.value)
+                local k = e.key and e.key.text:lower()
+                local c = ctx
+                if k and TRIGGER_CTX[k] then c = "trigger" elseif k and EFFECT_CTX[k] then c = "effect" end
+                walk(e.value, c)
             end
         end
     end
-    walk(tree)
-    return found
+    walk(tree, nil)
+    return found, found_ctx
 end
 
 local function sum_missing(stats)
@@ -395,7 +404,8 @@ function X.dynamic(mod_dir)
                 trees[file] = tree
             end
             local res = { kind = kind, name = name, scope = scope }
-            local node = tree and node_at(tree, line, name:lower())
+            local node, nctx
+            if tree then node, nctx = node_at(tree, line, name:lower()) end
             local sk = SCOPE_KIND[scope] or scope
             local id = node and first_of(world, sk, SCOPE_STORE[scope])
             if not node then
@@ -411,7 +421,8 @@ function X.dynamic(mod_dir)
                     for k, c in pairs(E.stats.unapplied) do un0[k] = c end
                 end
                 local ctx = eval.new_ctx(eval.S(sk, id), nil, nil, file)
-                local is_trigger = kind == "trigger" or (kind == "link" and file:match("trigger"))
+                -- the use's own block decides (a link's use is `link = { always = yes }` in a trigger)
+                local is_trigger = nctx == "trigger" or (nctx == nil and kind == "trigger")
                 local ok, err = pcall(function()
                     if is_trigger then
                         res.value = eval.trigger({ node }, ctx)
@@ -450,6 +461,9 @@ function X.dynamic(mod_dir)
                     res.result = "no applier"
                 elseif refused > 0 and res.applied == 0 and res.writes == 0 then
                     res.result = "refused"
+                elseif is_trigger and kind == "link" then
+                    -- `link = { always = yes }`: true when the link found its scope
+                    res.result = res.value and "resolved" or "no target"
                 elseif is_trigger then
                     res.result = "evaluated"
                 elseif res.writes > 0 or res.applied > 0 or res.script > 0 then
