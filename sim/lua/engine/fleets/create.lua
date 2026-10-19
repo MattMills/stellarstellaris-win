@@ -684,6 +684,18 @@ function create.ship(o)
     if o.army then
         world.append(b, "army", o.army)
     end
+    -- a colony ship: its colonization data, the species it settles (o.species, else its
+    -- country's founder species) [V: the game's create_ship of a colonizer writes
+    -- colonization_data={ species=<founder_species_ref> } after upgrade_progress]
+    if info.class == "shipclass_colonizer" then
+        local c = country and world.object("country", country)
+        local sp = o.species or (c and tonumber(world.field(c, "founder_species_ref")))
+        if sp then
+            local cd = {}
+            world.append(cd, "species", sp)
+            world.append(b, "colonization_data", cd)
+        end
+    end
     world.append(b, "created_this_update", "no")
     world.append(b, "targeting_module", {})
     world.append(b, "combat_action", 1)

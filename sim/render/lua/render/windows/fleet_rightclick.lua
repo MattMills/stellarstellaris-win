@@ -249,6 +249,11 @@ end
 -- rc.run(run, shift, ctrl): run = { cmd, fleets = { ids }, args = { ... } }
 function rc.run(run, shift, ctrl)
     local ok, r = pcall(function()
+        -- Colonize Planet opens the colonise view for that fleet (CColonizeOrderWindow::Click ->
+        -- NExpansionView::OpenColoniseView(planet, fleet)) [V]: the window's, not a command
+        if run and run.cmd == "colonize" then
+            return "open_colonize " .. tostring(run.args and run.args[1]) .. " " .. tostring(run.fleets and run.fleets[1])
+        end
         local cmd = COMMANDS[run and run.cmd]
         if not cmd then return "not done: " .. tostring(run and run.cmd) end
         local m = mode(shift, ctrl)
@@ -333,8 +338,10 @@ local function on_planet(fids, pid, mods, player)
             end
         elseif class == CLASS.colonizer then
             if surveyed(player, pid) and stations().colonizable(pid) then
-                -- CColonizeOrderWindow opens the colonise view (the species): not done here
-                menu[#menu + 1] = entry("FLEETORDER_COLONIZE_BUTTON", run_of("colonize", fids, pid), { possible = false })
+                -- CColonizeOrderWindow: possible as the colonize order (engine.fleets.colonize.check:
+                -- CanColonize's keys); its click opens the colonise view for the fleet (rc.run)
+                local okc = require("engine.fleets.colonize").check(fids[1], pid)
+                menu[#menu + 1] = entry("FLEETORDER_COLONIZE_BUTTON", run_of("colonize", fids, pid), { possible = okc })
             end
         elseif class == CLASS.science then
             if not surveyed(player, pid) then

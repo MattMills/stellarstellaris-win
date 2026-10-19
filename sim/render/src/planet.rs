@@ -36,6 +36,11 @@ pub struct State {
     pub text: Option<String>,
     /// the colonize window's selected source (a species id)
     pub source: Option<u32>,
+    /// the colonize window's selected colony ship (a fleet id: expansion_source_fleet_entry)
+    pub source_fleet: Option<u32>,
+    /// the colonize window opened from a fleet's Colonize Planet (OpenColoniseView with the fleet
+    /// as its filter: that fleet alone listed)
+    pub colonize_fleet: Option<u32>,
 }
 
 impl State {
@@ -115,6 +120,8 @@ pub fn act(app: &mut crate::app::App, action: &str) -> Result<(), String> {
         "colonize_close" => {
             app.planet_view.colonize = None;
             app.planet_view.source = None;
+            app.planet_view.source_fleet = None;
+            app.planet_view.colonize_fleet = None;
         }
         "side" => {
             // the same window again closes it (the side bar's buttons toggle **[I]**)
@@ -166,6 +173,13 @@ pub fn act(app: &mut crate::app::App, action: &str) -> Result<(), String> {
         "source" => {
             let sid = arg.parse::<u32>().ok();
             app.planet_view.source = if app.planet_view.source == sid { None } else { sid };
+            app.planet_view.source_fleet = None;
+        }
+        // a colony ship's entry (expansion_source_fleet_entry): selected, the species' unselected
+        "source_fleet" => {
+            let fid = arg.parse::<u32>().ok();
+            app.planet_view.source_fleet = if app.planet_view.source_fleet == fid { None } else { fid };
+            app.planet_view.source = None;
         }
         "prev" | "next" => {
             let owned: Vec<u32> = app.map.as_ref().map(|m| m.galaxy.planets.iter().map(|p| p.id).collect()).unwrap_or_default();
@@ -191,9 +205,11 @@ pub fn act(app: &mut crate::app::App, action: &str) -> Result<(), String> {
             app.planet_view.pending.push((id, arg.to_string()));
             run_pending(app)?;
             // colonizing closes the colonize window (the game's surface view closes on its order)
-            if arg.starts_with("colonize:") && app.planet_view.last.starts_with("ok") {
+            if (arg.starts_with("colonize:") || arg.starts_with("colonize_fleet:")) && app.planet_view.last.starts_with("ok") {
                 app.planet_view.colonize = None;
                 app.planet_view.source = None;
+                app.planet_view.source_fleet = None;
+                app.planet_view.colonize_fleet = None;
             }
         }
         _ => app.log.push(format!("  planet view: {action}: not done")),
@@ -275,6 +291,8 @@ pub fn set_extras(front: &Runtime, view: &State) -> Result<(), String> {
         t.set("dialog", view.dialog.clone())?;
         t.set("text", view.text.clone())?;
         t.set("source", view.source)?;
+        t.set("source_fleet", view.source_fleet)?;
+        t.set("colonize_fleet", view.colonize_fleet)?;
         Ok(())
     };
     set().map_err(|e| format!("planet view: {e}"))

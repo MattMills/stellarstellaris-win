@@ -711,8 +711,15 @@ end
 -- follow_order (CFollowFleetOrder): engine.fleets.follow (the right click on a fleet)
 TYPES.follow_order = require("engine.fleets.follow").order
 
--- the orders the engine does not run yet (combat, colonization, archaeology): kept, never done
-local KEPT = { aggressive_stance_fleet_order = true, colonize_planet_order = true,
+-- colonize_planet_order (CColonizePlanetFleetOrder): engine.fleets.colonize
+TYPES.colonize_planet_order = require("engine.fleets.colonize").order_type
+-- land_armies_order (CLandArmiesFleetOrder): engine.fleets.armies
+TYPES.land_armies_order = require("engine.fleets.armies").order_type
+-- upgrade_design_at_orbitable_fleet_order (CUpgradeDesignAtOrbitableFleetOrder): engine.fleets.upgrade
+TYPES.upgrade_design_at_orbitable_fleet_order = require("engine.fleets.upgrade").order_type
+
+-- the orders the engine does not run yet (combat, archaeology): kept, never done
+local KEPT = { aggressive_stance_fleet_order = true,
                excavate_archaeological_site_fleet_order = true }
 
 local function T_of(o)

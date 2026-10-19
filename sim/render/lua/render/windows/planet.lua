@@ -2080,8 +2080,15 @@ function View:colonize_window()
     -- Colonize: greyed until a source is selected (CExpansionSourceSpeciesEntry::Select), then
     -- CCountryExpansionCommand (planet.colonize)
     local source = RENDER_PLANET and RENDER_PLANET.source
+    -- a colony ship chosen (expansion_source_fleet_entry): CFleetColonizePlanetCommand
+    -- (planet.command colonize_fleet: the colonize order), from the fleet menu only that fleet
+    local source_fleet = RENDER_PLANET and RENDER_PLANET.source_fleet
+    local filter = RENDER_PLANET and RENDER_PLANET.colonize_fleet
     local tints = {}
-    if source then
+    if source_fleet then
+        actions[CW .. "/colonize_button"] = "planet:cmd:colonize_fleet:" .. source_fleet
+        source = source_fleet
+    elseif source and not filter then
         actions[CW .. "/colonize_button"] = "planet:cmd:colonize:" .. source
     else
         tints[CW .. "/colonize_button"] = { 0.45, 0.45, 0.45, 1 }
@@ -2100,12 +2107,36 @@ function View:colonize_window()
             self:checkbox(cb[1] .. "/" .. cb[2], "GFX_checkbox_20_20_01", rr.x, rr.y, false)
         end
     end
-    -- the colonizing species (expansion_source_planet_sub_entry)
+    -- the colony ships first (expansion_source_fleet_entry: idle ones; with a filter, that one),
+    -- then the colonizing species (expansion_source_planet_sub_entry; none with a filter) [V
+    -- RefreshExpansionSources]
     local lr = r.rects[CW .. "/expansion_source/expansion_source_list_container/expansion_source_list"]
+    local nf = 0
     if lr then
         local h = 77
-        for i, s in ipairs(c.species) do
-            local y = lr.y + (i - 1) * h
+        for _, f in ipairs(c.fleets or {}) do
+            if (filter and f.id == filter) or (not filter and f.idle) then
+                local p = CW .. "/fleets/" .. f.id
+                local E = p .. "/expansion_source_fleet_entry"
+                local hab = math.floor((f.habitability or 0) * 100 + 1e-6)
+                local names = require("render.names")
+                self:entry("expansion_source_fleet_entry", p, lr.x, lr.y + nf * h, 725, h, {
+                    file = CFILE, actions = { [E] = "planet:source_fleet:" .. tostring(f.id) },
+                    text = {
+                        [E .. "/species_container/species_name_text"] = f.species_name and names.format(self.loc, f.species_name) or "",
+                        [E .. "/species_container/ship_type_text"] = self:L("colonizer"),
+                        [E .. "/habitability_container/habitability_percentage"] = col(hab > 0 and "G" or "R", hab .. "%"),
+                        [E .. "/colony_ship_container/ship_name"] = f.ship_name and names.format(self.loc, f.ship_name) or "",
+                        [E .. "/ship_location"] = f.location and names.format(self.loc, f.location) or "",
+                    },
+                    hide = { [E .. "/selected_overlay"] = source_fleet ~= f.id or nil },
+                    frames = { [E .. "/habitability_container/habitability_icon"] = hab > 0 and 2 or 1 },
+                })
+                nf = nf + 1
+            end
+        end
+        for i, s in ipairs(filter and {} or c.species) do
+            local y = lr.y + (nf + i - 1) * h
             local p = CW .. "/sources/" .. i
             local E = p .. "/expansion_source_planet_sub_entry"
             local hab = math.floor((s.habitability or 0) * 100 + 1e-6)
@@ -2687,12 +2718,13 @@ end
 -- traits; the colony ship's cost (the colonizer ship size's costs whose triggers hold, their
 -- @variables the game's).
 local function colonize_of(game_dir, world, galaxy, p, id, d, pc)
-    local out = { species = {}, cost = {} }
+    local out = { species = {}, cost = {}, fleets = {} }
     if not pc then
         return out
     end
     local climate = dfield(block_of(game_dir, "common/planet_classes", d.class), "climate")
-    local fs = num(world.field(pc, "founder_species_ref"))
+    -- a species' entry: its name, traits' icons, habitability on this planet
+    local function species_entry(fs)
     local s = fs and world.object("species", fs)
     if s then
         local traits, hab = {}, 0
@@ -2725,10 +2757,37 @@ local function colonize_of(game_dir, world, galaxy, p, id, d, pc)
         if aquatic then
             hab = hab + (climate == "wet" and 0.2 or -0.2)
         end
-        out.species[1] = {
+        return {
             id = fs, name = galaxy.name_block(world.field(s, "name")), traits = traits,
             habitability = math.max(0, math.min(1, hab)),
         }
+    end
+    end
+    out.species[1] = species_entry(num(world.field(pc, "founder_species_ref")))
+    -- the player's colony ships (RefreshExpansionSources: colonizer fleets, idle, with their
+    -- colonization data, as expansion_source_fleet_entry; opened from a fleet's Colonize Planet
+    -- only that fleet: the window filters, RENDER_PLANET.colonize_fleet) [V]
+    local NONE = 4294967295
+    for _, fid in ipairs(world.all("fleet")) do
+        local f = world.object("fleet", fid)
+        if f and world.fleet_owner and world.fleet_owner[fid] == d.player
+            and tostring(world.field(f, "ship_class") or ""):gsub('"', "") == "shipclass_colonizer" then
+            local sid = num(world.list(world.field(f, "ships") or {})[1])
+            local ship = sid and world.object("ships", sid)
+            local cd = ship and world.field(ship, "colonization_data")
+            local spec = type(cd) == "table" and num(world.field(cd, "species"))
+            if spec and spec ~= NONE then
+                local e = species_entry(spec) or {}
+                local origin = num(world.path(f, "movement_manager", "coordinate", "origin"))
+                local g = origin and world.object("galactic_object", origin)
+                local idle = world.field(f, "current_order") == nil
+                out.fleets[#out.fleets + 1] = {
+                    id = fid, species = spec, species_name = e.name, traits = e.traits, habitability = e.habitability,
+                    ship_name = galaxy.name_block(world.field(ship, "name")),
+                    location = g and galaxy.name_block(world.field(g, "name")), idle = idle,
+                }
+            end
+        end
     end
     local rorder = {}
     for i, n in ipairs(ordered(game_dir, "common/strategic_resources")) do
@@ -4092,6 +4151,30 @@ function planet.colonize(planet_id, player, species)
     return "ok colonizing " .. planet_id .. " colony " .. tostring(cid)
 end
 
+-- the colonize window's Colonize with a colony ship (CSurfaceView::ConfirmPlaceColony with a fleet:
+-- CFleetColonizePlanetCommand(fleet, planet, no queue): the fleet's orders cleared, the colonize
+-- order given, engine.fleets.colonize) [V]; the colony name popup (OpenColonyNamePopup) not done:
+-- the planet keeps its name
+function planet.colonize_fleet(planet_id, player, fleet_id)
+    local world = require("engine.world")
+    local fid = tonumber(fleet_id)
+    if not fid or not world.object("fleet", fid) then
+        return "invalid: no fleet " .. tostring(fleet_id)
+    end
+    if world.fleet_owner and world.fleet_owner[fid] ~= player then
+        return "invalid: not the player's fleet"
+    end
+    local colonize = require("engine.fleets.colonize")
+    local ok, why = colonize.check(fid, planet_id)
+    if not ok then
+        return "invalid: " .. tostring(why)
+    end
+    local orders = require("engine.fleets.orders")
+    orders.clear(fid)
+    local id = orders.issue(fid, colonize.order(planet_id))
+    return id and ("ok colonize order " .. tostring(id) .. " fleet " .. fid .. " planet " .. planet_id) or "invalid: the order was refused"
+end
+
 planet.more_commands = more
 
 function planet.command(game_dir, planet_id, verb, a1, a2, a3)
@@ -4109,6 +4192,9 @@ function planet.command(game_dir, planet_id, verb, a1, a2, a3)
     end
     if verb == "colonize" then
         return planet.colonize(planet_id, player, a1)
+    end
+    if verb == "colonize_fleet" then
+        return planet.colonize_fleet(planet_id, player, a1)
     end
     -- the game's commands are the player's own planet's (IsValid: the owner is the sender)
     if not c or owner ~= player then

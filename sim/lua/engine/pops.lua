@@ -1409,8 +1409,8 @@ end
 
 -- CColony::GrowColonists (0xdc1390): a colony being colonized grows by COLONY_MONTHLY_GROWTH * (1 +
 -- planet_colony_development_speed_mult), rounded with the colony's stream, into its colonizing
--- species (GROWTH_CAT_COLONIZATION); done at COLONY_POPS_REQUIRED (the colonization's completion
--- is not modelled: counted)
+-- species (GROWTH_CAT_COLONIZATION); done at COLONY_POPS_REQUIRED: the colony placed
+-- (CColony::CheckAndHandleColonizationFinished -> CPlanet::PlaceColony: engine.fleets.colonize)
 local function grow_colonists(host, cid, rv)
     local c = world.object("colony", cid)
     local sid = c and tonumber(world.field(c, "colonizing_species"))
@@ -1430,6 +1430,7 @@ local function grow_colonists(host, cid, rv)
     end
     if total >= d.COLONY_POPS_REQUIRED then
         pops.stats.colonization_done = pops.stats.colonization_done + 1
+        require("engine.fleets.colonize").place_colony(cid)
     end
 end
 
