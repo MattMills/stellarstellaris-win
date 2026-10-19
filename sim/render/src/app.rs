@@ -2264,6 +2264,14 @@ impl App {
                 }
             }
         }
+        // F11: the game files changed on disk read again (engine.reload: the front end's Lua state
+        // scans, then the map's applies the same changes)
+        if let Input::Key { key, down: false, .. } = input {
+            if key == "f11" {
+                self.reload_game_files();
+                return Ok(true);
+            }
+        }
         // the bars' .gui shortcuts (F1..F10, F, L, Alt+B, Ctrl+Z ..., O: mainbars.rs), on release
         if self.screen == Screen::Map {
             if let Input::Key { key, down: false, .. } = input {
@@ -2285,6 +2293,33 @@ impl App {
             changed |= self.apply(e)?;
         }
         Ok(changed)
+    }
+
+    /// The game files changed on disk read again in every Lua state (F11; docs/script_loading.md):
+    /// the front end's state scans the disk and applies the changes, the map's applies the same
+    /// ones; each state's summary goes to the log and the console.
+    pub fn reload_game_files(&mut self) {
+        let mut lines = Vec::new();
+        let scan = "local r = require('engine.reload'); return r.summary(r.scan())";
+        let poll = "local r = require('engine.reload'); return r.summary(r.poll())";
+        match self.runtime.lua.load(scan).eval::<String>() {
+            Ok(s) => lines.push(format!("front end {s}")),
+            Err(e) => lines.push(format!("front end reload: {e}")),
+        }
+        if let Some(map) = &self.map {
+            match map.runtime.lua.load(poll).eval::<String>() {
+                Ok(s) => lines.push(format!("map {s}")),
+                Err(e) => lines.push(format!("map reload: {e}")),
+            }
+        }
+        for l in lines {
+            eprintln!("{l}");
+            crate::console::push(&l);
+        }
+        // the screen, the windows and the scene built again with what was read
+        self.items = None;
+        self.overlay_key = None;
+        self.scene = None;
     }
 
     /// Whether a text field of the empire creator has the keyboard.

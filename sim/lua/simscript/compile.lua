@@ -1367,6 +1367,19 @@ function C.install(M)
     -- -----------------------------------------------------------------------------------------
     -- installed: the walker calls these, and so do the modules (eval.trigger, eval.resolve, ...)
 
+    -- C.flush(): every compiled closure and text cache dropped, compiled again at its next use
+    -- (engine.reload: a script file changed; a scripted variable's value is compiled in)
+    function C.flush()
+        RES, nRES = {}, 0
+        VT, nVT = {}, 0
+        SV, nSV = {}, 0
+        TB0, SEEN0 = setmetatable({}, WEAKK), setmetatable({}, WEAKK)
+        TBS, SEENS = setmetatable({}, WEAKK), setmetatable({}, WEAKK)
+        VB0, VSEEN0 = setmetatable({}, WEAKK), setmetatable({}, WEAKK)
+        VB1, VSEEN1 = setmetatable({}, WEAKK), setmetatable({}, WEAKK)
+        WB, WSEEN = setmetatable({}, WEAKK), setmetatable({}, WEAKK)
+    end
+
     I.set("trigger", trigger_c)
     I.set("apply_ops", apply_ops_c)
     I.set("value_text", value_text_c)

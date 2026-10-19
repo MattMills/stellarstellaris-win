@@ -9,13 +9,19 @@
 //! [`Vfs::invalidate`] raises, so a cache keyed by (path, version) above (the parse cache in
 //! `stellar.script.source`) stays valid until the file changes.
 //!
-//! Lua sees it as `RUST.vfs_open`, `vfs_list`, `vfs_dirs`, `vfs_path`, `vfs_read`, `vfs_version` and
-//! `vfs_invalidate` ([`register`]).
+//! What changed on disk is found by [`Vfs::scan`]: the files read (their size and modification
+//! time when read) and the folders listed, compared with the disk. Each change is invalidated and
+//! appended to the file system's change log, which every Lua state reads from its own place
+//! ([`Vfs::changes_since`], `engine.reload.poll`).
+//!
+//! Lua sees it as `RUST.vfs_open`, `vfs_list`, `vfs_dirs`, `vfs_path`, `vfs_read`, `vfs_version`,
+//! `vfs_invalidate`, `vfs_scan` and `vfs_changes` ([`register`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 
 use mlua::{Lua, Table, Value};
 
@@ -57,6 +63,18 @@ pub struct Vfs {
     versions: Mutex<HashMap<String, u64>>,
     /// raised by an invalidation of everything: part of every file's version
     generation: AtomicU64,
+    /// the files read: the path, size and modification time read
+    read: Mutex<HashMap<String, Stamp>>,
+    /// the relative paths found changed, in order (a change's sequence number is its index + 1)
+    log: Mutex<Vec<String>>,
+}
+
+type Stamp = Option<(PathBuf, u64, Option<SystemTime>)>;
+
+fn stamp_of(p: Option<PathBuf>) -> Stamp {
+    let p = p?;
+    let m = std::fs::metadata(&p).ok()?;
+    Some((p, m.len(), m.modified().ok()))
 }
 
 fn dirname(rel: &str) -> &str {
@@ -71,6 +89,8 @@ impl Vfs {
             paths: Mutex::new(HashMap::new()),
             versions: Mutex::new(HashMap::new()),
             generation: AtomicU64::new(0),
+            read: Mutex::new(HashMap::new()),
+            log: Mutex::new(Vec::new()),
         }
     }
 
@@ -90,6 +110,13 @@ impl Vfs {
         if let Some(l) = self.lists.lock().unwrap().get(&key) {
             return l.clone();
         }
+        let out = Arc::new(self.list_now(&sub, ext.as_deref(), depth));
+        self.lists.lock().unwrap().insert(key, out.clone());
+        out
+    }
+
+    /// [`Vfs::list`] read from the disk now (`ext` lower case, without the dot).
+    fn list_now(&self, sub: &str, ext: Option<&str>, depth: i32) -> Vec<String> {
         fn walk(dir: &Path, prefix: &str, depth: i32, out: &mut Vec<String>) {
             let Ok(rd) = std::fs::read_dir(dir) else { return };
             for e in rd.flatten() {
@@ -117,14 +144,14 @@ impl Vfs {
         let mut names: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for m in &self.mounts {
-            if m.replace.contains(&sub) {
+            if m.replace.contains(sub) {
                 names.clear();
                 seen.clear();
             }
             let mut found = Vec::new();
-            walk(&m.path.join(&sub), "", depth, &mut found);
+            walk(&m.path.join(sub), "", depth, &mut found);
             for name in found {
-                let wanted = match &ext {
+                let wanted = match ext {
                     Some(e) => name.to_lowercase().ends_with(&format!(".{e}")),
                     None => true,
                 };
@@ -134,10 +161,7 @@ impl Vfs {
             }
         }
         names.sort();
-        let out: Vec<String> = names.into_iter().map(|n| if sub.is_empty() { n } else { format!("{sub}/{n}") }).collect();
-        let out = Arc::new(out);
-        self.lists.lock().unwrap().insert(key, out.clone());
-        out
+        names.into_iter().map(|n| if sub.is_empty() { n } else { format!("{sub}/{n}") }).collect()
     }
 
     /// The folders under `sub` (relative paths, recursively) in any mount, sorted.
@@ -171,6 +195,12 @@ impl Vfs {
         if let Some(p) = self.paths.lock().unwrap().get(rel) {
             return p.clone();
         }
+        let found = self.path_now(rel);
+        self.paths.lock().unwrap().insert(rel.to_string(), found.clone());
+        found
+    }
+
+    fn path_now(&self, rel: &str) -> Option<PathBuf> {
         let dir = dirname(rel);
         let mut found = None;
         for m in self.mounts.iter().rev() {
@@ -183,14 +213,64 @@ impl Vfs {
                 break;
             }
         }
-        self.paths.lock().unwrap().insert(rel.to_string(), found.clone());
         found
     }
 
     /// The bytes of the file the game reads for a relative path.
     pub fn read(&self, rel: &str) -> Result<Vec<u8>, String> {
-        let p = self.path(rel).ok_or_else(|| format!("{rel}: no such file"))?;
+        let p = self.path(rel);
+        self.read.lock().unwrap().insert(rel.to_string(), stamp_of(p.clone()));
+        let p = p.ok_or_else(|| format!("{rel}: no such file"))?;
         std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))
+    }
+
+    /// The files changed on disk since they were read or listed: a file read whose winning path,
+    /// size or modification time is not what was read, and the files added to or gone from a folder
+    /// listed. Each is invalidated and appended to the change log; returns them.
+    pub fn scan(&self) -> Vec<String> {
+        let mut changed: Vec<String> = Vec::new();
+        let mut set: HashSet<String> = HashSet::new();
+        let read: Vec<(String, Stamp)> = self.read.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (rel, was) in read {
+            if stamp_of(self.path_now(&rel)) != was && set.insert(rel.clone()) {
+                changed.push(rel);
+            }
+        }
+        let lists: Vec<(ListKey, Arc<Vec<String>>)> = self.lists.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for ((sub, ext, depth), was) in lists {
+            let now = self.list_now(&sub, ext.as_deref(), depth);
+            if now != *was {
+                let old: HashSet<&String> = was.iter().collect();
+                let new: HashSet<&String> = now.iter().collect();
+                for rel in old.symmetric_difference(&new) {
+                    if set.insert((*rel).clone()) {
+                        changed.push((*rel).clone());
+                    }
+                }
+            }
+        }
+        changed.sort();
+        for rel in &changed {
+            self.invalidate(Some(rel));
+            self.read.lock().unwrap().remove(rel);
+        }
+        self.log.lock().unwrap().extend(changed.iter().cloned());
+        changed
+    }
+
+    /// The changes after sequence number `since` (0: all), and the last sequence number.
+    pub fn changes_since(&self, since: usize) -> (Vec<String>, usize) {
+        let log = self.log.lock().unwrap();
+        (log.get(since.min(log.len())..).unwrap_or(&[]).to_vec(), log.len())
+    }
+
+    /// Records changes found elsewhere (a watcher): invalidated and logged.
+    pub fn changed(&self, rels: &[String]) {
+        for rel in rels {
+            self.invalidate(Some(rel));
+            self.read.lock().unwrap().remove(rel);
+        }
+        self.log.lock().unwrap().extend(rels.iter().cloned());
     }
 
     /// The file's version: unchanged until the file (or everything) is invalidated.
@@ -261,6 +341,8 @@ fn by_key(key: &str) -> mlua::Result<Arc<Vfs>> {
 /// - `vfs_path(key, rel)` -> the file's path or nil; `vfs_read(key, rel)` -> its text, or nil and a
 ///   message
 /// - `vfs_version(key, rel)` -> a number; `vfs_invalidate(key [, rel])`
+/// - `vfs_scan(key)` -> the files found changed; `vfs_changes(key, since)` -> the changes after
+///   sequence number since, and the last one; `vfs_changed(key, rels)`: these changed (invalidated and logged)
 pub fn register(lua: &Lua, rust: &Table) -> mlua::Result<()> {
     rust.set(
         "vfs_open",
@@ -329,6 +411,24 @@ pub fn register(lua: &Lua, rust: &Table) -> mlua::Result<()> {
         lua.create_function(|_, (key, rel): (String, String)| Ok(by_key(&key)?.version(&rel) as f64))?,
     )?;
     rust.set(
+        "vfs_scan",
+        lua.create_function(|lua, key: String| lua.create_sequence_from(by_key(&key)?.scan()))?,
+    )?;
+    rust.set(
+        "vfs_changes",
+        lua.create_function(|lua, (key, since): (String, Option<usize>)| {
+            let (list, last) = by_key(&key)?.changes_since(since.unwrap_or(0));
+            Ok((lua.create_sequence_from(list)?, last))
+        })?,
+    )?;
+    rust.set(
+        "vfs_changed",
+        lua.create_function(|_, (key, rels): (String, Vec<String>)| {
+            by_key(&key)?.changed(&rels);
+            Ok(())
+        })?,
+    )?;
+    rust.set(
         "vfs_invalidate",
         lua.create_function(|_, (key, rel): (String, Option<String>)| {
             by_key(&key)?.invalidate(rel.as_deref());
@@ -394,6 +494,32 @@ mod tests {
         assert_ne!(v.version("common/x/b.txt"), v0);
         let _ = std::fs::remove_dir_all(&game);
         let _ = std::fs::remove_dir_all(&modd);
+    }
+
+    #[test]
+    fn scan_finds_changes() {
+        let game = tmp("scan");
+        put(&game, "common/z/a.txt", "a");
+        put(&game, "common/z/b.txt", "b");
+        let v = Vfs::new(vec![Mount { path: game.clone(), replace: HashSet::new() }]);
+        assert_eq!(v.list("common/z", Some("txt"), 0).len(), 2);
+        assert_eq!(v.read("common/z/a.txt").unwrap(), b"a");
+        let v0 = v.version("common/z/a.txt");
+        assert!(v.scan().is_empty());
+        // a longer text (the size changes even within the clock's resolution), a new file, one gone
+        put(&game, "common/z/a.txt", "a, changed");
+        put(&game, "common/z/c.txt", "c");
+        std::fs::remove_file(game.join("common/z/b.txt")).unwrap();
+        let changed = v.scan();
+        assert_eq!(changed, vec!["common/z/a.txt", "common/z/b.txt", "common/z/c.txt"]);
+        assert_ne!(v.version("common/z/a.txt"), v0);
+        assert_eq!(v.read("common/z/a.txt").unwrap(), b"a, changed");
+        assert_eq!(*v.list("common/z", Some("txt"), 0), vec!["common/z/a.txt", "common/z/c.txt"]);
+        let (all, last) = v.changes_since(0);
+        assert_eq!((all.len(), last), (3, 3));
+        assert!(v.changes_since(last).0.is_empty());
+        assert!(v.scan().is_empty());
+        let _ = std::fs::remove_dir_all(&game);
     }
 
     #[test]

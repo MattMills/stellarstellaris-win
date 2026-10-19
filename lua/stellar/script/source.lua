@@ -117,6 +117,15 @@ local function filesystem_of(fs)
 end
 source.filesystem_of = filesystem_of
 
+-- source.filesystems() -> the file systems of the game directories made so far (filesystem_of)
+function source.filesystems()
+    local out = {}
+    for _, f in pairs(by_dir) do
+        out[#out + 1] = f
+    end
+    return out
+end
+
 local function exists(path)
     local f = io.open(path, "rb")
     if f then
@@ -481,8 +490,9 @@ end
 -- the statement is dropped.
 -- A block with nothing to expand is returned as it is; a block with something to expand is
 -- returned as a new block (its statements copied where their blocks changed), so the block given
--- is never changed.
-function source.expand(fs, block, errors, depth, where, line_base)
+-- is never changed. used (a table, optional) gets the inline script files read, as keys
+-- (engine.reload: what to expand again when one changes).
+function source.expand(fs, block, errors, depth, where, line_base, used)
     fs = filesystem_of(fs)
     depth = depth or 0
     where = where or "?"
@@ -508,6 +518,9 @@ function source.expand(fs, block, errors, depth, where, line_base)
                 end
             end
             local file = "common/inline_scripts/" .. tostring(script) .. ".txt"
+            if used then
+                used[file] = true
+            end
             local text, message
             if fs:path(file) then
                 text, message = fs:read(file)
@@ -531,7 +544,7 @@ function source.expand(fs, block, errors, depth, where, line_base)
                 -- the line of its '}'
                 local call_line = (e.value.text == nil and e.value.last or e.line) - line_base
                 local inner_where = string.format("%s:%d(inline_script) %s", where, call_line, file)
-                for _, inner in ipairs(source.expand(fs, tree, errors, depth + 1, inner_where)) do
+                for _, inner in ipairs(source.expand(fs, tree, errors, depth + 1, inner_where, nil, used)) do
                     -- where it came from (its line numbers are those of the inline script)
                     inner.inline = inner.inline or inner_where
                     out[#out + 1] = inner
@@ -539,7 +552,7 @@ function source.expand(fs, block, errors, depth, where, line_base)
             end
         else
             if e.op and e.value and e.value.text == nil then
-                local x = source.expand(fs, e.value, errors, depth, where, line_base)
+                local x = source.expand(fs, e.value, errors, depth, where, line_base, used)
                 if x ~= e.value then
                     local c = {}
                     for k, v in pairs(e) do
@@ -638,9 +651,11 @@ end
 local texts = setmetatable({}, { __mode = "v" })
 function source.instantiate(fs, def, args, errors, where)
     if def.template == nil then
+        local f = filesystem_of(fs)
+        -- the file's version with the shared file system (a changed file is read again)
+        local version = f.vfs and def.file and f.rust.vfs_version(f.vfs, def.file) or 0
         local lines = texts[def.path]
-        if lines == nil then
-            local f = filesystem_of(fs)
+        if lines == nil or lines.version ~= version then
             local text, message
             if f.vfs and def.file then
                 text, message = f:read(def.file)
@@ -650,7 +665,7 @@ function source.instantiate(fs, def, args, errors, where)
             if text == nil then
                 return nil, message
             end
-            lines = { text = text }
+            lines = { text = text, version = version }
             for line in (text .. "\n"):gmatch("([^\n]*)\n") do
                 lines[#lines + 1] = line
             end

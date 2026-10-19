@@ -154,7 +154,7 @@ function localisation.load(game_dir, language)
             n = n + read_file(path, texts, path:find("/replace/", 1, true) ~= nil)
         end
     end
-    localisation.texts, localisation.language = texts, language
+    localisation.texts, localisation.language, localisation.game_dir = texts, language, game_dir
     localisation.files = #files
     local keys = 0
     for _ in pairs(texts) do
