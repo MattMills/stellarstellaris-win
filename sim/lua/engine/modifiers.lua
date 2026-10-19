@@ -145,7 +145,7 @@ function M.new(opts)
         local ok, db = pcall(require, "simscript.db")
         fs = ok and db.fs or nil
     end
-    self.fs = fs or source.filesystem(opts.game_dir)
+    self.fs = fs or source.filesystem_of(opts.game_dir)
     self.canon = {}
     for _, name in pairs(self.types.names) do
         self.canon[name:lower()] = name

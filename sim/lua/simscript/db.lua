@@ -191,7 +191,7 @@ local function load_on_actions()
 end
 
 local function load_events()
-    local files = RUST.list_files(db.game_dir, "events")
+    local files = source.files(db.fs, "events", "txt")
     for _, file in ipairs(files) do
         local tree, msg = source.parse(db.fs, file)
         if not tree then
@@ -238,7 +238,7 @@ end
 function db.load(game_dir, docs_dir)
     local t0 = RUST.clock()
     db.game_dir = game_dir
-    db.fs = source.filesystem(game_dir)
+    db.fs = source.filesystem_of(game_dir)
     for _, file in ipairs(source.files(db.fs, "common/scripted_variables", "txt")) do
         local tree = source.parse(db.fs, file)
         if tree then

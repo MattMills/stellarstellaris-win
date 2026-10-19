@@ -221,6 +221,8 @@ pub fn new_lua() -> mlua::Result<Lua> {
             Ok(list_files(&root, &sub, ext.as_deref()))
         })?,
     )?;
+    // the game's files with the mods over them (sim/src/vfs.rs), under stellar.script.source
+    crate::vfs::register(&lua, &rust)?;
     let start = std::time::Instant::now();
     rust.set("clock", lua.create_function(move |_, ()| Ok(start.elapsed().as_secs_f64()))?)?;
     // the platform's clock as a C function's address, for engine.slice (an FFI call compiles)

@@ -24,10 +24,22 @@ function defs.load(fs, game_dir)
     local t0 = RUST.clock()
     defs.fs = fs
     local folders = {}
-    for _, file in ipairs(RUST.list_files(game_dir, "common")) do
-        local folder = file:match("^(.*)/[^/]*$")
-        if folder then
-            folders[folder] = true
+    if fs and fs.vfs then
+        -- every mount's folders (a folder only a mod has too), those with .txt files
+        -- (common/ itself too, as before: its loose files, alerts.txt and achievements.txt)
+        local all = fs.rust.vfs_dirs(fs.vfs, "common")
+        table.insert(all, 1, "common")
+        for _, folder in ipairs(all) do
+            if #fs.rust.vfs_list(fs.vfs, folder, "txt", 0) > 0 then
+                folders[folder] = true
+            end
+        end
+    else
+        for _, file in ipairs(RUST.list_files(game_dir, "common")) do
+            local folder = file:match("^(.*)/[^/]*$")
+            if folder then
+                folders[folder] = true
+            end
         end
     end
     for folder in pairs(folders) do
