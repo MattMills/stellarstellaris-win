@@ -12,8 +12,10 @@
 --   objects    effects that make the game's objects (districts, buildings, pops, fleets, ships,
 --              leaders, countries, species, galaxy objects): a new game's start script
 --   fleet_actions  queue_actions, clear_fleet_actions, auto_move_to_planet, remove_auto_move_target
+--   general    keywords of no single window: scope links of every scope, control flow and tooltip
+--              triggers, the galaxy setup, the country's own fields, the galactic community
 
-local AREAS = { "runtime", "diplomacy", "creation", "objects", "fleet_actions" }
+local AREAS = { "runtime", "diplomacy", "creation", "objects", "fleet_actions", "general" }
 
 return function(eval)
     for _, area in ipairs(AREAS) do

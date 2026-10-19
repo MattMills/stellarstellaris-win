@@ -689,12 +689,10 @@ local LISTS = {
     owned_planet = function(sc) if sc.kind ~= "country" then return {} end sync() return map_scopes("planet", E.colonies(sc.id)) end,
     country = function() sync() return map_scopes("country", E.countries()) end,
     owned_pop_group = pop_groups_of,
-    pop_group = pop_groups_of,
     owned_leader = function(sc) if sc.kind ~= "country" then return {} end sync() return map_scopes("leader", E.leaders(sc.id)) end,
 }
 LISTS.owned_colony = LISTS.owned_planet
 LISTS.playable_country = LISTS.country
-LISTS.leader = LISTS.owned_leader
 LISTS.neighbor_country = function(sc)
     if sc.kind ~= "country" or not E.neighbors then return {} end
     sync()
@@ -807,7 +805,8 @@ end
 local TRIG = {}
 M.TRIG = TRIG
 local ITER_PARAMS = { limit = true, count = true, list = true, order_by = true, position = true, max = true,
-    min = true, check_range_bounds = true, weight = true, text = true, fail_text = true }
+    min = true, check_range_bounds = true, weight = true, weights = true, inverse = true, text = true,
+    fail_text = true }
 
 local function scripted_call(def, name, e, kind)
     if e.value.text then
@@ -1146,8 +1145,8 @@ TRIG["resource_stockpile_compare"] = function(e, ctx)
     if have == nil then return false end
     return compare(have, op, amount)
 end
--- has_dlc: the save's DLCs (E.has_dlc reads its required_dlcs; yes without a world)
-TRIG["has_dlc"] = function(e)
+-- host_has_dlc: the save's DLCs (E.has_dlc reads its required_dlcs; yes without a world)
+TRIG["host_has_dlc"] = function(e)
     if E.has_dlc and e.value.text then return E.has_dlc(e.value.text) end
     return true
 end
@@ -1159,7 +1158,6 @@ end
 TRIG["end_game_years_passed"] = function(e, ctx)
     return compare(floor(M.today() / 360) - 2400, e.op, M.value(e.value, ctx, e))
 end
-TRIG["host_has_dlc"] = TRIG["has_dlc"]
 TRIG["is_multiplayer"] = function(e) return not yes(e) end
 TRIG["is_ironman"] = function(e) return not yes(e) end
 
@@ -1540,9 +1538,6 @@ end
 -- numeric engine reads: key -> scope kind, field
 local NUMS = {
     num_owned_planets = { "country", "num_colonies" },
-    num_colonies = { "country", "num_colonies" },
-    num_pops = { nil, "num_pops" },
-    num_leaders = { "country", "num_leaders" },
     has_base_skill = { "leader", "has_base_skill" },
 }
 for k, spec in pairs(NUMS) do
@@ -1551,9 +1546,7 @@ for k, spec in pairs(NUMS) do
         local kind = spec[1] or sc.kind
         if kind ~= sc.kind then return false end
         sync()
-        local field = spec[2]
-        if sc.kind == "planet" and field == "num_pops" then field = "pops" end
-        local v = E.get(sc.kind, sc.id, field)
+        local v = E.get(sc.kind, sc.id, spec[2])
         return compare(tonumber(v) or 0, e.op, M.value(e.value, ctx, e))
     end
 end
@@ -1698,14 +1691,16 @@ local function iterate_effect(kind, lname, e, ctx)
         miss("iterator", kind .. "_" .. lname, ctx, e)
         return
     end
-    local limit, order_by, position, max = nil, nil, 0, 1
+    local limit, order_by, position, max, weights, inverse = nil, nil, 0, 1, nil, false
     for _, x in ipairs(e.value) do
         if x.op then
             local xk = x.key.text:lower()
             if xk == "limit" then limit = x.value
             elseif xk == "order_by" then order_by = x.value
             elseif xk == "position" then position = M.value(x.value, ctx, x)
-            elseif xk == "max" then max = M.value(x.value, ctx, x) end
+            elseif xk == "max" then max = M.value(x.value, ctx, x)
+            elseif xk == "weights" and x.value.text == nil then weights = x.value
+            elseif xk == "inverse" then inverse = x.value.text == "yes" end
         end
     end
     local chosen = {}
@@ -1718,13 +1713,38 @@ local function iterate_effect(kind, lname, e, ctx)
     local loop = SR and SR.begin(ctx)
     if kind == "random" then
         if #chosen == 0 then return end
-        chosen = { chosen[(loop and SR.draw(loop) or rand()) % #chosen + 1] }
+        local r = loop and SR.draw(loop) or rand()
+        if weights then
+            -- `weights = { base modifier ... }`: each element's weight in its own scope, one drawn in
+            -- proportion (in thousandths, as random_list) [I]; none with a weight above 0: nothing
+            local ws, total = {}, 0
+            for i, s2 in ipairs(chosen) do
+                local w = floor(math.max(0, M.weight(weights, push(ctx, s2), 1)) * 1000)
+                ws[i] = w
+                total = total + w
+            end
+            if total <= 0 then return end
+            r = r % total
+            for i, w in ipairs(ws) do
+                if r < w then chosen = { chosen[i] } break end
+                r = r - w
+            end
+        else
+            chosen = { chosen[r % #chosen + 1] }
+        end
     elseif kind == "ordered" then
         local keyed = {}
         for i, s2 in ipairs(chosen) do
             keyed[i] = { s2, order_by and M.value(order_by, push(ctx, s2), e) or 0, i }
         end
-        table.sort(keyed, function(a, b) if a[2] ~= b[2] then return a[2] > b[2] end return a[3] < b[3] end)
+        -- position 0 is the highest; `inverse = yes` the lowest
+        table.sort(keyed, function(a, b)
+            if a[2] ~= b[2] then
+                if inverse then return a[2] < b[2] end
+                return a[2] > b[2]
+            end
+            return a[3] < b[3]
+        end)
         chosen = {}
         for i = position + 1, math.min(#keyed, position + max) do
             chosen[#chosen + 1] = keyed[i][1]
@@ -1809,6 +1829,18 @@ local function effect1(e, ctx)
     miss("effect", lk, ctx, e)
 end
 
+-- `break = yes` (simscript/handlers/general.lua): the scope's break flag (CEventScope +0x168), set
+-- on the scope itself (a scripted effect's context is the same scope); the statements after it in
+-- that scope are skipped, in every block that holds it (CEffect::ExecuteActual 0x24f7bf0). A scope
+-- made from it (push) starts without it
+local function scope_of(ctx)
+    while ctx.same do ctx = ctx.same end
+    return ctx
+end
+function M.set_broke(ctx) scope_of(ctx).broke = true end
+local function broke(ctx) return scope_of(ctx).broke == true end
+M.broke = broke
+
 effect = function(b, ctx, skip)
     tick("effect")
     local taken = false
@@ -1831,6 +1863,7 @@ effect = function(b, ctx, skip)
                 else
                     effect1(e, ctx)
                 end
+                if broke(ctx) then return end
             end
         end
     end
@@ -1844,8 +1877,6 @@ EFF["custom_tooltip"] = noop
 EFF["tooltip"] = noop
 EFF["log"] = noop
 EFF["log_error"] = noop
-EFF["set_update_modifiers_batch"] = noop
-EFF["optimize_memory"] = noop
 EFF["while"] = function(e, ctx)
     local n, limit = nil, nil
     for _, x in ipairs(e.value) do
@@ -1922,48 +1953,18 @@ local function var_effect(op)
         elseif op == "round" then cur = floor(cur + 0.5)
         elseif op == "floor" then cur = floor(cur)
         elseif op == "ceiling" then cur = math.ceil(cur)
-        elseif op == "abs" then cur = math.abs(cur)
         elseif op == "clear" then cur = nil end
         setvar(ctx.this, which, cur)
     end
 end
-for _, op in ipairs({ "set", "change", "subtract", "multiply", "divide", "modulo", "round", "floor", "ceiling", "abs" }) do
+for _, op in ipairs({ "set", "change", "subtract", "multiply", "divide", "modulo", "round", "floor", "ceiling" }) do
     EFF[op .. "_variable"] = var_effect(op)
 end
 EFF["clear_variable"] = var_effect("clear")
-EFF["remove_variable"] = var_effect("clear")
-EFF["clamp_variable"] = function(e, ctx)
-    local which, lo, hi
-    for _, x in ipairs(e.value) do
-        if x.op then
-            local xk = x.key.text:lower()
-            if xk == "which" then which = x.value.text
-            elseif xk == "min" then lo = M.value(x.value, ctx, x)
-            elseif xk == "max" then hi = M.value(x.value, ctx, x) end
-        end
-    end
-    if not which then return end
-    count_script()
-    local v = getvar(ctx.this, which) or 0
-    if lo and v < lo then v = lo end
-    if hi and v > hi then v = hi end
-    setvar(ctx.this, which, v)
-end
 EFF["save_event_target_as"] = function(e, ctx) count_script(); ctx.targets[e.value.text] = ctx.this end
 EFF["save_global_event_target_as"] = function(e, ctx) count_script(); state.global_targets[e.value.text] = ctx.this end
 EFF["clear_global_event_target"] = function(e) count_script(); state.global_targets[e.value.text] = nil end
 EFF["clear_global_event_targets"] = function() count_script(); state.global_targets = {} end
-EFF["add_to_temp_list"] = function(e, ctx)
-    count_script()
-    local l = ctx.lists[e.value.text]
-    if not l then l = {}; ctx.lists[e.value.text] = l end
-    l[#l + 1] = ctx.this
-end
-EFF["remove_from_temp_list"] = function(e, ctx)
-    count_script()
-    local l = ctx.lists[e.value.text] or {}
-    for i = #l, 1, -1 do if l[i] == ctx.this then table.remove(l, i) end end
-end
 EFF["fire_on_action"] = function(e, ctx)
     local name
     if e.value.text then name = e.value.text else

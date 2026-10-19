@@ -275,12 +275,15 @@ local SCOPE_STORE = {
     ambient_object = "ambient_object", bypass = "bypasses", job = "pop_jobs",
 }
 
--- keywords that only hold other statements or only show text: when their documented use changes
--- nothing, that is the use (its body), not the keyword
+-- keywords that only hold other statements, only show text or only touch the interface (a sound, a
+-- tab, telemetry): when their documented use changes nothing, that is the use (its body), not the
+-- keyword
 local CONTAINER = {}
 for _, k in ipairs({ "if", "else", "else_if", "while", "switch", "inverted_switch", "random", "random_list",
     "locked_random_list", "hidden_effect", "custom_tooltip", "custom_tooltip_fail", "tooltip", "log", "log_error",
-    "break", "debug_break" }) do
+    "break", "debug_break", "custom_tooltip_with_params", "country_list_tooltip", "owned_planet_list_tooltip",
+    "owned_pop_faction_list_tooltip", "owned_leader_list_tooltip", "owned_fleet_list_tooltip", "play_sound",
+    "open_shroud_tab", "complete_tutorial_step", "endgame_telemetry" }) do
     CONTAINER[k] = true
 end
 local function is_container(name)
@@ -334,25 +337,27 @@ local function count_writes(world)
     end
 end
 
--- the statement of a file's tree at a line whose key is the keyword
+-- the statement of a file's tree at a line whose key is the keyword, and whether it is in a
+-- trigger block (a scope link's use in `trigger = { }` is a trigger)
+local TRIGGER_BLOCK = { trigger = true, limit = true, potential = true, allow = true, possible = true }
 local function node_at(tree, line, key)
-    local found
-    local function walk(block)
+    local found, in_trigger
+    local function walk(block, trig)
         for _, e in ipairs(block) do
             if found then
                 return
             end
             if e.key and e.line == line and e.key.text:lower() == key then
-                found = e
+                found, in_trigger = e, trig
                 return
             end
             if type(e.value) == "table" and e.value.text == nil then
-                walk(e.value)
+                walk(e.value, trig or (e.key ~= nil and TRIGGER_BLOCK[e.key.text:lower()] == true))
             end
         end
     end
-    walk(tree)
-    return found
+    walk(tree, false)
+    return found, in_trigger
 end
 
 local function sum_missing(stats)
@@ -395,7 +400,8 @@ function X.dynamic(mod_dir)
                 trees[file] = tree
             end
             local res = { kind = kind, name = name, scope = scope }
-            local node = tree and node_at(tree, line, name:lower())
+            local node, in_trigger
+            if tree then node, in_trigger = node_at(tree, line, name:lower()) end
             local sk = SCOPE_KIND[scope] or scope
             local id = node and first_of(world, sk, SCOPE_STORE[scope])
             if not node then
@@ -411,7 +417,7 @@ function X.dynamic(mod_dir)
                     for k, c in pairs(E.stats.unapplied) do un0[k] = c end
                 end
                 local ctx = eval.new_ctx(eval.S(sk, id), nil, nil, file)
-                local is_trigger = kind == "trigger" or (kind == "link" and file:match("trigger"))
+                local is_trigger = kind == "trigger" or (kind == "link" and (in_trigger or file:match("trigger") ~= nil))
                 local ok, err = pcall(function()
                     if is_trigger then
                         res.value = eval.trigger({ node }, ctx)
