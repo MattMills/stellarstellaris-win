@@ -14,12 +14,17 @@
 //! appended to the file system's change log, which every Lua state reads from its own place
 //! ([`Vfs::changes_since`], `engine.reload.poll`).
 //!
+//! [`Vfs::watch`] does the same without being asked: a watcher on every mount (the `notify` crate),
+//! its events gathered until 150 ms pass without one, then the paths they name checked as `scan`
+//! checks everything ([`Vfs::check`]).
+//!
 //! Lua sees it as `RUST.vfs_open`, `vfs_list`, `vfs_dirs`, `vfs_path`, `vfs_read`, `vfs_version`,
-//! `vfs_invalidate`, `vfs_scan` and `vfs_changes` ([`register`]).
+//! `vfs_invalidate`, `vfs_scan`, `vfs_changes`, `vfs_changed` and `vfs_watch` ([`register`]);
+//! a host asks [`change_count`] whether its Lua states have changes to apply.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
@@ -67,6 +72,17 @@ pub struct Vfs {
     read: Mutex<HashMap<String, Stamp>>,
     /// the relative paths found changed, in order (a change's sequence number is its index + 1)
     log: Mutex<Vec<String>>,
+    /// the watcher, once started (Vfs::watch)
+    watcher: Mutex<Option<notify::RecommendedWatcher>>,
+}
+
+/// Every change logged by any file system of the process: a host compares it with the last it saw
+/// to know whether its Lua states have changes to apply (engine.reload.poll).
+static CHANGES: AtomicUsize = AtomicUsize::new(0);
+
+/// The number of changes logged in the process so far.
+pub fn change_count() -> usize {
+    CHANGES.load(Ordering::Relaxed)
 }
 
 type Stamp = Option<(PathBuf, u64, Option<SystemTime>)>;
@@ -91,6 +107,7 @@ impl Vfs {
             generation: AtomicU64::new(0),
             read: Mutex::new(HashMap::new()),
             log: Mutex::new(Vec::new()),
+            watcher: Mutex::new(None),
         }
     }
 
@@ -250,12 +267,108 @@ impl Vfs {
             }
         }
         changed.sort();
-        for rel in &changed {
-            self.invalidate(Some(rel));
-            self.read.lock().unwrap().remove(rel);
-        }
-        self.log.lock().unwrap().extend(changed.iter().cloned());
+        self.changed(&changed);
         changed
+    }
+
+    /// [`Vfs::scan`] for these relative paths only (what a watcher's events named): a file read
+    /// whose stamp changed, and the files added to or gone from the listed folders that hold one.
+    pub fn check(&self, rels: &[String]) -> Vec<String> {
+        let mut changed: Vec<String> = Vec::new();
+        let mut set: HashSet<String> = HashSet::new();
+        for rel in rels {
+            let was = self.read.lock().unwrap().get(rel).cloned();
+            if let Some(was) = was {
+                if stamp_of(self.path_now(rel)) != was && set.insert(rel.clone()) {
+                    changed.push(rel.clone());
+                }
+            }
+        }
+        let lists: Vec<(ListKey, Arc<Vec<String>>)> = self.lists.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for ((sub, ext, depth), was) in lists {
+            let inside = rels.iter().any(|r| sub.is_empty() || r == &sub || r.starts_with(&format!("{sub}/")));
+            if !inside {
+                continue;
+            }
+            let now = self.list_now(&sub, ext.as_deref(), depth);
+            if now != *was {
+                let old: HashSet<&String> = was.iter().collect();
+                let new: HashSet<&String> = now.iter().collect();
+                for rel in old.symmetric_difference(&new) {
+                    if set.insert((*rel).clone()) {
+                        changed.push((*rel).clone());
+                    }
+                }
+            }
+        }
+        changed.sort();
+        self.changed(&changed);
+        changed
+    }
+
+    /// The relative path (with `/`) of a path in one of the mounts.
+    pub fn rel_of(&self, path: &Path) -> Option<String> {
+        for m in &self.mounts {
+            if let Ok(r) = path.strip_prefix(&m.path) {
+                let s = r.to_string_lossy().replace('\\', "/");
+                if !s.is_empty() {
+                    return Some(s);
+                }
+            }
+        }
+        None
+    }
+
+    /// Watches every mount (once): what changes there is checked ([`Vfs::check`]) when 150 ms
+    /// pass without another event, and logged.
+    pub fn watch(self: &Arc<Self>) -> Result<(), String> {
+        use notify::{EventKind, RecursiveMode, Watcher};
+        let mut slot = self.watcher.lock().unwrap();
+        if slot.is_some() {
+            return Ok(());
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
+        let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(ev) = res {
+                // opening and reading a file (ours too) changes nothing
+                if matches!(ev.kind, EventKind::Access(_)) {
+                    return;
+                }
+                for p in ev.paths {
+                    let _ = tx.send(p);
+                }
+            }
+        })
+        .map_err(|e| format!("file watcher: {e}"))?;
+        for m in &self.mounts {
+            if m.path.is_dir() {
+                w.watch(&m.path, RecursiveMode::Recursive).map_err(|e| format!("file watcher: {}: {e}", m.path.display()))?;
+            }
+        }
+        let me = self.clone();
+        std::thread::Builder::new()
+            .name("vfs watcher".into())
+            .spawn(move || loop {
+                let Ok(first) = rx.recv() else { return };
+                let mut paths: HashSet<PathBuf> = HashSet::new();
+                paths.insert(first);
+                loop {
+                    match rx.recv_timeout(std::time::Duration::from_millis(150)) {
+                        Ok(p) => {
+                            paths.insert(p);
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+                let mut rels: Vec<String> = paths.iter().filter_map(|p| me.rel_of(p)).collect();
+                rels.sort();
+                rels.dedup();
+                me.check(&rels);
+            })
+            .map_err(|e| format!("file watcher: {e}"))?;
+        *slot = Some(w);
+        Ok(())
     }
 
     /// The changes after sequence number `since` (0: all), and the last sequence number.
@@ -264,13 +377,17 @@ impl Vfs {
         (log.get(since.min(log.len())..).unwrap_or(&[]).to_vec(), log.len())
     }
 
-    /// Records changes found elsewhere (a watcher): invalidated and logged.
+    /// Records changes (found by scan or check, or named by the caller): invalidated and logged.
     pub fn changed(&self, rels: &[String]) {
+        if rels.is_empty() {
+            return;
+        }
         for rel in rels {
             self.invalidate(Some(rel));
             self.read.lock().unwrap().remove(rel);
         }
         self.log.lock().unwrap().extend(rels.iter().cloned());
+        CHANGES.fetch_add(rels.len(), Ordering::Relaxed);
     }
 
     /// The file's version: unchanged until the file (or everything) is invalidated.
@@ -342,7 +459,8 @@ fn by_key(key: &str) -> mlua::Result<Arc<Vfs>> {
 ///   message
 /// - `vfs_version(key, rel)` -> a number; `vfs_invalidate(key [, rel])`
 /// - `vfs_scan(key)` -> the files found changed; `vfs_changes(key, since)` -> the changes after
-///   sequence number since, and the last one; `vfs_changed(key, rels)`: these changed (invalidated and logged)
+///   sequence number since, and the last one; `vfs_changed(key, rels)`: these changed (invalidated and logged); `vfs_watch(key)`: watch the
+///   mounts ([`Vfs::watch`])
 pub fn register(lua: &Lua, rust: &Table) -> mlua::Result<()> {
     rust.set(
         "vfs_open",
@@ -420,6 +538,10 @@ pub fn register(lua: &Lua, rust: &Table) -> mlua::Result<()> {
             let (list, last) = by_key(&key)?.changes_since(since.unwrap_or(0));
             Ok((lua.create_sequence_from(list)?, last))
         })?,
+    )?;
+    rust.set(
+        "vfs_watch",
+        lua.create_function(|_, key: String| Ok(by_key(&key)?.watch().map_err(mlua::Error::runtime)?))?,
     )?;
     rust.set(
         "vfs_changed",
@@ -519,6 +641,33 @@ mod tests {
         assert_eq!((all.len(), last), (3, 3));
         assert!(v.changes_since(last).0.is_empty());
         assert!(v.scan().is_empty());
+        let _ = std::fs::remove_dir_all(&game);
+    }
+
+    #[test]
+    fn watcher_logs_changes() {
+        let game = tmp("watch");
+        put(&game, "common/w/a.txt", "a");
+        let (_, v) = open(vec![Mount { path: game.clone(), replace: HashSet::new() }]);
+        assert_eq!(v.list("common/w", Some("txt"), 0).len(), 1);
+        assert_eq!(v.read("common/w/a.txt").unwrap(), b"a");
+        v.watch().unwrap();
+        let (_, before) = v.changes_since(0);
+        put(&game, "common/w/a.txt", "a, changed by the test");
+        put(&game, "common/w/b.txt", "b");
+        // the events, the 150 ms quiet, the check
+        let mut got = Vec::new();
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            got = v.changes_since(before).0;
+            if got.len() >= 2 {
+                break;
+            }
+        }
+        got.sort();
+        got.dedup();
+        assert_eq!(got, vec!["common/w/a.txt", "common/w/b.txt"]);
+        assert_eq!(v.read("common/w/a.txt").unwrap(), b"a, changed by the test");
         let _ = std::fs::remove_dir_all(&game);
     }
 

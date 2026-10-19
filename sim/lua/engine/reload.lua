@@ -6,6 +6,8 @@
 --   reload.poll()            -- the changes this state has not applied yet (any state's scan, a watcher)
 --   reload.files({ rel })    -- these files, by name
 --   reload.on(function(report) ... end)   -- after each reload (a module that keeps its own copy)
+--   reload.watch()           -- the shared file systems watched: changes logged as they happen
+--                               (STELLAR_WATCH=0: not); a host then polls at its safe points
 --
 -- The changes are the shared file system's change log (sim/src/vfs.rs): one log for every Lua
 -- state of the process, each state at its own place in it. A change invalidates the file there (a
@@ -54,11 +56,27 @@ local function filesystems()
     return out
 end
 
+reload.filesystems = filesystems
+
+-- reload.watch() -> the number of file systems watched (none when STELLAR_WATCH is 0)
+function reload.watch()
+    if os.getenv("STELLAR_WATCH") == "0" then return 0 end
+    local n = 0
+    for _, fs in ipairs(filesystems()) do
+        fs.rust.vfs_watch(fs.vfs)
+        n = n + 1
+    end
+    return n
+end
+
 -- reload.apply(list) -> report: the products of these changed files rebuilt
 function reload.apply(list)
     local t0 = clock()
     local db = package.loaded["simscript.db"]
     local defs = package.loaded["engine.defs"]
+    -- (a module loaded but never filled: a state without definitions)
+    if defs and not defs.fs then defs = nil end
+    if db and not db.fs then db = nil end
     local loc = package.loaded["engine.localisation"]
     local report = { files = list, defs = {}, scripted = {}, events = {}, reexpanded = {} }
     local folders, scripted, events, inline = {}, {}, {}, {}

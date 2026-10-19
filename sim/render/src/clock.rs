@@ -238,6 +238,7 @@ impl Clock {
                     speed: speed.clamp(1, SPEEDS),
                     cadence,
                     earliest: 0.0,
+                    reload_seen: stellar_sim::vfs::change_count(),
                 };
                 if let Err(e) = w.publish() {
                     eprintln!("simulation: the first snapshot: {e}");
@@ -396,6 +397,8 @@ struct Worker {
     /// the slices' cadence (None: the days run whole), and when the next slice may begin
     cadence: Option<Cadence>,
     earliest: f64,
+    /// the file systems' change count last applied in the simulation's Lua state
+    reload_seen: usize,
 }
 
 impl Worker {
@@ -408,7 +411,11 @@ impl Worker {
         let mut first = true;
         let mut next = Instant::now() + day_length(self.speed) + FIRST_DELAY;
         loop {
-            let wait = if self.paused { Duration::from_secs(3600) } else { next.saturating_duration_since(Instant::now()) };
+            // game files changed (the watcher, F11): read again here, between days (a day is never
+            // left half run: run_sliced ends on a tick's end), and the world published again
+            self.apply_reloads();
+            // (paused: awake twice a second for them)
+            let wait = if self.paused { Duration::from_millis(500) } else { next.saturating_duration_since(Instant::now()) };
             match rx.recv_timeout(wait) {
                 Ok(Cmd::Run(days, reply)) => {
                     let r = self.days(days);
@@ -472,6 +479,26 @@ impl Worker {
                     next = (next + day).max(now.checked_sub(day.mul_f32(0.4)).unwrap_or(now));
                 }
             }
+        }
+    }
+
+    /// The changes logged since the last ones applied, applied in the simulation's Lua state.
+    fn apply_reloads(&mut self) {
+        let n = stellar_sim::vfs::change_count();
+        if n == self.reload_seen {
+            return;
+        }
+        self.reload_seen = n;
+        let poll = "local r = require('engine.reload'); local x = r.poll(); return x and r.summary(x) or ''";
+        match self.rt().eval::<String>(poll) {
+            Ok(s) if s.is_empty() => {}
+            Ok(s) => {
+                eprintln!("simulation {s}");
+                if let Err(e) = self.publish() {
+                    eprintln!("simulation: snapshot: {e}");
+                }
+            }
+            Err(e) => eprintln!("simulation reload: {e}"),
         }
     }
 
