@@ -495,4 +495,214 @@ return function(eval, H)
         world.set(g, "council_agenda_progress", 0)
         wrote()
     end
+
+    -- ------------------------------------------------------------------------------------------
+    -- species
+
+    local function species_target(e, ctx)
+        local sc = target(e, ctx)
+        return sc and H.species_of(sc) or nil
+    end
+    local function SP(ctx) return ctx.this.kind == "species" and H.species(ctx.this.id) or nil end
+    -- set_built_species = <species> (CSetBuiltSpeciesEffect): the country's built_species_ref
+    EFF["set_built_species"] = function(e, ctx)
+        local c = C(ctx)
+        local sid = species_target(e, ctx)
+        if not c or not sid then return end
+        world.set(c, "built_species_ref", sid)
+        wrote()
+    end
+    -- set_species_homeworld = <planet> (CSetSpeciesHomeworldEffect): the species' home_planet
+    EFF["set_species_homeworld"] = function(e, ctx)
+        local s = SP(ctx)
+        local sc = target(e, ctx)
+        if not s or not sc or sc.kind ~= "planet" then return end
+        world.set(s, "home_planet", sc.id)
+        wrote()
+    end
+    -- change_species_portrait = <portrait>|<species> (CChangeSpeciesPortraitEffect)
+    EFF["change_species_portrait"] = function(e, ctx)
+        local s = SP(ctx)
+        if not s or not e.value.text then return end
+        local sid = species_target(e, ctx)
+        local p = sid and unq(field(H.species(sid), "portrait")) or unq(e.value.text)
+        world.set(s, "portrait", quoted(p))
+        wrote()
+    end
+    -- change_species = <species> (CChangeSpeciesEffect): a leader's or army's `species`, a pop
+    -- group's key (its pops moved into the colony's group of that species and category), a
+    -- country's founder species, a ship's colonization species [I]
+    EFF["change_species"] = function(e, ctx)
+        local sid = species_target(e, ctx)
+        local sc = ctx.this
+        if not sid then return end
+        if sc.kind == "leader" or sc.kind == "army" then
+            local o = obj(sc.kind, sc.id)
+            if o then world.set(o, "species", sid) wrote() end
+        elseif sc.kind == "country" then
+            local c = obj("country", sc.id)
+            if c then world.set(c, "founder_species_ref", sid) wrote() end
+        elseif sc.kind == "pop_group" then
+            local g = H.group(sc.id)
+            local key = g and field(g, "key")
+            if type(key) == "table" then world.set(key, "species", sid) wrote() end
+        elseif sc.kind == "ship" then
+            local o = obj("ship", sc.id)
+            if o then world.set(o, "colonize_species", sid) wrote() end
+        end
+    end
+    -- set_<right> = { country type cooldown } on a species, pop group or leader
+    -- (CSetLivingStandardEffect and its kin): the species' entry in the country's species rights
+    -- module (made from the default when it has none); with cooldown its lock date
+    local LOCK = {
+        living_standard = "last_changed_living_standard", migration_control = "last_changed_migration_control",
+        population_control = "last_changed_population_control", purge = "last_changed_purge_type",
+    }
+    local function rights_effect(field_name, yes_no)
+        return function(e, ctx)
+            if e.value.text then return end
+            local sid = H.species_of(ctx.this)
+            local p = params(e)
+            local csc = target(p.country, ctx)
+            local cid = csc and csc.kind == "country" and csc.id or H.country_of(ctx.this)
+            local c = cid and obj("country", cid)
+            local m = c and world.path(c, "modules", "standard_species_rights_module")
+            local v = text_of(p.type)
+            if not sid or type(m) ~= "table" or not v then return end
+            if yes_no then
+                if v == "yes" then v = field_name .. "_yes" elseif v == "no" then v = field_name .. "_no" end
+            end
+            local entry, own = H.rights_entry(cid, sid)
+            if not own then
+                entry = {}
+                world.append(entry, "species_index", sid)
+                for _, x in ipairs(field(m, "default") or {}) do
+                    if x.op and x.key and x.key.text ~= "species_index" and x.value.text then
+                        world.append(entry, x.key.text, x.value.text)
+                    end
+                end
+                world.push(world.child(m, "species_rights"), entry)
+            end
+            local old = unq(field(entry, field_name))
+            if old and old ~= v then world.set(entry, "former_" .. field_name, quoted(old)) end
+            world.set(entry, field_name, quoted(v))
+            world.set(entry, "last_changed_value", field_name)
+            if text_of(p.cooldown) == "yes" and LOCK[field_name] then
+                world.set(entry, LOCK[field_name], quoted(add_days(360 * 10)))
+            end
+            wrote()
+        end
+    end
+    EFF["set_living_standard"] = rights_effect("living_standard")
+    EFF["set_migration_controls"] = rights_effect("migration_control", true)
+    EFF["set_population_controls"] = rights_effect("population_control", true)
+    EFF["set_purge_type"] = rights_effect("purge")
+
+    -- ------------------------------------------------------------------------------------------
+    -- the council, the heir, names and titles
+
+    -- set_heir = <leader> (CSetHeirEffect): the government's heir
+    EFF["set_heir"] = function(e, ctx)
+        local c = C(ctx)
+        local sc = target(e, ctx)
+        if not c or not sc or sc.kind ~= "leader" then return end
+        world.set(gov_of(c), "heir", sc.id)
+        wrote()
+    end
+    -- remove_from_empire_council (CRemoveFromEmpireCouncilEffect): the leader off its council
+    -- position (the position's leader none, the leader's council_location removed)
+    EFF["remove_from_empire_council"] = function(e, ctx)
+        local l = L(ctx)
+        if not l or e.value.text == "no" then return end
+        local cl = field(l, "council_location")
+        local pid = type(cl) == "table" and tonumber(field(cl, "id"))
+        local p = pid and obj("council_positions", pid)
+        if p then world.set(p, "leader", 4294967295) end
+        if remove_key(l, "council_location") or p then wrote() end
+    end
+    -- set_empire_name = <name> (CSetEmpireNameEffect) and set_name = <name> (CSetNameEffect): the
+    -- object's `name` (a localisation key, or a literal text when it is none)
+    local function set_name_of(o, text)
+        local lit = not (text:match("^[%w_]+$") ~= nil and text:upper() == text)
+        set_block(o, "name", name_block(text, lit))
+    end
+    EFF["set_empire_name"] = function(e, ctx)
+        local c = C(ctx)
+        if not c or not e.value.text then return end
+        set_name_of(c, unq(e.value.text))
+        wrote()
+    end
+    EFF["set_name"] = function(e, ctx)
+        if not e.value.text or ctx.this == NONE then return end
+        local o = world.object(ctx.this.kind, ctx.this.id)
+        if not o then return end
+        local sc = target(e, ctx)
+        local text = unq(e.value.text)
+        if sc then
+            local n = field(world.object(sc.kind, sc.id), "name")
+            if type(n) == "table" then set_block(o, "name", n) wrote() end
+            return
+        end
+        if ctx.this.kind == "leader" then
+            set_block(world.child(o, "name"), "full_names", name_block(text, true))
+        else
+            set_name_of(o, text)
+        end
+        wrote()
+    end
+    -- the ruler's and heir's titles (CSetRulerTitleEffect and its kin): the government's
+    -- ruler_title(_female) / heir_title(_female) (a text: literal; a key: as it is) [I keys]
+    local function title_effect(key)
+        return function(e, ctx)
+            local c = C(ctx)
+            if not c or not e.value.text then return end
+            local t = unq(e.value.text)
+            local lit = not (t:match("^[%w_]+$") ~= nil and t:upper() == t)
+            set_block(gov_of(c), key, name_block(t, lit))
+            wrote()
+        end
+    end
+    EFF["set_male_ruler_title"] = title_effect("ruler_title")
+    EFF["set_female_ruler_title"] = title_effect("ruler_title_female")
+    EFF["set_male_heir_title"] = title_effect("heir_title")
+    EFF["set_female_heir_title"] = title_effect("heir_title_female")
+    EFF["set_ruler_title_male"] = title_effect("ruler_title")
+    EFF["set_ruler_title_female"] = title_effect("ruler_title_female")
+    -- clear_custom_ruler_and_heir_titles (CClearCustomRulerAndHeirTitlesEffect)
+    EFF["clear_custom_ruler_and_heir_titles"] = function(_, ctx)
+        local c = C(ctx)
+        if not c then return end
+        local g = gov_of(c)
+        local n = 0
+        for _, k in ipairs({ "ruler_title", "ruler_title_female", "heir_title", "heir_title_female" }) do
+            if remove_key(g, k) then n = n + 1 end
+        end
+        if n > 0 then wrote() end
+    end
+    -- set_council_position_title_male / _female = { position_tag title }: the country's
+    -- custom_council_titles entry of that councillor type [I keys]
+    local function council_title(which)
+        return function(e, ctx)
+            local c = C(ctx)
+            if not c or e.value.text then return end
+            local p = params(e)
+            local tag, t = text_of(p.position_tag), text_of(p.title)
+            if not tag or not t then return end
+            local titles = world.child(c, "custom_council_titles")
+            local entry
+            for _, b in ipairs(world.blocks(titles)) do
+                if unq(field(b, "type")) == tag then entry = b end
+            end
+            if not entry then
+                entry = {}
+                world.append(entry, "type", tag, true)
+                world.push(titles, entry)
+            end
+            local lit = not (t:match("^[%w_]+$") ~= nil and t:upper() == t)
+            set_block(entry, which, name_block(t, lit))
+            wrote()
+        end
+    end
+    EFF["set_council_position_title_male"] = council_title("male")
+    EFF["set_council_position_title_female"] = council_title("female")
 end
