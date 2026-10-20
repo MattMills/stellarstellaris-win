@@ -404,6 +404,7 @@ fn memory(ui: &Ui) -> String {
 /// SECONDS with the clock running at STELLAR_BENCH_SPEED (3, Normal). Prints what the frames took
 /// against the frame's time (docs/frame_timing.md: the 120 FPS standard).
 pub fn bench(game: &str, save: &str, backend: Backend, adapter: Option<&str>, size: (u32, u32), secs: f64) -> Result<(), String> {
+    crate::clock::set_async_commands(std::env::var("STELLAR_ASYNC_COMMANDS").map_or(true, |v| v != "0"));
     let env = |k: &str, d: f64| std::env::var(k).ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(d);
     let (fps, speed) = (env("STELLAR_BENCH_FPS", 120.0), env("STELLAR_BENCH_SPEED", 3.0) as u8);
     let mut off = Offscreen::new(backend, adapter)?;

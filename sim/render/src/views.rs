@@ -147,7 +147,7 @@ pub fn command(map: &mut crate::Map, view: &str, args: &[&str]) -> Result<String
     let code = format!("return tostring(require('render.windows.{view}').command({}))", quoted.join(", "));
     map.ready()?;
     let clock = map.clock.as_ref().ok_or("no simulation")?;
-    let r = clock.query(&code).map_err(|e| format!("render.windows.{view}: command: {e}"))?;
+    let r = clock.command(&format!("{view} command"), &code).map_err(|e| format!("render.windows.{view}: command: {e}"))?;
     clock.publish(true);
     map.sync();
     Ok(r)

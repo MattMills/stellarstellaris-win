@@ -153,9 +153,13 @@ pub fn layout(
         *DATA.lock().unwrap() = None;
         gui_rt.lua.load("require('render.windows.designer').reset()").exec().map_err(|e| format!("render.windows.designer: {e}"))?;
     }
-    let cached = DATA.lock().unwrap().clone();
+    // (the simulation's: read as a layout reads, Clock::query_view: per snapshot, the last answer
+    // while a command is on its way; the save's world: once, until a command)
+    let sim = map.clock.as_ref().is_some_and(|c| c.status().ready);
+    let cached = if sim { None } else { DATA.lock().unwrap().clone() };
     let data = match cached {
         Some(d) => d,
+        None if sim => world_view(map, &format!("return require('render.windows.designer_commands').data({gd:?})")).map_err(|e| format!("render.windows.designer: {e}"))?,
         None => {
             let _s = crate::prof::span("designer: its data (the simulation)");
             let d = world_eval(map, &format!("return require('render.windows.designer_commands').data({gd:?})")).map_err(|e| format!("render.windows.designer: {e}"))?;

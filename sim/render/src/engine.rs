@@ -83,6 +83,8 @@ struct BenchFrame {
     gpu: f64,
     snapshot: bool,
     built: bool,
+    /// a click done in it (a left button released)
+    click: bool,
 }
 
 impl BenchFrame {
@@ -96,13 +98,15 @@ impl BenchFrame {
 
 /// The input `bench` makes each frame (docs/profiling.md): the pointer moved along a line and
 /// back (`hover`), wheel notches over a point (`wheel`: a notch every 4 frames, 8 one way then 8
-/// the other), a left drag along a line (`drag`: pressed, 58 frames of moves, released).
+/// the other), a left drag along a line (`drag`: pressed, 58 frames of moves, released), a left
+/// click at a point every 30 frames (`click`: the frames that release it reported apart).
 #[derive(Clone, Copy, Debug)]
 enum BenchInput {
     None,
     Hover(f32, f32, f32, f32),
     Wheel(f32, f32),
     Drag(f32, f32, f32, f32),
+    Click(f32, f32),
 }
 
 impl BenchInput {
@@ -113,6 +117,7 @@ impl BenchInput {
             Some("hover") => BenchInput::Hover(n(1)?, n(2)?, n(3)?, n(4)?),
             Some("wheel") => BenchInput::Wheel(n(1)?, n(2)?),
             Some("drag") => BenchInput::Drag(n(1)?, n(2)?, n(3)?, n(4)?),
+            Some("click") => BenchInput::Click(n(1)?, n(2)?),
             Some(o) => return Err(format!("bench SECONDS [FPS] [hover X0 Y0 X1 Y1 | wheel X Y | drag X0 Y0 X1 Y1]: {o}?")),
         })
     }
@@ -136,6 +141,13 @@ impl BenchInput {
                 }
                 v
             }
+            // a left click every 30 frames: pressed in one, released in the next (the click is done at
+            // the release: App::mouse_up)
+            BenchInput::Click(x, y) => match i % 30 {
+                0 => vec![Input::Move { x, y }, Input::Button { button: Button::Left, down: true }],
+                1 => vec![Input::Button { button: Button::Left, down: false }],
+                _ => Vec::new(),
+            },
             BenchInput::Drag(x0, y0, x1, y1) => {
                 let k = i % 60;
                 let t = k as f32 / 59.0;
@@ -210,7 +222,9 @@ impl Engine {
                 }
             }
             let t0 = std::time::Instant::now();
+            let mut click = false;
             for i in input.frame(frames.len() as u64) {
+                click |= matches!(i, Input::Button { button: Button::Left, down: false });
                 self.clock_ms = start.elapsed().as_secs_f64() * 1000.0;
                 self.app.input(&i, self.clock_ms)?;
             }
@@ -249,6 +263,7 @@ impl Engine {
                 gpu: (t4 - t3).as_secs_f64(),
                 snapshot: gen1 != gen0,
                 built,
+                click,
             });
             self.frames += 1;
             next += std::time::Duration::from_secs_f64(period);
@@ -276,9 +291,29 @@ impl Engine {
         let worst = frames.iter().copied().fold(BenchFrame::default(), |a, f| if f.total() > a.total() { f } else { a });
         let worst_cpu = frames.iter().copied().fold(BenchFrame::default(), |a, f| if f.cpu() > a.cpu() { f } else { a });
         let snap_max = snaps.iter().map(|f| f.cpu()).fold(0.0, f64::max);
+        // the frames that did a click: what each took (input, update, scene: the UI thread's), the
+        // frame's own and the GPU's
+        let clicks: Vec<&BenchFrame> = frames.iter().filter(|f| f.click).collect();
+        let click_line = if clicks.is_empty() {
+            String::new()
+        } else {
+            let mut c: Vec<f64> = clicks.iter().map(|f| f.cpu()).collect();
+            let worst = clicks.iter().copied().fold(BenchFrame::default(), |a, f| if f.cpu() > a.cpu() { *f } else { a });
+            format!(
+                "; {} clicks: their frame's CPU part mean {:.2} max {:.2} (the worst input {:.2} update {:.2} scene {:.2} upload {:.2}), with the GPU's frame mean {:.2}",
+                clicks.len(),
+                ms(c.iter().sum::<f64>() / c.len() as f64),
+                ms(pct(&mut c, 1.0)),
+                ms(worst.input),
+                ms(worst.update),
+                ms(worst.prepare),
+                ms(worst.upload),
+                ms(clicks.iter().map(|f| f.total()).sum::<f64>() / clicks.len() as f64),
+            )
+        };
         let spans = if crate::prof::on() { format!("; the most a frame (self ms): {}", crate::prof::summary(8)) } else { String::new() };
         Ok(format!(
-            "{} frames in {wall:.1} s at {fps} FPS ({:.2} ms a frame); frame ms p50 {:.2} p99 {:.2} max {:.2}, over the frame's time {over}; the CPU's part (input, update, scene, upload) mean {:.2} p50 {:.2} p99 {:.2} max {:.2}, over {cpu_over}; the GPU's p50 {:.2} p99 {:.2} max {:.2}; {builds} scenes built; the worst frame input {:.2} update {:.2} scene {:.2} upload {:.2} gpu {:.2}; the worst CPU part input {:.2} update {:.2} scene {:.2} upload {:.2}; {} frames took a new snapshot, their CPU part at most {:.2} ms; {days} days run, {date0} to {date}{spans}",
+            "{} frames in {wall:.1} s at {fps} FPS ({:.2} ms a frame); frame ms p50 {:.2} p99 {:.2} max {:.2}, over the frame's time {over}; the CPU's part (input, update, scene, upload) mean {:.2} p50 {:.2} p99 {:.2} max {:.2}, over {cpu_over}; the GPU's p50 {:.2} p99 {:.2} max {:.2}; {builds} scenes built; the worst frame input {:.2} update {:.2} scene {:.2} upload {:.2} gpu {:.2}; the worst CPU part input {:.2} update {:.2} scene {:.2} upload {:.2}; {} frames took a new snapshot, their CPU part at most {:.2} ms; {days} days run, {date0} to {date}{click_line}{spans}",
             frames.len(),
             ms(period),
             ms(pct(&mut total, 0.5)),
@@ -1021,6 +1056,33 @@ impl Engine {
                 }
                 _ => Err("prof on|off|reset|report [PATH]".into()),
             },
+            // `commands async|wait`: the windows' commands sent to the simulation without waiting (the
+            // window's way: their replies logged when they come), or waited for (the default here)
+            "commands" => match a.first().copied() {
+                Some("async") => {
+                    crate::clock::set_async_commands(true);
+                    Ok(Reply::ok("commands async"))
+                }
+                Some("wait") => {
+                    crate::clock::set_async_commands(false);
+                    Ok(Reply::ok("commands wait"))
+                }
+                _ => Err("commands async|wait".into()),
+            },
+            // `buttons [PREFIX]`: the scene's buttons (their paths from PREFIX), each `PATH X Y ACTION`
+            // at its centre: where a `click` goes
+            "buttons" => {
+                self.app.prepare()?;
+                let (scene, _) = self.app.parts().ok_or("no scene")?;
+                let prefix = a.first().copied().unwrap_or("");
+                let list: Vec<String> = scene
+                    .buttons
+                    .iter()
+                    .filter(|b| b.path.starts_with(prefix) && b.rect[2] > b.rect[0])
+                    .map(|b| format!("{} {:.0} {:.0} {}", b.path, (b.rect[0] + b.rect[2]) / 2.0, (b.rect[1] + b.rect[3]) / 2.0, b.action.as_deref().unwrap_or("-")))
+                    .collect();
+                Ok(Reply::ok(format!("buttons {}: {}", list.len(), list.join("; "))))
+            }
             "state" => Ok(Reply::ok(self.state())),
             // `effect WORDS...`: the console's effect in the simulation (render.windows.console_effect),
             // as the headless game's `effect`: a test's setup made the same way on both sides

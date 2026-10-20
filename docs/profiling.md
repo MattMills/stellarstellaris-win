@@ -544,3 +544,75 @@ the empire, a starbase).
 
 From the start of this work the designer's first opening went from 921 ms of scene and 196 ms of
 upload to 14 + 5 ms.
+
+## 12. Click latency
+
+What a click costs between the input and the frame that shows its effect, and whether the input's
+handling should move from Lua to Rust. The path: the window's event goes to the UI thread as a job
+(window.rs, ui.rs), `controls.rs` turns it into the bindings' effects, `App::input` and
+`App::mouse_up` find the button under the pointer in the scene's buttons (Rust) and `App::act`
+dispatches its action string (Rust); then what the action does: a window's state changed and the
+windows laid out again (Lua), or a command sent to the simulation (`Clock::query`) and its effect
+waited for (`Clock::publish(true)`).
+
+**Measured** with `bench SECONDS click X Y` (a left click every 30 frames; the frames that release
+it reported apart: their CPU part and its parts) at buttons listed by `buttons [PREFIX]` (each
+button's path, centre and action), 1600x900, NVK, `timestep 8.333` (the window's way: a view opened
+does not wait for its data); new spans `simulation: a query waited for`, `simulation: a snapshot
+waited for`. The click frame's CPU part, ms, mean / max, and the click's handling (`input`):
+
+| click | paused | running | the handling (`input`) | where the time went |
+|---|---:|---:|---:|---|
+| a left bar view (technology, empire) | 7 to 8 / 10 to 14 | 6 / 7 | 0.04 to 0.08 | the windows laid out again (the view's Lua 7 ms at most) |
+| an outliner row (a fleet selected) | 6 / 24 | 2 / 7 | 0.03 | the relayout |
+| an outliner tab | 3 / 9 | | 0.10 | the relayout |
+| the map (a system selected) | 1.4 / 7 | 0.7 / 6 | 0.07 | the scene |
+| the pause button | 8 / 10 | | 0.03 | the relayout |
+| a planet view tab | 8 / 9 | 7 / 10 | 0.07 | the relayout |
+| technology: auto research (`cmd:technology:auto`) | 138 / 139 | 2,315 / 3,058 | 132; 3,047 | paused: the snapshot waited for 131 ms (the command 0.2); running: the command waited for up to 2,047 ms (the day in progress) and the snapshot up to 1,000 |
+| the designer: auto design | 147 / 184 | | 173 | the snapshot waited for 173 ms |
+
+(Without the window's way, `bench` alone, a left bar view also waits for its data: 90 to 230 ms
+paused, up to 1 s running, in `Map::refresh_view`'s `publish(true)`.)
+
+**What it shows.** The input's handling is Rust already and costs 0.03 to 0.1 ms a click; the Lua
+a click runs is the windows' relayout, 2 to 10 ms (section 7), the same as any change of a
+window's state. Moving the input from Lua to Rust would gain nothing: none of it is in Lua. What
+makes a click slow is a command to the simulation, waited for on the UI thread twice: the command
+(`Clock::query`: between days only, so up to a day's length while the clock runs) and its effect
+(`Clock::publish(true)`: the next snapshot, 130 to 170 ms of the simulation's own work paused, up
+to its 1 s timeout running). Every window's commands do it: views.rs (`cmd:`), starbase.rs,
+planet.rs, designer.rs, fleetwin.rs and rightclick.rs, economy.rs.
+
+**Fix 9: the window's commands sent without waiting** (clock.rs `Clock::command`,
+`Clock::replies`, `set_async_commands`). The window (and `--bench`) sets it
+(STELLAR_ASYNC_COMMANDS=0 turns it off); the command protocol keeps the waits, so a script's
+replies say what a command did (`commands async|wait` switches it there):
+
+- the commands whose reply is only logged go to the simulation without waiting: views.rs (`cmd:`),
+  starbase.rs, planet.rs (the planet view's commands), fleetwin.rs (`fleet_run`: the fleet windows'
+  orders), economy.rs (the market's trades): the reply `WHAT: sent`, the simulation's own logged when
+  it comes (`App::advance`), the windows laid out again then;
+- `Clock::publish(true)` asks for the snapshot and does not wait for it: the next frame after it
+  comes shows the command's effect (`sync`);
+- the commands whose reply the window needs at once (the designer's dialogue with the simulation,
+  a right click's order menu, the emergency FTL's answer) still wait for it (a few ms paused), but
+  not for the snapshot;
+- while a command or a snapshot asked for is on its way the simulation answers a read after it, so
+  `Clock::query_view` serves the last answer then (as while the clock runs) instead of waiting, and
+  the designer's data is read that way (per snapshot) when the simulation has the world.
+
+The click frame's CPU part, ms, mean / max, waited for -> async (same build, `commands wait` /
+`commands async`): technology's auto research 144 / 160 -> 6.9 / 6.9 paused and 2,002 / 3,412 ->
+8.8 / 11.1 running; the designer's auto design 150 / 188 -> 6.2 / 6.4; the other clicks unchanged
+(1.4 to 8.6 mean). Every click of the scenario now takes at most 24 ms on the UI thread (an outliner
+row's first selection: its fleet window laid out), most of them under 10. The commands take effect as
+before: the technology view and the designer after a click, once the reply and the snapshot have come,
+are the same PNGs with the commands waited for and sent without waiting.
+
+**What is left**: the simulation answers a command only between days, so while the clock runs its
+effect shows after the day in progress (up to its length), though the window no longer waits for it;
+reading commands between its slices as well would take that away (the simulation's side). And the
+pipeline: the UI thread builds the scene of an input at its next period (up to 8.3 ms after the job),
+the render thread draws it at its next frame (up to 8.3 ms more); a scene built at once after an
+input job would take up to 8 ms off every click.
