@@ -30,6 +30,15 @@ local INLINE = { random = true }
 -- these keys hold a date written as a plain string
 local NOT_DATE = { dismantle_finish_date = true }
 
+-- the maps the game writes as pairs, `{ 6 { intel=0 ... } }`: a value at the start of its line, a
+-- space after it, then the block without `=` [V the saves: only these two]. pdxscript reads `6 {`
+-- as `6={`, and the game does not read `6={` back there: written with `=`, every intel entry was
+-- lost (30 days later the game had intel=0.9999 where its own save gave 10 to 29.8)
+local PAIRS = { intel = true, federation_intel = true }
+local function pair_of(b)
+    if #b == 1 and b[1].op and b[1].value.text == nil and not b[1].value.type then return b[1] end
+end
+
 -- the lists whose blocks the game separates with an empty line instead (none after the last) [V
 -- the saves]
 local NO_SPACE = {
@@ -129,9 +138,14 @@ function savegame.write(tree)
                 elseif NO_SPACE[key] then
                     put("\n")
                 end
+                local pair = PAIRS[key] and pair_of(e)
                 if e.type then
                     put(indent)
                     block_value(e, indent, key)
+                elseif pair then
+                    put(indent .. "{\n" .. token_text(pair.key) .. " \n" .. indent .. "\t{\n")
+                    entries(pair.value, indent .. "\t\t", pair.key.text)
+                    put(indent .. "\t}\n" .. indent .. "}\n")
                 else
                     put(indent .. "{\n")
                     entries(e, indent .. "\t", key)
