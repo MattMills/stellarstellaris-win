@@ -1038,7 +1038,8 @@ and each frame side by side, the game left, in `H:\code_working\tmp_sym\render3d
 |---|---|---|
 | `hold w 30` in the home system, then `state` | target z -217.053 (mid-glide) | -217.053 |
 | ... settled | -296.032 (the system's bound) | -295.924 |
-| `wheel 2 400 300`, `tick 1` | distance 1048.332 | 1048.332; the target toward the cursor 10% off (below) |
+| `wheel 2 400 300`, `tick 1` | distance 1048.332 | 1048.332 (the target: below) |
+| (2200.01.11, system 401) `tick 300`, `wheel 5 800 470`, `tick 60`, `wheel 6 520 780`, `tick 120` | target (0, 0, 19.387) at 37.729, then (4.56, 0, 26.415) at 9.25 | the same, to the third decimal; the frames alike |
 | `drag right 800 450 900 480 10 1` | yaw -22.918, pitch 56.876 | 337.082 (the same), 56.876 |
 | `key r` | target 0, pitch 50, yaw 0, the distance kept | the same |
 | `key space`; `key kp_plus` twice in a frame; `key space` and `key shift+down` | running at frame f + 2; speed 5; paused, speed 4 | the same, at the same frames |
@@ -1052,9 +1053,15 @@ and each frame side by side, the game left, in `H:\code_working\tmp_sym\render3d
 | `click 800 450` on the galaxy | (below) | selects system 401 |
 | `click 800 450 double` | enters system 401 | enters system 401 |
 
-**Seen, not matched yet**: the wheel's step toward the cursor in a system puts the target about 10%
-short of where the renderer puts it (the game's pick or bound in `SetTargetZoom` @0x2e66930 is not
-read); R on the galaxy puts the target at the star's height (y 1.825), the renderer at 0; after
+**The wheel toward the cursor** matches the game **[V]**: `SetTargetZoom` @0x2e66930 moves the goal
+target toward the plane's point under the cursor by 1 - the new distance / the goal's (the pick ray
+from the camera as it is that frame: `CGraphics::CalcPickRay`, 2x/w - 1, 1 - 2y/h; its y = 0 crossing,
+4000 along it when the ray is level), as `OrbitCamera::wheel` does. A comparison must let the game's
+camera settle first: entering a system it glides in from 14800 to 11100 (the game's world), and a
+wheel turned before it arrives picks from a farther camera (the target 0.8% short after `tick 30`,
+10% in the earlier note's run); without `timestep` the game also glides in real time between the
+notches while the renderer's offscreen camera jumps, which sent a two-stage zoom to different
+bodies. R on the galaxy puts the target at the star's height (y 1.825), the renderer at 0; after
 leaving the home system, a single left click on the galaxy (on the star or on empty space) makes
 the game enter that system in some states and select in others (`MakeSelection` and `ToggleSystem`
 read a system id at `CInGameIdler` +0xaa4; the rule is not read); the renderer selects.
