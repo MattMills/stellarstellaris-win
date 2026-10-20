@@ -60,9 +60,16 @@ gs "$SAVE" >"$OUT/game_save.gamestate"
 gs "$OUT/ours_0.sav" >"$OUT/ours_0.gamestate"
 game_run "$SAVE" $((N * 10)) "$OUT/game_N.gamestate" || say "1. the game's run from its save failed: $OUT/game_N.gamestate.log"
 game_run "$OUT/ours_0.sav" $((N * 10)) "$OUT/game_N_from_ours_0.gamestate" || say "1. the game's run from our save failed: $OUT/game_N_from_ours_0.gamestate.log"
+# the game's own noise: its AI is not repeatable on every save (docs/saves.md section 6), so the
+# game's run from its own save is made twice; a writer difference within that noise is the game's
+game_run "$SAVE" $((N * 10)) "$OUT/game_N_again.gamestate" || say "1. the game's second run from its save failed: $OUT/game_N_again.gamestate.log"
 if [ -s "$OUT/game_N.gamestate" ] && [ -s "$OUT/game_N_from_ours_0.gamestate" ]; then
 	bash "$GSDIFF" "$OUT/game_N.gamestate" "$OUT/game_N_from_ours_0.gamestate" >"$OUT/1_writer.diff"
 	say "1. writer: the game's $N days from its save and from ours (read, written back) differ in $(grep -c '^[<>]' "$OUT/1_writer.diff") lines (1_writer.diff)"
+	if [ -s "$OUT/game_N_again.gamestate" ]; then
+		bash "$GSDIFF" "$OUT/game_N.gamestate" "$OUT/game_N_again.gamestate" >"$OUT/1_noise.diff"
+		say "1. noise: two runs of the game from its own save differ in $(grep -c '^[<>]' "$OUT/1_noise.diff") lines (1_noise.diff)"
+	fi
 fi
 
 # 2. the game continues our save
