@@ -238,7 +238,7 @@ pub struct App {
     pub planet_view: crate::planet::State,
     /// what the windows were laid out for: the size, view, selection, snapshot, GUI shown, paused,
     /// star names' zoom, observing, the galaxy's hovered star
-    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool, u64, Option<usize>)>,
+    overlay_key: Option<(u32, u32, MapView, Option<Pickable>, u64, bool, bool, bool, bool, u64, (Option<usize>, crate::mapicons::ResourceMode))>,
     /// the player holds the camera (a drag, a turn); the plane's point a drag holds; what the
     /// camera follows; the systems' cameras as they were left; the last system shown
     holding: bool,
@@ -1520,7 +1520,7 @@ impl App {
             let (w, h) = self.size;
             let states = self.states();
             if self.screen == Screen::Map {
-                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0), m.observe, self.fleet.key(), self.hovered_system()));
+                let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0), m.observe, self.fleet.key(), (self.hovered_system(), self.resource_mode())));
                 if key != self.overlay_key {
                     // a star hovered or left changes the labels alone (its label's hover marker:
                     // mapicons.rs), not the windows: they are kept (laid out again they took 30 to
@@ -2484,8 +2484,14 @@ impl App {
         }
         let ctx = self.context();
         let mut changed = false;
+        // Alt held shows the star labels' resources in detail (mapicons.rs resource_mode)
+        let mode = self.resource_mode();
         for e in self.controls.input(input, now_ms, ctx) {
             changed |= self.apply(e)?;
+        }
+        if self.screen == Screen::Map && self.resource_mode() != mode {
+            self.scene = None;
+            changed = true;
         }
         Ok(changed)
     }

@@ -80,6 +80,7 @@ pub struct Deposit {
 pub struct PlanetDeposits {
     pub id: u32,
     pub owner: Option<u32>,
+    pub controller: Option<u32>,
     pub colony: bool,
     pub deposits: Vec<Deposit>,
 }
@@ -196,7 +197,11 @@ pub fn read(t: Option<Table>) -> mlua::Result<Data> {
                 let e = e?;
                 deposits.push(Deposit { resource: e.get("resource")?, amount: e.get("amount")?, collector: country(e.get::<Option<i64>>("collector")?.unwrap_or(-1)) });
             }
-            sys.planets.push(PlanetDeposits { id: p.get("id")?, owner: country(p.get::<Option<i64>>("owner")?.unwrap_or(-1)), colony: p.get::<Option<bool>>("colony")?.unwrap_or(false), deposits });
+            sys.planets.push(PlanetDeposits {
+                id: p.get("id")?,
+                owner: country(p.get::<Option<i64>>("owner")?.unwrap_or(-1)),
+                controller: country(p.get::<Option<i64>>("controller")?.unwrap_or(-1)),
+                colony: p.get::<Option<bool>>("colony")?.unwrap_or(false), deposits });
         }
         d.systems.insert(s.get("id")?, sys);
     }
@@ -412,6 +417,7 @@ impl App {
         let widths: Vec<f32> = names.iter().map(|n| font.map_or(8.0 * n.len() as f32, |f| f.width(n)).min(176.0)).collect();
         let empty = SystemIcons::default();
         let hovered = self.hovered_system();
+        let mode = self.resource_mode();
         let mut specs = Vec::new();
         let mut anchors = Vec::new();
         let mut owners = Vec::new();
@@ -432,9 +438,9 @@ impl App {
             if names_on {
                 only.push("name".into());
                 spec.text.push((format!("{p}/name"), name));
-                // UpdateName: white where the observer has surveyed every planet, grey (0.5) where
-                // not (restricted systems' reds not read) [V]
-                let surveyed = observer.country.is_none() || si.planets.iter().all(|pl| data.player_surveyed.contains(&pl.id));
+                // UpdateName: white where the observer has fully surveyed the system, grey (0.5)
+                // where not (restricted systems' reds not read) [V]
+                let surveyed = fully_surveyed(&observer, &data, si);
                 name_colour.insert(prefix.clone(), if surveyed { [1.0; 3] } else { [0.5; 3] });
                 // UpdateOwner [V]: where the system shows its controller's shield (SetUpData: a
                 // colony or a starbase level with display_empire_shield,
@@ -543,41 +549,18 @@ impl App {
                 c.prefix = Some(ep);
                 specs.push(c);
             }
-            // the deposits not collected (UpdateResources: `resources`, from (-88, 35), 176 wide,
-            // 8 apart, centred; resource_icon_item), within the name's zoom [V]: what a station
-            // collects is shown on hover only; another owner's with communications not at all
+            // the deposits (UpdateResourcesThreaded, UpdateResources: `resources`, from (-88, 35),
+            // 176 wide, 8 apart, centred; resource_icon_item), within the name's zoom [V]
             if names_on {
-                let shows = match observer.country {
-                    None => true,
-                    Some(me) => si.owner.is_none() || si.owner == Some(me) || !observer.has_communications(si.owner),
-                };
-                let mut sums: Vec<(String, f32)> = Vec::new();
-                if shows {
-                    for pl in &si.planets {
-                        if pl.colony || pl.owner.is_some() {
-                            continue;
-                        }
-                        if observer.country.is_some() && !data.player_surveyed.contains(&pl.id) {
-                            continue;
-                        }
-                        for dep in pl.deposits.iter().filter(|d| d.collector.is_none()) {
-                            match sums.iter_mut().find(|x| x.0 == dep.resource) {
-                                Some(x) => x.1 += dep.amount,
-                                None => sums.push((dep.resource.clone(), dep.amount)),
-                            }
-                        }
-                    }
-                }
-                sums.retain(|x| x.1 > 0.0);
-                sums.sort_by_key(|x| data.resources.iter().position(|r| *r == x.0).unwrap_or(usize::MAX));
+                let rows = resource_rows(&observer, &data, si, mode == ResourceMode::Details || hovered == Some(i), mode == ResourceMode::Hidden);
                 // (a resource_icon_item counts 10 wide here: the frames step 18 with spacing 8 [I])
-                let xs = overlapping(sums.len(), 10.0, 8.0, -88.0, 176.0, true);
-                for (k, ((res, amount), x)) in sums.iter().zip(xs).enumerate() {
+                let xs = overlapping(rows.len(), 10.0, 8.0, -88.0, 176.0, true);
+                for (k, ((res, text), x)) in rows.iter().zip(xs).enumerate() {
                     let mut r = gui::WindowSpec::new(MAPICONS, "resource_icon_item");
                     let rp = format!("{prefix}/res{k}");
                     r.parent = Some([x, 35.0, 0.0, 0.0]);
                     r.sprites.push((format!("{rp}/resource_icon_item/icon"), format!("GFX_resource_{}", res.trim_end_matches("_research"))));
-                    r.text.push((format!("{rp}/resource_icon_item/num"), amount_string(*amount)));
+                    r.text.push((format!("{rp}/resource_icon_item/num"), text.clone()));
                     r.prefix = Some(rp);
                     specs.push(r);
                 }
@@ -999,6 +982,110 @@ impl App {
         match (&self.hovered, self.view) {
             (Some((HoverTarget::Map(Pickable::System(i)), _)), MapView::Galaxy) => Some(*i),
             _ => None,
+        }
+    }
+}
+
+/// What the star labels' resources show (UpdateResourcesThreaded's flags [V]): the available
+/// deposits (Normal), all of them (Details: CInGameIdler::IsMapFilterEnabled(1), the bottom bar's
+/// details filter or Alt held; a hovered system's label too), none (Hidden: the filter's third
+/// state, unless Alt is held).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum ResourceMode {
+    Normal,
+    Details,
+    Hidden,
+}
+
+/// Whether the observer has surveyed a deposit holder (CCountry::_HasSurveyedDepositHolder [V]):
+/// its owner's or its controller's, or in its surveyed_deposit_holders; all when observing.
+fn surveyed(observer: &Observer, data: &Data, pl: &PlanetDeposits) -> bool {
+    match observer.country {
+        None => true,
+        Some(me) => pl.owner == Some(me) || pl.controller == Some(me) || data.player_surveyed.contains(&pl.id),
+    }
+}
+
+/// CCountry::HasFullySurveyedSystem [V]: the observer's own system, or every planet surveyed
+/// [I: astral rifts not read; a country type needing no survey not read].
+fn fully_surveyed(observer: &Observer, data: &Data, si: &SystemIcons) -> bool {
+    match observer.country {
+        None => true,
+        Some(me) => si.owner == Some(me) || si.planets.iter().all(|pl| surveyed(observer, data, pl)),
+    }
+}
+
+/// A star label's resources, in common/strategic_resources' order: each resource's icon and its
+/// `num` text (CGalacticObjectMapIcon::UpdateResources [V]). CGalacticObject::
+/// ListResourcesForMapmode sums the deposits of the surveyed planets that are not colonies into
+/// three tables: not collected, collected by the observer's station, by another's. Normal: the
+/// not collected sum in white (§W), where the observer may see it (NeedsBorderAccess: an unowned
+/// system, its own, an owner without communications); a resource with nothing left out. Details:
+/// the three sums on lines of their own, white, green (§G), yellow (§Y), each one above 0 [I:
+/// the hindered deposits' §H not done]. Hidden: none.
+pub(crate) fn resource_rows(observer: &Observer, data: &Data, si: &SystemIcons, details: bool, hidden: bool) -> Vec<(String, String)> {
+    if hidden && !details {
+        return Vec::new();
+    }
+    let access = match observer.country {
+        None => true,
+        Some(me) => si.owner.is_none() || si.owner == Some(me) || !observer.has_communications(si.owner),
+    };
+    // resource -> (not collected, the observer's, others')
+    let mut sums: Vec<(String, [f32; 3])> = Vec::new();
+    for pl in si.planets.iter().filter(|pl| !pl.colony && surveyed(observer, data, pl)) {
+        for dep in &pl.deposits {
+            let k = match (dep.collector, observer.country) {
+                (None, _) => 0,
+                (Some(c), Some(me)) if c == me => 1,
+                (Some(_), None) => 1,
+                (Some(_), _) => 2,
+            };
+            match sums.iter_mut().find(|x| x.0 == dep.resource) {
+                Some(x) => x.1[k] += dep.amount,
+                None => {
+                    let mut v = [0.0; 3];
+                    v[k] = dep.amount;
+                    sums.push((dep.resource.clone(), v));
+                }
+            }
+        }
+    }
+    sums.sort_by_key(|x| data.resources.iter().position(|r| *r == x.0).unwrap_or(usize::MAX));
+    let mut out = Vec::new();
+    for (res, v) in sums {
+        if !details && v[0] <= 0.0 {
+            continue;
+        }
+        let mut lines: Vec<String> = Vec::new();
+        if (access || details) && v[0] > 0.0 {
+            lines.push(format!("§W{}§!", amount_string(v[0])));
+        }
+        if details {
+            for (amount, code) in [(v[1], 'G'), (v[2], 'Y')] {
+                if amount > 0.0 {
+                    lines.push(format!("§{code}{}§!", amount_string(amount)));
+                }
+            }
+        }
+        if !lines.is_empty() {
+            out.push((res, lines.join("\n")));
+        }
+    }
+    out
+}
+
+impl App {
+    /// The star labels' resources mode (ResourceMode): the bottom bar's details filter
+    /// (mainbars.rs: 0 normal, 1 details, 2 hidden), Alt held showing the details.
+    pub(crate) fn resource_mode(&self) -> ResourceMode {
+        let filter = self.bars.filters[crate::mainbars::FILTERS.iter().position(|f| *f == "details").unwrap_or(2)];
+        if self.controls.mods().alt || filter == 1 {
+            ResourceMode::Details
+        } else if filter == 2 {
+            ResourceMode::Hidden
+        } else {
+            ResourceMode::Normal
         }
     }
 }
