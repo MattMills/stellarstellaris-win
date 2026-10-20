@@ -446,6 +446,37 @@ impl Runtime {
         Ok((text.to_str()?.to_string(), date.call(())?))
     }
 
+    /// The world as a save at a tick within the day (`tick`, CGameState::_nTickCount), with the
+    /// synchronized generator as it is now (the save's random_seed, random_count): the gamestate
+    /// in the game's layout and the date ("2210.02.01").
+    pub fn save_text_at(&self, tick: i32) -> mlua::Result<(String, String)> {
+        let (seed, position) = {
+            let r = self.rng.borrow();
+            (r.seed, r.position)
+        };
+        let state = self.lua.create_table()?;
+        state.set("tick", tick)?;
+        state.set("seed", seed)?;
+        state.set("position", position)?;
+        let f: Function = self.engine.get("save")?;
+        let text: mlua::String = f.call(state)?;
+        let date: Function = self.engine.get("date_text")?;
+        Ok((text.to_str()?.to_string(), date.call(())?))
+    }
+
+    /// The save's `meta` made from the world (`old`: the loaded save's, for what the world does
+    /// not give).
+    pub fn save_meta(&self, old: Option<&str>) -> mlua::Result<String> {
+        let f: Function = self.engine.get("save_meta")?;
+        f.call(old)
+    }
+
+    /// What of the loaded save this build does not read (its version, ironman ...), one line each.
+    pub fn save_report(&self, meta: Option<&str>) -> mlua::Result<Vec<String>> {
+        let f: Function = self.lua.load("return require('engine.savegame').report").eval()?;
+        f.call(meta)
+    }
+
     /// What ran, and what the world does not answer yet.
     pub fn report(&self) -> String {
         let f: mlua::Result<Function> = self.engine.get("report");

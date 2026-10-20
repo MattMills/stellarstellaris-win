@@ -2128,6 +2128,10 @@ impl App {
                     // RestoreDeviceObjects begins at its step 0
                     p.report = status.report;
                     p.map_gfx = Some(0);
+                    // what of the save this build does not read: in the log (and the console)
+                    for line in &status.save_report {
+                        self.log.push(format!("save: {line}"));
+                    }
                 } else {
                     p.bar.advance(dt, p.progress.stage(), p.progress.world_gen());
                 }
@@ -2285,6 +2289,20 @@ impl App {
                     if *down {
                         if let Some(a) = creator_key(key, self.controls.mods().shift).and_then(|t| crate::designer::typed(self, &t)) {
                             crate::designer::act(self, &a)?;
+                        }
+                    }
+                    return Ok(true);
+                }
+            }
+        }
+        // the save window's file name box takes the keyboard while it is open (mainbars.rs
+        // save_typed): RETURN saves; ESCAPE goes on (the window's close button)
+        if self.screen == Screen::Map && self.bars.save.is_some() {
+            if let Input::Key { key, down, .. } = input {
+                if !matches!(key.as_str(), "shift" | "ctrl" | "alt" | "escape") {
+                    if *down {
+                        if let Some(a) = creator_key(key, self.controls.mods().shift).and_then(|a| crate::mainbars::save_typed(&self.bars, &a)) {
+                            self.act("/key", Some(&a))?;
                         }
                     }
                     return Ok(true);

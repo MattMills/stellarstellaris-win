@@ -212,6 +212,20 @@ impl Simulation {
         self.tick_count
     }
 
+    /// Writes the world as a save the game loads (docs/saves.md): the gamestate in the game's
+    /// layout with this tick and the generator, the meta made from the world (`old_meta`: the
+    /// loaded save's, kept for what the world does not give). Only between ticks (a tick half run
+    /// is not a state the game has); returns the save's date.
+    pub fn write_save(&self, path: &str, old_meta: Option<&str>) -> Result<String, String> {
+        if self.mid_tick() {
+            return Err("a tick is in progress: saves are written between ticks".into());
+        }
+        let (text, date) = self.runtime.save_text_at(self.tick_count).map_err(|e| format!("the gamestate: {e}"))?;
+        let meta = self.runtime.save_meta(old_meta).map_err(|e| format!("the meta: {e}"))?;
+        crate::save::write_save(path, &text, &meta, &date)?;
+        Ok(date)
+    }
+
     /// Posts a command (`PostCommandToSession`); it runs before the next tick.
     pub fn post_command(&mut self, c: Command) {
         self.commands.push(c);

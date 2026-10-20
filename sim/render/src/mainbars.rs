@@ -35,6 +35,112 @@ pub struct Bars {
     pub cycle: HashMap<String, usize>,
     /// the load window opened from the menu (Escape returns to the map)
     pub load_from_game: bool,
+    /// the save window open (the menu's Save: CInGameIdler::ShowSaveGameScreen)
+    pub save: Option<SaveWindow>,
+}
+
+/// The save window (savegame_view.gui `SaveGameScreen`, CSaveGameView): the game's name, the file
+/// name box (the date by default, as the user's own manual save `2200.01.11.sav` [V]), Save, and
+/// the saves already in the game's folder (CGameState::GetSaveFolderName: save::save_folder_name).
+#[derive(Clone, Debug, Default)]
+pub struct SaveWindow {
+    pub game: String,
+    pub name: String,
+    pub folder: std::path::PathBuf,
+    /// the folder's saves, newest first: the file's name without `.sav`, the date, fleets, planets
+    /// (each save's meta)
+    pub saves: Vec<[String; 4]>,
+}
+
+/// The saves of a folder, newest first (as SaveWindow::saves).
+fn folder_saves(folder: &std::path::Path) -> Vec<[String; 4]> {
+    let mut out: Vec<(std::time::SystemTime, [String; 4])> = Vec::new();
+    for e in std::fs::read_dir(folder).into_iter().flatten().flatten() {
+        let p = e.path();
+        if !p.extension().is_some_and(|x| x.eq_ignore_ascii_case("sav")) {
+            continue;
+        }
+        let meta = stellar_sim::save::read_meta(&p.to_string_lossy()).unwrap_or_default();
+        let value = |key: &str| {
+            meta.lines().find_map(|l| l.strip_prefix(key).and_then(|v| v.strip_prefix('='))).unwrap_or("").trim_matches('"').to_string()
+        };
+        let stem = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let t = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+        out.push((t, [stem, value("date"), value("meta_fleets"), value("meta_planets")]));
+    }
+    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.into_iter().map(|(_, s)| s).collect()
+}
+
+/// The menu's Save: the save window over the menu, its name the date (the simulation's world).
+fn open_save(app: &mut App) -> Result<(), String> {
+    let Some(clock) = app.map.as_ref().and_then(|m| m.clock.as_ref()) else {
+        note(app, "the save window: no simulation runs (a map without one cannot be saved)");
+        return Ok(());
+    };
+    let (game, date) = clock.save_name()?;
+    let root = stellar_sim::save::save_games_dir().ok_or("no folder for save games (HOME, USERPROFILE or STELLAR_SAVE_GAMES)")?;
+    let folder = root.join(stellar_sim::save::save_folder_name(&game));
+    let saves = folder_saves(&folder);
+    app.bars.save = Some(SaveWindow { game, name: date, folder, saves });
+    Ok(())
+}
+
+/// The save window's Save (its button, RETURN): the world written between days to the game's
+/// folder (CSaveGameView::StartSave -> CInGameIdler::SaveGame); the window closes when it is done.
+fn do_save(app: &mut App) -> Result<(), String> {
+    let Some(w) = app.bars.save.as_ref() else { return Ok(()) };
+    let path = w.folder.join(stellar_sim::save::save_file_name(&w.name));
+    let path = path.to_string_lossy().into_owned();
+    let clock = app.map.as_ref().and_then(|m| m.clock.as_ref()).ok_or("no simulation")?;
+    match clock.save(&path) {
+        Ok(date) => {
+            app.log.push(format!("saved {date} to {path}"));
+            app.bars.save = None;
+        }
+        Err(e) => app.log.push(format!("the save to {path} failed: {e}")),
+    }
+    Ok(())
+}
+
+/// The save window takes the keyboard while open (its file name box): a key typed (app.rs
+/// creator_key's `creator:...`) as the window's action, or None.
+pub fn save_typed(bars: &Bars, creator_action: &str) -> Option<String> {
+    bars.save.as_ref()?;
+    if let Some(c) = creator_action.strip_prefix("creator:text:") {
+        return Some(format!("menu:save_text:{c}"));
+    }
+    creator_action.strip_prefix("creator:key:").map(|k| format!("menu:save_key:{k}"))
+}
+
+fn save_window(app: &mut App, rest: &str) -> Result<(), String> {
+    match rest {
+        "save_hide" => app.bars.save = None,
+        "save_do" | "save_key:return" => do_save(app)?,
+        "save_key:backspace" => {
+            if let Some(w) = app.bars.save.as_mut() {
+                w.name.pop();
+            }
+        }
+        r if r.starts_with("save_text:") => {
+            if let Some(w) = app.bars.save.as_mut() {
+                // (the box's own limit is its width; a file name of 100 characters at most [I])
+                if w.name.chars().count() < 100 {
+                    w.name.push_str(&r["save_text:".len()..]);
+                }
+            }
+        }
+        r if r.starts_with("save_pick:") => {
+            let i: usize = r["save_pick:".len()..].parse().unwrap_or(usize::MAX);
+            if let Some(w) = app.bars.save.as_mut() {
+                if let Some(s) = w.saves.get(i) {
+                    w.name = s[0].clone();
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// The map filters' order in `Bars::filters` and their .gui names (main_bottom.gui toolbar).
@@ -178,7 +284,8 @@ fn menu(app: &mut App, rest: &str) -> Result<(), String> {
             app.bars.load_from_game = true;
             app.action("open_load")?;
         }
-        "save" => note(app, "the save window (CSaveGameView)"),
+        "save" => open_save(app)?,
+        r if r.starts_with("save_") => save_window(app, r)?,
         "settings" => {
             // the menu closes, the settings open (ShowSettings)
             app.bars.menu = false;
@@ -323,6 +430,9 @@ pub fn pickable(action: &str) -> Option<Pickable> {
 pub fn escape(app: &mut App, first: bool) -> Result<bool, String> {
     if app.bars.dialog.is_some() {
         app.bars.dialog = None;
+    } else if app.bars.save.is_some() {
+        // the save window's close button (shortcut ESCAPE)
+        app.bars.save = None;
     } else if app.bars.menu {
         app.bars.menu = false;
     } else if first && app.outliner.popup != 0 {
@@ -384,6 +494,7 @@ pub fn modal(bars: &Bars) -> Option<&'static str> {
     match bars.dialog.as_deref() {
         Some("resign") => Some("/standard_dialog_quit_to_menu"),
         Some(_) => Some("/standard_dialog_quit"),
+        None if bars.save.is_some() => Some("/SaveGameScreen"),
         None if bars.menu => Some("/mainmenu_window"),
         None => None,
     }
@@ -394,7 +505,7 @@ pub fn modal(bars: &Bars) -> Option<&'static str> {
 /// every other window.
 pub fn menu_items(runtime: &stellar_sim::Runtime, w: u32, h: u32, bars: &Bars, version: &str) -> Result<Vec<crate::gui::GuiItem>, String> {
     use crate::gui::WindowSpec;
-    if !bars.menu && bars.dialog.is_none() {
+    if !bars.menu && bars.dialog.is_none() && bars.save.is_none() {
         return Ok(Vec::new());
     }
     let mut specs = Vec::new();
@@ -427,7 +538,60 @@ pub fn menu_items(runtime: &stellar_sim::Runtime, w: u32, h: u32, bars: &Bars, v
         s.text.push((format!("{p}/description"), desc.into()));
         specs.push(s);
     }
-    Ok(crate::gui::layout_specs(runtime, w, h, &specs)?.items)
+    let mut items = crate::gui::layout_specs(runtime, w, h, &specs)?.items;
+    if let Some(s) = &bars.save {
+        items.extend(save_items(runtime, w, h, s)?);
+    }
+    Ok(items)
+}
+
+/// The save window laid out (over the menu): SaveGameScreen with the game's name and the file name
+/// box, then a SaveSaveGameEntry for each save in the folder down its list (spacing -4). No cloud:
+/// its checkbox, label and icon hidden, each entry's cloud_file at its first frame (a local file)
+/// and its delete button hidden [I].
+fn save_items(runtime: &stellar_sim::Runtime, w: u32, h: u32, s: &SaveWindow) -> Result<Vec<crate::gui::GuiItem>, String> {
+    use crate::gui::WindowSpec;
+    const FILE: &str = "interface/savegame_view.gui";
+    let p = "/SaveGameScreen";
+    let mut m = WindowSpec::new(FILE, "SaveGameScreen");
+    m.actions.push((p.into(), "menu:none".into()));
+    m.actions.push((format!("{p}/hide"), "menu:save_hide".into()));
+    m.actions.push((format!("{p}/save"), "menu:save_do".into()));
+    m.hide = vec!["cloud_save".into(), "cloud_save_label".into(), "cloud_icon".into()];
+    m.text.push((format!("{p}/game_name"), s.game.clone()));
+    // (the box's cursor: a bar after the text [I])
+    m.text.push((format!("{p}/filename"), format!("{}|", s.name)));
+    let main = crate::gui::layout_specs(runtime, w, h, &[m])?;
+    let mut items = main.items;
+    let Some(list) = main.rects.get(&format!("{p}/list")).copied() else { return Ok(items) };
+    let (ew, eh) = (560.0, 58.0);
+    let mut entries = Vec::new();
+    for (i, save) in s.saves.iter().enumerate() {
+        let y = list[1] + i as f32 * (eh - 4.0);
+        if y + eh > list[1] + list[3] {
+            break;
+        }
+        let prefix = format!("{p}/list/{i}");
+        let e = format!("{prefix}/SaveSaveGameEntry");
+        let mut spec = WindowSpec::new(FILE, "SaveSaveGameEntry");
+        spec.prefix = Some(prefix.clone());
+        // (the entry is `orientation = center`: its parent's centre is the slot's corner plus half
+        // the entry, as render.loadgame's)
+        spec.parent = Some([list[0] - ew / 2.0, y - eh / 2.0, ew, eh]);
+        spec.hide = vec!["delete".into()];
+        spec.frames.push((format!("{e}/cloud_file"), 1));
+        spec.actions.push((format!("{e}/bg"), format!("menu:save_pick:{i}")));
+        spec.text.push((format!("{e}/name"), save[0].clone()));
+        spec.text.push((format!("{e}/date"), save[1].clone()));
+        spec.text.push((format!("{e}/filename"), format!("{}.sav", save[0])));
+        spec.text.push((format!("{e}/fleets"), save[2].clone()));
+        spec.text.push((format!("{e}/planets"), save[3].clone()));
+        entries.push(spec);
+    }
+    if !entries.is_empty() {
+        items.extend(crate::gui::layout_specs(runtime, w, h, &entries)?.items);
+    }
+    Ok(items)
 }
 
 #[cfg(test)]

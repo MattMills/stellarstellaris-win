@@ -401,6 +401,21 @@ impl Engine {
                 self.app.set_console(on);
                 Ok(Reply::ok(format!("console {}", if on { "on" } else { "off" })))
             }
+            "save" => {
+                // `save PATH`: the simulation's world written as a save between days (docs/saves.md);
+                // `save` alone: to the game's folder as the save window names it (the date)
+                let clock = self.app.map.as_ref().and_then(|m| m.clock.as_ref()).ok_or("save: no simulation runs (load-sim first)")?;
+                let path = if rest.is_empty() {
+                    let (game, date) = clock.save_name()?;
+                    let root = stellar_sim::save::save_games_dir().ok_or("save: no save games folder")?;
+                    root.join(stellar_sim::save::save_folder_name(&game)).join(stellar_sim::save::save_file_name(&date)).to_string_lossy().into_owned()
+                } else {
+                    rest.to_string()
+                };
+                let t0 = std::time::Instant::now();
+                let date = clock.save(&path)?;
+                Ok(Reply::ok(format!("save {date} {path} {:.1} s", t0.elapsed().as_secs_f64())))
+            }
             "load-sim" if a.first().copied() == Some("async") => {
                 // a save loaded behind the load screen, as the window's Load does; `loaded` waits
                 let path = rest["async".len()..].trim();
