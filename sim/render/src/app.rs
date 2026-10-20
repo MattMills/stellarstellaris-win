@@ -637,6 +637,10 @@ impl App {
                 // the topbar's date, the galaxy, the system's ships
                 self.scene = None;
             }
+            // the replies of the commands sent without waiting (Clock::command), logged
+            if let Some(c) = m.clock.as_ref() {
+                self.log.extend(c.replies());
+            }
             // a window's data the simulation answered (Clock::query_view: the windows laid out
             // with the last answer meanwhile) come: laid out again
             if m.clock.as_ref().is_some_and(|c| c.answers_arrived()) {

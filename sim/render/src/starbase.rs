@@ -180,7 +180,7 @@ fn run_command(app: &mut App, cmd: &str) -> Result<String, String> {
     let map = app.map.as_mut().ok_or("no map")?;
     map.ready()?;
     let clock = map.clock.as_ref().ok_or("no simulation")?;
-    let r = clock.query(&code).map_err(|e| format!("render.windows.starbase_commands: {e}"))?;
+    let r = clock.command("starbase command", &code).map_err(|e| format!("render.windows.starbase_commands: {e}"))?;
     clock.publish(true);
     map.sync();
     Ok(r)

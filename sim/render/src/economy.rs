@@ -30,6 +30,17 @@ fn world_query(app: &mut App, code: &str) -> Result<String, String> {
     m.runtime.lua.load(code).set_name("economy buttons").eval::<String>().map_err(|e| format!("render.windows.market: {e}"))
 }
 
+/// [`world_query`] for a command (its reply only logged): with the window's commands async, sent
+/// to the simulation without waiting (Clock::command).
+fn world_command(app: &mut App, code: &str) -> Result<String, String> {
+    if crate::clock::async_commands() {
+        if let Some(clock) = app.map.as_ref().filter(|m| !m.has_world()).and_then(|m| m.clock.as_ref()) {
+            return clock.command("market command", &format!("local market = require('render.windows.market') {code}"));
+        }
+    }
+    world_query(app, code)
+}
+
 /// The world changed: the open view's data and the top bar made again.
 fn changed(app: &mut App) {
     let name = app.open_view.clone();
@@ -57,7 +68,7 @@ pub fn act(app: &mut App, action: &str) -> Result<(), String> {
         ["trade", side, key, mult] => {
             let mult: i64 = mult.parse().map_err(|_| format!("bad action {action}"))?;
             let code = format!("return market.trade({cid}, {}, {mult}, {}, {})", lua_str(key), *side == "buy", lua_str(&game_dir));
-            let r = world_query(app, &code)?;
+            let r = world_command(app, &code)?;
             app.log.push(format!("market: {side} {mult} x {key}: {r}"));
             changed(app);
         }
@@ -69,14 +80,14 @@ pub fn act(app: &mut App, action: &str) -> Result<(), String> {
                 let id: i64 = parts[6].parse().map_err(|_| format!("bad action {action}"))?;
                 format!("return market.monthly({cid}, 'update', {id}, {}, {}, {amount}, {price}, {})", lua_str(key), *side == "buy", lua_str(&game_dir))
             };
-            let r = world_query(app, &code)?;
+            let r = world_command(app, &code)?;
             app.log.push(format!("market: monthly trade {}: {r}", parts[1]));
             close_monthly(app);
             changed(app);
         }
         ["monthly", "remove", id] => {
             let id: i64 = id.parse().map_err(|_| format!("bad action {action}"))?;
-            let r = world_query(app, &format!("return market.monthly({cid}, 'remove', {id}, nil, nil, nil, nil, {})", lua_str(&game_dir)))?;
+            let r = world_command(app, &format!("return market.monthly({cid}, 'remove', {id}, nil, nil, nil, nil, {})", lua_str(&game_dir)))?;
             app.log.push(format!("market: monthly trade {id} removed: {r}"));
             close_monthly(app);
             changed(app);

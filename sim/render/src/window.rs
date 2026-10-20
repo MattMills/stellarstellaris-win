@@ -370,6 +370,9 @@ pub fn run<F>(make: F, backend: render::Backend, want: Option<String>, frames: O
 where
     F: FnOnce() -> Result<App, String> + Send + 'static,
 {
+    // the window's commands sent to the simulation without waiting (clock.rs; STELLAR_ASYNC_COMMANDS=0:
+    // waited for, as the command protocol does)
+    crate::clock::set_async_commands(std::env::var("STELLAR_ASYNC_COMMANDS").map_or(true, |v| v != "0"));
     let ui = Ui::start(move || {
         let mut app = make()?;
         app.smooth = true;

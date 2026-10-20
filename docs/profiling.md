@@ -584,10 +584,35 @@ makes a click slow is a command to the simulation, waited for on the UI thread t
 to its 1 s timeout running). Every window's commands do it: views.rs (`cmd:`), starbase.rs,
 planet.rs, designer.rs, fleetwin.rs and rightclick.rs, economy.rs.
 
-**What would fix it** (not done): the commands sent without waiting in the window (the reply
-logged when it comes, as `Clock::query_view`'s answers), the snapshot not waited for (the next
-one shows the effect: `answers_arrived`, `sync`), the protocol keeping its waits for exact replies;
-the simulation reading its commands between its slices as well as between days would take the wait
-for the day away. And the pipeline itself: the UI thread builds the scene of an input at its next
-period (up to 8.3 ms after the job), and the render thread draws it at its next frame (up to 8.3 ms
-more); a scene built at once after an input job would take up to 8 ms off every click.
+**Fix 9: the window's commands sent without waiting** (clock.rs `Clock::command`,
+`Clock::replies`, `set_async_commands`). The window (and `--bench`) sets it
+(STELLAR_ASYNC_COMMANDS=0 turns it off); the command protocol keeps the waits, so a script's
+replies say what a command did (`commands async|wait` switches it there):
+
+- the commands whose reply is only logged go to the simulation without waiting: views.rs (`cmd:`),
+  starbase.rs, planet.rs (the planet view's commands), fleetwin.rs (`fleet_run`: the fleet windows'
+  orders), economy.rs (the market's trades): the reply `WHAT: sent`, the simulation's own logged when
+  it comes (`App::advance`), the windows laid out again then;
+- `Clock::publish(true)` asks for the snapshot and does not wait for it: the next frame after it
+  comes shows the command's effect (`sync`);
+- the commands whose reply the window needs at once (the designer's dialogue with the simulation,
+  a right click's order menu, the emergency FTL's answer) still wait for it (a few ms paused), but
+  not for the snapshot;
+- while a command or a snapshot asked for is on its way the simulation answers a read after it, so
+  `Clock::query_view` serves the last answer then (as while the clock runs) instead of waiting, and
+  the designer's data is read that way (per snapshot) when the simulation has the world.
+
+The click frame's CPU part, ms, mean / max, waited for -> async (same build, `commands wait` /
+`commands async`): technology's auto research 144 / 160 -> 6.9 / 6.9 paused and 2,002 / 3,412 ->
+8.8 / 11.1 running; the designer's auto design 150 / 188 -> 6.2 / 6.4; the other clicks unchanged
+(1.4 to 8.6 mean). Every click of the scenario now takes at most 24 ms on the UI thread (an outliner
+row's first selection: its fleet window laid out), most of them under 10. The commands take effect as
+before: the technology view and the designer after a click, once the reply and the snapshot have come,
+are the same PNGs with the commands waited for and sent without waiting.
+
+**What is left**: the simulation answers a command only between days, so while the clock runs its
+effect shows after the day in progress (up to its length), though the window no longer waits for it;
+reading commands between its slices as well would take that away (the simulation's side). And the
+pipeline: the UI thread builds the scene of an input at its next period (up to 8.3 ms after the job),
+the render thread draws it at its next frame (up to 8.3 ms more); a scene built at once after an
+input job would take up to 8 ms off every click.

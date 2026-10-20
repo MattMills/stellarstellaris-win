@@ -1056,6 +1056,19 @@ impl Engine {
                 }
                 _ => Err("prof on|off|reset|report [PATH]".into()),
             },
+            // `commands async|wait`: the windows' commands sent to the simulation without waiting (the
+            // window's way: their replies logged when they come), or waited for (the default here)
+            "commands" => match a.first().copied() {
+                Some("async") => {
+                    crate::clock::set_async_commands(true);
+                    Ok(Reply::ok("commands async"))
+                }
+                Some("wait") => {
+                    crate::clock::set_async_commands(false);
+                    Ok(Reply::ok("commands wait"))
+                }
+                _ => Err("commands async|wait".into()),
+            },
             // `buttons [PREFIX]`: the scene's buttons (their paths from PREFIX), each `PATH X Y ACTION`
             // at its centre: where a `click` goes
             "buttons" => {

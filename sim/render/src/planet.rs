@@ -273,7 +273,7 @@ pub fn run_pending(app: &mut crate::app::App) -> Result<(), String> {
             if args.is_empty() { "" } else { ", " },
             args.join(", ")
         );
-        let r = map.clock.as_ref().unwrap().query(&code).unwrap_or_else(|e| format!("error {e}"));
+        let r = map.clock.as_ref().unwrap().command(&format!("planet view {cmd}"), &code).unwrap_or_else(|e| format!("error {e}"));
         app.log.push(format!("planet view: {cmd}: {r}"));
         app.planet_view.last = r;
     }

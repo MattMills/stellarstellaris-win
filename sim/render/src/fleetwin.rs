@@ -186,6 +186,23 @@ impl App {
         self.fleet_world_query(code)
     }
 
+    /// [`App::fleet_sim_query`] for a command (its reply only logged): with the window's commands
+    /// async, sent to the simulation without waiting (Clock::command).
+    pub(crate) fn fleet_sim_command(&mut self, code: &str) -> Result<String, String> {
+        if crate::clock::async_commands() {
+            if let Some(m) = self.map.as_mut() {
+                if m.has_world() {
+                    let r = m.step(0)?;
+                    self.log.push(format!("fleet command: the simulation started ({r})"));
+                }
+                if let Some(clock) = m.clock.as_ref() {
+                    return clock.command("fleet command", &format!("local fd = require('render.windows.fleet_data') {code}"));
+                }
+            }
+        }
+        self.fleet_sim_query(code)
+    }
+
     /// The map shows a command's effect without a day run: a snapshot now, taken when it comes.
     pub(crate) fn fleet_published(&mut self) {
         if let Some(c) = self.map.as_ref().and_then(|m| m.clock.as_ref()) {
@@ -196,7 +213,7 @@ impl App {
     /// Commands run in the simulation (Lua code returning a text): the state changed as the
     /// game's commands change it; the windows read it again. Returns the reply.
     pub(crate) fn fleet_run(&mut self, code: &str) -> Result<String, String> {
-        let r = self.fleet_sim_query(code)?;
+        let r = self.fleet_sim_command(code)?;
         self.log.push(format!("fleet command: {r}"));
         self.fleet_published();
         self.fleet.commands += 1;

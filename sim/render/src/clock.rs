@@ -183,6 +183,20 @@ struct Shared {
     status: Mutex<Status>,
 }
 
+/// Whether the window's commands go to the simulation without waiting ([`Clock::command`],
+/// [`Clock::publish`]; docs/profiling.md section 12): the window sets it, the command protocol
+/// keeps the waits (its replies say what a command did), `commands async|wait` sets it there.
+static ASYNC: AtomicBool = AtomicBool::new(false);
+
+/// The window's commands sent without waiting (on), or waited for (off: the protocol's way).
+pub fn set_async_commands(on: bool) {
+    ASYNC.store(on, Ordering::Relaxed);
+}
+
+pub fn async_commands() -> bool {
+    ASYNC.load(Ordering::Relaxed)
+}
+
 /// The simulation's thread, seen from the render thread.
 pub struct Clock {
     tx: Sender<Cmd>,
@@ -192,6 +206,10 @@ pub struct Clock {
     paused: AtomicBool,
     /// the windows' read-only queries' answers ([`Clock::query_view`])
     views: Mutex<Views>,
+    /// the commands sent without waiting ([`Clock::command`]): what each is, its reply to come
+    commands: Mutex<Vec<(String, mpsc::Receiver<Result<String, String>>)>>,
+    /// the snapshots asked for and not waited for ([`Clock::publish`] with the commands async)
+    publishing: Mutex<Vec<mpsc::Receiver<()>>>,
 }
 
 /// The answers of [`Clock::query_view`]: each code's last answer with the snapshot generation it
@@ -312,7 +330,7 @@ impl Clock {
                 w.run(rx);
             })
             .expect("the simulation's thread");
-        Clock { tx, shared, thread: Some(thread), paused: AtomicBool::new(paused), views: Mutex::new(Views::default()) }
+        Clock { tx, shared, thread: Some(thread), paused: AtomicBool::new(paused), views: Mutex::new(Views::default()), commands: Mutex::new(Vec::new()), publishing: Mutex::new(Vec::new()) }
     }
 
     pub fn status(&self) -> Status {
@@ -363,6 +381,61 @@ impl Clock {
         self.ask(code)
     }
 
+    /// A command of a window (Lua that changes the world, run where the world is: `what` names it
+    /// for the log). Waited for as [`Clock::query`], or with the window's commands async
+    /// ([`set_async_commands`]) sent and not waited for: the reply `WHAT: sent`, the simulation's own
+    /// in [`Clock::replies`] when it comes (between days while the clock runs: waited for, a click
+    /// held the UI thread up to a day's length, docs/profiling.md section 12).
+    pub fn command(&self, what: &str, code: &str) -> Result<String, String> {
+        if !async_commands() {
+            return self.query(code);
+        }
+        self.forget_views();
+        if !self.status().ready {
+            return Err("the simulation is not loaded yet".into());
+        }
+        let (tx, rx) = mpsc::channel();
+        self.tx.send(Cmd::Query(code.to_string(), tx)).map_err(|_| "the simulation's thread has ended")?;
+        self.commands.lock().unwrap().push((what.to_string(), rx));
+        Ok(format!("{what}: sent"))
+    }
+
+    /// Whether a command sent without waiting, or a snapshot asked for, is on its way: the
+    /// simulation answers a read after it.
+    fn busy(&self) -> bool {
+        let mut p = self.publishing.lock().unwrap();
+        p.retain(|rx| matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        !p.is_empty() || !self.commands.lock().unwrap().is_empty()
+    }
+
+    /// The replies of the commands sent without waiting that came since (`WHAT: REPLY`), for the
+    /// log; the windows' answers asked again after them (the world changed: [`Clock::answers_arrived`]
+    /// then says so).
+    pub fn replies(&self) -> Vec<String> {
+        let mut c = self.commands.lock().unwrap();
+        if c.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        c.retain(|(what, rx)| match rx.try_recv() {
+            Ok(r) => {
+                out.push(match r {
+                    Ok(s) => format!("{what}: {s}"),
+                    Err(e) => format!("{what}: error {e}"),
+                });
+                false
+            }
+            Err(TryRecvError::Disconnected) => false,
+            Err(TryRecvError::Empty) => true,
+        });
+        drop(c);
+        if !out.is_empty() {
+            self.forget_views();
+            self.views.lock().unwrap().arrived = true;
+        }
+        out
+    }
+
     /// A window's data, read-only Lua run where the world is (as [`Clock::query`]), for a layout
     /// of snapshot `generation` (docs/profiling.md). Paused, the answer is waited for as
     /// `query`'s, and kept for the generation. Running, the simulation answers only after the day
@@ -371,6 +444,9 @@ impl Clock {
     /// most) and a new one asked for; [`Clock::answers_arrived`] says when it came (the windows
     /// laid out again). A code's first answer is waited for.
     pub fn query_view(&self, code: &str, generation: u64) -> Result<String, String> {
+        // (a command on its way: the simulation answers after it, so a read waits for it too; the
+        // last answer meanwhile, as while the clock runs)
+        let busy = self.busy();
         let mut v = self.views.lock().unwrap();
         v.poll();
         if let Some((Some(g), r)) = v.answers.get(code) {
@@ -378,7 +454,7 @@ impl Clock {
                 return r.clone();
             }
         }
-        if !self.paused.load(Ordering::Relaxed) {
+        if !self.paused.load(Ordering::Relaxed) || busy {
             if let Some((_, r)) = v.answers.get(code) {
                 let r = r.clone();
                 if !v.asked.contains_key(code) {
@@ -464,7 +540,16 @@ impl Clock {
     /// them (at most a second: a day may be running).
     /// A snapshot published now (with `wait`, waited for up to a second).
     pub fn publish(&self, wait: bool) {
-        if wait && self.status().ready {
+        // (the window's commands async: asked for, not waited for; a read meanwhile is served the last
+        // answer: busy)
+        if wait && async_commands() && self.status().ready {
+            let (tx, rx) = mpsc::channel();
+            if self.tx.send(Cmd::Publish(Some(tx))).is_ok() {
+                self.publishing.lock().unwrap().push(rx);
+            }
+            return;
+        }
+        if wait && self.status().ready && !async_commands() {
             let _s = crate::prof::span("simulation: a snapshot waited for");
             let (tx, rx) = mpsc::channel();
             if self.tx.send(Cmd::Publish(Some(tx))).is_ok() {
