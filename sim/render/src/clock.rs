@@ -183,6 +183,16 @@ struct Shared {
     status: Mutex<Status>,
 }
 
+/// What [`Clock::query_view`] answers when a read has no answer yet and the simulation cannot
+/// answer at once (the clock runs, or a command is on its way): asked for, not waited for; the
+/// window shows what it can and is laid out again when the answer comes.
+pub const PENDING: &str = "the simulation's answer is on its way";
+
+/// Whether an error of [`Clock::query_view`] is [`PENDING`].
+pub fn is_pending(e: &str) -> bool {
+    e == PENDING
+}
+
 /// Whether the window's commands go to the simulation without waiting ([`Clock::command`],
 /// [`Clock::publish`]; docs/profiling.md section 12): the window sets it, the command protocol
 /// keeps the waits (its replies say what a command did), `commands async|wait` sets it there.
@@ -442,7 +452,9 @@ impl Clock {
     /// it is in (up to a second in slices), and a layout that waited for it held the UI thread
     /// for that long at every snapshot: the last answer is served (the window a day behind at
     /// most) and a new one asked for; [`Clock::answers_arrived`] says when it came (the windows
-    /// laid out again). A code's first answer is waited for.
+    /// laid out again). In the window ([`set_async_commands`]) a code's first answer is not waited for either then (each fleet's, each
+    /// ship's, each planet's data is a code of its own: a click on a new one held the UI thread for the
+    /// day, 0.8 to 2.2 s): [`PENDING`] until it comes; paused, and in the command protocol, it is waited for.
     pub fn query_view(&self, code: &str, generation: u64) -> Result<String, String> {
         // (a command on its way: the simulation answers after it, so a read waits for it too; the
         // last answer meanwhile, as while the clock runs)
@@ -454,17 +466,17 @@ impl Clock {
                 return r.clone();
             }
         }
-        if !self.paused.load(Ordering::Relaxed) || busy {
-            if let Some((_, r)) = v.answers.get(code) {
-                let r = r.clone();
-                if !v.asked.contains_key(code) {
-                    let (tx, rx) = mpsc::channel();
-                    if self.tx.send(Cmd::Query(code.to_string(), tx)).is_ok() {
-                        v.asked.insert(code.to_string(), (generation, rx));
-                    }
+        // (no answer yet: pending in the window; the command protocol waits for the first one, its
+        // replies exact)
+        let last = v.answers.get(code).map(|(_, r)| r.clone());
+        if (!self.paused.load(Ordering::Relaxed) || busy) && (last.is_some() || async_commands()) {
+            if !v.asked.contains_key(code) {
+                let (tx, rx) = mpsc::channel();
+                if self.tx.send(Cmd::Query(code.to_string(), tx)).is_ok() {
+                    v.asked.insert(code.to_string(), (generation, rx));
                 }
-                return r;
             }
+            return last.unwrap_or_else(|| Err(PENDING.to_string()));
         }
         drop(v);
         let r = self.ask(code);

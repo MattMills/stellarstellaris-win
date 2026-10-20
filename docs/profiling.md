@@ -616,3 +616,21 @@ reading commands between its slices as well would take that away (the simulation
 pipeline: the UI thread builds the scene of an input at its next period (up to 8.3 ms after the job),
 the render thread draws it at its next frame (up to 8.3 ms more); a scene built at once after an
 input job would take up to 8 ms off every click.
+
+**Fix 10: a new fleet's, ship's or planet's data not waited for while the clock runs**
+(clock.rs `PENDING`, `Clock::query_view`). Each fleet's, ship's and planet's data is a query of its
+own (`fd.fleet(ID)`, `fd.ship_view(ID)`, the planet's `data`, the combat check of a selected fleet),
+so `query_view`'s "the last answer while the clock runs" did not cover the first click on each: its
+first answer was waited for, a day's length. Measured one after the other in one process, each a new
+id (1600x900, NVK, the window's way), the frame of the click: paused 5 to 30 ms each (a new planet's
+composed portrait up to 45); the clock running 0.8 to 2.2 s each (a fleet: two queries waited for,
+the combat check and its data, 2,157 ms; a ship: 941 ms). In the window (`set_async_commands`) a
+first answer is now asked for and not waited for while the clock runs or a command is on its way:
+`query_view` returns `PENDING` and each caller shows what it can until the answer comes (the planet
+view its frame and name, the fleet windows nothing, the designer nothing, the combat check "not in
+combat"), then the windows are laid out again (`answers_arrived`). Paused, and in the command
+protocol, the first answer is waited for as before. The clock running, a new fleet or ship now costs
+5 to 23 ms in all, its longest frame 13 ms (the window drawn when its data comes, a day later at
+most: under a second at Normal). The textures are prepared by file, not by window instance
+(sections 10 and 11): a ship whose textures no run noted yet decodes them on first sight, a few ms
+each, as measured in the paused clicks above.

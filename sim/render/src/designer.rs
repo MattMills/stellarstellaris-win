@@ -129,6 +129,7 @@ pub fn layout(
     }
     if let Some(fleet) = combat {
         let data = world_view(map, &format!("local d = require('render.windows.combat').extract({gd:?}, {fleet}) return d and require('render.windows.designer').serialize(d) or ''"))
+            .or_else(|e| if crate::clock::is_pending(&e) { Ok(String::new()) } else { Err(e) })
             .map_err(|e| format!("render.windows.combat: {e}"))?;
         if !data.is_empty() {
             let read = || -> mlua::Result<Vec<GuiItem>> {
@@ -159,7 +160,12 @@ pub fn layout(
     let cached = if sim { None } else { DATA.lock().unwrap().clone() };
     let data = match cached {
         Some(d) => d,
-        None if sim => world_view(map, &format!("return require('render.windows.designer_commands').data({gd:?})")).map_err(|e| format!("render.windows.designer: {e}"))?,
+        None if sim => match world_view(map, &format!("return require('render.windows.designer_commands').data({gd:?})")) {
+            Ok(d) => d,
+            // (on its way: the designer drawn when it comes)
+            Err(e) if crate::clock::is_pending(&e) => return Ok((items, HashMap::new())),
+            Err(e) => return Err(format!("render.windows.designer: {e}")),
+        },
         None => {
             let _s = crate::prof::span("designer: its data (the simulation)");
             let d = world_eval(map, &format!("return require('render.windows.designer_commands').data({gd:?})")).map_err(|e| format!("render.windows.designer: {e}"))?;
