@@ -410,7 +410,12 @@ impl App {
         if let (false, Some(clock)) = (m.has_world(), m.clock.as_ref()) {
             let code = format!("local fd = require('render.windows.fleet_data') {code}");
             let generation = m.snapshot.as_ref().map_or(0, |s| s.generation);
-            return clock.query_view(&code, generation).map_err(|e| format!("render.windows.fleet_data (simulation): {e}"));
+            return match clock.query_view(&code, generation) {
+                Ok(s) => Ok(s),
+                // (on its way: the windows without their data until it comes)
+                Err(e) if crate::clock::is_pending(&e) => Ok("return {}".to_string()),
+                Err(e) => Err(format!("render.windows.fleet_data (simulation): {e}")),
+            };
         }
         self.fleet_world_query(code)
     }
