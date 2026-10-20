@@ -634,3 +634,74 @@ protocol, the first answer is waited for as before. The clock running, a new fle
 most: under a second at Normal). The textures are prepared by file, not by window instance
 (sections 10 and 11): a ship whose textures no run noted yet decodes them on first sight, a few ms
 each, as measured in the paused clicks above.
+
+## 13. The textures the game can show, read ahead and kept compressed
+
+**What the game can show** (`lua/render/texture_set.lua`, `src/texset.rs`; the protocol's
+`textures census [PATH]`): the textures of every ship design's frame, sections and turrets (as
+render.system makes a design's model), every planet's and star's entity (its class and variant), the
+portraits of the species present, the worlds' skies, reflections and colour corrections
+(gfx/worldgfx), and every sprite of the GUI's .gfx files; the entities resolved to their textures by
+the models' index (models.rs). In the 2210.01.01 game:
+
+| set | files | on the GPU, compressed as the files are | decoded RGBA with mips (the renderer's way before) |
+|---|---:|---:|---:|
+| the worlds (3 reflection cubes, 5 sky cubes, their colour corrections) | 23 | 126 MB | 749 MB |
+| planets and stars (76 entities) | 231 | 546 MB | 2,382 MB |
+| portraits (71 entities) | 381 | 203 MB | 549 MB |
+| ships of the player's culture | 57 | 141 MB | 637 MB |
+| ships of the other cultures present | 551 | 1,291 MB | 5,684 MB |
+| the GUI (95% of it stored uncompressed) | 6,901 | 613 MB | 833 MB |
+| all, each once | 8,121 | 2.8 GB | 10.1 GB |
+
+The whole install is 17 GB of DDS (15 GB of it gfx/models: every species' and culture's), none of
+which needs reading but this. The models' and worlds' textures are BC1, BC3 (and a few BC2) in their
+files, with their mips: a GPU takes them as they are.
+
+**Fix 11: kept compressed.** The device asks for TEXTURE_COMPRESSION_BC where the adapter has it
+(every desktop GPU: DX12, Vulkan; STELLAR_BC=0 turns it off). A model's texture (gfx/models) and a
+cube map in BC1, BC2, BC3 or BC7 whose size is a multiple of 4 is read as its file has it
+(`dds::load_compressed`, `load_cube_compressed`): no decode, no mip chain made on the CPU; the image
+the scene keeps is a placeholder (its size, no pixels) whose levels the renderer uploads as they are
+(`Renderer::texture_compressed`, `cube`), then frees (read from the file again if wanted again).
+The GUI's, the flags' and the composed portraits' sources are decoded as before (their pixels are
+read on the CPU). Read when used, it already gives: the designer's first upload 201 -> 48 ms, its
+ships' textures read 51 -> 5 ms; a first system view 580 + 774 ms -> 102 + 175 (scene + upload).
+
+**Fix 12: read ahead at a load.** `App::warm` lists the textures the game can show (0.2 to 0.3 s)
+and the prepare workers read them after the windows' manifest, in this order: the worlds', the
+planets' and stars', the portraits', the player's culture's ships', the other ships'; compressed
+where they can be, and pinned on the GPU by the render thread (section 11) within STELLAR_PIN_MB:
+1,024 MB by default, a mainstream 4 GB GPU's quarter (a budget for the GPUs the game is played on,
+not for this machine's 11 GB), the compressed textures counted as their blocks. The workers stay at
+most STELLAR_PREPARE_AHEAD_MB (128) ahead of the pinning, so what is read is freed as it goes up.
+`Map::warm` also reads the particle effects now (a star's first system view read them: 338 ms).
+STELLAR_PRELOAD=0 turns the list off.
+
+The first frames (scene + upload, ms), the 2210 game, NVK, a process each:
+
+| | decoded, read when used | compressed, read when used | compressed and read ahead |
+|---|---:|---:|---:|
+| a system entered first (100) | 580 + 774 | 102 + 175 | 15 + 16 |
+| another system (300) | 49 + 140 | 15 + 18 | 10 + 3 |
+| the designer | 13 + 5 | 14 + 5 | 14 + 5 |
+| the council | 25 + 10 | 27 + 13 | 25 + 16 |
+| a fleet (120) | 10 + 3 | 11 + 3 | 11 + 3 |
+
+(The windows were prepared already by the manifest, sections 10 and 11.) The process's peak: 3.9 GB
+decoded, 3.2 GB compressed, 4.0 GB compressed with 1 GB of textures read ahead and pinned; the load
+the same (7.6 to 8.3 s). The pictures differ by the GPU's block decoding and the files' own mips
+(the game's) where the renderer made its own: PSNR 51 to 84 dB, at most 0.06% of the pixels by more
+than 16 levels of 255 (the galaxy 0.10% of pixels differing, the system views about half their
+pixels by a level or two: the sky).
+
+**And a fix to Fix 8**: a texture pinned under the name of one the scene had uploaded already (its
+own copy, decoded before a worker finished) replaced it on the GPU and dropped the bind groups of the
+meshes drawn with it; the next frame without a new scene drew them without (`no entry found for
+key`, render.rs). A pin now leaves a texture already on the GPU as it is.
+
+**Not done**: the GUI's textures are stored uncompressed (6,515 of its 6,901 files); compressing
+them at a load would cost a CPU encoder's time; they are read when used or by the windows' manifest.
+The ships of the other cultures past the budget are read when used (compressed). The budget does
+not read the GPU's memory size (wgpu does not give it); STELLAR_PIN_MB sets it, an out-of-memory
+upload stops it.

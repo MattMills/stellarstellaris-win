@@ -2143,11 +2143,28 @@ impl App {
         if let Some(map) = self.map.as_mut() {
             map.warm();
         }
-        let _s = crate::prof::span("load: the windows' definitions");
+        let s = crate::prof::span("load: the windows' definitions");
         match self.runtime.lua.load("return require('render.warm').run(RENDER_GAME_DIR)").eval::<String>() {
             Ok(failed) if failed.is_empty() => {}
             Ok(failed) => self.log.push(format!("warm: {failed}")),
             Err(e) => self.log.push(format!("warm: {e}")),
+        }
+        drop(s);
+        // the textures the game can show (texset.rs: its planets and stars, its species' portraits,
+        // its ships, the player's culture's first), read ahead on the workers, compressed where the
+        // GPU takes them, and pinned on it within STELLAR_PIN_MB (prepare.rs)
+        let _s = crate::prof::span("load: the textures the game can show");
+        if std::env::var("STELLAR_PRELOAD").map_or(true, |v| v != "0") {
+            let gd = self.game_dir.clone();
+            if let Some(map) = self.map.as_mut() {
+                match crate::texset::used(map, &self.runtime, &gd, false) {
+                    Ok((list, _)) => {
+                        self.log.push(format!("textures: {} the game can show read ahead", list.len()));
+                        crate::prepare::add(&gd, list.into_iter().map(|(_, p)| p).collect());
+                    }
+                    Err(e) => self.log.push(format!("textures: {e}")),
+                }
+            }
         }
     }
 

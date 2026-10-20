@@ -18,7 +18,7 @@
 //! - **Pinned on the GPU**: each asset decoded is queued for the render thread, which uploads it
 //!   in its idle frames within its upload budget ([`next_pins`], `Renderer::pin`) under the name the
 //!   scenes give it, so that a window's first scene finds its textures on the GPU already (the
-//!   renderer keeps them for the session). At most STELLAR_PIN_MB (512; 0: none) pinned, in the
+//!   renderer keeps them for the session). At most STELLAR_PIN_MB (1024; 0: none) pinned, in the
 //!   manifest's order (the designer's first); none on a CPU adapter (lavapipe: a second copy in
 //!   memory); an upload the GPU refuses (out of memory) stops the pinning ([`pin_failed`]) and the
 //!   windows upload their textures themselves, from the decoded store, as without it.
@@ -55,13 +55,14 @@ struct Pins {
 fn pins() -> &'static Mutex<Pins> {
     static P: OnceLock<Mutex<Pins>> = OnceLock::new();
     P.get_or_init(|| {
-        let mb = std::env::var("STELLAR_PIN_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(512);
+        let mb = std::env::var("STELLAR_PIN_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(1024);
         Mutex::new(Pins { queue: Default::default(), bytes: 0, on: mb > 0, workers: 0, skipped: 0 })
     })
 }
 
 fn pin_budget() -> usize {
-    std::env::var("STELLAR_PIN_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(512) << 20
+    // (1 GB: a 4 GB GPU's quarter, compressed textures counted as their blocks)
+    std::env::var("STELLAR_PIN_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(1024) << 20
 }
 
 /// The assets to pin on the GPU now, about `budget` bytes of them (one at least): for the render
@@ -72,7 +73,7 @@ pub fn next_pins(budget: usize) -> Vec<(String, bool, Arc<Image>)> {
     let mut spent = 0;
     while p.on {
         let Some(front) = p.queue.front() else { break };
-        let bytes = front.3.rgba.len() * 4 / 3;
+        let bytes = gpu_cost(&front.3);
         // (one that does not fit the budget left: uploaded when used, the others pinned)
         if p.bytes + bytes > pin_budget() {
             let (_, name, _, _) = p.queue.pop_front().unwrap();
@@ -105,6 +106,19 @@ pub fn pin_failed(why: &str) {
         p.queue.clear();
         eprintln!("prepare: no more textures pinned on the GPU ({why}; {} MB pinned)", p.bytes >> 20);
     }
+}
+
+/// The bytes read and waiting to be pinned (0 once pinning is off).
+fn pins_waiting() -> usize {
+    let p = pins().lock().unwrap();
+    if !p.on {
+        return 0;
+    }
+    p.queue.iter().map(|e| gpu_cost(&e.3)).sum()
+}
+
+fn ahead_budget() -> usize {
+    std::env::var("STELLAR_PREPARE_AHEAD_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(128) << 20
 }
 
 /// The renderer's name of an asset of the store (`cube1:` is `cube:` there: scene::Textures).
@@ -252,26 +266,18 @@ pub fn dds_names(game_dir: &str) -> Arc<HashMap<String, String>> {
     n
 }
 
-/// An asset decoded as dds::Cache would (`PATH`, `cubeN:PATH`).
+/// An asset read as dds::Cache would (`PATH`, `cubeN:PATH`): compressed for the GPU where it may
+/// be, else decoded (dds.rs load_texture, load_cube_texture).
 fn decode(game_dir: &str, key: &str) -> Decoded {
-    let (levels, rel) = match key.strip_prefix("cube").and_then(|r| r.split_once(':')) {
-        Some((n, rel)) => (n.parse::<u32>().ok(), rel),
-        None => (None, key),
-    };
-    let image = match levels {
-        Some(levels) => {
-            let path = dds::find_case_insensitive(game_dir, rel).unwrap_or_else(|| format!("{game_dir}/{rel}"));
-            dds::load_cube(&path, levels)?
-        }
-        None => {
-            let tga_dds = rel.strip_suffix(".tga").map(|b| format!("{b}.dds"));
-            let path = dds::find_case_insensitive(game_dir, rel)
-                .or_else(|| tga_dds.as_ref().and_then(|d| dds::find_case_insensitive(game_dir, d)))
-                .unwrap_or_else(|| format!("{game_dir}/{rel}"));
-            dds::load(&path)?
-        }
-    };
-    Ok(Arc::new(image))
+    if let Some((levels, rel)) = key.strip_prefix("cube").and_then(|r| r.split_once(':')).and_then(|(n, rel)| Some((n.parse::<u32>().ok()?, rel))) {
+        let path = dds::find_case_insensitive(game_dir, rel).unwrap_or_else(|| format!("{game_dir}/{rel}"));
+        return dds::load_cube_texture(&path, levels);
+    }
+    let tga_dds = key.strip_suffix(".tga").map(|b| format!("{b}.dds"));
+    let path = dds::find_case_insensitive(game_dir, key)
+        .or_else(|| tga_dds.as_ref().and_then(|d| dds::find_case_insensitive(game_dir, d)))
+        .unwrap_or_else(|| format!("{game_dir}/{key}"));
+    dds::load_texture(key, &path)
 }
 
 /// Prepares, on worker threads, every window's recorded assets (the designer's first), and the
@@ -299,21 +305,60 @@ pub fn start(game_dir: &str) {
         }
         keys
     };
-    let queue = Arc::new(Mutex::new((keys.into_iter().enumerate(), 0usize)));
-    let gd = game_dir.to_string();
     {
-        let gd = gd.clone();
+        let gd = game_dir.to_string();
         let _ = std::thread::Builder::new().name("prepare".into()).spawn(move || {
             dds_names(&gd);
         });
     }
+    spawn(game_dir, keys.into_iter().enumerate().collect(), threads, budget);
+}
+
+/// More assets to prepare, after the manifest's (their pins after its): the textures the game can
+/// show (texture_set.lua, App::warm), in their order; those prepared already skipped.
+pub fn add(game_dir: &str, keys: Vec<String>) {
+    let threads = std::env::var("STELLAR_PREPARE_THREADS").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(3);
+    if threads == 0 || keys.is_empty() {
+        return;
+    }
+    let budget = std::env::var("STELLAR_PREPARE_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(256) << 20;
+    spawn(game_dir, keys.into_iter().enumerate().map(|(i, k)| (1_000_000 + i, k)).collect(), threads, budget);
+}
+
+/// What an image prepared holds in memory until a window takes it: its pixels decoded, or its
+/// compressed levels while they are not on the GPU (pinning off).
+fn ram_cost(img: &Arc<Image>) -> usize {
+    if !img.rgba.is_empty() {
+        return img.rgba.len();
+    }
+    if pins().lock().unwrap().on {
+        return 0;
+    }
+    dds::compressed_of(img).map_or(0, |c| c.bytes())
+}
+
+/// What an image takes on the GPU pinned: its compressed levels, or its pixels with their mips.
+fn gpu_cost(img: &Arc<Image>) -> usize {
+    if img.rgba.is_empty() {
+        dds::compressed_of(img).map_or(0, |c| c.bytes())
+    } else {
+        img.rgba.len() * 4 / 3
+    }
+}
+
+/// Worker threads preparing `keys` (index, key: the pins' order) within `budget` bytes of memory.
+fn spawn(game_dir: &str, keys: Vec<(usize, String)>, threads: usize, budget: usize) {
+    // (the keys left; the bytes kept in memory; the bytes queued for the GPU)
+    let queue = Arc::new(Mutex::new((keys.into_iter(), 0usize, 0usize)));
+    let gd = game_dir.to_string();
     pins().lock().unwrap().workers += threads;
     for i in 0..threads {
         let (queue, gd) = (queue.clone(), gd.clone());
         let _ = std::thread::Builder::new().name(format!("prepare-{i}")).spawn(move || loop {
             let (index, key) = {
                 let mut q = queue.lock().unwrap();
-                if q.1 >= budget {
+                // (the memory's budget spent, or the GPU's: what is left is read when a window uses it)
+                if q.1 >= budget || (pins().lock().unwrap().on && q.2 >= pin_budget()) {
                     pins().lock().unwrap().workers -= 1;
                     return;
                 }
@@ -325,6 +370,11 @@ pub fn start(game_dir: &str) {
                     }
                 }
             };
+            // (no more than STELLAR_PREPARE_AHEAD_MB (128) read and waiting for the render thread to pin
+            // it: what is pinned is freed here, so the memory stays near the GPU's use)
+            while pins_waiting() > ahead_budget() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
             // (already decoded on the UI thread, or by another load's workers: skipped)
             if store().lock().unwrap().contains_key(&key) {
                 continue;
@@ -336,7 +386,12 @@ pub fn start(game_dir: &str) {
                 if !key.starts_with("cube") {
                     crate::render::premip(img);
                 }
-                queue.lock().unwrap().1 += img.rgba.len();
+                {
+                    let (ram, gpu) = (ram_cost(img), gpu_cost(img));
+                    let mut q = queue.lock().unwrap();
+                    q.1 += ram;
+                    q.2 += gpu;
+                }
                 let mut p = pins().lock().unwrap();
                 if p.on {
                     // (in the manifest's order, whichever worker finished first)

@@ -103,6 +103,211 @@ pub fn load(path: &str) -> Result<Image, String> {
     Ok(Image { width: surface.width, height: surface.height, rgba, format })
 }
 
+/// A texture kept as its file has it, block-compressed (BC1, BC2, BC3, BC7: 4x4 blocks), its mip
+/// levels the file's: uploaded to the GPU as they are, never decoded on the CPU
+/// (docs/profiling.md section 13). Each level: its size and its blocks.
+pub struct Compressed {
+    pub format: wgpu::TextureFormat,
+    pub block_bytes: u32,
+    /// the file (its levels read again from it if they are wanted after an upload freed them)
+    pub path: String,
+    pub levels: Vec<(u32, u32, Vec<u8>)>,
+    /// a cube map (its levels' six faces one after the other), its levels at most this
+    pub cube: Option<u32>,
+}
+
+impl Compressed {
+    pub fn bytes(&self) -> usize {
+        self.levels.iter().map(|l| l.2.len()).sum()
+    }
+
+    /// Its levels: those kept, or read from the file again (after an upload freed them).
+    pub fn levels(&self) -> Option<std::borrow::Cow<'_, [(u32, u32, Vec<u8>)]>> {
+        if !self.levels.is_empty() {
+            return Some(std::borrow::Cow::Borrowed(&self.levels));
+        }
+        let info = crate::texset::dds_info(&self.path)?;
+        match self.cube {
+            Some(max) => read_cube_levels(&self.path, &info, max),
+            None => read_levels(&self.path, &info),
+        }
+        .map(std::borrow::Cow::Owned)
+    }
+}
+
+/// Whether the GPU takes block-compressed textures (the device was made with
+/// TEXTURE_COMPRESSION_BC: render.rs); set once the device is made.
+static BC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_bc(on: bool) {
+    BC.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn bc() -> bool {
+    BC.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The compressed levels of the placeholder images ([`load_compressed`]), by the image's address:
+/// the renderer uploads them; taken (freed here) once it has.
+static COMPRESSED: std::sync::Mutex<Option<HashMap<usize, (std::sync::Weak<Image>, std::sync::Arc<Compressed>)>>> = std::sync::Mutex::new(None);
+
+/// The compressed levels of `img` if it is a placeholder of [`load_compressed`] (its pixels on the
+/// GPU, none here).
+pub fn compressed_of(img: &std::sync::Arc<Image>) -> Option<std::sync::Arc<Compressed>> {
+    let key = std::sync::Arc::as_ptr(img) as usize;
+    let g = COMPRESSED.lock().unwrap();
+    let (w, c) = g.as_ref()?.get(&key)?;
+    w.upgrade().filter(|i| std::sync::Arc::ptr_eq(i, img)).map(|_| c.clone())
+}
+
+/// The compressed levels of `img` uploaded: their bytes freed here (the GPU has them; read from the
+/// file again if it is uploaded again).
+pub fn uploaded(img: &std::sync::Arc<Image>) {
+    if let Some(m) = COMPRESSED.lock().unwrap().as_mut() {
+        if let Some((_, c)) = m.get_mut(&(std::sync::Arc::as_ptr(img) as usize)) {
+            *c = std::sync::Arc::new(Compressed { format: c.format, block_bytes: c.block_bytes, path: c.path.clone(), levels: Vec::new(), cube: c.cube });
+        }
+    }
+}
+
+/// Whether a texture at `relative` may be kept compressed: a model's (gfx/models: ships, stations,
+/// planets, stars, portraits), which only the GPU reads; the GUI's and the composed images'
+/// sources are decoded (their pixels read on the CPU).
+pub fn compressible(relative: &str) -> bool {
+    bc() && relative.to_ascii_lowercase().starts_with("gfx/models/")
+}
+
+/// A texture read compressed as its file has it: a placeholder image (its size, no pixels: the
+/// format `BCn on the GPU`) whose levels the renderer uploads. None if the file is not BC1, BC2,
+/// BC3 or BC7, not a plain 2D texture, or its size is not a multiple of 4 (then decoded).
+pub fn load_compressed(path: &str) -> Option<std::sync::Arc<Image>> {
+    let info = crate::texset::dds_info(path)?;
+    let format = match info.format.as_str() {
+        "BC1" => wgpu::TextureFormat::Bc1RgbaUnorm,
+        "BC2" => wgpu::TextureFormat::Bc2RgbaUnorm,
+        "BC3" => wgpu::TextureFormat::Bc3RgbaUnorm,
+        "BC7" => wgpu::TextureFormat::Bc7RgbaUnorm,
+        _ => return None,
+    };
+    if info.cube || info.width % 4 != 0 || info.height % 4 != 0 || info.width == 0 || info.height == 0 {
+        return None;
+    }
+    let levels = read_levels(path, &info)?;
+    let img = std::sync::Arc::new(Image { width: info.width, height: info.height, rgba: Vec::new(), format: format!("{} on the GPU", info.format) });
+    let c = std::sync::Arc::new(Compressed { format, block_bytes: info.block, path: path.to_string(), levels, cube: None });
+    let mut g = COMPRESSED.lock().unwrap();
+    let m = g.get_or_insert_with(HashMap::new);
+    if m.len() > 256 {
+        m.retain(|_, (w, _)| w.strong_count() > 0);
+    }
+    m.insert(std::sync::Arc::as_ptr(&img) as usize, (std::sync::Arc::downgrade(&img), c));
+    Some(img)
+}
+
+/// A compressed file's levels: each one's size and blocks, as many as the file holds.
+fn read_levels(path: &str, info: &crate::texset::DdsInfo) -> Option<Vec<(u32, u32, Vec<u8>)>> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() < 128 {
+        return None;
+    }
+    // the header (128 bytes, and the DX10 one's 20 when it has one)
+    let dx10 = &bytes[84..88] == b"DX10";
+    let mut at = if dx10 { 148 } else { 128 };
+    let mut levels = Vec::new();
+    for m in 0..info.mips {
+        let (w, h) = ((info.width >> m).max(1), (info.height >> m).max(1));
+        let n = (w.div_ceil(4) * h.div_ceil(4) * info.block) as usize;
+        if at + n > bytes.len() {
+            break;
+        }
+        levels.push((w, h, bytes[at..at + n].to_vec()));
+        at += n;
+    }
+    (!levels.is_empty()).then_some(levels)
+}
+
+/// A cube map's levels read compressed (BC1-BC3, BC7, its size a multiple of 4): each level's six
+/// faces' blocks one after the other (the order of a 6-layer texture), at most `max_levels`, none
+/// under 4 pixels (as load_cube). The file holds each face with its whole mip chain in turn.
+fn read_cube_levels(path: &str, info: &crate::texset::DdsInfo, max_levels: u32) -> Option<Vec<(u32, u32, Vec<u8>)>> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() < 128 {
+        return None;
+    }
+    let dx10 = &bytes[84..88] == b"DX10";
+    let start = if dx10 { 148 } else { 128 };
+    let level_bytes = |m: u32| -> usize {
+        let (w, h) = ((info.width >> m).max(1), (info.height >> m).max(1));
+        (w.div_ceil(4) * h.div_ceil(4) * info.block) as usize
+    };
+    let face: usize = (0..info.mips).map(level_bytes).sum();
+    if start + face * 6 > bytes.len() {
+        return None;
+    }
+    let mut levels = Vec::new();
+    let mut offset = 0usize;
+    for m in 0..info.mips.min(max_levels.max(1)) {
+        let (w, h) = ((info.width >> m).max(1), (info.height >> m).max(1));
+        if w < 4 {
+            break;
+        }
+        let n = level_bytes(m);
+        let mut all = Vec::with_capacity(n * 6);
+        for f in 0..6 {
+            let at = start + f * face + offset;
+            all.extend_from_slice(&bytes[at..at + n]);
+        }
+        levels.push((w, h, all));
+        offset += n;
+    }
+    (!levels.is_empty()).then_some(levels)
+}
+
+/// A cube map read compressed as its file has it (see [`load_compressed`]): a placeholder image in
+/// load_cube's shape (its size, six faces stacked, no pixels) whose levels the renderer uploads.
+pub fn load_cube_compressed(path: &str, max_levels: u32) -> Option<std::sync::Arc<Image>> {
+    let info = crate::texset::dds_info(path)?;
+    let format = match info.format.as_str() {
+        "BC1" => wgpu::TextureFormat::Bc1RgbaUnorm,
+        "BC2" => wgpu::TextureFormat::Bc2RgbaUnorm,
+        "BC3" => wgpu::TextureFormat::Bc3RgbaUnorm,
+        "BC7" => wgpu::TextureFormat::Bc7RgbaUnorm,
+        _ => return None,
+    };
+    if !info.cube || info.width != info.height || info.width % 4 != 0 || info.width == 0 {
+        return None;
+    }
+    let levels = read_cube_levels(path, &info, max_levels)?;
+    let img = std::sync::Arc::new(Image { width: info.width, height: info.height * 6, rgba: Vec::new(), format: format!("cube {} on the GPU", info.format) });
+    let c = std::sync::Arc::new(Compressed { format, block_bytes: info.block, path: path.to_string(), levels, cube: Some(max_levels) });
+    let mut g = COMPRESSED.lock().unwrap();
+    let m = g.get_or_insert_with(HashMap::new);
+    m.insert(std::sync::Arc::as_ptr(&img) as usize, (std::sync::Arc::downgrade(&img), c));
+    Some(img)
+}
+
+/// A cube map at `path` as dds::Cache keeps it: compressed for the GPU when it can be, else
+/// decoded (load_cube).
+pub fn load_cube_texture(path: &str, levels: u32) -> Result<std::sync::Arc<Image>, String> {
+    if bc() {
+        if let Some(img) = load_cube_compressed(path, levels) {
+            return Ok(img);
+        }
+    }
+    load_cube(path, levels).map(std::sync::Arc::new)
+}
+
+/// A texture at `relative` (found at `path`) as dds::Cache keeps it: compressed for the GPU when it
+/// may be ([`compressible`], [`load_compressed`]), else decoded.
+pub fn load_texture(relative: &str, path: &str) -> Result<std::sync::Arc<Image>, String> {
+    if compressible(relative) {
+        if let Some(img) = load_compressed(path) {
+            return Ok(img);
+        }
+    }
+    load(path).map(std::sync::Arc::new)
+}
+
 /// Textures by path, loaded once; the formats seen, for reports.
 #[derive(Default)]
 pub struct Cache {
@@ -126,7 +331,7 @@ impl Cache {
                 None => {
                     let _s = crate::prof::span("texture: dds read, decode");
                     crate::prepare::record(&key);
-                    load(&path).map(std::sync::Arc::new)
+                    load_texture(&key, &path)
                 }
             };
             self.images.insert(key.clone(), r);
@@ -222,7 +427,7 @@ impl Cache {
                 None => {
                     let _s = crate::prof::span("texture: cube map read, decode");
                     crate::prepare::record(&key);
-                    load_cube(&path, levels).map(std::sync::Arc::new)
+                    load_cube_texture(&path, levels)
                 }
             };
             self.images.insert(key.clone(), r);

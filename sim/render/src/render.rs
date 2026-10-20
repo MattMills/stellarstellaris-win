@@ -264,13 +264,18 @@ pub async fn open_device(
         let info = adapter.get_info();
         let desc = wgpu::DeviceDescriptor {
             label: Some("stellar-render"),
-            required_features: wgpu::Features::empty(),
+            // the block-compressed textures where the adapter has them (all desktop GPUs): the models'
+            // textures uploaded as their files have them (dds.rs Compressed)
+            required_features: adapter.features() & wgpu::Features::TEXTURE_COMPRESSION_BC,
             // all the adapter has (no downlevel cap)
             required_limits: adapter.limits(),
             ..Default::default()
         };
         match adapter.request_device(&desc).await {
-            Ok((device, queue)) => return Ok((adapter, device, queue)),
+            Ok((device, queue)) => {
+                crate::dds::set_bc(device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC) && std::env::var("STELLAR_BC").map_or(true, |v| v != "0"));
+                return Ok((adapter, device, queue));
+            }
             Err(e) => {
                 eprintln!("{}: no device: {e}", info.name);
                 errors.push(format!("{}: {e}", info.name));
@@ -464,7 +469,7 @@ static PREMIPS: std::sync::Mutex<Option<HashMap<usize, Premip>>> = std::sync::Mu
 /// The mip chain of `img` made now, for its upload later on another thread (small images are left
 /// to the upload). Once per image.
 pub fn premip(img: &Arc<Image>) {
-    if (img.width as usize) * (img.height as usize) < 128 * 128 {
+    if (img.width as usize) * (img.height as usize) < 128 * 128 || img.rgba.is_empty() {
         return;
     }
     let key = Arc::as_ptr(img) as usize;
@@ -894,6 +899,11 @@ impl Renderer {
         if self.textures.get(name).is_some_and(|t| Arc::ptr_eq(&t.source, img)) {
             return;
         }
+        // a model's texture kept compressed (dds.rs load_compressed): its file's blocks and mips as they are
+        if let Some(c) = crate::dds::compressed_of(img) {
+            self.texture_compressed(device, queue, name, img, &c);
+            return;
+        }
         let t0 = std::time::Instant::now();
         let levels = mips_of(img);
         crate::prof(&format!("upload: {name} {}x{} mips", img.width, img.height), t0);
@@ -935,6 +945,11 @@ impl Renderer {
     /// name the scene gives it: kept for the session, a scene with the same image finds it there. An
     /// error if the GPU refused it (out of memory: nothing kept).
     pub fn pin(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, name: &str, cube: bool, img: &Arc<Image>) -> Result<(), String> {
+        // (a texture of that name on the GPU already, the scene's own copy: kept; replaced it would
+        // drop the bind groups of the meshes drawn with it, under a scene that does not upload again)
+        if (cube && self.cubes.contains_key(name)) || (!cube && self.textures.contains_key(name)) {
+            return Ok(());
+        }
         let _s = crate::prof::span("prepare: pinned on the GPU");
         let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         if cube {
@@ -955,6 +970,45 @@ impl Renderer {
         }
     }
 
+    /// A block-compressed texture (dds::Compressed) uploaded as it is: its levels' blocks, rows of
+    /// blocks (each level's size rounded up to the 4x4 block: the physical size).
+    fn texture_compressed(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, name: &str, img: &Arc<Image>, c: &crate::dds::Compressed) {
+        let t0 = std::time::Instant::now();
+        let Some(levels) = c.levels() else { return };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(name),
+            size: wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 },
+            mip_level_count: levels.len() as u32,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: c.format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for (level, (w, h, blocks)) in levels.iter().enumerate() {
+            let (bw, bh) = (w.div_ceil(4), h.div_ceil(4));
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: level as u32, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                blocks,
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bw * c.block_bytes), rows_per_image: Some(bh) },
+                wgpu::Extent3d { width: bw * 4, height: bh * 4, depth_or_array_layers: 1 },
+            );
+        }
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(name),
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        self.mesh_binds.retain(|k, _| k.0 != name && k.1 != name && k.2 != name);
+        self.textures.insert(name.to_string(), GpuTexture { source: img.clone(), _texture: texture, view, bind });
+        crate::dds::uploaded(img);
+        crate::prof(&format!("upload: {name} compressed"), t0);
+    }
+
     /// A cube map (dds::load_cube: six faces stacked) as a cube texture, one mip.
     fn cube(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, name: &str, img: &Arc<Image>) {
         if self.cubes.get(name).is_some_and(|c| Arc::ptr_eq(&c.0, img)) {
@@ -962,6 +1016,34 @@ impl Renderer {
         }
         let _s = crate::prof::span("upload: cube maps");
         self.mesh_binds.retain(|k, _| k.3 != name && k.4 != name);
+        // kept compressed (dds.rs load_cube_compressed): its file's blocks, six faces a level
+        if let Some(c) = crate::dds::compressed_of(img) {
+            let Some(levels) = c.levels() else { return };
+            let size = img.width;
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(name),
+                size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 6 },
+                mip_level_count: levels.len() as u32,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: c.format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            for (m, (w, h, blocks)) in levels.iter().enumerate() {
+                let (bw, bh) = (w.div_ceil(4), h.div_ceil(4));
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: m as u32, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    blocks,
+                    wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bw * c.block_bytes), rows_per_image: Some(bh) },
+                    wgpu::Extent3d { width: bw * 4, height: bh * 4, depth_or_array_layers: 6 },
+                );
+            }
+            let view = texture.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::Cube), ..Default::default() });
+            self.cubes.insert(name.to_string(), (img.clone(), texture, view));
+            crate::dds::uploaded(img);
+            return;
+        }
         let size = img.width;
         let levels = crate::dds::cube_levels(img);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
