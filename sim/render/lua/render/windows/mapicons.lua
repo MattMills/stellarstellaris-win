@@ -18,7 +18,7 @@
 --     starbase = { level, size, owner, map_icon, frame } | nil,
 --     null_starbase = bool,                  -- its starbases list names none that exists
 --     fleets = { { id, owner, class (EShipClass), power, ftl, station, icon_frame } },
---     planets = { { id, owner, colony, deposits = { { resource, amount, collector } } } },
+--     planets = { { id, owner, controller, colony, deposits = { { resource, amount, collector } } } },
 --     contact = bool,                        -- a first contact of the player's in progress here
 --   } ... },
 -- }
@@ -227,6 +227,7 @@ function mapicons.extract(game_dir, player)
             if p then
                 local planet = {
                     id = pid, owner = tonumber(world.field(p, "owner")) or -1,
+                    controller = tonumber(world.field(p, "controller")) or -1,
                     colony = world.field(p, "colony") ~= nil, deposits = {},
                 }
                 -- a colony in the system shows its owner's shield

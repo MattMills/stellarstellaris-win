@@ -45,9 +45,15 @@ the observer's intel level above 0 (here: the terra incognita's systems; all whe
 contracts there. All map labels keep their pixel size at every zoom **[V]**.
 
 - **The name** (UpdateName 0x3533f40) **[V]**: shown with +0x23; its colour (SetModColor):
-  white where the observer has fully surveyed the system (HasFullySurveyedSystem; here: every
-  planet in surveyed_deposit_holders; always when observing), grey 0.5 where not; restricted
+  white where the observer has fully surveyed the system, grey 0.5 where not; restricted
   systems red (1, 0.25, 0.25) / (0.75, 0, 0) (IsSystemRestricted, not read).
+  CCountry::HasFullySurveyedSystem (0x237acd0): true for the country's own system, else every
+  planet (and astral rift **[I: not read]**) surveyed; a planet is surveyed
+  (_HasSurveyedDepositHolder 0x237aea0) when its owner or controller is the country or it is in
+  surveyed_deposit_holders; always when observing. A new game's empires have their home system
+  surveyed: NGalaxyGenerator::CreateStarbaseWithDesign calls CCountry::AddSurveyedSystem (the
+  game's 2200.01.11 save lists the home system's planets 0 .. 12); the Lua generator writes that
+  list (engine/newgame/empires.lua).
 - **The owner** (UpdateOwner 0x35338d0) **[V]**: only with +0x23 and a valid controller. The
   shield (CGalacticObject +0x1376, CalcShouldDisplayShieldOnMap 0x25fc740): a starbase whose
   level has display_empire_shield (or is occupied), or a colony in the system; outposts show no
@@ -68,14 +74,26 @@ contracts there. All map labels keep their pixel size at every zoom **[V]**.
     read]**.
 - **Resources** (UpdateResourcesThreaded 0x3534410, UpdateResources 0x3534ba0) **[V]**:
   CGalacticObject::ListResourcesForMapmode sums the deposits of the system's planets the observer
-  has surveyed (colonised planets excluded) into three tables (CDeposit::ListResourcesForMapmode
-  0x2487640): collected by the observer's station, not collected, collected by another's. A
-  deposit is collected when the planet's `shipclass_orbital_station` fleet is of the deposit
-  type's station class or a starbase. By default the label shows the *uncollected* sums in white
-  ("§W"), resource by resource in common/strategic_resources' order, a resource with nothing
-  uncollected left out; the collected (green) and others' rows only when hovered or with a map
-  filter. Shown for unowned systems, the observer's own, and owners without communications
-  (NeedsBorderAccess); hidden zoomed out and at intel 0. Layout: `resources` box (-88, 35), 176
+  has surveyed (owned and controlled planets count as surveyed; colonies excluded) into three
+  tables (CDeposit::ListResourcesForMapmode 0x2487640): not collected, collected by the
+  observer's station, collected by another's. A deposit is collected when the planet's
+  `shipclass_orbital_station` fleet is of the deposit type's station class or a starbase.
+  Each resource (common/strategic_resources' order) is a `resource_icon_item` whose `num` is
+  built from colour codes:
+  - Normal: the uncollected sum in white (`§W`), where the observer may see it
+    (NeedsBorderAccess: unowned systems, its own, owners without communications); a resource
+    with nothing uncollected is left out.
+  - Details (`b00`: the system hovered, or CInGameIdler::IsMapFilterEnabled(1): the bottom bar's
+    Details Map Mode filter at "Detailed", or **Alt held** (`TOGGLE_MAPMODE_DETAILS_TEMP`, "Hold
+    Alt to toggle Details temporarily")): the three sums each on a line of its own, uncollected
+    white `§W`, the observer's green `§G`, others' yellow `§Y` (`§H` instead for hindered
+    deposits, CollectHinderedResources **[I: not done]**).
+  - Hidden (the filter's third state, IsMapFilterEnabledInternal(4), unless Details): none.
+  Here: mapicons.rs resource_rows and App::resource_mode (Alt from the controls' held keys, the
+  filter from mainbars.rs); the labels are laid out again when the mode changes. Checked against
+  the game on 2200.01.11 (the home system: `2 2 2`; Alt: `2 2 2` over green `10 10 3`) and on a
+  new game made here (Sol: white `2 2 2` energy, minerals, engineering; Alt: green `10 10` and
+  physics `3`). Hidden zoomed out and at intel 0. Layout: `resources` box (-88, 35), 176
   wide, centred; the items step 18 px (spacing 8 + the item counted 10 wide **[I: measured]**).
 - **Fleets** (UpdateSystemFleets 0x3536b40) **[V]**: within GALAXY_SHOW_FLEETS_ZOOM (2300 world,
   1150 map); the fleets of the classes military, constructor, colonizer, science, transport,

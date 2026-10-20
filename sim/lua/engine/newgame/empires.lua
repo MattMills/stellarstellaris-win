@@ -681,6 +681,20 @@ function empires.objects(ctx, inputs, r, game)
         gov:str("origin", e.origin)
         k:str("name_list", e.species.name_list)
         k:set("starting_system", e.system.id)
+        -- the home system surveyed: NGalaxyGenerator::CreateStarbaseWithDesign calls
+        -- CCountry::AddSurveyedSystem for the starbase's owner [V]; the game's 2200 saves list the
+        -- system's planets as { type = 0 id = N }, in id order
+        local surveyed = k:child("surveyed_deposit_holders")
+        local pids = {}
+        for _, pid in ipairs(e.system.planets or {}) do
+            pids[#pids + 1] = pid
+        end
+        table.sort(pids)
+        for _, pid in ipairs(pids) do
+            local h = surveyed:item()
+            h:set("type", 0)
+            h:set("id", pid)
+        end
         k:child("owned_leaders")
         k:list("owned_planets", { col_id })
         k:list("controlled_colonies", { col_id })
