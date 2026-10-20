@@ -417,6 +417,7 @@ impl Clock {
     }
 
     fn ask(&self, code: &str) -> Result<String, String> {
+        let _s = crate::prof::span("simulation: a query waited for");
         self.wait_ready()?;
         let (tx, rx) = mpsc::channel();
         self.tx.send(Cmd::Query(code.to_string(), tx)).map_err(|_| "the simulation's thread has ended")?;
@@ -464,6 +465,7 @@ impl Clock {
     /// A snapshot published now (with `wait`, waited for up to a second).
     pub fn publish(&self, wait: bool) {
         if wait && self.status().ready {
+            let _s = crate::prof::span("simulation: a snapshot waited for");
             let (tx, rx) = mpsc::channel();
             if self.tx.send(Cmd::Publish(Some(tx))).is_ok() {
                 let _ = rx.recv_timeout(Duration::from_secs(1));
@@ -475,6 +477,7 @@ impl Clock {
 
     pub fn watch(&self, system: Option<u32>, wait: bool) {
         if wait && self.status().ready {
+            let _s = crate::prof::span("simulation: a system's snapshot waited for");
             let (tx, rx) = mpsc::channel();
             if self.tx.send(Cmd::Watch(system, Some(tx))).is_ok() {
                 let _ = rx.recv_timeout(Duration::from_secs(1));
