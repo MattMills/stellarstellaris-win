@@ -1069,6 +1069,31 @@ impl Engine {
                 }
                 _ => Err("commands async|wait".into()),
             },
+            // `textures census [PATH]`: the textures the game can show (texset.rs, texture_set.lua), by
+            // what shows them: files, bytes on the disk, on the GPU compressed, decoded; the list to PATH
+            "textures" if a.first().copied() == Some("census") => {
+                let t0 = std::time::Instant::now();
+                let gd = self.app.game_dir.clone();
+                let map = self.app.map.as_mut().ok_or("no map loaded")?;
+                let (list, failed) = crate::texset::used(map, &self.app.runtime, &gd, true)?;
+                let mut sums: Vec<(String, crate::texset::Sum)> = Vec::new();
+                let mut all = crate::texset::Sum::default();
+                let mut text = String::new();
+                for (kind, p) in &list {
+                    if sums.last().is_none_or(|(k, _)| k != kind) {
+                        sums.push((kind.clone(), crate::texset::Sum::default()));
+                    }
+                    sums.last_mut().unwrap().1.add(&gd, p);
+                    all.add(&gd, p);
+                    text.push_str(&format!("{kind}\t{p}\n"));
+                }
+                let mut lines: Vec<String> = sums.iter().map(|(k, s)| s.line(k)).collect();
+                lines.push(all.line("all, each once"));
+                if let Some(path) = a.get(1) {
+                    std::fs::write(path, &text).map_err(|e| format!("{path}: {e}"))?;
+                }
+                Ok(Reply::ok(format!("textures census in {:.1} s ({failed} entities not resolved): {}", t0.elapsed().as_secs_f64(), lines.join(" | "))))
+            }
             // `buttons [PREFIX]`: the scene's buttons (their paths from PREFIX), each `PATH X Y ACTION`
             // at its centre: where a `click` goes
             "buttons" => {

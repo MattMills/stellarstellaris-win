@@ -60,6 +60,7 @@ mod particles;
 mod pdxmesh;
 mod prof;
 mod prepare;
+mod texset;
 mod planet;
 mod portraits;
 mod system;
@@ -415,6 +416,9 @@ impl Map {
         if let Err(e) = self.runtime.lua.load("require('render.models').portraits(RENDER_MODELS)").exec() {
             eprintln!("models: the portraits: {e}");
         }
+        // and the particle effects (a star's fire and flares: the first system view's)
+        let _s = crate::prof::span("load: the particle effects");
+        self.particles.ensure(&self.runtime, &self.game_dir);
     }
 
     /// A system's bodies and ships: the simulation's (when it sends that system), else read from

@@ -301,7 +301,9 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
     };
     // the top bar, as on the map
     let topbar = map.topbar(width, height)?;
+    let s = crate::prof::span("system: its data");
     let data = map.system_data(id)?;
+    drop(s);
     // the hyperlane exits (CNavigationArrowManager::InitForSystem): a neighbour by hyperlane the
     // player has discovered (CGalacticObject::IsDiscoveredBy; here: in its terra incognita's
     // cleared systems [I]), its direction from the system and its name
@@ -341,6 +343,7 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
     let mut first_star = true;
     let positions: HashMap<u32, (f32, f32)> = data.bodies.iter().map(|b| (b.id, (b.x, b.y))).collect();
     let mut missing = Vec::new();
+    let s = crate::prof::span("system: bodies");
     for b in &data.bodies {
         let at = V3(b.x, PLANE_Y, b.y);
         // the entity's scale in map units: the game's (x 10 world) over the space scale
@@ -358,7 +361,10 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
                 // its world transform: the position, the orientation, the scale (the entity's own
                 // scale is applied by models::draws), as the game's (`state planet ID`)
                 let m = M4::translation(at).mul(&body_rotation(b.id, b.x, b.y, b.star)).mul(&M4::scaling(scale));
-                meshes.extend(models::draws(&model, m, [1.0; 4], &b.look, tex, &mut cache, &gd));
+                {
+                    let _d = crate::prof::span("system: a body's draws (its textures)");
+                    meshes.extend(models::draws(&model, m, [1.0; 4], &b.look, tex, &mut cache, &gd));
+                }
                 // the entity's attachments (a black hole's rings and lens)
                 attachments(lib, rt, &gd, &model, m, &b.look, tex, &mut cache, &mut meshes, &mut missing, 0);
                 // its ring (PLANET_RING_ENTITY), at its place and scale, tilted by
@@ -374,6 +380,7 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
                 }
                 // its particle effects (a star's surface fire and flares), with the entity's transform
                 let em = m.mul(&M4::scaling(model.scale));
+                let _p = crate::prof::span("system: a body's particle effects");
                 for name in &model.particles {
                     match plib.effect(rt, &gd, name) {
                         Ok(e) => {
@@ -397,6 +404,8 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
         }
     }
 
+    drop(s);
+    let s = crate::prof::span("system: belts");
     // the asteroid belts (CAsteroidGraphics::CalculateAsteroidFields, 4.5.2 Linux)
     let mut asteroids = 0;
     for belt in &data.belts {
@@ -428,6 +437,8 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
         eprintln!("system {id}: {asteroids} asteroids in {} belts", data.belts.len());
     }
 
+    drop(s);
+    let s = crate::prof::span("system: ships");
     // ships
     let disc = tex.generated("@disc");
     let mut ships_drawn = 0;
@@ -554,6 +565,8 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
         eprintln!("system {id}: textures not loaded: {}", tex.missing.join("; "));
     }
 
+    drop(s);
+    let s = crate::prof::span("system: its world (post, sky, environment)");
     // the post effects of the system's star: the gfx/worldgfx world its star class names
     // (CStarClass::CalcClassKeyHash: common/star_classes `class`, sc_binary_10: a_star)
     let world = if data.world.is_empty() { "system_view".to_string() } else { data.world.clone() };
@@ -561,6 +574,7 @@ pub fn build(map: &mut Map, index: usize, camera: &OrbitCamera, width: u32, heig
     let post = world_gfx.post(tex, &mut cache, &gd);
     let sky = world_gfx.sky(tex, &mut cache, &gd, core_pct);
     let env = world_gfx.env(tex, &mut cache, &gd);
+    drop(s);
     // the star's light (gfx/lights: the world's system_light, colour x intensity) and the back light
     let lc = worldgfx::light(rt, &gd, &world_gfx.system_light).unwrap_or([1.3, 1.3, 1.3]);
     let light_colour = [lc[0], lc[1], lc[2], 1.0];

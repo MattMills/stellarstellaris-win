@@ -76,6 +76,12 @@ fn pair(t: &Table, k: &str) -> mlua::Result<(f32, f32)> {
 }
 
 impl Library {
+    /// gfx/particles read (once): what a star's first system view read in its frame (330 ms on
+    /// 10.5.0.24), read with the load (Map::warm).
+    pub fn ensure(&mut self, rt: &Runtime, game_dir: &str) {
+        let _ = self.effect(rt, game_dir, "");
+    }
+
     pub fn effect(&mut self, rt: &Runtime, game_dir: &str, name: &str) -> Result<Effect, String> {
         if !self.loaded {
             let t0 = std::time::Instant::now();
