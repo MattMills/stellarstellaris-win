@@ -217,7 +217,13 @@ fn normal_mapped(i: VsOut, n: vec3<f32>, nm: vec4<f32>) -> vec3<f32> {
     return normalize(t * nx + b * ny + n * nz);
 }
 
-// PixelPdxMeshStandard (gfx/FX/pdxmesh.shader) at time 0, by the effect's defines: IS_PLANET,
+// vUVAnimationTime (the entity's uv_animation_speed x the time) and vUVAnimationDir, for a part
+// not a ship's (ship3: x, y the direction, z the speed)
+fn uv_time() -> f32 {
+    return select(view.time * draw.ship3.z, 0.0, draw.extra.y > 1.5);
+}
+
+// PixelPdxMeshStandard (gfx/FX/pdxmesh.shader), by the effect's defines: IS_PLANET,
 // EMISSIVE, NO_PLANET_EMISSIVE, USE_FLOWMAP, EMISSIVE_FLOW, IS_CLOUDS, IS_RING. Not ported: the
 // city lights, the tiled point lights, ADD_COLOR (the empire colour), dissolves, Sensor.
 fn standard(i: VsOut) -> vec4<f32> {
@@ -225,14 +231,19 @@ fn standard(i: VsOut) -> vec4<f32> {
     let v = normalize(view.eye.xyz - i.world);
     let to_light = light_dir(i.world);
     var n_in = normalize(i.normal);
-    // every sample first (uniform control flow): the flow map's offset samples at time 0
-    // (frac(t) = 0: the first at the uv, the second at uv + flow x 0.5, blended 1: the second)
+    // every sample first (uniform control flow): USE_FLOWMAP's two samples along the flow
+    // (frac(t) and frac(t + 0.5) of it, blended by |2 frac(t) - 1|), else the uv moved by
+    // vUVAnimationDir x vUVAnimationTime
+    let ut = uv_time();
     let nm0 = textureSample(normal_tex, samp, i.uv);
     let props = textureSample(specular_tex, samp, i.uv);
     let flow = (nm0.xy - 0.5) * 2.0 * 0.05;
-    let d_plain = textureSample(diffuse_tex, samp, i.uv);
-    let d_flow = textureSample(diffuse_tex, samp, i.uv + flow * 0.5);
-    let nm_flow = textureSample(normal_tex, samp, i.uv + flow * 0.5);
+    let d_plain = textureSample(diffuse_tex, samp, i.uv + draw.ship3.xy * ut);
+    let fa = fract(ut);
+    let fb = fract(ut + 0.5);
+    let blend = abs(fa * 2.0 - 1.0);
+    let d_flow = mix(textureSample(diffuse_tex, samp, i.uv + flow * fa), textureSample(diffuse_tex, samp, i.uv + flow * fb), blend);
+    let nm_flow = mix(textureSample(normal_tex, samp, i.uv + flow * fa), textureSample(normal_tex, samp, i.uv + flow * fb), blend);
     let gloss = props.a;
     let env_level = (1.0 - gloss) * 8.0;
     var nm = nm0;
@@ -327,13 +338,43 @@ fn standard(i: VsOut) -> vec4<f32> {
 const F_USE_NORMALMAP_AS_ALPHA: u32 = 2048u;
 const F_BLACK_HOLE: u32 = 4096u;
 
-// PixelPdxMeshAdditive (gfx/FX/pdxmesh.shader) at time 0 (ANIMATE_UV: the uv as it is): the
-// diffuse x its alpha, the alpha x vBloomFactor, added by SRC_ALPHA (BlendStateAdditiveBlend).
-// Not ported: the flow map variant, the ship's PrimaryColor (ADD_COLOR, USE_EMPIRE_COLOR).
+// PixelPdxMeshAdditive (gfx/FX/pdxmesh.shader): ANIMATE_UV (with USE_FLOWMAP the flow map at
+// intensity vUVAnimationDir.x; RIPPLE_UV; else the uv moved along vUVAnimationDir, or up with
+// ANIMATE_UV_UP; the alpha the unmoved texel's unless ANIMATE_UV_ALPHA), the diffuse x its alpha,
+// the alpha x vBloomFactor, added by SRC_ALPHA (BlendStateAdditiveBlend). Not ported: the ship's
+// PrimaryColor (ADD_COLOR, USE_EMPIRE_COLOR).
+const F_ANIMATE_UV: u32 = 1024u;
+const F_ANIMATE_UV_ALPHA: u32 = 16384u;
+const F_ANIMATE_UV_UP: u32 = 524288u;
+const F_RIPPLE_UV: u32 = 1048576u;
+
 fn additive(i: VsOut) -> vec4<f32> {
     let flags = u32(draw.stdc.x + 0.5);
     let nm = textureSample(normal_tex, samp, i.uv);
-    var d = textureSample(diffuse_tex, samp, i.uv);
+    let ut = uv_time();
+    // every sample first (uniform control flow)
+    let d0 = textureSample(diffuse_tex, samp, i.uv);
+    let flow = (nm.xy - 0.5) * 2.0 * draw.ship3.x;
+    let fa = fract(ut);
+    let d_flow = mix(textureSample(diffuse_tex, samp, i.uv + flow * fa), textureSample(diffuse_tex, samp, i.uv + flow * fract(ut + 0.5)), abs(fa * 2.0 - 1.0));
+    let p = i.uv * 2.0 - vec2<f32>(1.0);
+    let len = max(length(p), 1e-4);
+    let d_ripple = textureSample(diffuse_tex, samp, i.uv + (p / len) * cos(len * 4.0 - ut * 8.0) * 0.03);
+    let dir = select(draw.ship3.xy, vec2<f32>(0.0, 1.0), has(flags, F_ANIMATE_UV_UP));
+    let d_moved = textureSample(diffuse_tex, samp, i.uv + dir * ut);
+    var d = d0;
+    if (has(flags, F_ANIMATE_UV)) {
+        if (has(flags, F_FLOWMAP)) {
+            d = d_flow;
+        } else if (has(flags, F_RIPPLE_UV)) {
+            d = d_ripple;
+        } else {
+            d = d_moved;
+        }
+        if (!has(flags, F_ANIMATE_UV_ALPHA)) {
+            d.a = d0.a;
+        }
+    }
     if (has(flags, F_USE_NORMALMAP_AS_ALPHA)) {
         d.a = d.a * nm.r;
     }

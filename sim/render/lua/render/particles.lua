@@ -75,6 +75,7 @@ local function subsystem(b)
         duration = tonumber(get(b, "duration")) or -1,
         size = numbers(get(b, "size")),
         rotation = numbers(get(b, "rotation")),
+        rotation_speed = numbers(get(b, "rotation_speed")),
         trail = get(b, "trail") == "yes",
     }
 end
