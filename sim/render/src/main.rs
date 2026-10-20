@@ -406,6 +406,13 @@ impl Map {
         let _s = crate::prof::span("load: the models' index");
         if let Err(e) = self.models.ensure(&self.runtime, &self.game_dir) {
             eprintln!("models: {e}");
+            return;
+        }
+        // and the portraits' meshes and entities (gfx/models/portraits, read when a portrait is
+        // first drawn: 90 to 110 ms of the council's, technology's, leaders' or the empire's
+        // first opening)
+        if let Err(e) = self.runtime.lua.load("require('render.models').portraits(RENDER_MODELS)").exec() {
+            eprintln!("models: the portraits: {e}");
         }
     }
 

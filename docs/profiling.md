@@ -34,9 +34,10 @@ left.
   byte for byte the same PNGs as before.
 - **First openings** (section 8): the first window with a portrait or a ship's view (the council,
   technology, leaders, the empire, the designer) took 0.7 to 1 s, 550 to 610 ms of it the models'
-  index (531 files of gfx/models parsed in the map's runtime). It is made with the load now (Fix 5):
-  those first openings take 156 to 178 ms (the designer 355 ms and its 200 ms upload), the load
-  0.5 to 0.6 s longer, behind the load screen.
+  index (531 files of gfx/models parsed in the map's runtime), and the fleet windows and species
+  130 to 175 ms of their own definitions. Both are read with the load now (Fixes 5 and 6): those
+  first openings take 16 to 65 ms (the designer 340 ms and its 200 ms upload), the load 1.1 s
+  longer, behind the load screen.
 - **The GPU of 10.5.0.24.** The baselines and fixes of sections 4 to 6 were measured on lavapipe
   (Vulkan on the CPU, forced in /etc/environment from 2026-10-16 to 2026-10-20): its frames are 35
   to 65 ms at 1280x720 whatever the CPU's part is, and its 24 `llvmpipe` threads hold about 99% of
@@ -351,10 +352,9 @@ in sim/render (with a test of the lazy `tips` and one of the spans).
   runs still waits for the simulation's day once (1.7 s in `running_fleet`'s opening frame). A
   window could open with its frame and fill in when the answer comes, as it does while the
   simulation loads.
-- **First openings** after Fix 5 (section 8): each window's own definitions, parsed once in its
-  module's cache on first use: the fleet windows' leader traits 140 ms, species 123 ms, the council,
-  technology and leaders views 50 to 90 ms, the portraits 100 ms, the designer's ships 255 ms and
-  their 2048x2048 textures' upload 200 ms.
+- **First openings** after Fixes 5 and 6 (section 8): the designer, 340 ms (its ships' meshes and
+  textures, which depend on the designs shown) and 196 ms of upload; the portrait views 50 to 65
+  ms; the rest 8 to 30 ms. And the load is 1.1 s longer for them.
 - **A relayout is still 5 to 10 ms** of windows' Lua (the planet view about 5 ms, the labels 3, the
   top bar 2.7) at every snapshot and window change, and the technology view's own layout 16 ms on
   average and up to 56 (the window's run): within a frame or two, not within 8.3 ms with the
@@ -370,7 +370,8 @@ in sim/render (with a test of the lazy `tips` and one of the spans).
 
 ## 8. First openings
 
-Measured each in a process of its own (`tools/profile/first_open.sh`: the save loaded, the galaxy shown, paused, then the window
+Measured each in a process of its own (`tools/profile/first_open.sh`: the save loaded, the galaxy
+shown, paused, then the window
 opened once: `prof reset`, the command, `prof report`, `bench 2`, `prof report`), so that no window
 opened before has made what it needs. The first frame's scene and upload, ms, before Fix 5:
 
@@ -406,8 +407,39 @@ map's runtime anew. The first frame, ms (scene, then upload):
 | empire | 720 + 9 | 156 + 9 | 763 + 9 | 161 + 9 |
 | designer | 921 + 196 | 355 + 199 | 946 + 197 | 361 + 204 |
 
-The load takes 0.5 to 0.6 s more (`load-sim` 6.1 s to 6.7 s, `loaded` 6.1 s to 6.6 s). What is
-left of the first openings is in section 7.
+The load takes 0.5 to 0.6 s more (`load-sim` 6.1 s to 6.7 s, `loaded` 6.1 s to 6.6 s).
+
+**Fix 6: the windows' definitions read with the load** (`App::warm`, `lua/render/warm.lua`), at
+the same places as Fix 5: in the UI thread's runtime, the caches the windows fill on first use:
+render.windows.empire_common's definitions of 18 directories of common/ (traits, leader classes,
+edicts, councilors, policies, species classes, governments, ethics and the rest the windows ask
+for), render.creator_rules' rules (the species view), render.portraits' database,
+render.scripted_loc's defaults, the technology view's definitions and the fleet windows' leader
+traits (`technology.definitions`, `fleet.traits`: the two module-local loaders exported for it);
+in the map's runtime, the portraits' meshes and entities (`models.portraits`). Each step is
+guarded: one that fails is logged (`warm: ...`) and left to its window. All 18 windows, each in a
+fresh process, `load-sim`, the first frame's scene in ms (the uploads unchanged):
+
+| window | after Fix 5 | after Fix 6 |
+|---|---:|---:|
+| a fleet selected | 175 | 24 |
+| fleet view | 133 | 24 |
+| fleet manager | 149 | 30 |
+| species | 97 | 16 |
+| leaders | 154 | 64 |
+| council | 185 | 61 |
+| technology | 164 | 51 |
+| empire | 149 | 55 |
+| traditions | 33 to 36 | 16 |
+| designer | 345 | 341 |
+| planet, starbase, situation, diplomacy, discoveries, market, expansion planner, claims | 7 to 31 | 7 to 29 |
+
+(Three runs each for starbase and traditions: 10 ms both before and after, 32 to 35 ms before and
+16 ms after.) The load screen's flow (`load-sim async`, `loaded`) gives the same. The load takes
+0.58 s more again: `load-sim` 6.6 s to 7.2 s on average over 18 loads. With Fix 5, the portrait
+and ship windows' first openings went from 0.7 to 1 s to 50 to 65 ms (the designer 0.9 s to 340 ms),
+for 1.1 s more of load. The windows' pictures are the same PNGs as master's (technology, council,
+species, leaders, the fleet manager, a selected fleet). What is left is in section 7.
 
 ## 9. On the GTX 1080 Ti (NVK)
 

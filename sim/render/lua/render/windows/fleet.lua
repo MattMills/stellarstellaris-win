@@ -1698,4 +1698,7 @@ function fleet.build(game_dir, db, screen, texture_size, loc, data)
     return ctx.items, ctx.report
 end
 
+-- (read with the load: render.warm)
+fleet.traits = traits
+
 return fleet

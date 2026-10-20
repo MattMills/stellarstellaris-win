@@ -909,4 +909,7 @@ function technology.command(what, area, tech)
     return "refused: unknown command " .. tostring(what)
 end
 
+-- (read with the load: render.warm)
+technology.definitions = definitions
+
 return technology

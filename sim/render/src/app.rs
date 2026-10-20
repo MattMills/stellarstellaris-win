@@ -2093,11 +2093,28 @@ impl App {
 
     pub fn load_as(&mut self, path: &str, sim: bool) -> Result<(), String> {
         let t0 = std::time::Instant::now();
-        let mut map = if sim { Map::load_sim(&self.game_dir, path)? } else { Map::load(&self.game_dir, path)? };
-        // what a window's first opening would make once, made with the load (Map::warm)
-        map.warm();
+        let map = if sim { Map::load_sim(&self.game_dir, path)? } else { Map::load(&self.game_dir, path)? };
         self.pending = None;
-        self.show_map(map, path, t0)
+        self.show_map(map, path, t0)?;
+        // what a window's first opening would make once, made with the load
+        self.warm();
+        Ok(())
+    }
+
+    /// What the windows' first openings would make once, made now (behind the load screen, or
+    /// with a load): the map's models' index (Map::warm) and the windows' definitions in this
+    /// runtime (render.warm: the leader traits, the species' rules, the portraits, the
+    /// technologies; docs/profiling.md section 8).
+    pub fn warm(&mut self) {
+        if let Some(map) = self.map.as_mut() {
+            map.warm();
+        }
+        let _s = crate::prof::span("load: the windows' definitions");
+        match self.runtime.lua.load("return require('render.warm').run(RENDER_GAME_DIR)").eval::<String>() {
+            Ok(failed) if failed.is_empty() => {}
+            Ok(failed) => self.log.push(format!("warm: {failed}")),
+            Err(e) => self.log.push(format!("warm: {e}")),
+        }
     }
 
     /// A new game started from `settings` (the setup's: newgame.rs): the load screen shown while
@@ -2225,9 +2242,7 @@ impl App {
                     }
                 }
                 // what a window's first opening would make once, made while the load screen is up
-                if let Some(map) = self.map.as_mut() {
-                    map.warm();
-                }
+                self.warm();
                 // DestroyLoadScreen: the game is shown
                 let p = self.pending.take().unwrap();
                 match &p.save {
