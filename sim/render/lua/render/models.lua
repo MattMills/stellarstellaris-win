@@ -117,7 +117,7 @@ end
 -- models.load(game_dir) -> { meshes = { [name] = def }, entities = { [name] = def }, files, seconds }
 function models.load(game_dir)
     local t0 = RUST.clock()
-    local db = { meshes = {}, entities = {}, files = 0, errors = 0, game_dir = game_dir }
+    local db = { meshes = {}, entities = {}, anims = {}, files = 0, errors = 0, game_dir = game_dir }
     models.scan(db, game_dir, false)
     db.seconds = RUST.clock() - t0
     return db
@@ -136,9 +136,18 @@ function models.scan(db, game_dir, portraits)
             find(tree, "pdxmesh", function(m)
                 local name = get(m, "name")
                 if name then
+                    -- its animations: `animation = { id = "idle" type = "base_star_idle_animation" }`
+                    local anims = {}
+                    each(m, "animation", function(a)
+                        local id, ty = get(a, "id"), get(a, "type")
+                        if id and ty then
+                            anims[id] = ty
+                        end
+                    end)
                     db.meshes[name] = {
                         name = name, file = (get(m, "file") or ""):gsub("\\", "/"),
                         scale = num(get(m, "scale")) or 1, settings = settings_of(m), source = f,
+                        animations = anims,
                     }
                 end
             end)
@@ -151,6 +160,19 @@ function models.scan(db, game_dir, portraits)
         local num = numbers(tree)
         if tree then
             db.files = db.files + 1
+            -- the animations' files: `animation = { name = "base_star_idle_animation" file =
+            -- "base_star_idle.anim" }` (a name beside the asset file)
+            find(tree, "animation", function(a)
+                local name, file = get(a, "name"), get(a, "file")
+                if name and file then
+                    file = file:gsub("\\", "/")
+                    if not file:find("/", 1, true) then
+                        file = (f:match("^(.*)/[^/]*$") or "") .. "/" .. file
+                    end
+                    db.anims = db.anims or {}
+                    db.anims[name] = file
+                end
+            end)
             find(tree, "entity", function(e)
                 local name = get(e, "name")
                 if name then
@@ -253,6 +275,9 @@ function models.describe(db, name)
         out.scale = m.scale or 1
     end
     out.file = m.file
+    -- the idle animation's file (the pdxmesh's `animation` with id "idle": anim.rs)
+    local idle = m.animations and m.animations.idle
+    out.idle_anim = idle and db.anims and db.anims[idle] or nil
     -- the directories a texture name of the settings is looked for in: the entity's file's, the
     -- pdxmesh's file's (then the mesh file's)
     out.dirs = {}

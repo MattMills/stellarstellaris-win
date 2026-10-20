@@ -23,7 +23,8 @@ struct View {
     // 1: the HDR scene of the post effects (textures and colours converted to linear, nothing
     // clamped; the alpha the emissive, for the bloom)
     linear: u32,
-    _pad0: u32,
+    // the time in seconds (the game's `Time`: the stars' lava; render.rs set_time)
+    time: f32,
     _pad1: u32,
     _pad2: u32,
     // the star's light (colour x intensity, gfx/lights) and the planets' back light
@@ -42,7 +43,8 @@ struct Draw {
     params: vec4<f32>,
     // rgb: the atmosphere's colour, a: its intensity
     atmosphere: vec4<f32>,
-    // x: the atmosphere's width, y: 1 a planet, 2 a ship
+    // x: the atmosphere's width, y: 1 a planet, 2 a ship, z: 1 a turning part (its rotation in
+    // ship0..2: the entity's idle animation, anim.rs)
     extra: vec4<f32>,
     // a star's lava colours: bright, hot stone, cold stone
     lava0: vec4<f32>,
@@ -86,15 +88,26 @@ fn vs_mesh(
     @location(2) tangent: vec4<f32>,
     @location(3) uv: vec2<f32>,
 ) -> VsOut {
-    let w = draw.model * vec4<f32>(pos, 1.0);
+    // a turning part: its joint's rotation first, as the game's skinning (the mesh's space)
+    var p = pos;
+    var n = normal;
+    var t = tangent.xyz;
+    if (draw.extra.z > 0.5) {
+        let r = mat3x3<f32>(draw.ship0.xyz, draw.ship1.xyz, draw.ship2.xyz);
+        p = r * p;
+        n = r * n;
+        t = r * t;
+    }
+    let w = draw.model * vec4<f32>(p, 1.0);
     var o: VsOut;
     o.pos = view.view_proj * w;
     o.world = w.xyz;
     // uniform scales only: the model's 3x3 keeps directions
-    o.normal = normalize((draw.model * vec4<f32>(normal, 0.0)).xyz);
-    o.tangent = vec4<f32>(normalize((draw.model * vec4<f32>(tangent.xyz, 0.0)).xyz + vec3<f32>(1e-6)), tangent.w);
+    o.normal = normalize((draw.model * vec4<f32>(n, 0.0)).xyz);
+    o.tangent = vec4<f32>(normalize((draw.model * vec4<f32>(t, 0.0)).xyz + vec3<f32>(1e-6)), tangent.w);
     o.uv = uv;
-    o.local = pos;
+    // (the skinned position: the stars' noise is sampled at it, so it stays while the surface turns)
+    o.local = p;
     return o;
 }
 
@@ -143,7 +156,8 @@ fn light_dir(world: vec3<f32>) -> vec3<f32> {
 
 fn star(i: VsOut) -> vec4<f32> {
     // PixelPdxMeshStar: the noise (the game samples the cube map LavaNoise at the direction
-    // three times, at the same direction: 3 x (noise - 0.5)), animated by time (0 here)
+    // three times, at the same direction: 3 x (noise - 0.5)), animated by time
+    // (sin((noise + Time x LAVA_ANIMATION_SPEED 0.08) x LAVA_FIELD_SIZE 10))
     // the direction: the star mesh's tangent is its position ("tangent == position" in the
     // game's code), here the model-space position; the cube sampled three times at the same
     // direction (v, v x 4, v x 8): 3 x (noise - 0.5)
@@ -151,7 +165,7 @@ fn star(i: VsOut) -> vec4<f32> {
     // the game loads the noise, lava and stone textures as sRGB (AddTexture_sRGB in
     // SetStarEntityCustomData): read linear
     let noise = 3.0 * (lin(textureSample(noise_cube, samp, dir).rgb).r - 0.5);
-    let animated = sin(noise * 10.0);
+    let animated = sin((noise + view.time * 0.08) * 10.0);
     let inv = (1.0 - animated) * 0.5;
     let inv2 = inv * inv;
     let lava_mask = clamp(-animated, 0.0, 1.0) * clamp(-animated, 0.0, 1.0);

@@ -38,6 +38,7 @@ macro_rules! eprintln {
 }
 
 mod console;
+mod anim;
 mod app;
 mod border;
 mod camera;

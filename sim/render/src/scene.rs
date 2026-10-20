@@ -217,11 +217,14 @@ pub struct MeshDraw {
     /// space) with w the lights' intensity, w of the second the rim's start and of the third its
     /// stop; the fourth: the ambient intensity, -, EmissiveRecolorCrunch, -
     pub ship: [[f32; 4]; 4],
+    /// the part's turn over time (its entity's idle animation: anim.rs), applied in the mesh's
+    /// space at each frame's time (render.rs set_time)
+    pub spin: Option<Arc<crate::anim::Spin>>,
 }
 
 impl MeshDraw {
     pub fn new(mesh: Arc<MeshData>, model: M4, textures: [usize; 3], shading: Shading, tint: [f32; 4]) -> MeshDraw {
-        MeshDraw { mesh, model, textures, shading, tint, params: [shading.number(), 1.6, 1.0, 0.12], look: Look::default(), cube: None, std: [0.0, 1.0, 0.0, 1.0], ship: [[0.0; 4]; 4] }
+        MeshDraw { mesh, model, textures, shading, tint, params: [shading.number(), 1.6, 1.0, 0.12], look: Look::default(), cube: None, std: [0.0, 1.0, 0.0, 1.0], ship: [[0.0; 4]; 4], spin: None }
     }
 }
 

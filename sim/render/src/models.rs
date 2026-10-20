@@ -25,6 +25,8 @@ pub struct Part {
     pub shading: Shading,
     /// the defines of its effect (gfx/FX/pdxmesh.shader: effects.rs bits)
     pub flags: u32,
+    /// its turn in the entity's idle animation (a part skinned wholly to a turning joint: anim.rs)
+    pub spin: Option<Arc<crate::anim::Spin>>,
 }
 
 #[derive(Clone)]
@@ -112,6 +114,8 @@ pub struct Library {
     /// mesh files read: path -> the mesh, or why not
     files: HashMap<String, Result<Arc<pdxmesh::Mesh>, String>>,
     models: HashMap<String, Result<Model, String>>,
+    /// animation files read: path -> the parsed asset, or none
+    anims: HashMap<String, Option<Arc<pdxmesh::Node>>>,
     pub summary: Option<String>,
     /// the .dds files of gfx/models by their name (lower case) -> their path in the game
     /// directory: where a texture is found when it is not beside its mesh or its definition
@@ -151,6 +155,19 @@ impl Library {
     fn dds_names(&mut self, game_dir: &str) -> std::sync::Arc<HashMap<String, String>> {
         // (walked once a process, on a worker at a load: prepare.rs)
         self.dds_names.get_or_insert_with(|| crate::prepare::dds_names(game_dir)).clone()
+    }
+
+    /// An animation file (gfx/models/**/*.anim), read once; none if it does not parse.
+    fn anim_file(&mut self, game_dir: &str, rel: &str) -> Option<Arc<pdxmesh::Node>> {
+        if !self.anims.contains_key(rel) {
+            let path = dds::find_case_insensitive(game_dir, rel).unwrap_or_else(|| format!("{game_dir}/{rel}"));
+            let node = std::fs::read(&path).ok().and_then(|d| pdxmesh::parse(&d).ok()).map(Arc::new);
+            if node.is_none() {
+                eprintln!("models: the animation {rel} did not read");
+            }
+            self.anims.insert(rel.to_string(), node);
+        }
+        self.anims[rel].clone()
     }
 
     fn mesh_file(&mut self, game_dir: &str, rel: &str) -> Result<Arc<pdxmesh::Mesh>, String> {
@@ -199,7 +216,9 @@ impl Library {
             Ok((file, scale, settings, attach))
         };
         let (file, scale, settings, attach) = read().map_err(|e| format!("render.models: {e}"))?;
+        let idle_anim: Option<String> = t.get::<Option<String>>("idle_anim").ok().flatten();
         drop(span);
+        let anim = idle_anim.as_deref().and_then(|a| self.anim_file(game_dir, a));
         let span = crate::prof::span("model: mesh file read, parsed");
         let mesh = self.mesh_file(game_dir, &file)?;
         drop(span);
@@ -269,7 +288,17 @@ impl Library {
                     }
                 }
                 let key = format!("{file}#{}#{k}", shape.name);
+                // its turn in the idle animation (a ship's part keeps its constants' slot: none)
+                let spin = match (&anim, &sm.skin) {
+                    (Some(a), Some(skin)) if part_kind(&shader) != 2.0 => crate::anim::part_spin(a, skin, &shape.skeleton).map(Arc::new),
+                    _ => None,
+                };
+                if let Some(sp) = &spin {
+                    let turn = sp.angles.iter().fold(0f32, |m, a| m.max(a.abs()));
+                    eprintln!("models: {name} {}: turns {:.0} degrees in its idle animation ({:.0} s)", shape.name, turn.to_degrees(), sp.angles.len() as f32 / sp.fps.max(1e-3));
+                }
                 parts.push(Part {
+                    spin,
                     shape: shape.name.clone(),
                     mesh: Arc::new(MeshData { key, vertices, indices: sm.indices.clone() }),
                     textures,
@@ -363,6 +392,7 @@ pub fn draws(model: &Model, transform: M4, tint: [f32; 4], look: &Look, tex: &mu
             // PixelPdxMeshStandard's: the defines, vBloomFactor, (CubemapIntensity: the
             // scene's), AtmosphereColor.a (a class with an atmosphere colour)
             d.std = [p.flags as f32, model.bloom_factor, 0.0, look.colour_alpha];
+            d.spin = p.spin.clone();
             d
         })
         .collect()

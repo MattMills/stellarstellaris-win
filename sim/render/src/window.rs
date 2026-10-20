@@ -257,6 +257,7 @@ impl Win {
         let span = crate::prof::span("render: draw, submit, present");
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = s.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+        s.renderer.set_time(&s.queue, crate::render::clock_seconds());
         s.renderer.draw(&mut encoder, &view, ALL);
         s.in_flight = Some(s.queue.submit([encoder.finish()]));
         s.window.pre_present_notify();
