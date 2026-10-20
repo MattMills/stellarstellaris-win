@@ -264,6 +264,8 @@ pub fn files_runtime() -> Result<Runtime, String> {
     let package: Table = runtime.lua.globals().get("package").map_err(|e| e.to_string())?;
     let old: String = package.get("path").map_err(|e| e.to_string())?;
     package.set("path", format!("{path};{old}")).map_err(|e| e.to_string())?;
+    // STELLAR_LUA_PROF_RUNTIME=map: the sampler here (prof.rs)
+    crate::prof::lua_start(&runtime, "map");
     Ok(runtime)
 }
 

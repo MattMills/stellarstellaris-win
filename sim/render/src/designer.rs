@@ -157,6 +157,7 @@ pub fn layout(
     let data = match cached {
         Some(d) => d,
         None => {
+            let _s = crate::prof::span("designer: its data (the simulation)");
             let d = world_eval(map, &format!("return require('render.windows.designer_commands').data({gd:?})")).map_err(|e| format!("render.windows.designer: {e}"))?;
             *DATA.lock().unwrap() = Some(d.clone());
             d
@@ -168,6 +169,7 @@ pub fn layout(
             Some(id) => format!("{{ design = {id} }}"),
             None => "{}".into(),
         };
+        let span = crate::prof::span("designer: layout (lua)");
         let t: Table = gui_rt
             .lua
             .load(format!(
@@ -178,6 +180,7 @@ pub fn layout(
             ))
             .eval()?;
         items.extend(crate::gui::read_items(t.get("items")?)?);
+        drop(span);
         let mut by_id: HashMap<i64, ShipModel> = HashMap::new();
         for p in t.get::<Table>("models")?.pairs::<i64, Table>() {
             let (id, m) = p?;
@@ -192,6 +195,7 @@ pub fn layout(
                  local m = require('render.system').stage_model({gd:?}, load('return ' .. {stage:?})(), '', {country})
                  return m and require('render.windows.designer').serialize(m) or ''"
             );
+            let _s = crate::prof::span("designer: stage model (the simulation)");
             let m = world_view(map, &code).map_err(mlua::Error::RuntimeError)?;
             if !m.is_empty() {
                 gui_rt.lua.globals().set("RENDER_DESIGNER_MODEL", m)?;
@@ -383,14 +387,24 @@ pub fn turn(dx: f32, dy: f32) {
 /// of it and the ship designer world's lights (gfx/worldgfx/ship_designer.txt) [I: the camera,
 /// by the game's frame: the ship's side, its bow to the right, a little from above].
 pub fn fill_insets(scene: &mut Scene, models: &HashMap<String, ShipModel>, lib: &mut models::Library, rt: &Runtime, game_dir: &str, tex: &mut Textures, cache: &mut Cache) {
-    if scene.insets.is_empty() || models.is_empty() || lib.ensure(rt, game_dir).is_err() {
+    if scene.insets.is_empty() || models.is_empty() {
         return;
     }
+    let s = crate::prof::span("insets: the models' index");
+    if lib.ensure(rt, game_dir).is_err() {
+        return;
+    }
+    drop(s);
+    let _s = crate::prof::span("insets: designer's ships");
+    let s = crate::prof::span("insets: the designer's world (worldgfx)");
     let world = crate::worldgfx::read(rt, game_dir, "ship_designer").ok();
+    drop(s);
     for inset in scene.insets.iter_mut() {
         let Some(m) = models.get(&inset.path) else { continue };
         let (w, h) = ((inset.rect[2] - inset.rect[0]).max(1.0), (inset.rect[3] - inset.rect[1]).max(1.0));
+        let s = crate::prof::span("insets: a ship's meshes");
         let (meshes, radius, centre) = ship_meshes(lib, rt, game_dir, m, tex, cache);
+        drop(s);
         // a hull with nothing drawn (no section yet): the view's sky alone, at a ship's distance
         let ok = |v: V3| v.0.is_finite() && v.1.is_finite() && v.2.is_finite();
         let (radius, centre) = if meshes.is_empty() || !radius.is_finite() || radius <= 0.01 || !ok(centre) { (10.0, V3(0.0, 0.0, 0.0)) } else { (radius, centre) };
@@ -421,6 +435,7 @@ pub fn fill_insets(scene: &mut Scene, models: &HashMap<String, ShipModel>, lib: 
         inset.light = [l.0, l.1, l.2, 0.0];
         if let Some(wg) = &world {
             inset.cam_lights = wg.ship_lights.map(|c| [c[0].max(0.0).powf(4.84), c[1].max(0.0).powf(4.84), c[2].max(0.0).powf(4.84), 1.0]);
+            let _s = crate::prof::span("insets: environment map, sky");
             inset.env = wg.env(tex, cache, game_dir);
             // its galaxy_background (gfx/map/sky_rim.dds) behind the ship (the designer's view)
             if main {

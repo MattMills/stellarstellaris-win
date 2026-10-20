@@ -31,10 +31,18 @@ const MODEL: &str = "/model|";
 
 /// Fills the scene's portrait insets (those whose path has [`MARK`]) and model insets ([`MODEL`]).
 pub fn fill_insets(scene: &mut Scene, lib: &mut models::Library, rt: &Runtime, game_dir: &str, tex: &mut Textures, cache: &mut Cache) {
-    if !scene.insets.iter().any(|i| i.path.contains(MARK) || i.path.contains(MODEL)) || lib.ensure(rt, game_dir).is_err() {
+    if !scene.insets.iter().any(|i| i.path.contains(MARK) || i.path.contains(MODEL)) {
         return;
     }
+    let s = crate::prof::span("insets: the models' index");
+    if lib.ensure(rt, game_dir).is_err() {
+        return;
+    }
+    drop(s);
+    let s = crate::prof::span("insets: portraits' models");
     fill_models(scene, lib, rt, game_dir, tex, cache);
+    drop(s);
+    let _s = crate::prof::span("insets: portraits");
     for inset in scene.insets.iter_mut() {
         let Some(at) = inset.path.find(MARK) else { continue };
         let parts: Vec<&str> = inset.path[at + MARK.len()..].split('|').collect();

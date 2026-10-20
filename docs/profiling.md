@@ -32,9 +32,19 @@ left.
   running, from 0.75 to 2.8 s a frame with the planet, fleet or starbase window to 0.3 to 3.5 ms.
   The frames are unchanged: the galaxy, a selected fleet, the planet view and four tooltips are
   byte for byte the same PNGs as before.
-- **On 10.5.0.24 the GPU is lavapipe**, Vulkan on the CPU: its frames are 35 to 65 ms at 1280x720
-  whatever the CPU's part is, and its 24 `llvmpipe` threads hold about 99% of the process's CPU
-  samples. Judge the CPU's part, not the frame's total, there.
+- **First openings** (section 8): the first window with a portrait or a ship's view (the council,
+  technology, leaders, the empire, the designer) took 0.7 to 1 s, 550 to 610 ms of it the models'
+  index (531 files of gfx/models parsed in the map's runtime), and the fleet windows and species
+  130 to 175 ms of their own definitions. Both are read with the load now (Fixes 5 and 6), and the
+  textures each window used before are decoded on worker threads while the save loads (Fix 7,
+  section 10) and pinned on the GPU ahead (Fix 8, section 11): every first opening takes 7 to 29 ms
+  (the designer 14 ms and 5 ms of upload, from 921 + 196), the load 1.2 s longer, behind the load
+  screen, the process up to 241 MB larger and 266 MB of textures held on the GPU.
+- **The GPU of 10.5.0.24.** The baselines and fixes of sections 4 to 6 were measured on lavapipe
+  (Vulkan on the CPU, forced in /etc/environment from 2026-10-16 to 2026-10-20): its frames are 35
+  to 65 ms at 1280x720 whatever the CPU's part is, and its 24 `llvmpipe` threads hold about 99% of
+  the process's CPU samples. The renderers there use the GTX 1080 Ti through NVK again since
+  2026-10-20 (section 9): 13 to 18 ms a frame, the CPU's part the same.
 
 ## 1. How to profile
 
@@ -87,11 +97,14 @@ frame's parts, each texture's upload).
 millisecond, `STELLAR_LUA_PROF_DEPTH` the stacks' depth, 8). LuaJIT's `jit.profile` in the UI
 thread's runtime (render.windows, render.gui, the names, the tooltips), the samples by function,
 by line, by stack and by the VM's state (N compiled, I interpreted, C in C, G the collector, J the
-compiler), in `prof report`. Its limits: one Lua state per process (the profiler is the process's
-timer), so the map's runtime (portraits, models, the designer's insets) and the simulation's are
-not in it; and the timer counts the whole process's CPU, so a tick that came while the state ran
-no Lua lands on its next instruction: each callback counts once, not its ticks. The simulation
-has its own (`STELLAR_SLICE_PROFILE`, docs/frame_timing.md).
+compiler), in `prof report`. `STELLAR_LUA_PROF_RUNTIME=map` samples the map's runtime instead
+(portraits, the models' index, the designer's insets). Its limits: one Lua state per process (the
+profiler is the process's timer), so the other runtime and the simulation's are not in it; the
+timer counts the whole process's CPU, so a tick that came while the state ran no Lua lands on its
+next instruction: each callback counts once, not its ticks; and once in about 40 runs the process
+spun in the profiler itself (gdb: `lj_dispatch_profile` on the callback's thread, under the
+patched LuaJIT's hooks): kill it and run again, and keep it off for long runs. The simulation has
+its own (`STELLAR_SLICE_PROFILE`, docs/frame_timing.md).
 
 **perf** (`tools/profile/perf.sh BINARY RUN_DIR SETUP.txt "bench ..." [SECONDS]`): the renderer
 serves the protocol, SETUP's commands load and open a window, and perf attaches for SECONDS of the
@@ -341,9 +354,11 @@ in sim/render (with a test of the lazy `tips` and one of the spans).
   runs still waits for the simulation's day once (1.7 s in `running_fleet`'s opening frame). A
   window could open with its frame and fill in when the answer comes, as it does while the
   simulation loads.
-- **First openings**: the designer (about 1 s of scene, 182 ms of upload), the technology view's
-  portraits (650 ms when first), the fleet view (160 ms). Loading those definitions with the
-  map (or on a worker) would take them out of the click.
+- **First openings** after Fixes 5 to 8 (sections 8, 10, 11): every window's first frame 7 to 29
+  ms of scene, the designer's 14 ms and 5 ms of upload; a window opened for the first time ever
+  (not in the manifest yet) still decodes and uploads its textures itself, and so do the textures
+  composed at run time (portraits, flags: 8 to 13 ms of upload). The load is 1.2 s longer, the
+  process up to 241 MB larger and the GPU 266 MB fuller for them.
 - **A relayout is still 5 to 10 ms** of windows' Lua (the planet view about 5 ms, the labels 3, the
   top bar 2.7) at every snapshot and window change, and the technology view's own layout 16 ms on
   average and up to 56 (the window's run): within a frame or two, not within 8.3 ms with the
@@ -356,3 +371,176 @@ in sim/render (with a test of the lazy `tips` and one of the spans).
   cheap, but the only window that does.
 - **GPU timestamps** on a real GPU (section 1), and these runs on the Windows laptop (its CPU has a
   third of these cores; the slices and the UI thread compete there).
+
+## 8. First openings
+
+Measured each in a process of its own (`tools/profile/first_open.sh`: the save loaded, the galaxy
+shown, paused, then the window
+opened once: `prof reset`, the command, `prof report`, `bench 2`, `prof report`), so that no window
+opened before has made what it needs. The first frame's scene and upload, ms, before Fix 5:
+
+| window | first frame | of which |
+|---|---:|---|
+| designer | 1,096 | the models' index 610, the designer's ships 255, its layout 97, upload 197 |
+| council | 794 | the models' index (in `scene: insets, trackers` 679), the view 87 |
+| technology | 794 | the models' index 575, the portraits 101, the view 65 |
+| leaders | 751 | the models' index (in 656), the view 66 |
+| empire | 720 | the models' index (in 651), the view 48 |
+| fleet manager | 164 | the view 141 (leader traits parsed: `source.lua:expand`) |
+| a fleet selected, the fleet view | 156, 157 | `windows: fleet windows` 141 (`fleet.lua:traits`) |
+| species | 143 | the view 123 (`empire_common.defs`: the species' and governments' files parsed) |
+| traditions, planet, situation, discoveries, diplomacy, market, expansion planner, starbase, claims | 12 to 43 | |
+
+**The models' index.** render.models.load parses gfx/models (531 files, 7,953 entities, 2,821
+pdxmeshes) with the Lua pdxscript lexer: 0.3 to 0.6 s, about half the samples the lexer
+(`pdxscript.lua:lex`) and 39% the collector (`STELLAR_LUA_PROF_RUNTIME=map`). The simulation's
+thread makes its own for the systems' ships; the map's runtime (galaxy::files_runtime, made anew
+with the map) made its own when a scene first needed a model: the first window with a portrait or
+a ship's view, or the first system view.
+
+**Fix 5: the models' index made with the load** (`Map::warm`, main.rs): behind the load screen
+(App::loading_step, before DestroyLoadScreen: the window's Load, Continue and new games), in
+`App::load_as` (the protocol's `load` and `load-sim`, `--map`), and where `Map::sync` makes the
+map's runtime anew. The first frame, ms (scene, then upload):
+
+| window | load-sim: before | after | the load screen's flow: before | after |
+|---|---:|---:|---:|---:|
+| technology | 726 + 4 | 169 + 4 | 767 + 4 | 202 + 4 |
+| council | 742 + 13 | 175 + 13 | 784 + 13 | 174 + 13 |
+| leaders | 717 + 15 | 178 + 15 | 769 + 15 | 160 + 15 |
+| empire | 720 + 9 | 156 + 9 | 763 + 9 | 161 + 9 |
+| designer | 921 + 196 | 355 + 199 | 946 + 197 | 361 + 204 |
+
+The load takes 0.5 to 0.6 s more (`load-sim` 6.1 s to 6.7 s, `loaded` 6.1 s to 6.6 s).
+
+**Fix 6: the windows' definitions read with the load** (`App::warm`, `lua/render/warm.lua`), at
+the same places as Fix 5: in the UI thread's runtime, the caches the windows fill on first use:
+render.windows.empire_common's definitions of 18 directories of common/ (traits, leader classes,
+edicts, councilors, policies, species classes, governments, ethics and the rest the windows ask
+for), render.creator_rules' rules (the species view), render.portraits' database,
+render.scripted_loc's defaults, the technology view's definitions and the fleet windows' leader
+traits (`technology.definitions`, `fleet.traits`: the two module-local loaders exported for it);
+in the map's runtime, the portraits' meshes and entities (`models.portraits`). Each step is
+guarded: one that fails is logged (`warm: ...`) and left to its window. All 18 windows, each in a
+fresh process, `load-sim`, the first frame's scene in ms (the uploads unchanged):
+
+| window | after Fix 5 | after Fix 6 |
+|---|---:|---:|
+| a fleet selected | 175 | 24 |
+| fleet view | 133 | 24 |
+| fleet manager | 149 | 30 |
+| species | 97 | 16 |
+| leaders | 154 | 64 |
+| council | 185 | 61 |
+| technology | 164 | 51 |
+| empire | 149 | 55 |
+| traditions | 33 to 36 | 16 |
+| designer | 345 | 341 |
+| planet, starbase, situation, diplomacy, discoveries, market, expansion planner, claims | 7 to 31 | 7 to 29 |
+
+(Three runs each for starbase and traditions: 10 ms both before and after, 32 to 35 ms before and
+16 ms after.) The load screen's flow (`load-sim async`, `loaded`) gives the same. The load takes
+0.58 s more again: `load-sim` 6.6 s to 7.2 s on average over 18 loads. With Fix 5, the portrait
+and ship windows' first openings went from 0.7 to 1 s to 50 to 65 ms (the designer 0.9 s to 340 ms),
+for 1.1 s more of load. The windows' pictures are the same PNGs as master's (technology, council,
+species, leaders, the fleet manager, a selected fleet). What is left is in section 7.
+
+## 9. On the GTX 1080 Ti (NVK)
+
+From 2026-10-16 to 2026-10-20 /etc/environment on 10.5.0.24 forced lavapipe
+(`VK_DRIVER_FILES=.../lvp_icd.json`, after memory corruption seen under nouveau and NVK); it is
+removed (the file before is /etc/environment.lavapipe-2026-10-16), and the renderer picks the GTX
+1080 Ti through NVK (Mesa 26.0.8, nouveau without reclocking on Pascal: its boot clocks). The
+fixed build's scenarios there (no kernel messages from nouveau through them), ms a frame, the CPU's
+part mean / p99 and the GPU's p50:
+
+| | CPU | GPU (lavapipe before) |
+|---|---:|---:|
+| main menu | 0.00 / 0.01 | 1.3 (2.6) |
+| map, hovered | 0.14 / 1.4 | 18.7 (58) |
+| planet view, hovered | 0.28 / 1.9 | 14.2 (36) |
+| technology, hovered | 0.44 / 2.1 | 17.1 (35) |
+| empire, hovered | 0.38 / 1.9 | 14.2 (50) |
+| running: map | 0.16 / 7.7 | 18.0 (62) |
+| running: planet view | 0.18 / 8.0 | 18.9 (65) |
+
+The GPU's frames at the card's boot clocks are over 8.33 ms at 1280x720; the CPU's part fits.
+
+## 10. Windows prepared in Rust, ahead (the designer)
+
+The ship designer's first opening after Fixes 5 and 6, broken down (`tools/profile/first_open.sh`,
+spans in designer.rs, models.rs and dds.rs), ms:
+
+| part | ms |
+|---|---:|
+| the designer's world's environment map (`cubemap_filtered_ldr.dds`, 16 levels: `texture: cube map read, decode`) | 184 |
+| the upload: the mip chains made on the CPU (24 ms for each 2048x2048 texture) and the copies | 196 to 209 |
+| the designer's layout (Lua): 65% of its samples the parse of its components' files (`designer.lua` `files`), 8% render.gui | 69 |
+| the ships' meshes: textures decoded (28, 41 ms), the index of gfx/models' texture names (32) | 69 |
+| the rest (its data from the simulation 4, the relayout's other parts) | 20 |
+
+Nearly all of it is Rust work that needs no Lua state: textures and cube maps read and decoded,
+mip chains made, a directory walked. **Fix 7: the windows' assets prepared on worker threads
+while the save loads** (`src/prepare.rs`):
+
+- **What each window uses is recorded as it is built**: the textures and cube maps decoded while
+  `App::scene` builds a scene with a window open are noted under it (`designer`, the left bar
+  view's name, `diplomacy`, `planet`, `fleet`, `starbase`: `App::prepare_window`) in a manifest
+  kept between runs (STELLAR_PREPARE_FILE, else `stellar-render/prepare.txt` in XDG_CACHE_HOME,
+  ~/.cache or LOCALAPPDATA; written only when something new is noted). A seed from the game's files
+  (the designer's world: its environment map, background and colour correction) is prepared before
+  any run noted anything. The 18 windows of section 8 noted 413 assets, 11 to 44 each.
+- **At a load** (`App::load_as`, `App::start_load_save`) `prepare::start` decodes them on three
+  worker threads (STELLAR_PREPARE_THREADS; 0 turns it off), the designer's first, into a shared
+  store, makes their mip chains (`render::premip`) and walks gfx/models' texture names; at most
+  STELLAR_PREPARE_MB (256) of images a load, what no window took forgotten at the next load.
+  `dds::Cache::get`/`get_cube` take an asset from the store instead of decoding it; the upload finds
+  its mip chain made.
+- And the designer's components (`designer.files`) read with the load by render.warm (Fix 6).
+
+The designer's first frame, ms (scene + upload): 341 + 216 before; 145 + 196 on a first run with
+the seed alone; 72 + 110 with the manifest; 14 + 110 with its components read with the load too.
+The upload left is the copies to the GPU (on the window's render thread, within its 4 MB a frame;
+offscreen `bench` counts it on its one thread). All windows with the manifest, the first frame's
+scene in ms (after Fix 6 -> with Fix 7): council 61 -> 26, technology 51 -> 19, leaders 64 -> 29,
+empire 55 -> 22, starbase 35 -> 9 (one run), the others 7 to 26 as before. The load's length is
+unchanged (7.19 s, 7.18 s: the workers run beside the simulation's load) and 0.1 s more with the
+designer's components. The cost is memory: the process's peak 2,765 MB without, 3,006 MB with every
+window's assets prepared (+241 MB, within the 256 MB budget); the assets of a window not opened stay
+until the next load. The pictures are the same PNGs as master's (the designer, the council, the
+empire, a starbase, with the prepared assets).
+
+**Constructing the windows in Rust** (their layout) would take the windows' Lua out of a first
+opening, but after Fixes 5 to 7 little of a first opening is layout: the designer's 14 ms, the
+portrait views' 19 to 29 ms, of which render.gui's share is small (8% of the designer's samples).
+The rest of the Lua's first-opening cost was the parse of the game's files, which the warm-up
+takes; what is left is listed in section 7.
+
+## 11. The prepared textures pinned on the GPU
+
+After Fix 7 the designer's first frame was 14 ms of scene and 110 ms of upload: its textures
+copied to the GPU (the copies of three 2048x2048 textures and their chains, 20 ms each) and its
+background's cube map (`sky_rim.dds`, 128 MB as RGBA, 41 ms). The renderer keeps every texture it
+uploads for the session, by name, and a scene whose image is the same `Arc` finds it there; the
+prepared images are those `Arc`s. **Fix 8: the prepared textures uploaded ahead** (`prepare.rs`
+`next_pins`, `Renderer::pin`, `ui::pin_prepared`): each asset the workers decode is queued, in the
+manifest's order (the designer's first), and the render thread uploads them in its frames with no
+new scene's resources to upload, within its 4 MB a frame, under the names the scenes give them
+(offscreen, `bench` does it after each frame's times). The fallbacks:
+
+- STELLAR_PIN_MB (512; 0: none): an asset past it is left (logged once) and uploaded when a
+  window uses it, the others pinned;
+- an upload the GPU refuses (out of memory, caught with an error scope) stops the pinning for the
+  session; the windows upload their textures from the prepared store, as with Fix 7 alone;
+- none on a CPU adapter (lavapipe: the GPU's memory is a second copy in the process).
+
+The designer's first frame (scene + upload, ms), the manifest of the 18 windows, NVK: 16 + 109
+without pinning; 15 + 47 with 256 MB (the background's cube map did not fit what was left); 14 + 5
+with 512 MB in the manifest's order. 266 MB of the windows' textures pinned (the decoded store's
+256 MB and their mip chains). With 64 MB: 15 + 76; on lavapipe: no pinning, 14 + 105. The other
+windows' uploads (8 to 13 ms) are the textures composed at run time (portraits, flags), which are
+not files and not prepared. The pictures are the same PNGs as master's (the designer, the council,
+the empire, a starbase).
+
+From the start of this work the designer's first opening went from 921 ms of scene and 196 ms of
+upload to 14 + 5 ms.

@@ -335,7 +335,7 @@ impl App {
         let t0 = std::time::Instant::now();
         let (runtime, loc) = gui::frontend_runtime(game_dir, &cache, "english")?;
         // STELLAR_LUA_PROF: the GUI Lua's sampling profiler in this runtime (prof.rs)
-        crate::prof::lua_start(&runtime);
+        crate::prof::lua_start(&runtime, "front");
         // the game's files watched: a change is read again without asking (STELLAR_WATCH=0: only F11)
         if let Err(e) = runtime.lua.load("require('engine.reload').watch()").exec() {
             eprintln!("file watcher: {e}");
@@ -1348,6 +1348,36 @@ impl App {
         Ok(items)
     }
 
+    /// The window whose textures a scene built now notes for the next load (prepare.rs): the ship
+    /// designer, the left bar's view, diplomacy, the selection's window; none for the map alone.
+    fn prepare_window(&self) -> Option<String> {
+        if self.screen != Screen::Map {
+            return None;
+        }
+        if self.designer.open {
+            return Some("designer".into());
+        }
+        if let Some(v) = &self.open_view {
+            return Some(v.clone());
+        }
+        if self.diplomacy.open.is_some() {
+            return Some("diplomacy".into());
+        }
+        let station = |id: u32| self.map.as_ref().is_some_and(|m| m.galaxy.fleets.iter().any(|f| f.id == id && f.station));
+        match self.selected {
+            Some(Pickable::Body(_)) => Some("planet".into()),
+            Some(Pickable::Fleet(id)) if station(id) => Some("starbase".into()),
+            Some(Pickable::Fleet(_)) | Some(Pickable::Ship(_)) => Some("fleet".into()),
+            _ => None,
+        }
+    }
+
+    /// The Lua runtimes the frame profiler's report asks for samples (prof.rs): the front end's,
+    /// the map's.
+    pub fn prof_runtimes(&self) -> Vec<&stellar_sim::Runtime> {
+        std::iter::once(&self.runtime).chain(self.map.as_ref().map(|m| &m.runtime)).collect()
+    }
+
     /// The scene must be built again (the world or the view changed).
     pub fn invalidate(&mut self) {
         self.scene = None;
@@ -1485,6 +1515,8 @@ impl App {
     pub fn scene(&mut self) -> Result<&Scene, String> {
         if self.scene.is_none() {
             let _s = crate::prof::span("scene");
+            // the textures decoded in it noted under the window open (prepare.rs)
+            crate::prepare::set_window(self.prepare_window());
             let (w, h) = self.size;
             let states = self.states();
             if self.screen == Screen::Map {
@@ -1571,6 +1603,8 @@ impl App {
                 crate::events::draw_trackers(&mut scene, &self.runtime, map, self.view, self.camera.as_ref(), &self.game_dir);
             }
             drop(s);
+            crate::prepare::set_window(None);
+            crate::prepare::save();
             self.scene = Some(std::sync::Arc::new(scene));
             // a new scene, whoever asked for it (a hit test builds it too)
             self.generation += 1;
@@ -2087,9 +2121,30 @@ impl App {
 
     pub fn load_as(&mut self, path: &str, sim: bool) -> Result<(), String> {
         let t0 = std::time::Instant::now();
+        // the windows' textures prepared on workers while it loads (prepare.rs)
+        crate::prepare::start(&self.game_dir);
         let map = if sim { Map::load_sim(&self.game_dir, path)? } else { Map::load(&self.game_dir, path)? };
         self.pending = None;
-        self.show_map(map, path, t0)
+        self.show_map(map, path, t0)?;
+        // what a window's first opening would make once, made with the load
+        self.warm();
+        Ok(())
+    }
+
+    /// What the windows' first openings would make once, made now (behind the load screen, or
+    /// with a load): the map's models' index (Map::warm) and the windows' definitions in this
+    /// runtime (render.warm: the leader traits, the species' rules, the portraits, the
+    /// technologies; docs/profiling.md section 8).
+    pub fn warm(&mut self) {
+        if let Some(map) = self.map.as_mut() {
+            map.warm();
+        }
+        let _s = crate::prof::span("load: the windows' definitions");
+        match self.runtime.lua.load("return require('render.warm').run(RENDER_GAME_DIR)").eval::<String>() {
+            Ok(failed) if failed.is_empty() => {}
+            Ok(failed) => self.log.push(format!("warm: {failed}")),
+            Err(e) => self.log.push(format!("warm: {e}")),
+        }
     }
 
     /// A new game started from `settings` (the setup's: newgame.rs): the load screen shown while
@@ -2130,6 +2185,8 @@ impl App {
     /// async PATH`): the simulation's thread loads it, then the map is shown as after a new game.
     pub fn start_load_save(&mut self, path: &str) -> Result<(), String> {
         self.log.push(format!("loading {path}"));
+        // the windows' textures prepared on workers while it loads (prepare.rs)
+        crate::prepare::start(&self.game_dir);
         self.map = None;
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
         let seed = std::env::var("STELLAR_LOADSCREEN").ok().and_then(|v| v.parse().ok()).unwrap_or(seed);
@@ -2216,6 +2273,8 @@ impl App {
                         return Ok(false);
                     }
                 }
+                // what a window's first opening would make once, made while the load screen is up
+                self.warm();
                 // DestroyLoadScreen: the game is shown
                 let p = self.pending.take().unwrap();
                 match &p.save {

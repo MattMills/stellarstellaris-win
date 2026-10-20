@@ -193,7 +193,7 @@ impl Engine {
         let mut uploaded = u64::MAX;
         let mut frames: Vec<BenchFrame> = Vec::new();
         // (the spans and the GUI Lua's samples counted from here)
-        crate::prof::full_report(&self.app.runtime, 0, true);
+        crate::prof::full_report(&self.app.prof_runtimes(), 0, true);
         let start = std::time::Instant::now();
         let mut next = start;
         while start.elapsed().as_secs_f64() < secs {
@@ -235,6 +235,11 @@ impl Engine {
                 self.off.draw_frame(w, h, ALL, &mut self.target)?;
             }
             let t4 = std::time::Instant::now();
+            // the windows' textures prepared ahead pinned on the GPU, as the window's render thread
+            // does in a frame with nothing else to upload (after the frame's times: not the UI's work)
+            if !built {
+                crate::ui::pin_prepared(&mut self.off.renderer, &self.off.device, &self.off.queue);
+            }
             crate::prof::frame_end();
             frames.push(BenchFrame {
                 input: (ti - t0).as_secs_f64(),
@@ -998,11 +1003,11 @@ impl Engine {
                     Ok(Reply::ok("prof off"))
                 }
                 Some("reset") => {
-                    crate::prof::full_report(&self.app.runtime, 0, true);
+                    crate::prof::full_report(&self.app.prof_runtimes(), 0, true);
                     Ok(Reply::ok("prof reset"))
                 }
                 Some("report") => {
-                    let text = crate::prof::full_report(&self.app.runtime, 40, true);
+                    let text = crate::prof::full_report(&self.app.prof_runtimes(), 40, true);
                     match a.get(1) {
                         Some(path) => {
                             std::fs::write(path, &text).map_err(|e| format!("{path}: {e}"))?;

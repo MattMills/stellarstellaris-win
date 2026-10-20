@@ -206,27 +206,36 @@ pub fn report(top: usize) -> String {
 }
 
 /// The GUI Lua's sampling profiler started in `runtime` with STELLAR_LUA_PROF set (its interval
-/// in ms; STELLAR_LUA_PROF_DEPTH the stacks' depth): render.prof.
-pub fn lua_start(runtime: &stellar_sim::Runtime) {
+/// in ms; STELLAR_LUA_PROF_DEPTH the stacks' depth): render.prof. `which` names the runtime:
+/// `front` (the UI thread's: the windows' layouts, the default) or `map` (the map's game files:
+/// portraits, models, the designer's insets), chosen by STELLAR_LUA_PROF_RUNTIME (one a process).
+pub fn lua_start(runtime: &stellar_sim::Runtime, which: &str) {
+    if std::env::var("STELLAR_LUA_PROF_RUNTIME").ok().filter(|v| !v.is_empty()).as_deref().unwrap_or("front") != which {
+        return;
+    }
     let Some(ms) = std::env::var("STELLAR_LUA_PROF").ok().and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0) else { return };
     let depth = std::env::var("STELLAR_LUA_PROF_DEPTH").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(8);
     match runtime.lua.load(format!("return require('render.prof').start({ms}, {depth})")).eval::<bool>() {
-        Ok(true) => eprintln!("lua profiler: a sample every {ms} ms, stacks {depth} deep"),
+        Ok(true) => eprintln!("lua profiler: a sample every {ms} ms, stacks {depth} deep (the {which} runtime)"),
         Ok(false) => eprintln!("lua profiler: not started (no jit.profile, or another state has it)"),
         Err(e) => eprintln!("lua profiler: {e}"),
     }
 }
 
-/// The Rust spans' table and the GUI Lua's samples (`runtime`'s, if it has them); `reset`:
-/// both forgotten after.
-pub fn full_report(runtime: &stellar_sim::Runtime, top: usize, reset_after: bool) -> String {
+/// The Rust spans' table and the GUI Lua's samples (of whichever of `runtimes` is profiled);
+/// `reset_after`: both forgotten after.
+pub fn full_report(runtimes: &[&stellar_sim::Runtime], top: usize, reset_after: bool) -> String {
     let mut out = report(top);
-    if let Ok(s) = runtime.lua.load(format!("return package.loaded['render.prof'] and require('render.prof').report({top}) or ''")).eval::<String>() {
-        out.push_str(&s);
+    for rt in runtimes {
+        if let Ok(s) = rt.lua.load(format!("return package.loaded['render.prof'] and require('render.prof').report({top}) or ''")).eval::<String>() {
+            out.push_str(&s);
+        }
     }
     if reset_after {
         reset();
-        let _ = runtime.lua.load("if package.loaded['render.prof'] then require('render.prof').reset() end").exec();
+        for rt in runtimes {
+            let _ = rt.lua.load("if package.loaded['render.prof'] then require('render.prof').reset() end").exec();
+        }
     }
     out
 }

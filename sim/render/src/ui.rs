@@ -158,7 +158,7 @@ fn run(mut app: App, rx: Receiver<Job>, sh: &Shared) {
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 if crate::prof::on() {
-                    eprintln!("{}", crate::prof::full_report(&app.runtime, 40, false));
+                    eprintln!("{}", crate::prof::full_report(&app.prof_runtimes(), 40, false));
                 }
                 break;
             }
@@ -197,7 +197,7 @@ fn run(mut app: App, rx: Receiver<Job>, sh: &Shared) {
         if let Some(every) = every.filter(|_| crate::prof::on()) {
             if reported.elapsed() >= every {
                 let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
-                eprintln!("prof report at {unix:.1} (the last {:.1} s)\n{}", reported.elapsed().as_secs_f64(), crate::prof::full_report(&app.runtime, 25, true));
+                eprintln!("prof report at {unix:.1} (the last {:.1} s)\n{}", reported.elapsed().as_secs_f64(), crate::prof::full_report(&app.prof_runtimes(), 25, true));
                 reported = Instant::now();
             }
         }
@@ -216,6 +216,18 @@ pub fn take(renderer: &mut render::Renderer, device: &wgpu::Device, queue: &wgpu
     renderer.upload(device, queue, &frame.scene, &frame.textures);
     *uploaded = frame.generation;
     true
+}
+
+/// The windows' textures prepared ahead (prepare.rs), pinned on the GPU within the frame's upload
+/// budget: for a frame with no new scene's resources to upload. A texture the GPU refuses stops
+/// the pinning (the windows upload theirs when they are built).
+pub fn pin_prepared(renderer: &mut render::Renderer, device: &wgpu::Device, queue: &wgpu::Queue) {
+    for (name, cube, img) in crate::prepare::next_pins(UPLOAD_BUDGET) {
+        if let Err(e) = renderer.pin(device, queue, &name, cube, &img) {
+            crate::prepare::pin_failed(&e);
+            break;
+        }
+    }
 }
 
 /// A frame of [`bench`]: the render thread's parts (the newest scene taken and its resources
@@ -266,6 +278,8 @@ fn frames_for(ui: &Ui, off: &mut Offscreen, target: &mut Option<(u32, u32, wgpu:
             let was = *uploaded;
             if !take(&mut off.renderer, &off.device, &off.queue, &frame, uploaded) {
                 waiting += 1;
+            } else {
+                pin_prepared(&mut off.renderer, &off.device, &off.queue);
             }
             switched = *uploaded != was;
         }

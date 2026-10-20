@@ -59,6 +59,7 @@ mod models;
 mod particles;
 mod pdxmesh;
 mod prof;
+mod prepare;
 mod planet;
 mod portraits;
 mod system;
@@ -384,6 +385,8 @@ impl Map {
                     self.runtime = rt;
                     self.world = false;
                     self.models = models::Library::default();
+                    // (its models' index made now, not by the first window that shows a model: warm)
+                    self.warm();
                     self.particles = particles::Library::default();
                     self.system_cache = None;
                     self.topbar_cache = None;
@@ -393,6 +396,25 @@ impl Map {
             }
         }
         true
+    }
+
+    /// What a window's first opening would make once, made now (behind the load screen, or where
+    /// the runtime is made anew): the models' index (render.models: 531 files of gfx/models parsed,
+    /// 0.6 s on 10.5.0.24), which the first window with a portrait or a ship's view (the council,
+    /// technology, leaders, the empire, the designer) and the first system view built
+    /// (docs/profiling.md).
+    pub fn warm(&mut self) {
+        let _s = crate::prof::span("load: the models' index");
+        if let Err(e) = self.models.ensure(&self.runtime, &self.game_dir) {
+            eprintln!("models: {e}");
+            return;
+        }
+        // and the portraits' meshes and entities (gfx/models/portraits, read when a portrait is
+        // first drawn: 90 to 110 ms of the council's, technology's, leaders' or the empire's
+        // first opening)
+        if let Err(e) = self.runtime.lua.load("require('render.models').portraits(RENDER_MODELS)").exec() {
+            eprintln!("models: the portraits: {e}");
+        }
     }
 
     /// A system's bodies and ships: the simulation's (when it sends that system), else read from

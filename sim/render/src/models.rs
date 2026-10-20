@@ -115,7 +115,7 @@ pub struct Library {
     pub summary: Option<String>,
     /// the .dds files of gfx/models by their name (lower case) -> their path in the game
     /// directory: where a texture is found when it is not beside its mesh or its definition
-    dds_names: Option<HashMap<String, String>>,
+    dds_names: Option<std::sync::Arc<HashMap<String, String>>>,
 }
 
 impl Library {
@@ -148,32 +148,9 @@ impl Library {
     }
 
     /// The .dds files of gfx/models by name (walked once).
-    fn dds_names(&mut self, game_dir: &str) -> &HashMap<String, String> {
-        self.dds_names.get_or_insert_with(|| {
-            let mut out = HashMap::new();
-            let mut stack = vec![std::path::PathBuf::from(format!("{game_dir}/gfx/models"))];
-            while let Some(d) = stack.pop() {
-                let Ok(rd) = std::fs::read_dir(&d) else { continue };
-                for e in rd.flatten() {
-                    let p = e.path();
-                    if p.is_dir() {
-                        stack.push(p);
-                    } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("dds")) {
-                        let rel = p.strip_prefix(game_dir).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-                        let name = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
-                        // the shortest path wins (the shared ones higher up)
-                        let rel = rel.trim_start_matches('/').to_string();
-                        match out.get(&name) {
-                            Some(old) if String::len(old) <= rel.len() => {}
-                            _ => {
-                                out.insert(name, rel);
-                            }
-                        }
-                    }
-                }
-            }
-            out
-        })
+    fn dds_names(&mut self, game_dir: &str) -> std::sync::Arc<HashMap<String, String>> {
+        // (walked once a process, on a worker at a load: prepare.rs)
+        self.dds_names.get_or_insert_with(|| crate::prepare::dds_names(game_dir)).clone()
     }
 
     fn mesh_file(&mut self, game_dir: &str, rel: &str) -> Result<Arc<pdxmesh::Mesh>, String> {
@@ -196,6 +173,7 @@ impl Library {
 
     fn load_model(&mut self, rt: &Runtime, game_dir: &str, name: &str) -> Result<Model, String> {
         self.ensure(rt, game_dir)?;
+        let span = crate::prof::span("model: described (lua)");
         let d: (Option<Table>, Option<String>) = rt
             .lua
             .load(format!("return require('render.models').describe(RENDER_MODELS, {name:?})"))
@@ -221,7 +199,11 @@ impl Library {
             Ok((file, scale, settings, attach))
         };
         let (file, scale, settings, attach) = read().map_err(|e| format!("render.models: {e}"))?;
+        drop(span);
+        let span = crate::prof::span("model: mesh file read, parsed");
         let mesh = self.mesh_file(game_dir, &file)?;
+        drop(span);
+        let _s = crate::prof::span("model: parts, texture paths");
         let dir = file.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default();
         // the directories a texture's name is looked for in: the entity's and the pdxmesh's
         // definition files' (meshsettings), then the mesh file's
