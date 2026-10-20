@@ -27,7 +27,9 @@ struct ViewUniform {
     srgb: u32,
     /// 1: the HDR scene (colours in linear space, nothing clamped)
     linear: u32,
-    _pad: [u32; 3],
+    /// the time in seconds (the game's `Time`: the meshes' animation; set_time)
+    time: f32,
+    _pad: [u32; 2],
     /// the star's light (colour x intensity) and the planets' back light (gfx/lights, gfx/worldgfx)
     light_colour: [f32; 4],
     back_light: [f32; 4],
@@ -172,6 +174,15 @@ struct DrawUniform {
 }
 
 const DRAW_SLOT: u64 = 256;
+/// ViewUniform's `time` and DrawUniform's `ship` (a turning part's rotation: set_time), in bytes
+const VIEW_TIME_OFFSET: u64 = 148;
+const DRAW_SPIN_OFFSET: u64 = 192;
+
+/// The meshes' clock: seconds since the process's first frame asked for it (the game's `Time`).
+pub fn clock_seconds() -> f32 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_secs_f32()
+}
 
 /// The adapter picked to render: its description, for reports.
 pub fn describe(info: &wgpu::AdapterInfo) -> String {
@@ -381,6 +392,8 @@ pub struct Renderer {
     lines: Option<wgpu::Buffer>,
     n_lines: u32,
     draw_uniforms: Option<(wgpu::Buffer, wgpu::BindGroup)>,
+    /// the turning parts' draw slots and their turns (set_time)
+    spins: Vec<(u32, std::sync::Arc<crate::anim::Spin>)>,
     mesh_draws: Vec<MeshDrawGpu>,
     draws: Vec<Draw>,
     insets: Vec<InsetGpu>,
@@ -881,6 +894,7 @@ impl Renderer {
             lines: None,
             n_lines: 0,
             draw_uniforms: None,
+            spins: Vec::new(),
             mesh_draws: Vec::new(),
             draws: Vec::new(),
             insets: Vec::new(),
@@ -1071,7 +1085,8 @@ impl Renderer {
             focal: v.focal_px,
             srgb: self.srgb as u32,
             linear: 0,
-            _pad: [0; 3],
+            time: 0.0,
+            _pad: [0; 2],
             light_colour: scene.light_colour,
             back_light: scene.back_light,
             cam_lights: scene.cam_lights,
@@ -1166,6 +1181,7 @@ impl Renderer {
         // meshes: opaque first, then blended and added
         self.mesh_draws.clear();
         let mut uniforms: Vec<DrawUniform> = Vec::new();
+        self.spins.clear();
         // the world's environment map (its levels by glossiness), shared by every mesh
         let env_name = scene.env.map(|(i, _)| {
             self.cube(device, queue, &textures.names[i], &textures.images[i]);
@@ -1198,7 +1214,8 @@ impl Renderer {
                 focal: v.focal_px,
                 srgb: self.srgb as u32,
                 linear: 0,
-                _pad: [0; 3],
+                time: 0.0,
+                _pad: [0; 2],
                 light_colour: inset.light_colour,
                 back_light: scene.back_light,
                 cam_lights: inset.cam_lights,
@@ -1323,16 +1340,21 @@ impl Renderer {
             // in SetStarEntityCustomData / SetPlanetEntityCustomData); its intensity as it is
             let a = k.atmosphere;
             let atmosphere = if hdr { [a[0].max(0.0).powf(2.2), a[1].max(0.0).powf(2.2), a[2].max(0.0).powf(2.2), a[3]] } else { a };
+            // a turning part: extra.z 1 and its rotation in `ship` (set_time writes it each frame)
+            let spin = m.spin.is_some() && k.kind != 2.0;
             uniforms.push(DrawUniform {
                 model: m.model.cols(),
                 tint: m.tint,
                 params: m.params,
                 atmosphere,
-                extra: [k.width, k.kind, 0.0, 0.0],
+                extra: [k.width, k.kind, if spin { 1.0 } else { 0.0 }, 0.0],
                 lava: [l(k.lava[0]), l(k.lava[1]), l(k.lava[2])],
                 std: [m.std[0], m.std[1], env_intensity, m.std[3]],
-                ship: m.ship,
+                ship: if spin { crate::math::M4::IDENTITY.cols() } else { m.ship },
             });
+            if let (true, Some(s)) = (spin, &m.spin) {
+                self.spins.push(((uniforms.len() - 1) as u32, s.clone()));
+            }
             MeshDrawGpu { mesh: m.mesh.key.clone(), textures: names, shading: m.shading, slot: (uniforms.len() - 1) as u32 }
         }
     }
@@ -1507,6 +1529,21 @@ impl Renderer {
     /// The size of the scene prepared (its depth buffer's), if any: the target it can be drawn to.
     pub fn size(&self) -> Option<(u32, u32)> {
         self.depth.as_ref().map(|d| (d.0, d.1))
+    }
+
+    /// The meshes' time for the next draw (seconds: clock_seconds): the view's `time` (the stars'
+    /// lava, mesh.wgsl) and each turning part's rotation at it (anim.rs).
+    pub fn set_time(&self, queue: &wgpu::Queue, t: f32) {
+        queue.write_buffer(&self.uniform, VIEW_TIME_OFFSET, bytemuck::bytes_of(&t));
+        for inset in &self.insets {
+            queue.write_buffer(&inset._buffer, VIEW_TIME_OFFSET, bytemuck::bytes_of(&t));
+        }
+        if let Some((buf, _)) = &self.draw_uniforms {
+            for (slot, spin) in &self.spins {
+                let r = spin.matrix_at(t).cols();
+                queue.write_buffer(buf, *slot as u64 * DRAW_SLOT + DRAW_SPIN_OFFSET, bytemuck::cast_slice(&r));
+            }
+        }
     }
 
     pub fn draw(&self, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, mask: u32) {
@@ -1744,6 +1781,7 @@ impl Offscreen {
             *target = Some((width, height, texture));
         }
         let view = target.as_ref().unwrap().2.create_view(&wgpu::TextureViewDescriptor::default());
+        self.renderer.set_time(&self.queue, clock_seconds());
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("bench") });
         self.renderer.draw(&mut encoder, &view, mask);
         self.queue.submit([encoder.finish()]);
@@ -1775,6 +1813,7 @@ impl Offscreen {
             mapped_at_creation: false,
         });
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") });
+        self.renderer.set_time(&self.queue, clock_seconds());
         self.renderer.draw(&mut encoder, &view, mask);
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },

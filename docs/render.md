@@ -383,7 +383,29 @@ The tree, with the number of files and occurrences in 4.5.2:
   +2.6, the hull spans z = -3.2 to +2.9.
 - **What the renderer covers**: positions, normals, tangents, uv set 0, indices, materials,
   locators (for attachments). **Skinning** is read (bones per vertex, indices, weights, the
-  skeleton) but meshes are drawn in their bind pose: the animations (`.anim`) are not read.
+  skeleton); meshes are drawn in their bind pose, except a part skinned wholly to one bone that
+  turns in its entity's idle animation (below).
+- **Animations** (`.anim`, `src/anim.rs`) **[V]** the files: the same binary format; `[info]`
+  (`fps`, `sa` the frames, `j` the joints; a child per joint: `sa` which of t, q, s are sampled,
+  its rest `t`, `q`, `s`) and `[samples]` (`q`, `t`, `s`: each frame's values of the sampled
+  joints in order). A pdxmesh names its animations (`animation = { id = "idle" type = ... }`), an
+  asset maps the type to its file (`animation = { name file }`, beside the asset). Played: a
+  part skinned wholly to one joint (every vertex's first influence, weight 1) whose rotation turns
+  about one axis: the stars' (`base_star_idle.anim`: 360 degrees in about 370 s, easing in and out,
+  then still to the loop's 667 s) and the planets' (`planet_no_pole_no_clouds_idle.anim`: 34
+  frames at 0.102 fps, 333 s a turn; clouds twice as fast). The turn in the mesh's space is
+  w^-1 q(t)^-1 q_rest w (w the ancestors' rest rotations, the nearest first): the game's
+  rotations act on row vectors **[V: a molten planet's surface moves right and up in the game's
+  frames and here, 20 s apart]**. The render thread writes each turning part's rotation into its
+  draw constants every frame (`Renderer::set_time`). Not played: translations and scales,
+  several joints, ships' skeletons, the states' `time_offset` (a random start, 0 .. 100 s for the
+  gas giants) **[I]**.
+- **Time**: the view constants carry the time in seconds (`time`, the game's `Time`; one clock
+  for the process, `render::clock_seconds`), written before each frame's draw (the window, the
+  offscreen `frame`): the stars' lava noise (PixelPdxMeshStar: sin((noise + Time x 0.08) x 10)),
+  sampled at the skinned position so it stays in place while the surface turns. Still at time 0:
+  the flow maps, PixelPdxMeshAdditive's ANIMATE_UV, the entities' `uv_animation_speed`, the
+  ships' emissive.
   **LODs**: the 16 LOD shapes (5 files) are read but not chosen between; all shapes are drawn.
   `u1`, `boundingsphere`, `sfs` and the locators' `tx` are read and unused.
 
@@ -515,7 +537,7 @@ simplifications **[I]** (named).
 - **Ships** (PixelPdxMeshShip), **the environment map**, **gas giants and molten planets** (the
   flow map), **rings**, **asteroids**, **additive effects**: section 11.
 - **Not drawn**: shadows, the tiled point lights, the lens flare, city lights, the dissolve and
-  cloak effects, animation (planets' spin, ships' skeletons). The post effects, the sky and the
+  cloak effects, ships' skeletal animation (the stars' and planets' turn: section 8). The post effects, the sky and the
   particles: section 11.
 
 ## 9. The command protocol (headless, TCP)
@@ -1385,8 +1407,8 @@ freed when the device is polled).
   tint the game's frame does not show); black holes, pulsars and neutron stars (drawn, not
   checked: the player of the 2210 save knows none; `observe` shows them all now); the territories' edge
   bands from far (section 11); the map flag's texture.
-- **3D, not drawn yet**: animation (skeletons and `.anim`: the ships' idle animations, the
-  planets' spin), engine trails, LOD selection, the `PdxMeshShipFlow` shader, city lights,
+- **3D, not drawn yet**: the ships' skeletal idle animations, particles moving over time (the
+  stars' flares stand still), uv and flow animations, engine trails, LOD selection, the `PdxMeshShipFlow` shader, city lights,
   shadows, nebula names, the names' fades, the system's hyperlane exits, fleets moving between their
   save positions (they are drawn where the world puts them each day), and smooth transitions
   between the galaxy and a system.
