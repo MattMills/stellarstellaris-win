@@ -89,7 +89,12 @@ pub fn data(map: &Map, id: u32, side: &str) -> Result<Option<String>, String> {
         return Ok(None);
     }
     let generation = map.snapshot.as_ref().map_or(0, |s| s.generation);
-    clock.query_view(&code, generation).map(|s| if s.is_empty() { None } else { Some(s) }).map_err(|e| format!("render.windows.planet.data: {e}"))
+    match clock.query_view(&code, generation) {
+        Ok(s) => Ok(if s.is_empty() { None } else { Some(s) }),
+        // (on its way: the frame and the name until it comes)
+        Err(e) if crate::clock::is_pending(&e) => Ok(None),
+        Err(e) => Err(format!("render.windows.planet.data: {e}")),
+    }
 }
 
 /// A planet view click (its `planet:` actions; docs/windows/planet.md, the buttons):
