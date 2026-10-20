@@ -335,7 +335,7 @@ impl App {
         let t0 = std::time::Instant::now();
         let (runtime, loc) = gui::frontend_runtime(game_dir, &cache, "english")?;
         // STELLAR_LUA_PROF: the GUI Lua's sampling profiler in this runtime (prof.rs)
-        crate::prof::lua_start(&runtime);
+        crate::prof::lua_start(&runtime, "front");
         // the game's files watched: a change is read again without asking (STELLAR_WATCH=0: only F11)
         if let Err(e) = runtime.lua.load("require('engine.reload').watch()").exec() {
             eprintln!("file watcher: {e}");
@@ -1348,6 +1348,12 @@ impl App {
         Ok(items)
     }
 
+    /// The Lua runtimes the frame profiler's report asks for samples (prof.rs): the front end's,
+    /// the map's.
+    pub fn prof_runtimes(&self) -> Vec<&stellar_sim::Runtime> {
+        std::iter::once(&self.runtime).chain(self.map.as_ref().map(|m| &m.runtime)).collect()
+    }
+
     /// The scene must be built again (the world or the view changed).
     pub fn invalidate(&mut self) {
         self.scene = None;
@@ -2087,7 +2093,9 @@ impl App {
 
     pub fn load_as(&mut self, path: &str, sim: bool) -> Result<(), String> {
         let t0 = std::time::Instant::now();
-        let map = if sim { Map::load_sim(&self.game_dir, path)? } else { Map::load(&self.game_dir, path)? };
+        let mut map = if sim { Map::load_sim(&self.game_dir, path)? } else { Map::load(&self.game_dir, path)? };
+        // what a window's first opening would make once, made with the load (Map::warm)
+        map.warm();
         self.pending = None;
         self.show_map(map, path, t0)
     }
@@ -2215,6 +2223,10 @@ impl App {
                     if !has && since.elapsed() < std::time::Duration::from_secs(60) {
                         return Ok(false);
                     }
+                }
+                // what a window's first opening would make once, made while the load screen is up
+                if let Some(map) = self.map.as_mut() {
+                    map.warm();
                 }
                 // DestroyLoadScreen: the game is shown
                 let p = self.pending.take().unwrap();

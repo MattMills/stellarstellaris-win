@@ -383,9 +383,15 @@ pub fn turn(dx: f32, dy: f32) {
 /// of it and the ship designer world's lights (gfx/worldgfx/ship_designer.txt) [I: the camera,
 /// by the game's frame: the ship's side, its bow to the right, a little from above].
 pub fn fill_insets(scene: &mut Scene, models: &HashMap<String, ShipModel>, lib: &mut models::Library, rt: &Runtime, game_dir: &str, tex: &mut Textures, cache: &mut Cache) {
-    if scene.insets.is_empty() || models.is_empty() || lib.ensure(rt, game_dir).is_err() {
+    if scene.insets.is_empty() || models.is_empty() {
         return;
     }
+    let s = crate::prof::span("insets: the models' index");
+    if lib.ensure(rt, game_dir).is_err() {
+        return;
+    }
+    drop(s);
+    let _s = crate::prof::span("insets: designer's ships");
     let world = crate::worldgfx::read(rt, game_dir, "ship_designer").ok();
     for inset in scene.insets.iter_mut() {
         let Some(m) = models.get(&inset.path) else { continue };

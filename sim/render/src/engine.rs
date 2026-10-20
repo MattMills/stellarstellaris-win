@@ -193,7 +193,7 @@ impl Engine {
         let mut uploaded = u64::MAX;
         let mut frames: Vec<BenchFrame> = Vec::new();
         // (the spans and the GUI Lua's samples counted from here)
-        crate::prof::full_report(&self.app.runtime, 0, true);
+        crate::prof::full_report(&self.app.prof_runtimes(), 0, true);
         let start = std::time::Instant::now();
         let mut next = start;
         while start.elapsed().as_secs_f64() < secs {
@@ -998,11 +998,11 @@ impl Engine {
                     Ok(Reply::ok("prof off"))
                 }
                 Some("reset") => {
-                    crate::prof::full_report(&self.app.runtime, 0, true);
+                    crate::prof::full_report(&self.app.prof_runtimes(), 0, true);
                     Ok(Reply::ok("prof reset"))
                 }
                 Some("report") => {
-                    let text = crate::prof::full_report(&self.app.runtime, 40, true);
+                    let text = crate::prof::full_report(&self.app.prof_runtimes(), 40, true);
                     match a.get(1) {
                         Some(path) => {
                             std::fs::write(path, &text).map_err(|e| format!("{path}: {e}"))?;

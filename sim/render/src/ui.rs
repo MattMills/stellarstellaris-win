@@ -158,7 +158,7 @@ fn run(mut app: App, rx: Receiver<Job>, sh: &Shared) {
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 if crate::prof::on() {
-                    eprintln!("{}", crate::prof::full_report(&app.runtime, 40, false));
+                    eprintln!("{}", crate::prof::full_report(&app.prof_runtimes(), 40, false));
                 }
                 break;
             }
@@ -197,7 +197,7 @@ fn run(mut app: App, rx: Receiver<Job>, sh: &Shared) {
         if let Some(every) = every.filter(|_| crate::prof::on()) {
             if reported.elapsed() >= every {
                 let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
-                eprintln!("prof report at {unix:.1} (the last {:.1} s)\n{}", reported.elapsed().as_secs_f64(), crate::prof::full_report(&app.runtime, 25, true));
+                eprintln!("prof report at {unix:.1} (the last {:.1} s)\n{}", reported.elapsed().as_secs_f64(), crate::prof::full_report(&app.prof_runtimes(), 25, true));
                 reported = Instant::now();
             }
         }
