@@ -27,6 +27,8 @@ pub const GLOSSY_EMISSIVE: u32 = 65536;
 pub const USE_EMPIRE_COLOR_MASK_FOR_EMISSIVE: u32 = 131072;
 /// not a define: the effect's pixel shader is PixelPdxMeshShip
 pub const SHIP: u32 = 262144;
+pub const ANIMATE_UV_UP: u32 = 524288;
+pub const RIPPLE_UV: u32 = 1048576;
 
 #[derive(Clone, Debug, Default)]
 pub struct Effect {
@@ -57,6 +59,8 @@ impl Effect {
                 "BLACK_HOLE" => BLACK_HOLE,
                 "USE_EMPIRE_COLOR" => USE_EMPIRE_COLOR,
                 "ANIMATE_UV_ALPHA" => ANIMATE_UV_ALPHA,
+                "ANIMATE_UV_UP" => ANIMATE_UV_UP,
+                "RIPPLE_UV" => RIPPLE_UV,
                 "RIM_LIGHT" => RIM_LIGHT,
                 "GLOSSY_EMISSIVE" => GLOSSY_EMISSIVE,
                 "USE_EMPIRE_COLOR_MASK_FOR_EMISSIVE" => USE_EMPIRE_COLOR_MASK_FOR_EMISSIVE,

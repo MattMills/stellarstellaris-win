@@ -18,7 +18,8 @@ struct View {
     srgb: u32,
     // 1: the HDR scene of the post effects (colours converted to linear, nothing clamped)
     linear: u32,
-    _pad0: u32,
+    // the time in seconds (render.rs set_time): the particles' ages
+    time: f32,
     _pad1: u32,
     _pad2: u32,
     light_colour: vec4<f32>,
@@ -76,6 +77,38 @@ struct QuadOut {
     @location(4) fx2: vec4<f32>,
 };
 
+// a particle's curve point: the age in 10 bits, the value 0 .. 8 in 13 (particles.rs packed)
+fn unpack_point(p: f32) -> vec2<f32> {
+    let v = u32(p + 0.5);
+    return vec2<f32>(f32(v / 8192u) / 1023.0, f32(v % 8192u) / 1023.0);
+}
+
+fn curve_seg(a: vec2<f32>, b: vec2<f32>, t: f32) -> f32 {
+    let f = select(0.0, clamp((t - a.x) / max(b.x - a.x, 1e-6), 0.0, 1.0), b.x > a.x);
+    return mix(a.y, b.y, f);
+}
+
+// the curve's value at the age: the points joined by lines (particles.rs Curve::at)
+fn curve4(c: vec4<f32>, t: f32) -> f32 {
+    let p0 = unpack_point(c.x);
+    let p1 = unpack_point(c.y);
+    let p2 = unpack_point(c.z);
+    let p3 = unpack_point(c.w);
+    if (t <= p0.x) { return p0.y; }
+    if (t <= p1.x) { return curve_seg(p0, p1, t); }
+    if (t <= p2.x) { return curve_seg(p1, p2, t); }
+    if (t <= p3.x) { return curve_seg(p2, p3, t); }
+    return p3.y;
+}
+
+fn curve2(a: f32, b: f32, t: f32) -> f32 {
+    let p0 = unpack_point(a);
+    let p1 = unpack_point(b);
+    if (t <= p0.x) { return p0.y; }
+    if (t <= p1.x) { return curve_seg(p0, p1, t); }
+    return p1.y;
+}
+
 @vertex
 fn vs_quad(
     @builtin(vertex_index) vi: u32,
@@ -95,8 +128,21 @@ fn vs_quad(
     let centre = 0.5 * (rect.xy + rect.zw);
     var half = 0.5 * (rect.zw - rect.xy);
     let local = (t * 2.0 - vec2<f32>(1.0));
-    let cs = cos(misc.x);
-    let sn = sin(misc.x);
+    // a particle over time (particles.rs: fx.x 5 + 0.4 x its starting age, fx.y 1 / its life,
+    // fx.z its spin (radians a second), fx.w and misc.w its size curve, fx2 its alpha curve):
+    // its age goes round its life; its size, alpha and rotation at that age
+    var col = colour;
+    var angle = misc.x;
+    var least_px = misc.w;
+    if (fx.x > 4.5 && fx.x < 5.5) {
+        let age = fract((fx.x - 5.0) * 2.5 + view.time * fx.y);
+        col.a = colour.a * curve4(fx2, age);
+        half = half * curve2(fx.w, misc.w, age);
+        angle = misc.x + fx.z * view.time;
+        least_px = 0.0;
+    }
+    let cs = cos(angle);
+    let sn = sin(angle);
     var clip: vec4<f32>;
     var world = vec3<f32>(centre.x, misc.z, centre.y);
     if (misc.y > 1.5) {
@@ -105,7 +151,7 @@ fn vs_quad(
         let c3 = vec3<f32>(centre.x, misc.z, centre.y);
         let cc = to_clip(c3);
         let ppu = view.focal / max(cc.w, 1e-4);
-        let least = misc.w / max(ppu, 1e-6);
+        let least = least_px / max(ppu, 1e-6);
         let h = max(abs(half.x), least);
         let l = vec2<f32>(local.x * cs - local.y * sn, local.x * sn + local.y * cs) * h;
         world = c3 + view.right.xyz * l.x + view.up.xyz * l.y;
@@ -122,7 +168,7 @@ fn vs_quad(
     var o: QuadOut;
     o.pos = clip;
     o.uv = mix(uv.xy, uv.zw, t);
-    o.colour = colour;
+    o.colour = col;
     o.world = world;
     o.fx = fx;
     o.fx2 = fx2;

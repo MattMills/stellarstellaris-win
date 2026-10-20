@@ -393,19 +393,30 @@ The tree, with the number of files and occurrences in 4.5.2:
   part skinned wholly to one joint (every vertex's first influence, weight 1) whose rotation turns
   about one axis: the stars' (`base_star_idle.anim`: 360 degrees in about 370 s, easing in and out,
   then still to the loop's 667 s) and the planets' (`planet_no_pole_no_clouds_idle.anim`: 34
-  frames at 0.102 fps, 333 s a turn; clouds twice as fast). The turn in the mesh's space is
-  w^-1 q(t)^-1 q_rest w (w the ancestors' rest rotations, the nearest first): the game's
-  rotations act on row vectors **[V: a molten planet's surface moves right and up in the game's
-  frames and here, 20 s apart]**. The render thread writes each turning part's rotation into its
-  draw constants every frame (`Renderer::set_time`). Not played: translations and scales,
-  several joints, ships' skeletons, the states' `time_offset` (a random start, 0 .. 100 s for the
-  gas giants) **[I]**.
+  frames at 0.102 fps, 333 s a turn; clouds twice as fast). The skinning, column vectors (the
+  skeleton's `tx` is the inverse world bind pose stored by columns): S(t) = P R(q(t)) B, P the
+  ancestors' rest rotations of the animation (the root first), B the joint's `tx`; as D(t) K, D
+  the turn P q(t) q_rest^-1 P^-1 about a fixed axis, K = P R(q_rest) B fixed **[V: K is the identity
+  for the stars (the star's S is the identity at rest with this reading only); for the planets
+  the animation's rest of `planet_rotation` gives their tilt]**. The entity's `playback_rate`
+  scales and signs the time (`-1.0 # Rotation is reversed`, -1.03: most planets) **[V: a molten
+  planet (playback_rate -1) moves right in the game's frames and here, 20 s apart]**. The render
+  thread writes each turning part's rotation into its draw constants every frame
+  (`Renderer::set_time`). Not played: translations and scales, several joints, ships' skeletons,
+  the states' `time_offset` (a random start, 0 .. 100 s for the gas giants) **[I]**. Seen: the
+  binary system 401's T-class companion shows its pole to the camera here and horizontal bands in
+  the game, with or without the animation (its orientation, not its turn) **[I]**.
 - **Time**: the view constants carry the time in seconds (`time`, the game's `Time`; one clock
   for the process, `render::clock_seconds`), written before each frame's draw (the window, the
   offscreen `frame`): the stars' lava noise (PixelPdxMeshStar: sin((noise + Time x 0.08) x 10)),
-  sampled at the skinned position so it stays in place while the surface turns. Still at time 0:
-  the flow maps, PixelPdxMeshAdditive's ANIMATE_UV, the entities' `uv_animation_speed`, the
-  ships' emissive.
+  sampled at the skinned position so it stays in place while the surface turns; the uv
+  animations (vUVAnimationTime = the entity's game_data `uv_animation_speed` x the time,
+  vUVAnimationDir its `uv_animation_direction`, in a part's draw constants `ship3`, not a ship's):
+  USE_FLOWMAP's two samples along the flow map (frac(t), frac(t + 0.5), blended by |2 frac(t) -
+  1|: the gas giants', the molten planets'), a plain diffuse moved by the direction, and
+  PixelPdxMeshAdditive's ANIMATE_UV (its flow map at intensity vUVAnimationDir.x, RIPPLE_UV,
+  ANIMATE_UV_UP, ANIMATE_UV_ALPHA) **[V]** pdxmesh.shader, **[I]** vUVAnimationTime's making.
+  Still at time 0: the ships' emissive, hue shifts, the dissolves.
   **LODs**: the 16 LOD shapes (5 files) are read but not chosen between; all shapes are drawn.
   `u1`, `boundingsphere`, `sfs` and the locators' `tx` are read and unused.
 
@@ -831,7 +842,11 @@ the culture's first), drawn at the slot's `locatorname` of the section's mesh.
 (`emission` x mean `life`, at most `max_amount`) at random places of its sphere emitter, each at a
 random age with the type's `animation` curves at that age (`size_grow` 1..3, `fade_in_out`), alpha
 x 0.8 (PixelParticle), the colour made linear; billboards added with alpha written. Not drawn:
-velocity, forces, trails, child systems, rotation over time.
+velocity, forces, trails, child systems. Over time (`map.wgsl` vs_quad, the view's time): each
+particle's age goes round its life from its random start (`life` with its spread), its alpha
+and size curves at that age (packed per quad: up to 4 alpha points, 2 size points), its rotation
+at `rotation_speed`; it stays where it was placed (a new place each life is not done) **[I]**;
+the stars' flares come and go over seconds as the game's.
 
 **The galaxy view** (`sim/render/src/scene.rs` `galaxy_3d`, `src/galaxymap.rs`, `src/map.wgsl`;
 CGalaxyGraphics, CTerraIncognitaGraphics, CBordersGraphics, CBorderShapeCalculator and the
@@ -1407,8 +1422,8 @@ freed when the device is polled).
   tint the game's frame does not show); black holes, pulsars and neutron stars (drawn, not
   checked: the player of the 2210 save knows none; `observe` shows them all now); the territories' edge
   bands from far (section 11); the map flag's texture.
-- **3D, not drawn yet**: the ships' skeletal idle animations, particles moving over time (the
-  stars' flares stand still), uv and flow animations, engine trails, LOD selection, the `PdxMeshShipFlow` shader, city lights,
+- **3D, not drawn yet**: the ships' skeletal idle animations, particles moving (a new place
+  each life, velocity), engine trails, LOD selection, the `PdxMeshShipFlow` shader, city lights,
   shadows, nebula names, the names' fades, the system's hyperlane exits, fleets moving between their
   save positions (they are drawn where the world puts them each day), and smooth transitions
   between the galaxy and a system.

@@ -48,6 +48,9 @@ pub struct Model {
     pub bloom_factor: f32,
     /// game_data emissive_recolor_crunch (a ship's ShipVars.r), 1 if none
     pub recolor_crunch: f32,
+    /// game_data uv_animation_direction (x, y) and uv_animation_speed (vUVAnimationDir,
+    /// vUVAnimationTime = time x speed), none: 0
+    pub uv: [f32; 3],
 }
 
 impl Model {
@@ -217,6 +220,10 @@ impl Library {
         };
         let (file, scale, settings, attach) = read().map_err(|e| format!("render.models: {e}"))?;
         let idle_anim: Option<String> = t.get::<Option<String>>("idle_anim").ok().flatten();
+        let playback_rate = t.get::<Option<f32>>("playback_rate").ok().flatten().unwrap_or(1.0);
+        let uv_dir: Option<Vec<f32>> = t.get::<Option<Vec<f32>>>("uv_dir").ok().flatten();
+        let uv_speed = t.get::<Option<f32>>("uv_speed").ok().flatten().unwrap_or(0.0);
+        let uv = [uv_dir.as_ref().and_then(|d| d.first().copied()).unwrap_or(0.0), uv_dir.as_ref().and_then(|d| d.get(1).copied()).unwrap_or(0.0), uv_speed];
         drop(span);
         let anim = idle_anim.as_deref().and_then(|a| self.anim_file(game_dir, a));
         let span = crate::prof::span("model: mesh file read, parsed");
@@ -290,7 +297,7 @@ impl Library {
                 let key = format!("{file}#{}#{k}", shape.name);
                 // its turn in the idle animation (a ship's part keeps its constants' slot: none)
                 let spin = match (&anim, &sm.skin) {
-                    (Some(a), Some(skin)) if part_kind(&shader) != 2.0 => crate::anim::part_spin(a, skin, &shape.skeleton).map(Arc::new),
+                    (Some(a), Some(skin)) if part_kind(&shader) != 2.0 => crate::anim::part_spin(a, skin, &shape.skeleton, playback_rate).map(Arc::new),
                     _ => None,
                 };
                 if let Some(sp) = &spin {
@@ -319,7 +326,7 @@ impl Library {
             .unwrap_or_default();
         let bloom_factor = t.get::<Option<f32>>("bloom_factor").ok().flatten().unwrap_or(1.0);
         let recolor_crunch = t.get::<Option<f32>>("recolor_crunch").ok().flatten().unwrap_or(1.0);
-        Ok(Model { name: name.to_string(), file, scale, parts, locators: mesh.locators.clone(), aabb: (lo, hi), attach, skipped, particles, bloom_factor, recolor_crunch })
+        Ok(Model { name: name.to_string(), file, scale, parts, locators: mesh.locators.clone(), aabb: (lo, hi), attach, skipped, particles, bloom_factor, recolor_crunch, uv })
     }
 }
 
@@ -393,6 +400,7 @@ pub fn draws(model: &Model, transform: M4, tint: [f32; 4], look: &Look, tex: &mu
             // scene's), AtmosphereColor.a (a class with an atmosphere colour)
             d.std = [p.flags as f32, model.bloom_factor, 0.0, look.colour_alpha];
             d.spin = p.spin.clone();
+            d.uv = model.uv;
             d
         })
         .collect()

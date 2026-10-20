@@ -220,11 +220,13 @@ pub struct MeshDraw {
     /// the part's turn over time (its entity's idle animation: anim.rs), applied in the mesh's
     /// space at each frame's time (render.rs set_time)
     pub spin: Option<Arc<crate::anim::Spin>>,
+    /// the entity's uv animation: direction (x, y) and speed (mesh.wgsl, a part not a ship's)
+    pub uv: [f32; 3],
 }
 
 impl MeshDraw {
     pub fn new(mesh: Arc<MeshData>, model: M4, textures: [usize; 3], shading: Shading, tint: [f32; 4]) -> MeshDraw {
-        MeshDraw { mesh, model, textures, shading, tint, params: [shading.number(), 1.6, 1.0, 0.12], look: Look::default(), cube: None, std: [0.0, 1.0, 0.0, 1.0], ship: [[0.0; 4]; 4], spin: None }
+        MeshDraw { mesh, model, textures, shading, tint, params: [shading.number(), 1.6, 1.0, 0.12], look: Look::default(), cube: None, std: [0.0, 1.0, 0.0, 1.0], ship: [[0.0; 4]; 4], spin: None, uv: [0.0; 3] }
     }
 }
 

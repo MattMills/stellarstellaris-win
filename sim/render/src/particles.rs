@@ -2,8 +2,10 @@
 //! steady state: each subsystem's live particles (emission x mean life, at most max_amount) at
 //! deterministic random places of its emitter, each at a random age over its life, its size and
 //! alpha times the particle's animation curves at that age (size_grow, fade_in_out, ...), as
-//! billboards of its texture, added (ParticleAdditive) or blended. What the game animates over
-//! time (velocity, forces, trails) is not.
+//! billboards of its texture, added (ParticleAdditive) or blended. Over time (map.wgsl vs_quad,
+//! the view's time): each particle's age goes round its life from its random start, its alpha
+//! and size curves at that age, its rotation at rotation_speed; it stays where it was placed (a
+//! new place each life, velocity, forces and trails are not done) [I].
 
 use std::collections::HashMap;
 
@@ -54,6 +56,10 @@ pub struct Subsystem {
     pub colour: [f32; 4],
     pub size: (f32, f32),
     pub rotation: (f32, f32),
+    /// degrees a second
+    pub rotation_speed: (f32, f32),
+    /// seconds
+    pub life: (f32, f32),
     pub size_curve: Option<Curve>,
     pub alpha_curve: Option<Curve>,
 }
@@ -134,6 +140,8 @@ impl Library {
                     colour,
                     size: pair(&s, "size")?,
                     rotation: pair(&s, "rotation")?,
+                    rotation_speed: pair(&s, "rotation_speed")?,
+                    life,
                     size_curve,
                     alpha_curve,
                 });
@@ -175,8 +183,55 @@ pub fn billboards(effect: &Effect, transform: &M4, seed: u32, tex: &mut Textures
             let colour = [s.colour[0], s.colour[1], s.colour[2], s.colour[3] * fade];
             let mut q = Quad::billboard(p[0], p[2], p[1], size * 0.5, colour, rot, 0.0);
             q.uv = uv;
+            // over time (map.wgsl's particle mode): its life and spin, the curves packed
+            let life = (s.life.0 + s.life.1 * (2.0 * rng.next() - 1.0)).max(0.05);
+            let spin = (s.rotation_speed.0 + s.rotation_speed.1 * (2.0 * rng.next() - 1.0)).to_radians();
+            if let (Some(alpha), Some(sz)) = (packed(s.alpha_curve.as_ref(), 4), packed(s.size_curve.as_ref(), 2)) {
+                let base = size / grow.max(1e-3);
+                q = Quad::billboard(p[0], p[2], p[1], base * 0.5, [s.colour[0], s.colour[1], s.colour[2], s.colour[3]], rot, sz[1]);
+                q.uv = uv;
+                q.fx = [5.0 + 0.4 * age, 1.0 / life, spin, sz[0]];
+                q.fx2 = [alpha[0], alpha[1], alpha[2], alpha[3]];
+            }
             out.push((Layer::Stars, if s.additive { Blend::Add } else { Blend::Alpha }, t, q));
         }
     }
     out
+}
+
+/// A curve's points for map.wgsl's particle mode: up to `n` points (age, value), each packed into
+/// one float (the age in 10 bits, the value 0 .. 8 in 13: exact in an f32), the value with the
+/// curve's min and max applied, the last repeated to `n`; none (no curve: constant 1) gives
+/// (0, 1) .. (1, 1). None when it does not fit (more points, values outside 0 .. 8).
+fn packed(c: Option<&Curve>, n: usize) -> Option<Vec<f32>> {
+    let pts: Vec<(f32, f32)> = match c {
+        None => vec![(0.0, 1.0), (1.0, 1.0)],
+        Some(c) => c.points.iter().map(|&(x, v)| (x, c.min + (c.max - c.min) * v)).collect(),
+    };
+    if pts.is_empty() || pts.len() > n || pts.iter().any(|&(x, y)| !(0.0..=1.0).contains(&x) || !(0.0..8.0).contains(&y)) {
+        return None;
+    }
+    let pack = |(x, y): (f32, f32)| ((x * 1023.0).round() * 8192.0 + (y * 1023.0).round()) as f32;
+    let mut out: Vec<f32> = pts.iter().map(|&p| pack(p)).collect();
+    while out.len() < n {
+        out.push(*out.last().unwrap());
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn curves_pack_exactly() {
+        let c = Curve { min: 1.0, max: 3.0, points: vec![(0.0, 0.0), (1.0, 1.0)] };
+        let p = packed(Some(&c), 2).unwrap();
+        let v = p[1] as u32;
+        assert_eq!(v / 8192, 1023);
+        assert_eq!(v % 8192, 3069);
+        assert_eq!(packed(None, 4).unwrap().len(), 4);
+        let big = Curve { min: 0.0, max: 9.0, points: vec![(0.0, 1.0)] };
+        assert!(packed(Some(&big), 4).is_none());
+    }
 }

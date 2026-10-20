@@ -1432,7 +1432,14 @@ impl Renderer {
                 extra: [k.width, k.kind, if spin { 1.0 } else { 0.0 }, 0.0],
                 lava: [l(k.lava[0]), l(k.lava[1]), l(k.lava[2])],
                 std: [m.std[0], m.std[1], env_intensity, m.std[3]],
-                ship: if spin { crate::math::M4::IDENTITY.cols() } else { m.ship },
+                ship: {
+                    // a part not a ship's: ship3 its uv animation (direction, speed)
+                    let mut s = if spin { crate::math::M4::IDENTITY.cols() } else { m.ship };
+                    if k.kind != 2.0 {
+                        s[3] = [m.uv[0], m.uv[1], m.uv[2], 0.0];
+                    }
+                    s
+                },
             });
             if let (true, Some(s)) = (spin, &m.spin) {
                 self.spins.push(((uniforms.len() - 1) as u32, s.clone()));
@@ -1622,8 +1629,9 @@ impl Renderer {
         }
         if let Some((buf, _)) = &self.draw_uniforms {
             for (slot, spin) in &self.spins {
+                // (three columns: the fourth is the uv animation's)
                 let r = spin.matrix_at(t).cols();
-                queue.write_buffer(buf, *slot as u64 * DRAW_SLOT + DRAW_SPIN_OFFSET, bytemuck::cast_slice(&r));
+                queue.write_buffer(buf, *slot as u64 * DRAW_SLOT + DRAW_SPIN_OFFSET, bytemuck::cast_slice(&r[..3]));
             }
         }
     }

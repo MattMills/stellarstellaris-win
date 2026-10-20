@@ -187,11 +187,28 @@ function models.scan(db, game_dir, portraits)
                     -- game_data: the entity's shader constants (bloom_factor: vBloomFactor,
                     -- uv_animation_speed, ...)
                     local gd = get(e, "game_data")
+                    -- uv_animation_direction = { x y } (numbers or @variables)
+                    local dir = type(gd) == "table" and get(gd, "uv_animation_direction") or nil
+                    local uv_dir
+                    if type(dir) == "table" then
+                        local v = {}
+                        for _, x in ipairs(dir) do
+                            if not x.op and x.text then
+                                v[#v + 1] = num(x.text)
+                            end
+                        end
+                        uv_dir = { v[1] or 0, v[2] or 0 }
+                    end
                     db.entities[name] = {
                         name = name, pdxmesh = get(e, "pdxmesh"), clone = get(e, "clone"), scale = num(get(e, "scale")) or 1,
                         settings = settings_of(e), attach = attach, source = f, particles = state_particles(e),
                         bloom_factor = type(gd) == "table" and tonumber(get(gd, "bloom_factor")) or nil,
                         recolor_crunch = type(gd) == "table" and tonumber(get(gd, "emissive_recolor_crunch")) or nil,
+                        -- the idle animation's speed (< 0 backwards: "Rotation is reversed")
+                        playback_rate = num(get(e, "playback_rate")),
+                        -- vUVAnimationTime's speed and vUVAnimationDir (mesh.wgsl)
+                        uv_speed = type(gd) == "table" and num(get(gd, "uv_animation_speed")) or nil,
+                        uv_dir = uv_dir,
                     }
                 end
             end)
@@ -234,6 +251,9 @@ local function resolve(db, e, depth)
         source = e.source, clone = e.clone,
         particles = #(e.particles or {}) > 0 and e.particles or base.particles,
         bloom_factor = e.bloom_factor or base.bloom_factor,
+        playback_rate = e.playback_rate or base.playback_rate,
+        uv_speed = e.uv_speed or base.uv_speed,
+        uv_dir = e.uv_dir or base.uv_dir,
         recolor_crunch = e.recolor_crunch or base.recolor_crunch,
     }
 end
@@ -264,6 +284,9 @@ function models.describe(db, name)
         out.attach = e.attach
         out.particles = e.particles or {}
         out.bloom_factor = e.bloom_factor
+        out.playback_rate = e.playback_rate
+        out.uv_speed = e.uv_speed
+        out.uv_dir = e.uv_dir
         out.recolor_crunch = e.recolor_crunch
     else
         m = db.meshes[name]
