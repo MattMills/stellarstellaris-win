@@ -82,23 +82,14 @@ pub fn data(map: &Map, id: u32, side: &str) -> Result<Option<String>, String> {
             .map_err(|e| format!("render.windows.planet.data: {e}"));
     }
     // the simulation's world (its own thread): asked once a snapshot, when it is ready (the
-    // window shows its frame and name until then; Clock::query would wait for the load)
+    // window shows its frame and name until then; Clock::query would wait for the load); while
+    // the clock runs, the last answer until the new one comes (Clock::query_view)
     let Some(clock) = map.clock.as_ref() else { return Ok(None) };
     if !clock.status().ready {
         return Ok(None);
     }
     let generation = map.snapshot.as_ref().map_or(0, |s| s.generation);
-    if let Some(d) = CACHE.with(|c| c.borrow().as_ref().filter(|(i, g, s, _)| *i == id && *g == generation && s == side).map(|(_, _, _, d)| d.clone())) {
-        return Ok(d);
-    }
-    let d = clock.query(&code).map(|s| if s.is_empty() { None } else { Some(s) }).map_err(|e| format!("render.windows.planet.data: {e}"))?;
-    CACHE.with(|c| *c.borrow_mut() = Some((id, generation, side.to_string(), d.clone())));
-    Ok(d)
-}
-
-thread_local! {
-    /// the last planet's data from the simulation: (planet, snapshot generation, data)
-    static CACHE: std::cell::RefCell<Option<(u32, u64, String, Option<String>)>> = const { std::cell::RefCell::new(None) };
+    clock.query_view(&code, generation).map(|s| if s.is_empty() { None } else { Some(s) }).map_err(|e| format!("render.windows.planet.data: {e}"))
 }
 
 /// A planet view click (its `planet:` actions; docs/windows/planet.md, the buttons):
@@ -291,7 +282,9 @@ pub fn run_pending(app: &mut crate::app::App) -> Result<(), String> {
         c.publish(true);
     }
     map.sync();
-    forget();
+    if let Some(c) = map.clock.as_ref() {
+        c.forget_views();
+    }
     Ok(())
 }
 
@@ -327,11 +320,6 @@ pub fn typed(view: &State, creator_action: &str) -> Option<String> {
         return Some(format!("planet:text:{c}"));
     }
     creator_action.strip_prefix("creator:key:").map(|k| format!("planet:key:{k}"))
-}
-
-/// Forgets the simulation's data (a command changed the planet).
-pub fn forget() {
-    CACHE.with(|c| *c.borrow_mut() = None);
 }
 
 /// Hands planet `id`'s data and the tab shown to the front end's runtime (`RENDER_PLANET =

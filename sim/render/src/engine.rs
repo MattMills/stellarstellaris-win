@@ -36,8 +36,10 @@
 //!   the timestep)
 //! - `frame PATH.png` (renders the view, writes the PNG: `ok frame PATH W H MS`), `frame -`;
 //!   in lockstep the camera arrives first (frames run), `frame PATH now` takes the frame as it is
-//! - `bench SECONDS [FPS]`: frames drawn back to back at FPS (120) as a window draws them, the
-//!   clock running as it is; what each frame took against the frame's time
+//! - `bench SECONDS [FPS] [hover X0 Y0 X1 Y1 | wheel X Y | drag X0 Y0 X1 Y1]`: frames drawn back
+//!   to back at FPS (120) as a window draws them, the clock running as it is, that input made each
+//!   frame; what each frame took against the frame's time (docs/profiling.md)
+//! - `prof on|off`, `prof reset`, `prof report [PATH]`: the frame profiler (prof.rs)
 //! - `state` (JSON: screen, view, camera, date, the clock, the selection, the input, size), `quit`
 
 use std::io::{BufRead, BufReader, Write};
@@ -69,24 +71,82 @@ pub struct Engine {
     clock_ms: f64,
 }
 
-/// A frame of `bench`: its parts, seconds: the app's update (the camera, the simulation's
-/// snapshot taken), the scene built (when something changed), its upload, the GPU's frame; and
-/// whether a new snapshot came in it.
+/// A frame of `bench`: its parts, seconds: the input made for it (`bench`'s pattern), the app's
+/// update (the camera, the simulation's snapshot taken), the scene built (when something
+/// changed), its upload, the GPU's frame; and whether a new snapshot came in it, a scene built.
 #[derive(Clone, Copy, Default)]
 struct BenchFrame {
+    input: f64,
     update: f64,
     prepare: f64,
     upload: f64,
     gpu: f64,
     snapshot: bool,
+    built: bool,
 }
 
 impl BenchFrame {
     fn total(&self) -> f64 {
-        self.update + self.prepare + self.upload + self.gpu
+        self.input + self.update + self.prepare + self.upload + self.gpu
     }
     fn cpu(&self) -> f64 {
-        self.update + self.prepare + self.upload
+        self.input + self.update + self.prepare + self.upload
+    }
+}
+
+/// The input `bench` makes each frame (docs/profiling.md): the pointer moved along a line and
+/// back (`hover`), wheel notches over a point (`wheel`: a notch every 4 frames, 8 one way then 8
+/// the other), a left drag along a line (`drag`: pressed, 58 frames of moves, released).
+#[derive(Clone, Copy, Debug)]
+enum BenchInput {
+    None,
+    Hover(f32, f32, f32, f32),
+    Wheel(f32, f32),
+    Drag(f32, f32, f32, f32),
+}
+
+impl BenchInput {
+    fn parse(a: &[&str]) -> Result<BenchInput, String> {
+        let n = |i: usize| -> Result<f32, String> { num(a.get(i), "coordinate") };
+        Ok(match a.first().copied() {
+            None => BenchInput::None,
+            Some("hover") => BenchInput::Hover(n(1)?, n(2)?, n(3)?, n(4)?),
+            Some("wheel") => BenchInput::Wheel(n(1)?, n(2)?),
+            Some("drag") => BenchInput::Drag(n(1)?, n(2)?, n(3)?, n(4)?),
+            Some(o) => return Err(format!("bench SECONDS [FPS] [hover X0 Y0 X1 Y1 | wheel X Y | drag X0 Y0 X1 Y1]: {o}?")),
+        })
+    }
+
+    /// Frame `i`'s input.
+    fn frame(&self, i: u64) -> Vec<Input> {
+        let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+        match *self {
+            BenchInput::None => Vec::new(),
+            BenchInput::Hover(x0, y0, x1, y1) => {
+                // along the line in 120 frames and back
+                let p = (i % 240) as f32 / 120.0;
+                let t = if p <= 1.0 { p } else { 2.0 - p };
+                vec![Input::Move { x: lerp(x0, x1, t).round(), y: lerp(y0, y1, t).round() }]
+            }
+            BenchInput::Wheel(x, y) => {
+                let mut v = if i == 0 { vec![Input::Move { x, y }] } else { Vec::new() };
+                if i % 4 == 0 {
+                    let notch = (i / 4) % 16;
+                    v.push(Input::Wheel { notches: if notch < 8 { -1.0 } else { 1.0 } });
+                }
+                v
+            }
+            BenchInput::Drag(x0, y0, x1, y1) => {
+                let k = i % 60;
+                let t = k as f32 / 59.0;
+                let at = Input::Move { x: lerp(x0, x1, t).round(), y: lerp(y0, y1, t).round() };
+                match k {
+                    0 => vec![at, Input::Button { button: Button::Left, down: true }],
+                    59 => vec![at, Input::Button { button: Button::Left, down: false }],
+                    _ => vec![at],
+                }
+            }
+        }
     }
 }
 
@@ -121,15 +181,19 @@ impl Engine {
 
     /// Frames drawn back to back at `fps` for `secs` seconds as a window draws them (the app
     /// updated, the scene built when something changed and uploaded, the GPU's frame waited for;
-    /// no read-back), with the clock running as it is: what each frame took against the frame's
-    /// time (docs/frame_timing.md, the 120 FPS standard). A frame that ends late starts the next
-    /// at once.
-    fn bench(&mut self, secs: f64, fps: f64) -> Result<String, String> {
+    /// no read-back), with the clock running as it is and `input`'s input made each frame: what
+    /// each frame took against the frame's time (docs/frame_timing.md, the 120 FPS standard;
+    /// docs/profiling.md). A frame that ends late starts the next at once. With the frame
+    /// profiler on (STELLAR_PROF=1, `prof on`) its spans are counted from the start and the
+    /// reply names the costliest a frame.
+    fn bench(&mut self, secs: f64, fps: f64, input: BenchInput) -> Result<String, String> {
         let period = 1.0 / fps.max(1.0);
         let days0 = self.app.map.as_ref().and_then(|m| m.clock.as_ref()).map_or(0, |c| c.status().days);
         let date0 = self.app.map.as_ref().map_or(String::new(), |m| m.date());
         let mut uploaded = u64::MAX;
         let mut frames: Vec<BenchFrame> = Vec::new();
+        // (the spans and the GUI Lua's samples counted from here)
+        crate::prof::full_report(&self.app.runtime, 0, true);
         let start = std::time::Instant::now();
         let mut next = start;
         while start.elapsed().as_secs_f64() < secs {
@@ -146,27 +210,40 @@ impl Engine {
                 }
             }
             let t0 = std::time::Instant::now();
+            for i in input.frame(frames.len() as u64) {
+                self.clock_ms = start.elapsed().as_secs_f64() * 1000.0;
+                self.app.input(&i, self.clock_ms)?;
+            }
+            let ti = std::time::Instant::now();
             let gen0 = self.app.map.as_ref().and_then(|m| m.snapshot.as_ref()).map_or(0, |s| s.generation);
             self.app.update();
             let gen1 = self.app.map.as_ref().and_then(|m| m.snapshot.as_ref()).map_or(0, |s| s.generation);
             let t1 = std::time::Instant::now();
             let generation = self.app.prepare()?;
             let t2 = std::time::Instant::now();
-            if generation != uploaded {
+            let built = generation != uploaded;
+            if built {
+                let _s = crate::prof::span("upload");
                 let (scene, textures) = self.app.parts().ok_or("no scene")?;
                 self.off.upload(scene, textures);
                 uploaded = generation;
             }
             let t3 = std::time::Instant::now();
             let (w, h) = self.app.size;
-            self.off.draw_frame(w, h, ALL, &mut self.target)?;
+            {
+                let _s = crate::prof::span("gpu frame (draw, wait)");
+                self.off.draw_frame(w, h, ALL, &mut self.target)?;
+            }
             let t4 = std::time::Instant::now();
+            crate::prof::frame_end();
             frames.push(BenchFrame {
-                update: (t1 - t0).as_secs_f64(),
+                input: (ti - t0).as_secs_f64(),
+                update: (t1 - ti).as_secs_f64(),
                 prepare: (t2 - t1).as_secs_f64(),
                 upload: (t3 - t2).as_secs_f64(),
                 gpu: (t4 - t3).as_secs_f64(),
                 snapshot: gen1 != gen0,
+                built,
             });
             self.frames += 1;
             next += std::time::Duration::from_secs_f64(period);
@@ -174,6 +251,7 @@ impl Engine {
                 next = t4;
             }
         }
+        self.flush_log();
         let wall = start.elapsed().as_secs_f64();
         let days = self.app.map.as_ref().and_then(|m| m.clock.as_ref()).map_or(0, |c| c.status().days) - days0;
         let date = self.app.map.as_ref().map_or(String::new(), |m| m.date());
@@ -185,29 +263,35 @@ impl Engine {
         let mut total: Vec<f64> = frames.iter().map(|f| f.total()).collect();
         let mut cpu: Vec<f64> = frames.iter().map(|f| f.cpu()).collect();
         let mut gpu: Vec<f64> = frames.iter().map(|f| f.gpu).collect();
+        let cpu_mean = if cpu.is_empty() { 0.0 } else { cpu.iter().sum::<f64>() / cpu.len() as f64 };
         let over = frames.iter().filter(|f| f.total() > period).count();
         let cpu_over = frames.iter().filter(|f| f.cpu() > period).count();
         let snaps: Vec<&BenchFrame> = frames.iter().filter(|f| f.snapshot).collect();
+        let builds = frames.iter().filter(|f| f.built).count();
         let worst = frames.iter().copied().fold(BenchFrame::default(), |a, f| if f.total() > a.total() { f } else { a });
         let worst_cpu = frames.iter().copied().fold(BenchFrame::default(), |a, f| if f.cpu() > a.cpu() { f } else { a });
         let snap_max = snaps.iter().map(|f| f.cpu()).fold(0.0, f64::max);
+        let spans = if crate::prof::on() { format!("; the most a frame (self ms): {}", crate::prof::summary(8)) } else { String::new() };
         Ok(format!(
-            "{} frames in {wall:.1} s at {fps} FPS ({:.2} ms a frame); frame ms p50 {:.2} p99 {:.2} max {:.2}, over the frame's time {over}; the CPU's part (update, scene, upload) p50 {:.2} p99 {:.2} max {:.2}, over {cpu_over}; the GPU's p50 {:.2} p99 {:.2} max {:.2}; the worst frame update {:.2} scene {:.2} upload {:.2} gpu {:.2}; the worst CPU part update {:.2} scene {:.2} upload {:.2}; {} frames took a new snapshot, their CPU part at most {:.2} ms; {days} days run, {date0} to {date}",
+            "{} frames in {wall:.1} s at {fps} FPS ({:.2} ms a frame); frame ms p50 {:.2} p99 {:.2} max {:.2}, over the frame's time {over}; the CPU's part (input, update, scene, upload) mean {:.2} p50 {:.2} p99 {:.2} max {:.2}, over {cpu_over}; the GPU's p50 {:.2} p99 {:.2} max {:.2}; {builds} scenes built; the worst frame input {:.2} update {:.2} scene {:.2} upload {:.2} gpu {:.2}; the worst CPU part input {:.2} update {:.2} scene {:.2} upload {:.2}; {} frames took a new snapshot, their CPU part at most {:.2} ms; {days} days run, {date0} to {date}{spans}",
             frames.len(),
             ms(period),
             ms(pct(&mut total, 0.5)),
             ms(pct(&mut total, 0.99)),
             ms(pct(&mut total, 1.0)),
+            ms(cpu_mean),
             ms(pct(&mut cpu, 0.5)),
             ms(pct(&mut cpu, 0.99)),
             ms(pct(&mut cpu, 1.0)),
             ms(pct(&mut gpu, 0.5)),
             ms(pct(&mut gpu, 0.99)),
             ms(pct(&mut gpu, 1.0)),
+            ms(worst.input),
             ms(worst.update),
             ms(worst.prepare),
             ms(worst.upload),
             ms(worst.gpu),
+            ms(worst_cpu.input),
             ms(worst_cpu.update),
             ms(worst_cpu.prepare),
             ms(worst_cpu.upload),
@@ -878,11 +962,45 @@ impl Engine {
                 Ok(Reply::ok(format!("frame {rest} {w} {h} {ms:.0}")))
             }
             "bench" => {
+                // bench SECONDS [FPS] [hover X0 Y0 X1 Y1 | wheel X Y | drag X0 Y0 X1 Y1]
                 let secs: f64 = num(a.first(), "seconds")?;
-                let fps: f64 = if a.len() > 1 { num(a.get(1), "fps")? } else { 120.0 };
-                let r = self.bench(secs.clamp(0.1, 600.0), fps)?;
+                let has_fps = a.get(1).is_some_and(|v| v.parse::<f64>().is_ok());
+                let fps: f64 = if has_fps { num(a.get(1), "fps")? } else { 120.0 };
+                let input = BenchInput::parse(&a[if has_fps { 2 } else { 1 }.min(a.len())..])?;
+                let r = self.bench(secs.clamp(0.1, 600.0), fps, input)?;
                 Ok(Reply::ok(format!("bench {r}")))
             }
+            // the frame profiler (prof.rs, docs/profiling.md): `prof on|off`, `prof reset`,
+            // `prof report [PATH]` (the spans' table and the GUI Lua's samples, to PATH or stderr;
+            // then both forgotten)
+            "prof" => match a.first().copied() {
+                Some("on") => {
+                    crate::prof::set(true);
+                    Ok(Reply::ok("prof on"))
+                }
+                Some("off") => {
+                    crate::prof::set(false);
+                    Ok(Reply::ok("prof off"))
+                }
+                Some("reset") => {
+                    crate::prof::full_report(&self.app.runtime, 0, true);
+                    Ok(Reply::ok("prof reset"))
+                }
+                Some("report") => {
+                    let text = crate::prof::full_report(&self.app.runtime, 40, true);
+                    match a.get(1) {
+                        Some(path) => {
+                            std::fs::write(path, &text).map_err(|e| format!("{path}: {e}"))?;
+                            Ok(Reply::ok(format!("prof report {path} {} lines", text.lines().count())))
+                        }
+                        None => {
+                            std::eprint!("{text}");
+                            Ok(Reply::ok(format!("prof report {} lines", text.lines().count())))
+                        }
+                    }
+                }
+                _ => Err("prof on|off|reset|report [PATH]".into()),
+            },
             "state" => Ok(Reply::ok(self.state())),
             // `effect WORDS...`: the console's effect in the simulation (render.windows.console_effect),
             // as the headless game's `effect`: a test's setup made the same way on both sides

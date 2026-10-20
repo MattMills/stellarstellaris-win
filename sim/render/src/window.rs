@@ -178,17 +178,20 @@ impl Win {
         // nothing else holds the frames back, and the GPU's queue and the resources the scenes
         // replaced, freed when the device is polled, grew until the GPU ran out of memory)
         if let Some(idx) = s.in_flight.take() {
+            let _s = crate::prof::span("render: wait for the GPU's frame before");
             let _ = s.device.poll(wgpu::PollType::Wait { submission_index: Some(idx), timeout: Some(Duration::from_millis(250)) });
         }
         // the newest scene: its resources up within the frame's budget, then drawn; until then
         // the one before (ui.rs)
         if let Some(frame) = self.ui.latest() {
             self.screen = frame.screen;
+            let _s = crate::prof::span("render: scene taken, uploads");
             ui::take(&mut s.renderer, &s.device, &s.queue, &frame, &mut s.uploaded);
         }
         if s.uploaded == u64::MAX {
             return Ok(());
         }
+        let span = crate::prof::span("render: surface texture");
         let texture = match s.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
             wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
@@ -242,6 +245,8 @@ impl Win {
             s.window.request_redraw();
             return Ok(());
         }
+        drop(span);
+        let span = crate::prof::span("render: draw, submit, present");
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = s.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         s.renderer.draw(&mut encoder, &view, ALL);
@@ -249,6 +254,8 @@ impl Win {
         s.window.pre_present_notify();
         s.queue.present(texture);
         self.drawn += 1;
+        drop(span);
+        crate::prof::frame_end();
         if self.drawn == 1 {
             eprintln!("first frame drawn ({:?})", self.screen);
             self.first_frame = Some(std::time::Instant::now());

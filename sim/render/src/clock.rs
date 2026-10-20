@@ -21,7 +21,8 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -181,6 +182,49 @@ pub struct Clock {
     tx: Sender<Cmd>,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
+    /// the clock as the app last set it: running, [`Clock::query_view`] does not wait
+    paused: AtomicBool,
+    /// the windows' read-only queries' answers ([`Clock::query_view`])
+    views: Mutex<Views>,
+}
+
+/// The answers of [`Clock::query_view`]: each code's last answer with the snapshot generation it
+/// was asked at (None: a command ran since, the world may have changed), the questions on their
+/// way (asked at a generation), and whether an answer came since the app last looked.
+#[derive(Default)]
+struct Views {
+    answers: HashMap<String, (Option<u64>, Result<String, String>)>,
+    asked: HashMap<String, (u64, mpsc::Receiver<Result<String, String>>)>,
+    arrived: bool,
+}
+
+impl Views {
+    /// The answers come since, kept.
+    fn poll(&mut self) {
+        let mut done = Vec::new();
+        for (code, (g, rx)) in &self.asked {
+            match rx.try_recv() {
+                Ok(r) => done.push((code.clone(), Some((*g, r)))),
+                Err(TryRecvError::Disconnected) => done.push((code.clone(), None)),
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        for (code, answer) in done {
+            self.asked.remove(&code);
+            if let Some((g, r)) = answer {
+                self.keep(code, g, r);
+                self.arrived = true;
+            }
+        }
+    }
+
+    fn keep(&mut self, code: String, generation: u64, r: Result<String, String>) {
+        // (the codes name ids: bounded by the windows looked at)
+        if self.answers.len() >= 512 && !self.answers.contains_key(&code) {
+            self.answers.clear();
+        }
+        self.answers.insert(code, (Some(generation), r));
+    }
 }
 
 impl Clock {
@@ -256,7 +300,7 @@ impl Clock {
                 w.run(rx);
             })
             .expect("the simulation's thread");
-        Clock { tx, shared, thread: Some(thread) }
+        Clock { tx, shared, thread: Some(thread), paused: AtomicBool::new(paused), views: Mutex::new(Views::default()) }
     }
 
     pub fn status(&self) -> Status {
@@ -291,6 +335,7 @@ impl Clock {
     }
 
     pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Relaxed);
         let _ = self.tx.send(Cmd::Pause(paused));
     }
 
@@ -299,8 +344,67 @@ impl Clock {
     }
 
     /// Runs Lua `code` in the simulation's runtime (between days) and returns the string it
-    /// returns: what a window shows of the world while the simulation runs (fleetwin.rs).
+    /// returns, waited for: a command (it may change the world: the windows' answers of
+    /// [`Clock::query_view`] are asked again), or what a window shows of the world.
     pub fn query(&self, code: &str) -> Result<String, String> {
+        self.forget_views();
+        self.ask(code)
+    }
+
+    /// A window's data, read-only Lua run where the world is (as [`Clock::query`]), for a layout
+    /// of snapshot `generation` (docs/profiling.md). Paused, the answer is waited for as
+    /// `query`'s, and kept for the generation. Running, the simulation answers only after the day
+    /// it is in (up to a second in slices), and a layout that waited for it held the UI thread
+    /// for that long at every snapshot: the last answer is served (the window a day behind at
+    /// most) and a new one asked for; [`Clock::answers_arrived`] says when it came (the windows
+    /// laid out again). A code's first answer is waited for.
+    pub fn query_view(&self, code: &str, generation: u64) -> Result<String, String> {
+        let mut v = self.views.lock().unwrap();
+        v.poll();
+        if let Some((Some(g), r)) = v.answers.get(code) {
+            if *g == generation {
+                return r.clone();
+            }
+        }
+        if !self.paused.load(Ordering::Relaxed) {
+            if let Some((_, r)) = v.answers.get(code) {
+                let r = r.clone();
+                if !v.asked.contains_key(code) {
+                    let (tx, rx) = mpsc::channel();
+                    if self.tx.send(Cmd::Query(code.to_string(), tx)).is_ok() {
+                        v.asked.insert(code.to_string(), (generation, rx));
+                    }
+                }
+                return r;
+            }
+        }
+        drop(v);
+        let r = self.ask(code);
+        self.views.lock().unwrap().keep(code.to_string(), generation, r.clone());
+        r
+    }
+
+    /// Whether an answer [`Clock::query_view`] asked for came since the last call.
+    pub fn answers_arrived(&self) -> bool {
+        let mut v = self.views.lock().unwrap();
+        if v.asked.is_empty() && !v.arrived {
+            return false;
+        }
+        v.poll();
+        std::mem::take(&mut v.arrived)
+    }
+
+    /// The windows' answers asked again (a command changed the world): served while running
+    /// until the new ones come, waited for while paused; the questions on their way forgotten.
+    pub fn forget_views(&self) {
+        let mut v = self.views.lock().unwrap();
+        v.asked.clear();
+        for a in v.answers.values_mut() {
+            a.0 = None;
+        }
+    }
+
+    fn ask(&self, code: &str) -> Result<String, String> {
         self.wait_ready()?;
         let (tx, rx) = mpsc::channel();
         self.tx.send(Cmd::Query(code.to_string(), tx)).map_err(|_| "the simulation's thread has ended")?;

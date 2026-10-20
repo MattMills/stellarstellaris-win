@@ -129,6 +129,9 @@ fn end(sh: &Shared, r: Result<(), String>) {
 
 fn run(mut app: App, rx: Receiver<Job>, sh: &Shared) {
     let mut published = u64::MAX;
+    // STELLAR_PROF=1: the spans' table on stderr every STELLAR_PROF_EVERY seconds, and at the end
+    let every = std::env::var("STELLAR_PROF_EVERY").ok().and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0).map(Duration::from_secs_f64);
+    let mut reported = Instant::now();
     let mut next = Instant::now();
     // a job ran since the last update (its effect is drawn at the next period)
     let mut pending = true;
@@ -138,6 +141,7 @@ fn run(mut app: App, rx: Receiver<Job>, sh: &Shared) {
         let wait = if pending || app.animating() { next.saturating_duration_since(Instant::now()) } else { Duration::from_millis(100) };
         match rx.recv_timeout(wait) {
             Ok(job) => {
+                let _s = crate::prof::span("ui: jobs (input, commands)");
                 if let Err(e) = job(&mut app) {
                     end(sh, Err(e));
                 }
@@ -152,7 +156,12 @@ fn run(mut app: App, rx: Receiver<Job>, sh: &Shared) {
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Disconnected) => {
+                if crate::prof::on() {
+                    eprintln!("{}", crate::prof::full_report(&app.runtime, 40, false));
+                }
+                break;
+            }
         }
         next = (next + PERIOD).max(Instant::now());
         pending = false;
@@ -167,11 +176,13 @@ fn run(mut app: App, rx: Receiver<Job>, sh: &Shared) {
             Ok(g) if g != published => {
                 let Some(scene) = app.scene_shared() else { continue };
                 let textures = app.textures();
+                let s = crate::prof::span("ui: mip chains");
                 for r in render::scene_resources(&scene) {
                     if let Res::Texture(i) = r {
                         render::premip(&textures.images[i]);
                     }
                 }
+                drop(s);
                 let frame = Frame { generation: g, scene, textures: Arc::new(textures.clone()), screen: app.screen };
                 if std::env::var("RENDER_TRACE").is_ok() {
                     eprintln!("scene {g} published ({}x{})", frame.scene.view.width, frame.scene.view.height);
@@ -181,6 +192,14 @@ fn run(mut app: App, rx: Receiver<Job>, sh: &Shared) {
             }
             Ok(_) => {}
             Err(e) => end(sh, Err(e)),
+        }
+        crate::prof::frame_end();
+        if let Some(every) = every.filter(|_| crate::prof::on()) {
+            if reported.elapsed() >= every {
+                let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+                eprintln!("prof report at {unix:.1} (the last {:.1} s)\n{}", reported.elapsed().as_secs_f64(), crate::prof::full_report(&app.runtime, 25, true));
+                reported = Instant::now();
+            }
         }
     }
 }

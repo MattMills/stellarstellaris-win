@@ -58,6 +58,7 @@ mod math;
 mod models;
 mod particles;
 mod pdxmesh;
+mod prof;
 mod planet;
 mod portraits;
 mod system;
@@ -89,6 +90,8 @@ use std::sync::Arc;
 /// RENDER_PROFILE=1: a step of a frame's work that took more than 0.3 ms, on stderr (what holds
 /// a frame up: docs/render.md section 12).
 pub fn prof(label: &str, t0: std::time::Instant) {
+    // (and a span of the frame profiler's with STELLAR_PROF=1: prof.rs)
+    prof::record(label, t0);
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *ON.get_or_init(|| std::env::var("RENDER_PROFILE").as_deref() == Ok("1")) {
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -96,6 +99,19 @@ pub fn prof(label: &str, t0: std::time::Instant) {
             eprintln!("profile {label} {ms:.2} ms");
         }
     }
+}
+
+/// Drops `v` on a thread of its own (named `drop`): the last reference to a snapshot's old galaxy
+/// freed on the UI thread took it 10 ms and more (the outliner's view alone is 350,000 Lua values
+/// in the 2210 save: docs/profiling.md).
+pub fn drop_later<T: Send + 'static>(v: T) {
+    static TX: std::sync::OnceLock<std::sync::mpsc::Sender<Box<dyn Send>>> = std::sync::OnceLock::new();
+    let tx = TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Box<dyn Send>>();
+        let _ = std::thread::Builder::new().name("drop".into()).spawn(move || rx.into_iter().for_each(drop));
+        tx
+    });
+    let _ = tx.send(Box::new(v));
 }
 
 use stellar_sim::{save, Runtime};
@@ -338,7 +354,8 @@ impl Map {
         if self.snapshot.as_ref().is_some_and(|s| s.generation == snap.generation) {
             return false;
         }
-        self.galaxy = snap.galaxy.clone();
+        // (the old galaxy and snapshot freed elsewhere: drop_later)
+        drop_later((std::mem::replace(&mut self.galaxy, snap.galaxy.clone()), self.snapshot.take()));
         if self.observe {
             // the simulation's map textures are the player's: the observer's are made here
             self.galaxy = Arc::new(Map::observed(&snap.galaxy));
@@ -881,6 +898,8 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
+    // STELLAR_PROF=1: the frame profiler's spans (prof.rs, docs/profiling.md)
+    prof::init();
     // the Lua states' collector pause 200, not stellar_sim's 400 (STELLAR_GC_PAUSE overrides):
     // the simulation's heap (about 1.4 GB live) grows by its size before a cycle, not by four
     // times it. 60 s at the fastest speed on 10.5.0.24: the process levelled at 4.5 GB (the heap
