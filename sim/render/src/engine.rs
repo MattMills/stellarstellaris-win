@@ -235,6 +235,11 @@ impl Engine {
                 self.off.draw_frame(w, h, ALL, &mut self.target)?;
             }
             let t4 = std::time::Instant::now();
+            // the windows' textures prepared ahead pinned on the GPU, as the window's render thread
+            // does in a frame with nothing else to upload (after the frame's times: not the UI's work)
+            if !built {
+                crate::ui::pin_prepared(&mut self.off.renderer, &self.off.device, &self.off.queue);
+            }
             crate::prof::frame_end();
             frames.push(BenchFrame {
                 input: (ti - t0).as_secs_f64(),

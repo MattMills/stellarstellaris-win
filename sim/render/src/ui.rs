@@ -218,6 +218,18 @@ pub fn take(renderer: &mut render::Renderer, device: &wgpu::Device, queue: &wgpu
     true
 }
 
+/// The windows' textures prepared ahead (prepare.rs), pinned on the GPU within the frame's upload
+/// budget: for a frame with no new scene's resources to upload. A texture the GPU refuses stops
+/// the pinning (the windows upload theirs when they are built).
+pub fn pin_prepared(renderer: &mut render::Renderer, device: &wgpu::Device, queue: &wgpu::Queue) {
+    for (name, cube, img) in crate::prepare::next_pins(UPLOAD_BUDGET) {
+        if let Err(e) = renderer.pin(device, queue, &name, cube, &img) {
+            crate::prepare::pin_failed(&e);
+            break;
+        }
+    }
+}
+
 /// A frame of [`bench`]: the render thread's parts (the newest scene taken and its resources
 /// uploaded, the GPU's frame), seconds, and whether a new scene was switched to in it.
 #[derive(Clone, Copy, Default)]
@@ -266,6 +278,8 @@ fn frames_for(ui: &Ui, off: &mut Offscreen, target: &mut Option<(u32, u32, wgpu:
             let was = *uploaded;
             if !take(&mut off.renderer, &off.device, &off.queue, &frame, uploaded) {
                 waiting += 1;
+            } else {
+                pin_prepared(&mut off.renderer, &off.device, &off.queue);
             }
             switched = *uploaded != was;
         }

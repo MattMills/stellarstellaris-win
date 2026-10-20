@@ -931,11 +931,36 @@ impl Renderer {
         crate::prof(&format!("upload: {name} in all"), t0);
     }
 
+    /// A texture or cube map uploaded ahead of the scene that will use it (prepare.rs), under the
+    /// name the scene gives it: kept for the session, a scene with the same image finds it there. An
+    /// error if the GPU refused it (out of memory: nothing kept).
+    pub fn pin(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, name: &str, cube: bool, img: &Arc<Image>) -> Result<(), String> {
+        let _s = crate::prof::span("prepare: pinned on the GPU");
+        let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        if cube {
+            self.cube(device, queue, name, img);
+        } else {
+            self.texture(device, queue, name, img);
+        }
+        match pollster::block_on(scope.pop()) {
+            None => Ok(()),
+            Some(e) => {
+                if cube {
+                    self.cubes.remove(name);
+                } else {
+                    self.textures.remove(name);
+                }
+                Err(format!("{name}: {e}"))
+            }
+        }
+    }
+
     /// A cube map (dds::load_cube: six faces stacked) as a cube texture, one mip.
     fn cube(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, name: &str, img: &Arc<Image>) {
         if self.cubes.get(name).is_some_and(|c| Arc::ptr_eq(&c.0, img)) {
             return;
         }
+        let _s = crate::prof::span("upload: cube maps");
         self.mesh_binds.retain(|k, _| k.3 != name && k.4 != name);
         let size = img.width;
         let levels = crate::dds::cube_levels(img);
@@ -969,6 +994,7 @@ impl Renderer {
         if self.meshes.get(&m.key).is_some_and(|g| same_mesh(&g.source, m)) {
             return;
         }
+        let _s = crate::prof::span("upload: meshes");
         let buffer = |label: &str, bytes: &[u8], usage: wgpu::BufferUsages| {
             let buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -1688,6 +1714,10 @@ impl Offscreen {
         let info = adapter.get_info();
         let adapter = describe(&info);
         let renderer = Renderer::new(&device, OFFSCREEN_FORMAT);
+        // (textures pinned on the GPU ahead only on a GPU: prepare.rs)
+        if info.device_type == wgpu::DeviceType::Cpu {
+            crate::prepare::pin_failed("a CPU adapter");
+        }
         Ok(Offscreen { device, queue, adapter, info, renderer })
     }
 

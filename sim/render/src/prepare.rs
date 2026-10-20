@@ -15,6 +15,13 @@
 //!   too; [`crate::dds::Cache`] takes an asset from the store instead of decoding it
 //!   ([`take`]), and the upload finds its mip chain made. At most STELLAR_PREPARE_MB (256) of
 //!   decoded images are prepared a load (and forgotten at the next one).
+//! - **Pinned on the GPU**: each asset decoded is queued for the render thread, which uploads it
+//!   in its idle frames within its upload budget ([`next_pins`], `Renderer::pin`) under the name the
+//!   scenes give it, so that a window's first scene finds its textures on the GPU already (the
+//!   renderer keeps them for the session). At most STELLAR_PIN_MB (512; 0: none) pinned, in the
+//!   manifest's order (the designer's first); none on a CPU adapter (lavapipe: a second copy in
+//!   memory); an upload the GPU refuses (out of memory) stops the pinning ([`pin_failed`]) and the
+//!   windows upload their textures themselves, from the decoded store, as without it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -31,6 +38,83 @@ const SEED: &[(&str, &str)] = &[
     ("designer", "cube1:gfx/map/sky_rim.dds"),
     ("designer", "gfx/worldgfx/colorcorrection_neutral.tga"),
 ];
+
+/// The assets decoded and waiting for the render thread to pin them on the GPU (the renderer's
+/// name for each: `PATH`, `cube:PATH`, `cubeN:PATH`; whether a cube map), the bytes pinned, and
+/// whether pinning is on.
+struct Pins {
+    queue: std::collections::VecDeque<(usize, String, bool, Arc<Image>)>,
+    bytes: usize,
+    on: bool,
+    /// the workers still decoding (the total logged once they are done and all is pinned)
+    workers: usize,
+    /// the assets left unpinned for the budget (the first one logged)
+    skipped: usize,
+}
+
+fn pins() -> &'static Mutex<Pins> {
+    static P: OnceLock<Mutex<Pins>> = OnceLock::new();
+    P.get_or_init(|| {
+        let mb = std::env::var("STELLAR_PIN_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(512);
+        Mutex::new(Pins { queue: Default::default(), bytes: 0, on: mb > 0, workers: 0, skipped: 0 })
+    })
+}
+
+fn pin_budget() -> usize {
+    std::env::var("STELLAR_PIN_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(512) << 20
+}
+
+/// The assets to pin on the GPU now, about `budget` bytes of them (one at least): for the render
+/// thread's idle frames. None once pinning is off or its budget spent.
+pub fn next_pins(budget: usize) -> Vec<(String, bool, Arc<Image>)> {
+    let mut p = pins().lock().unwrap();
+    let mut out = Vec::new();
+    let mut spent = 0;
+    while p.on {
+        let Some(front) = p.queue.front() else { break };
+        let bytes = front.3.rgba.len() * 4 / 3;
+        // (one that does not fit the budget left: uploaded when used, the others pinned)
+        if p.bytes + bytes > pin_budget() {
+            let (_, name, _, _) = p.queue.pop_front().unwrap();
+            if p.skipped == 0 {
+                eprintln!("prepare: {name} ({} MB) not pinned, nor the others past STELLAR_PIN_MB: {} MB pinned", bytes >> 20, p.bytes >> 20);
+            }
+            p.skipped += 1;
+            continue;
+        }
+        if !out.is_empty() && spent + bytes > budget {
+            break;
+        }
+        spent += bytes;
+        p.bytes += bytes;
+        let (_, name, cube, img) = p.queue.pop_front().unwrap();
+        out.push((name, cube, img));
+    }
+    if p.on && p.workers == 0 && p.queue.is_empty() && !out.is_empty() {
+        eprintln!("prepare: {} MB of the windows' textures pinned on the GPU", p.bytes >> 20);
+    }
+    out
+}
+
+/// The GPU refused a pinned upload (out of memory), or the adapter is the CPU: no more pinning;
+/// the windows upload what they use when they are built, as without it.
+pub fn pin_failed(why: &str) {
+    let mut p = pins().lock().unwrap();
+    if p.on {
+        p.on = false;
+        p.queue.clear();
+        eprintln!("prepare: no more textures pinned on the GPU ({why}; {} MB pinned)", p.bytes >> 20);
+    }
+}
+
+/// The renderer's name of an asset of the store (`cube1:` is `cube:` there: scene::Textures).
+fn renderer_name(key: &str) -> (String, bool) {
+    match key.strip_prefix("cube").and_then(|r| r.split_once(':')) {
+        Some(("1", rel)) => (format!("cube:{rel}"), true),
+        Some(_) => (key.to_string(), true),
+        None => (key.to_string(), false),
+    }
+}
 
 /// The decoded assets waiting to be taken, by dds::Cache's keys (`PATH`, `cubeN:PATH`).
 fn store() -> &'static Mutex<HashMap<String, Decoded>> {
@@ -215,7 +299,7 @@ pub fn start(game_dir: &str) {
         }
         keys
     };
-    let queue = Arc::new(Mutex::new((keys.into_iter(), 0usize)));
+    let queue = Arc::new(Mutex::new((keys.into_iter().enumerate(), 0usize)));
     let gd = game_dir.to_string();
     {
         let gd = gd.clone();
@@ -223,17 +307,22 @@ pub fn start(game_dir: &str) {
             dds_names(&gd);
         });
     }
+    pins().lock().unwrap().workers += threads;
     for i in 0..threads {
         let (queue, gd) = (queue.clone(), gd.clone());
         let _ = std::thread::Builder::new().name(format!("prepare-{i}")).spawn(move || loop {
-            let key = {
+            let (index, key) = {
                 let mut q = queue.lock().unwrap();
                 if q.1 >= budget {
+                    pins().lock().unwrap().workers -= 1;
                     return;
                 }
                 match q.0.next() {
                     Some(k) => k,
-                    None => return,
+                    None => {
+                        pins().lock().unwrap().workers -= 1;
+                        return;
+                    }
                 }
             };
             // (already decoded on the UI thread, or by another load's workers: skipped)
@@ -243,8 +332,18 @@ pub fn start(game_dir: &str) {
             let _s = crate::prof::span("prepare: an asset decoded, its mips");
             let r = decode(&gd, &key);
             if let Ok(img) = &r {
-                crate::render::premip(img);
+                // (a cube map uploads its own levels: no 2D chain)
+                if !key.starts_with("cube") {
+                    crate::render::premip(img);
+                }
                 queue.lock().unwrap().1 += img.rgba.len();
+                let mut p = pins().lock().unwrap();
+                if p.on {
+                    // (in the manifest's order, whichever worker finished first)
+                    let (name, cube) = renderer_name(&key);
+                    let at = p.queue.iter().position(|e| e.0 > index).unwrap_or(p.queue.len());
+                    p.queue.insert(at, (index, name, cube, img.clone()));
+                }
             }
             store().lock().unwrap().insert(key, r);
         });

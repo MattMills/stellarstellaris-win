@@ -126,6 +126,10 @@ impl Win {
         let (adapter, device, queue) =
             pollster::block_on(render::open_device(&self.instance, self.backend, self.want.as_deref(), Some(&surface)))?;
         eprintln!("rendering on: {}", render::describe(&adapter.get_info()));
+        // (textures pinned on the GPU ahead only on a GPU: prepare.rs)
+        if adapter.get_info().device_type == wgpu::DeviceType::Cpu {
+            crate::prepare::pin_failed("a CPU adapter");
+        }
         // everything here is in physical pixels (the window's size, the surface, the cursor's
         // positions, the GUI's layout): the display's scaling (Windows at 125 % or 150 %) changes
         // no coordinate, only the size winit gives a window moved to another monitor (Resized)
@@ -186,7 +190,11 @@ impl Win {
         if let Some(frame) = self.ui.latest() {
             self.screen = frame.screen;
             let _s = crate::prof::span("render: scene taken, uploads");
-            ui::take(&mut s.renderer, &s.device, &s.queue, &frame, &mut s.uploaded);
+            // the scene's resources all up: this frame's budget for the windows' textures prepared
+            // ahead, pinned on the GPU (prepare.rs)
+            if ui::take(&mut s.renderer, &s.device, &s.queue, &frame, &mut s.uploaded) {
+                ui::pin_prepared(&mut s.renderer, &s.device, &s.queue);
+            }
         }
         if s.uploaded == u64::MAX {
             return Ok(());

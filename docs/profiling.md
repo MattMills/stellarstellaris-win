@@ -37,9 +37,9 @@ left.
   index (531 files of gfx/models parsed in the map's runtime), and the fleet windows and species
   130 to 175 ms of their own definitions. Both are read with the load now (Fixes 5 and 6), and the
   textures each window used before are decoded on worker threads while the save loads (Fix 7,
-  section 10): every first opening takes 7 to 29 ms (the designer 14 ms and 110 ms of copies to the
-  GPU, from 921 + 196), the load 1.2 s longer, behind the load screen, the process up to 241 MB
-  larger.
+  section 10) and pinned on the GPU ahead (Fix 8, section 11): every first opening takes 7 to 29 ms
+  (the designer 14 ms and 5 ms of upload, from 921 + 196), the load 1.2 s longer, behind the load
+  screen, the process up to 241 MB larger and 266 MB of textures held on the GPU.
 - **The GPU of 10.5.0.24.** The baselines and fixes of sections 4 to 6 were measured on lavapipe
   (Vulkan on the CPU, forced in /etc/environment from 2026-10-16 to 2026-10-20): its frames are 35
   to 65 ms at 1280x720 whatever the CPU's part is, and its 24 `llvmpipe` threads hold about 99% of
@@ -354,10 +354,11 @@ in sim/render (with a test of the lazy `tips` and one of the spans).
   runs still waits for the simulation's day once (1.7 s in `running_fleet`'s opening frame). A
   window could open with its frame and fill in when the answer comes, as it does while the
   simulation loads.
-- **First openings** after Fixes 5 to 7 (sections 8 and 10): every window's first frame 7 to 29 ms
-  of scene, the designer's 14 ms and 110 ms of copies to the GPU; a window opened for the first
-  time ever (not in the manifest yet) still decodes its textures. The load is 1.2 s longer and the
-  process up to 241 MB larger for them.
+- **First openings** after Fixes 5 to 8 (sections 8, 10, 11): every window's first frame 7 to 29
+  ms of scene, the designer's 14 ms and 5 ms of upload; a window opened for the first time ever
+  (not in the manifest yet) still decodes and uploads its textures itself, and so do the textures
+  composed at run time (portraits, flags: 8 to 13 ms of upload). The load is 1.2 s longer, the
+  process up to 241 MB larger and the GPU 266 MB fuller for them.
 - **A relayout is still 5 to 10 ms** of windows' Lua (the planet view about 5 ms, the labels 3, the
   top bar 2.7) at every snapshot and window change, and the technology view's own layout 16 ms on
   average and up to 56 (the window's run): within a frame or two, not within 8.3 ms with the
@@ -514,3 +515,32 @@ opening, but after Fixes 5 to 7 little of a first opening is layout: the designe
 portrait views' 19 to 29 ms, of which render.gui's share is small (8% of the designer's samples).
 The rest of the Lua's first-opening cost was the parse of the game's files, which the warm-up
 takes; what is left is listed in section 7.
+
+## 11. The prepared textures pinned on the GPU
+
+After Fix 7 the designer's first frame was 14 ms of scene and 110 ms of upload: its textures
+copied to the GPU (the copies of three 2048x2048 textures and their chains, 20 ms each) and its
+background's cube map (`sky_rim.dds`, 128 MB as RGBA, 41 ms). The renderer keeps every texture it
+uploads for the session, by name, and a scene whose image is the same `Arc` finds it there; the
+prepared images are those `Arc`s. **Fix 8: the prepared textures uploaded ahead** (`prepare.rs`
+`next_pins`, `Renderer::pin`, `ui::pin_prepared`): each asset the workers decode is queued, in the
+manifest's order (the designer's first), and the render thread uploads them in its frames with no
+new scene's resources to upload, within its 4 MB a frame, under the names the scenes give them
+(offscreen, `bench` does it after each frame's times). The fallbacks:
+
+- STELLAR_PIN_MB (512; 0: none): an asset past it is left (logged once) and uploaded when a
+  window uses it, the others pinned;
+- an upload the GPU refuses (out of memory, caught with an error scope) stops the pinning for the
+  session; the windows upload their textures from the prepared store, as with Fix 7 alone;
+- none on a CPU adapter (lavapipe: the GPU's memory is a second copy in the process).
+
+The designer's first frame (scene + upload, ms), the manifest of the 18 windows, NVK: 16 + 109
+without pinning; 15 + 47 with 256 MB (the background's cube map did not fit what was left); 14 + 5
+with 512 MB in the manifest's order. 266 MB of the windows' textures pinned (the decoded store's
+256 MB and their mip chains). With 64 MB: 15 + 76; on lavapipe: no pinning, 14 + 105. The other
+windows' uploads (8 to 13 ms) are the textures composed at run time (portraits, flags), which are
+not files and not prepared. The pictures are the same PNGs as master's (the designer, the council,
+the empire, a starbase).
+
+From the start of this work the designer's first opening went from 921 ms of scene and 196 ms of
+upload to 14 + 5 ms.
