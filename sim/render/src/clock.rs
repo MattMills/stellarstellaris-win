@@ -147,6 +147,10 @@ pub struct Status {
     pub lua_max_mb: f64,
     /// a new game's: what was generated, loaded and started (newgame.rs)
     pub report: Option<String>,
+    /// a save's: what of it this build does not read (its version, ironman ...: galaxy::Loaded)
+    pub save_report: Vec<String>,
+    /// the last save written (its path and date), or why it failed
+    pub last_save: Option<Result<(String, String), String>>,
 }
 
 /// What the simulation's thread loads: a save, or a new game generated from the setup's settings
@@ -169,6 +173,8 @@ enum Cmd {
     /// Lua run in the simulation's runtime between days (its world, definitions, modifiers): the
     /// string it returns (a window's data read where the world is)
     Query(String, Sender<Result<String, String>>),
+    /// the world written as a save to the path (between days: the reply its date)
+    Save(String, Sender<Result<String, String>>),
     Quit,
 }
 
@@ -245,16 +251,19 @@ impl Clock {
             .spawn(move || {
                 let t0 = Instant::now();
                 let loaded = match &source {
-                    Source::Save(path) => galaxy::sim_runtime(&game_dir, path).map(|r| (r, None)),
+                    Source::Save(path) => galaxy::sim_runtime(&game_dir, path).map(|(r, l)| (r, None, l)),
                     Source::NewGame(settings, progress) => {
                         // (its stages are written as they end: newgame.rs)
-                        crate::newgame::sim_runtime(&game_dir, settings, progress).map(|(r, report)| (r, Some(report)))
+                        crate::newgame::sim_runtime(&game_dir, settings, progress)
+                            .map(|(r, report)| (r, Some(report), galaxy::Loaded::default()))
                     }
                 };
-                let runtime = match loaded {
-                    Ok((r, report)) => {
-                        sh.status.lock().unwrap().report = report;
-                        r
+                let (runtime, from) = match loaded {
+                    Ok((r, report, from)) => {
+                        let mut s = sh.status.lock().unwrap();
+                        s.report = report;
+                        s.save_report = from.report.clone();
+                        (r, from)
                     }
                     Err(e) => {
                         let mut s = sh.status.lock().unwrap();
@@ -270,8 +279,11 @@ impl Clock {
                         None
                     }
                 };
+                let mut sim = Simulation::new(runtime);
+                sim.set_tick_count(from.tick);
                 let mut w = Worker {
-                    sim: Simulation::new(runtime),
+                    sim,
+                    meta: from.meta,
                     game_dir,
                     shared: sh.clone(),
                     watch,
@@ -411,6 +423,37 @@ impl Clock {
         rx.recv_timeout(Duration::from_secs(10)).map_err(|_| "the simulation did not answer".to_string())?
     }
 
+    /// Writes the world as a save to `path` between days (docs/saves.md) and waits for it: the
+    /// save's date.
+    pub fn save(&self, path: &str) -> Result<String, String> {
+        self.wait_ready()?;
+        let (tx, rx) = mpsc::channel();
+        self.tx.send(Cmd::Save(path.to_string(), tx)).map_err(|_| "the simulation's thread has ended")?;
+        rx.recv_timeout(Duration::from_secs(120)).map_err(|_| "the simulation did not answer".to_string())?
+    }
+
+    /// The same, without waiting: the result goes to the status (`last_save`).
+    pub fn save_async(&self, path: &str) {
+        let (tx, _rx) = mpsc::channel();
+        let _ = self.tx.send(Cmd::Save(path.to_string(), tx));
+    }
+
+    /// The world's name and date now (the save window's default name and folder): the gamestate's
+    /// `name` and the date.
+    pub fn save_name(&self) -> Result<(String, String), String> {
+        const NAME: &str = r#"
+            local w, e = require('engine.world'), require('engine')
+            local name = 'save'
+            for _, x in ipairs(w.tree) do
+                if x.op and x.key.text == 'name' and x.value.text then name = x.value.text break end
+            end
+            return name .. '\n' .. e.date_text()
+        "#;
+        let s = self.query(NAME)?;
+        let (name, date) = s.split_once('\n').unwrap_or((&s, ""));
+        Ok((name.to_string(), date.to_string()))
+    }
+
     /// One day now (when paused), without waiting for it.
     pub fn next_day(&self) {
         let _ = self.tx.send(Cmd::NextDay);
@@ -490,6 +533,8 @@ fn sliced(runtime: &Runtime) -> Result<Option<Cadence>, String> {
 
 struct Worker {
     sim: Simulation,
+    /// the loaded save's meta (the saves written keep what the world does not give)
+    meta: Option<String>,
     game_dir: String,
     shared: Arc<Shared>,
     watch: Option<u32>,
@@ -528,6 +573,16 @@ impl Worker {
                 }
                 Ok(Cmd::Query(code, reply)) => {
                     let _ = reply.send(self.rt().eval::<String>(&code).map_err(|e| e.to_string()));
+                }
+                Ok(Cmd::Save(path, reply)) => {
+                    let t0 = Instant::now();
+                    let r = self.sim.write_save(&path, self.meta.as_deref());
+                    match &r {
+                        Ok(date) => eprintln!("simulation: saved {date} to {path} in {:.1} s", t0.elapsed().as_secs_f64()),
+                        Err(e) => eprintln!("simulation: the save to {path} failed: {e}"),
+                    }
+                    self.shared.status.lock().unwrap().last_save = Some(r.clone().map(|d| (path.clone(), d)));
+                    let _ = reply.send(r);
                 }
                 Ok(Cmd::Pause(p)) => {
                     if self.paused && !p {

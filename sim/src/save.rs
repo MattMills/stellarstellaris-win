@@ -33,8 +33,9 @@ pub fn read_meta(save: &str) -> Result<String, String> {
     Ok(text)
 }
 
-/// Writes a save: a zip of `meta` (its date set to `date`, "y.mm.dd") and `gamestate`, deflated as
-/// the game writes them.
+/// Writes a save: a zip of `gamestate` and `meta` (its date set to `date`, "y.mm.dd") as the game
+/// writes them [V 4.5.2's saves]: gamestate first, then meta, deflated, DOS date and time 0. The
+/// file is written next to `path` and renamed over it, so a save that fails leaves the old one.
 pub fn write_save(path: &str, gamestate: &str, meta: &str, date: &str) -> Result<(), String> {
     use std::io::Write;
     let mut meta_out = String::new();
@@ -46,15 +47,92 @@ pub fn write_save(path: &str, gamestate: &str, meta: &str, date: &str) -> Result
             meta_out.push('\n');
         }
     }
-    let f = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+    }
+    let tmp = format!("{path}.tmp");
+    let f = std::fs::File::create(&tmp).map_err(|e| format!("{tmp}: {e}"))?;
     let mut z = zip::ZipWriter::new(f);
-    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    z.start_file("meta", opts).map_err(|e| e.to_string())?;
-    z.write_all(meta_out.as_bytes()).map_err(|e| e.to_string())?;
+    // SAFETY: DOS date and time 0 is a bit pattern, as the game writes it (1980-00-00 00:00)
+    let zero = unsafe { zip::DateTime::from_msdos_unchecked(0, 0) };
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .last_modified_time(zero);
     z.start_file("gamestate", opts).map_err(|e| e.to_string())?;
     z.write_all(gamestate.as_bytes()).map_err(|e| e.to_string())?;
+    z.start_file("meta", opts).map_err(|e| e.to_string())?;
+    z.write_all(meta_out.as_bytes()).map_err(|e| e.to_string())?;
     z.finish().map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{path}: {e}"))?;
     Ok(())
+}
+
+/// The game's folder of save games: `Documents/Paradox Interactive/Stellaris/save games` on
+/// Windows, `~/.local/share/Paradox Interactive/Stellaris/save games` on Linux (the game's user
+/// dir; STELLAR_SAVE_GAMES chooses another).
+pub fn save_games_dir() -> Option<std::path::PathBuf> {
+    if let Ok(d) = std::env::var("STELLAR_SAVE_GAMES") {
+        return Some(d.into());
+    }
+    if cfg!(windows) {
+        let home = std::env::var("USERPROFILE").ok()?;
+        Some(std::path::Path::new(&home).join(r"Documents\Paradox Interactive\Stellaris\save games"))
+    } else {
+        let home = std::env::var("HOME").ok()?;
+        Some(std::path::Path::new(&home).join(".local/share/Paradox Interactive/Stellaris/save games"))
+    }
+}
+
+/// The folder of a game's saves in the save games folder (CGameState::GetSaveFolderName
+/// @0x1b40f20 [V]): the game's name (the gamestate's `name`) with every character but ASCII
+/// letters and digits removed; when that removed something, `_` and the MurmurHash3 (x86, 32 bit,
+/// seed 0: PMurHash32) of the whole name as a signed int are added; then lowercased.
+/// "Sacred Uthabulan Order" -> `sacreduthabulanorder_-730439522`.
+pub fn save_folder_name(name: &str) -> String {
+    let kept: String = name.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let folder = if kept == name { kept } else { format!("{kept}_{}", murmur3_32(name.as_bytes(), 0) as i32) };
+    folder.to_ascii_lowercase()
+}
+
+/// MurmurHash3_x86_32 (the game's PMurHash32).
+pub fn murmur3_32(data: &[u8], seed: u32) -> u32 {
+    const C1: u32 = 0xcc9e_2d51;
+    const C2: u32 = 0x1b87_3593;
+    let mut h = seed;
+    let mut chunks = data.chunks_exact(4);
+    for c in &mut chunks {
+        let k = u32::from_le_bytes([c[0], c[1], c[2], c[3]]).wrapping_mul(C1).rotate_left(15).wrapping_mul(C2);
+        h = (h ^ k).rotate_left(13).wrapping_mul(5).wrapping_add(0xe654_6b64);
+    }
+    let tail = chunks.remainder();
+    if !tail.is_empty() {
+        let mut k = 0u32;
+        for (i, b) in tail.iter().enumerate() {
+            k |= (*b as u32) << (8 * i);
+        }
+        h ^= k.wrapping_mul(C1).rotate_left(15).wrapping_mul(C2);
+    }
+    h ^= data.len() as u32;
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x85eb_ca6b);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xc2b2_ae35);
+    h ^ (h >> 16)
+}
+
+/// A save's file name made safe the way the game's save window keeps it: the characters a file
+/// name cannot hold dropped, `.sav` added.
+pub fn save_file_name(name: &str) -> String {
+    let clean: String = name.chars().filter(|c| !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') && !c.is_control()).collect();
+    let clean = clean.trim().trim_end_matches('.');
+    let clean = if clean.is_empty() { "save" } else { clean };
+    if clean.to_ascii_lowercase().ends_with(".sav") {
+        clean.to_string()
+    } else {
+        format!("{clean}.sav")
+    }
 }
 
 /// The date of a gamestate (its `date="y.m.d"` near the top).

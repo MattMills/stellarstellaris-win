@@ -269,20 +269,40 @@ pub fn files_runtime() -> Result<Runtime, String> {
 
 /// A runtime with the game's files and the save loaded for a simulation (the definitions, the
 /// script layer, the world), and the renderer's Lua modules on the path.
-pub fn sim_runtime(game_dir: &str, save_path: &str) -> Result<Runtime, String> {
+pub fn sim_runtime(game_dir: &str, save_path: &str) -> Result<(Runtime, Loaded), String> {
     let t0 = std::time::Instant::now();
     let gamestate = save::read_gamestate(save_path)?;
     let date = save::date_of(&gamestate).ok_or("the save has no date")?;
-    let runtime = Runtime::new(date, 0).map_err(|e| format!("the Lua runtime: {e}"))?;
+    // the save's tick within the day and synchronized generator (random_seed, random_count), as
+    // the game keeps them with -loadrandomseed: a save written again goes on from them
+    let tick = save::tick_of(&gamestate).unwrap_or(0);
+    let (seed, position) = save::random_of(&gamestate).unwrap_or((0, 0));
+    let runtime = Runtime::new(date, seed).map_err(|e| format!("the Lua runtime: {e}"))?;
+    runtime.rng.borrow_mut().position = position;
     let loaded = runtime.load(game_dir, Some(&gamestate), None).map_err(|e| format!("load: {e}"))?;
     drop(gamestate);
     eprintln!("{loaded}");
+    // what of the save this build does not read: said, not failed on
+    let meta = save::read_meta(save_path).ok();
+    let report = runtime.save_report(meta.as_deref()).unwrap_or_else(|e| vec![format!("the save's report: {e}")]);
+    for line in &report {
+        eprintln!("save: {line}");
+    }
     let path = format!("{}/?.lua", lua_dir());
     let package: Table = runtime.lua.globals().get("package").map_err(|e| e.to_string())?;
     let old: String = package.get("path").map_err(|e| e.to_string())?;
     package.set("path", format!("{path};{old}")).map_err(|e| e.to_string())?;
     eprintln!("simulation loaded in {:.1} s", t0.elapsed().as_secs_f64());
-    Ok(runtime)
+    Ok((runtime, Loaded { tick, meta, report }))
+}
+
+/// What a save's load leaves beside the runtime: the tick within the day it was written at, its
+/// `meta` (kept for the saves written from it) and what of it this build does not read.
+#[derive(Clone, Debug, Default)]
+pub struct Loaded {
+    pub tick: i32,
+    pub meta: Option<String>,
+    pub report: Vec<String>,
 }
 
 fn rgb(t: &Table) -> mlua::Result<[f32; 3]> {

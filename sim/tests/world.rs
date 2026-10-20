@@ -102,14 +102,23 @@ fn a_save_written_after_a_month_loads_back() {
     };
     let mut sim = Simulation::new(rt);
     sim.run_days(31);
-    let (text, date) = sim.runtime.save_text().expect("save");
     let meta = save::read_meta(&save::default_save().unwrap()).expect("meta");
     let out = std::env::temp_dir().join("stellar_sim_month.sav");
     let out = out.to_str().unwrap();
-    save::write_save(out, &text, &meta, &date).expect("write");
+    let date = sim.write_save(out, Some(&meta)).expect("write");
 
     let gamestate = save::read_gamestate(out).expect("read back");
     assert_eq!(save::date_of(&gamestate), Some(sim.date()));
+    // the head the game reads back: the tick within the day, the generator as it is now
+    assert_eq!(save::tick_of(&gamestate), Some(sim.tick_count()));
+    let r = sim.runtime.rng.borrow();
+    assert_eq!(save::random_of(&gamestate), Some((r.seed, r.position)));
+    drop(r);
+    // the meta: dated today, the rest the world's
+    let written_meta = save::read_meta(out).expect("meta back");
+    assert!(written_meta.contains(&format!("\ndate=\"{date}\"\n")), "{written_meta}");
+    assert!(written_meta.contains("\nmeta_fleets="), "{written_meta}");
+    let text = gamestate.clone();
     let back = Runtime::new(sim.date(), 7).expect("runtime");
     back.load(&save::game_dir().unwrap(), Some(&gamestate), None).expect("load back");
     assert_eq!(state_of(&back), state_of(&sim.runtime));

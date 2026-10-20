@@ -170,16 +170,19 @@ local function date_text()
 end
 engine.date_text = date_text
 
--- engine.save() -> the gamestate's text: the world as it is now, dated today
-function engine.save()
-    local world = engine.world
-    for _, e in ipairs(world.tree or {}) do
-        if e.op and e.key and e.key.text == "date" and e.value.text then
-            e.value.text, e.value.quoted = date_text(), true
-        end
-    end
-    world.meta.date = date_text()
-    return world.write()
+-- engine.save(state) -> the gamestate's text: the world as it is now, dated today, in the game's
+-- layout (engine.savegame). state (optional): { tick, seed, position }, the platform's tick within
+-- the day and synchronized generator, written as the save's tick, random_seed, random_count.
+function engine.save(state)
+    local savegame = require("engine.savegame")
+    state = state or {}
+    savegame.prepare({ date = date_text(), tick = state.tick, seed = state.seed, position = state.position })
+    return savegame.write(engine.world.tree)
+end
+
+-- engine.save_meta(old) -> the `meta` text from the world (old: the loaded save's meta, or nil)
+function engine.save_meta(old)
+    return require("engine.savegame").meta(old)
 end
 
 local function top(t, n)
