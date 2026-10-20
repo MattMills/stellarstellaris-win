@@ -76,7 +76,7 @@ pub fn combat_fleet() -> Option<u32> {
 /// Whether a fleet is in combat (render.windows.combat: its block's combat.in_combat_with), where
 /// the world is (the simulation's when it runs).
 pub fn in_combat(map: &crate::Map, fleet: u32) -> bool {
-    world_eval(map, &format!("return tostring(require('render.windows.combat').in_combat({fleet}))")).is_ok_and(|v| v == "true")
+    world_view(map, &format!("return tostring(require('render.windows.combat').in_combat({fleet}))")).is_ok_and(|v| v == "true")
 }
 
 /// The first fleet in combat, by id (`open_designer combat`).
@@ -95,6 +95,15 @@ static WAS_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 fn world_eval(map: &crate::Map, code: &str) -> Result<String, String> {
     match map.clock.as_ref() {
         Some(c) if c.status().ready => c.query(code),
+        _ => map.runtime.lua.load(code).eval::<String>().map_err(|e| e.to_string()),
+    }
+}
+
+/// [`world_eval`] for what a layout reads (read-only): while the clock runs, the last answer until
+/// the new one comes (Clock::query_view: a layout does not wait for the day in progress).
+fn world_view(map: &crate::Map, code: &str) -> Result<String, String> {
+    match map.clock.as_ref() {
+        Some(c) if c.status().ready => c.query_view(code, map.snapshot.as_ref().map_or(0, |s| s.generation)),
         _ => map.runtime.lua.load(code).eval::<String>().map_err(|e| e.to_string()),
     }
 }
@@ -119,7 +128,7 @@ pub fn layout(
         let _ = gui_rt.lua.load("require('render.windows.combat').hide()").exec();
     }
     if let Some(fleet) = combat {
-        let data = world_eval(map, &format!("local d = require('render.windows.combat').extract({gd:?}, {fleet}) return d and require('render.windows.designer').serialize(d) or ''"))
+        let data = world_view(map, &format!("local d = require('render.windows.combat').extract({gd:?}, {fleet}) return d and require('render.windows.designer').serialize(d) or ''"))
             .map_err(|e| format!("render.windows.combat: {e}"))?;
         if !data.is_empty() {
             let read = || -> mlua::Result<Vec<GuiItem>> {
@@ -183,7 +192,7 @@ pub fn layout(
                  local m = require('render.system').stage_model({gd:?}, load('return ' .. {stage:?})(), '', {country})
                  return m and require('render.windows.designer').serialize(m) or ''"
             );
-            let m = world_eval(map, &code).map_err(mlua::Error::RuntimeError)?;
+            let m = world_view(map, &code).map_err(mlua::Error::RuntimeError)?;
             if !m.is_empty() {
                 gui_rt.lua.globals().set("RENDER_DESIGNER_MODEL", m)?;
                 let m: Table = gui_rt.lua.load("return load('return ' .. RENDER_DESIGNER_MODEL)()").eval()?;

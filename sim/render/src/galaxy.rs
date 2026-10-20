@@ -109,7 +109,8 @@ pub struct Galaxy {
     /// the left bar's views' data: each lua/render/windows module's `extract` (views.rs)
     pub views: HashMap<String, crate::views::Value>,
     /// the outliner's and the observer outliner's view of the world (render.windows.outliner)
-    pub outliner_view: crate::outliner::LuaData,
+    /// (shared: the UI thread keeps it for its tooltips, render.windows.outliner reads it lazily)
+    pub outliner_view: std::sync::Arc<crate::outliner::LuaData>,
     /// what the map labels show (render.windows.mapicons: mapicons.rs)
     pub mapicons: std::sync::Arc<crate::mapicons::Data>,
     /// what the diplomacy windows show of the world: a Lua chunk (render.windows.diplomacy_data)
@@ -471,7 +472,7 @@ pub fn extract(runtime: &Runtime, game_dir: &str) -> Result<Galaxy, String> {
                 None => HashMap::new(),
             },
             diplomacy: g.get::<Option<String>>("diplomacy")?.unwrap_or_default(),
-            outliner_view: crate::outliner::read_view(&g)?,
+            outliner_view: std::sync::Arc::new(crate::outliner::read_view(&g)?),
             alerts: match g.get::<Option<Table>>("alerts")? {
                 Some(t) => t
                     .sequence_values::<Table>()

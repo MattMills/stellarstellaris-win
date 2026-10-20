@@ -4,6 +4,7 @@
 //! state: the tab shown, the groups collapsed, which view shows.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use stellar_sim::mlua::{self, Lua, Table, Value};
 use stellar_sim::Runtime;
@@ -186,13 +187,90 @@ impl State {
     }
 }
 
+thread_local! {
+    /// The view installed last: its `tips` are read from it as they are asked for ([`install`]).
+    static VIEW: std::cell::RefCell<Option<Arc<LuaData>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The field of a table under a Lua key (a string, or a number: the ids).
+fn field<'a>(d: &'a LuaData, key: &Value) -> Option<&'a LuaData> {
+    let LuaData::Table(pairs) = d else { return None };
+    pairs
+        .iter()
+        .find(|(k, _)| match (k, key) {
+            (LuaData::Str(a), Value::String(b)) => b.as_bytes().as_ref() == a.as_bytes(),
+            (LuaData::Num(a), Value::Integer(b)) => *a == *b as f64,
+            (LuaData::Num(a), Value::Number(b)) => a == b,
+            (LuaData::Bool(a), Value::Boolean(b)) => a == b,
+            _ => false,
+        })
+        .map(|(_, v)| v)
+}
+
+/// The view's `tips` (render.tooltip_data: 350,000 values in the 2210 save, the rest of the view
+/// 2,000) made in Lua as they are read, two levels deep: `tips.fleets[id]` makes that fleet's
+/// table alone. Made whole at each layout they took 50 to 80 ms (docs/profiling.md); the layout
+/// and the tooltips read a few dozen of them by key (render.windows.outliner row_tip,
+/// render.tooltip), never by `pairs`.
+const LAZY_TIPS: &str = r#"
+local get = RENDER_TIPS_GET
+local function level2(k1)
+    return setmetatable({}, { __index = function(t, k2)
+        local _, v = get(k1, k2)
+        rawset(t, k2, v)
+        return v
+    end })
+end
+return setmetatable({}, { __index = function(t, k1)
+    local nested, v = get(k1)
+    if nested then
+        v = level2(k1)
+    end
+    rawset(t, k1, v)
+    return v
+end })
+"#;
+
 /// What the outliner is laid out from, set as RENDER_OUTLINER in the GUI's runtime for
-/// render.windows: the world's view (`extract`), the state, the selection (kind, id), observing.
-pub fn install(runtime: &Runtime, view: &LuaData, state: &State, selected: Option<(&str, u32)>, observe: bool) -> Result<(), String> {
+/// render.windows: the world's view (`extract`; its `tips` made as they are read: [`LAZY_TIPS`]),
+/// the state, the selection (kind, id), observing.
+pub fn install(runtime: &Runtime, view: &Arc<LuaData>, state: &State, selected: Option<(&str, u32)>, observe: bool) -> Result<(), String> {
+    install_in(&runtime.lua, view, state, selected, observe)
+}
+
+fn install_in(lua: &Lua, view: &Arc<LuaData>, state: &State, selected: Option<(&str, u32)>, observe: bool) -> Result<(), String> {
     let set = || -> mlua::Result<()> {
-        let lua = &runtime.lua;
+        if lua.globals().get::<Option<mlua::Function>>("RENDER_TIPS_GET")?.is_none() {
+            // (nested: whether the field is a table, its fields then asked for one by one)
+            let get = lua.create_function(|lua, (k1, k2): (Value, Option<Value>)| -> mlua::Result<(bool, Value)> {
+                VIEW.with(|v| {
+                    let v = v.borrow();
+                    let Some(a) = v.as_ref().and_then(|v| v.get("tips")).and_then(|t| field(t, &k1)) else { return Ok((false, Value::Nil)) };
+                    match k2 {
+                        None if matches!(a, LuaData::Table(_)) => Ok((true, Value::Nil)),
+                        None => Ok((false, a.to_lua(lua)?)),
+                        Some(k2) => Ok((false, field(a, &k2).map(|b| b.to_lua(lua)).transpose()?.unwrap_or(Value::Nil))),
+                    }
+                })
+            })?;
+            lua.globals().set("RENDER_TIPS_GET", get)?;
+        }
+        // (the view before freed elsewhere: crate::drop_later)
+        if let Some(old) = VIEW.with(|v| v.borrow_mut().replace(view.clone())) {
+            crate::drop_later(old);
+        }
         let t = lua.create_table()?;
-        t.set("view", view.to_lua(lua)?)?;
+        let v = lua.create_table()?;
+        if let LuaData::Table(pairs) = &**view {
+            for (k, x) in pairs {
+                if matches!(k, LuaData::Str(s) if s == "tips") {
+                    v.raw_set("tips", lua.load(LAZY_TIPS).set_name("outliner tips").eval::<Table>()?)?;
+                } else {
+                    v.raw_set(k.to_lua(lua)?, x.to_lua(lua)?)?;
+                }
+            }
+        }
+        t.set("view", v)?;
         let s = lua.create_table()?;
         s.set("tab", state.tab)?;
         // (Overview shows once at the load)
@@ -275,6 +353,27 @@ mod tests {
         let inner: Table = t.get(4).unwrap();
         assert!(inner.get::<bool>("a").unwrap());
         assert_eq!(inner.get::<Table>("b").unwrap().get::<String>(1).unwrap(), "y");
+    }
+
+    #[test]
+    fn tips_made_as_read() {
+        let lua = Lua::new();
+        let v: Value = lua
+            .load("return { groups = { { key = 'military' } }, tips = { player_name = 'UOR', fleets = { [3] = { name = 'Typhoon', sizes = { { 'corvette', 3 } } } }, economy = { energy = { stock = 9000 } } } }")
+            .eval()
+            .unwrap();
+        let view = Arc::new(LuaData::read(v).unwrap());
+        install_in(&lua, &view, &State::default(), None, false).unwrap();
+        let check = |code: &str| lua.load(code).eval::<String>().unwrap();
+        assert_eq!(check("return RENDER_OUTLINER.view.groups[1].key"), "military");
+        assert_eq!(check("return RENDER_OUTLINER.view.tips.player_name"), "UOR");
+        assert_eq!(check("local f = RENDER_OUTLINER.view.tips.fleets[3] return f.name .. ' ' .. f.sizes[1][1] .. ' ' .. f.sizes[1][2]"), "Typhoon corvette 3");
+        assert_eq!(check("return tostring(RENDER_OUTLINER.view.tips.economy.energy.stock)"), "9000");
+        assert_eq!(check("local t = RENDER_OUTLINER.view.tips return tostring(t.fleets[4]) .. ' ' .. tostring(t.ships) .. ' ' .. tostring((t.ships or {})[1])"), "nil nil nil");
+        // a new view installed: the tips read from it
+        let v: Value = lua.load("return { tips = { player_name = 'Other' } }").eval().unwrap();
+        install_in(&lua, &Arc::new(LuaData::read(v).unwrap()), &State::default(), None, false).unwrap();
+        assert_eq!(check("return RENDER_OUTLINER.view.tips.player_name"), "Other");
     }
 
     #[test]

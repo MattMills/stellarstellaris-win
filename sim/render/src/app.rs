@@ -334,6 +334,8 @@ impl App {
         let cache = Rc::new(RefCell::new(Cache::default()));
         let t0 = std::time::Instant::now();
         let (runtime, loc) = gui::frontend_runtime(game_dir, &cache, "english")?;
+        // STELLAR_LUA_PROF: the GUI Lua's sampling profiler in this runtime (prof.rs)
+        crate::prof::lua_start(&runtime);
         // the game's files watched: a change is read again without asking (STELLAR_WATCH=0: only F11)
         if let Err(e) = runtime.lua.load("require('engine.reload').watch()").exec() {
             eprintln!("file watcher: {e}");
@@ -577,6 +579,7 @@ impl App {
     /// the wheel), the cameras toward their goals, the held keys and the edge scrolling, the
     /// simulation's newest snapshot taken. Whether the picture changed (a frame is due).
     pub fn advance(&mut self, dt: f32) -> bool {
+        let _s = crate::prof::span("update");
         let mut changed = false;
         // a system's camera fitted to a stand-in (its data not come yet) fitted again (mapicons.rs)
         changed |= self.refit_system_camera();
@@ -628,9 +631,17 @@ impl App {
             return changed;
         }
         if let Some(m) = self.map.as_mut() {
+            let _s = crate::prof::span("update: snapshot sync");
             if m.sync() {
                 changed = true;
                 // the topbar's date, the galaxy, the system's ships
+                self.scene = None;
+            }
+            // a window's data the simulation answered (Clock::query_view: the windows laid out
+            // with the last answer meanwhile) come: laid out again
+            if m.clock.as_ref().is_some_and(|c| c.answers_arrived()) {
+                changed = true;
+                self.overlay_key = None;
                 self.scene = None;
             }
         }
@@ -1208,7 +1219,10 @@ impl App {
             selected = None;
         }
         crate::designer::set_combat(combat);
+        let span = crate::prof::span("windows: names");
         let texts = gui::format_names(&self.runtime, &names)?;
+        drop(span);
+        let span = crate::prof::span("windows: outliner data (to lua)");
         let mut rest = texts.iter();
         let mut next = || rest.next().cloned().unwrap_or_default();
         // the outliner (render.windows.outliner, from the world's view and its own state)
@@ -1219,8 +1233,10 @@ impl App {
         };
         crate::outliner::install(&self.runtime, &g.outliner_view, &self.outliner, row_selected, observe)?;
         let selected = selected.map(|(kind, id)| gui::SelectedWindow { kind, id, name: next(), sub: String::new() });
+        drop(span);
         // the planet view's data and tab (planet.rs), its owner's flag
         let mut planet_owner = None;
+        let span = crate::prof::span("windows: planet, starbase data");
         match selected.as_ref() {
             Some(s) if s.kind == "planet" => {
                 let tab = self.planet_view.tab_for(s.id).to_string();
@@ -1232,7 +1248,11 @@ impl App {
             _ => crate::planet::clear(&self.runtime),
         }
         crate::starbase::prepare(&self.runtime, &g, &self.starbase, self.selected.is_some())?;
+        drop(span);
+        let span = crate::prof::span("windows: outliner + selection (lua)");
         let mut layout = gui::windows(&self.runtime, w, h, &[], selected.as_ref())?;
+        drop(span);
+        let span = crate::prof::span("windows: flags, portraits");
         if let Some(owner) = planet_owner {
             let map = self.map.as_mut().unwrap();
             let c = map.galaxy.countries.iter().position(|c| c.id == owner);
@@ -1241,15 +1261,21 @@ impl App {
         if selected.as_ref().is_some_and(|s| s.kind == "planet") {
             crate::planet::portraits(self.map.as_mut().unwrap(), &mut layout.items, planet_owner.is_none());
         }
+        drop(span);
         // the main screen's other windows under the outliner and the selection's window
+        let span = crate::prof::span("windows: main screen (topbar, bars)");
         let mut items = self.main_screen_items()?;
         items.extend(layout.items);
+        drop(span);
         // the fleet windows (fleetwin.rs): the selected fleet's fleet_view, ship_view, the fleet manager
+        let span = crate::prof::span("windows: fleet windows");
         match self.fleet_items(w, h) {
             Ok(f) => items.extend(f),
             Err(e) => self.log.push(format!("fleet windows: {e}")),
         }
+        drop(span);
         // the event windows and popups, over the others (events.rs)
+        let span = crate::prof::span("windows: events");
         let map = self.map.as_mut().unwrap();
         crate::starbase::flags(&self.runtime, &self.starbase, map, &mut items);
         let chunk = map.galaxy.events.clone();
@@ -1265,8 +1291,10 @@ impl App {
         if self.events.take_trackers_changed() {
             self.scene = None;
         }
+        drop(span);
         // the left bar's view open (views.rs)
         if let Some(name) = self.open_view.clone() {
+            let _s = crate::prof::span_dyn(|| format!("windows: view {name}"));
             let data = self.map.as_ref().and_then(|m| m.galaxy.views.get(&name).cloned());
             match crate::views::layout(&self.runtime, w, h, &name, data.as_ref(), &self.view_state) {
                 Ok(l) => items.extend(l.items),
@@ -1274,6 +1302,7 @@ impl App {
             }
         }
         // the ship designer and the combat view over them
+        let span = crate::prof::span("windows: designer");
         let map = self.map.as_ref().unwrap();
         match crate::designer::layout(&self.runtime, map, &self.game_dir, w, h, &self.designer, combat) {
             Ok((more, models)) => {
@@ -1285,6 +1314,8 @@ impl App {
                 self.log.push(format!("windows: {e}"));
             }
         }
+        drop(span);
+        let span = crate::prof::span("windows: diplomacy, menu, flags");
         let map = self.map.as_mut().unwrap();
         // the outliner's flags (the observer's countries: `@ID` in their path)
         for it in items.iter_mut() {
@@ -1310,6 +1341,8 @@ impl App {
         items.extend(crate::mainbars::menu_items(&self.runtime, w, h, &self.bars, &self.version)?);
         // the textures the windows name that are made (a disabled button greyed, a progress bar
         // filled: fleetwin.rs), for any window's items
+        drop(span);
+        let _s = crate::prof::span("windows: derived textures, fonts");
         crate::fleetwin::derived_textures(map, &items);
         gui::fonts(&self.runtime, &self.game_dir, &items, map.fonts.get_or_insert_with(HashMap::new))?;
         Ok(items)
@@ -1451,17 +1484,30 @@ impl App {
     /// The scene of the current screen (rebuilt when something changed).
     pub fn scene(&mut self) -> Result<&Scene, String> {
         if self.scene.is_none() {
+            let _s = crate::prof::span("scene");
             let (w, h) = self.size;
             let states = self.states();
             if self.screen == Screen::Map {
                 let key = self.map.as_ref().map(|m| (w, h, self.view, self.selected, m.snapshot.as_ref().map_or(0, |s| s.generation), m.gui, m.paused, self.camera.is_some_and(|c| c.distance <= 400.0), m.observe, self.fleet.key(), self.hovered_system()));
                 if key != self.overlay_key {
-                    let t = Instant::now();
-                    self.overlay_items = self.selection_windows();
-                    crate::prof("scene: selection windows", t);
-                    let t = Instant::now();
+                    // a star hovered or left changes the labels alone (its label's hover marker:
+                    // mapicons.rs), not the windows: they are kept (laid out again they took 30 to
+                    // 140 ms on 10.5.0.24 with a window open: docs/profiling.md)
+                    let hover_only = match (key, self.overlay_key) {
+                        (Some(mut a), Some(b)) => {
+                            a.10 = b.10;
+                            a == b
+                        }
+                        _ => false,
+                    };
+                    let s = crate::prof::span("scene: selection windows (relayout)");
+                    if !hover_only {
+                        self.overlay_items = self.selection_windows();
+                    }
+                    drop(s);
+                    let s = crate::prof::span("scene: system labels");
                     let labels = self.system_labels();
-                    crate::prof("scene: system labels", t);
+                    drop(s);
                     self.overlay_labels = match labels {
                         Ok(l) => l,
                         Err(e) => {
@@ -1473,10 +1519,12 @@ impl App {
                 }
             }
             // the tooltip over the windows (tooltip.rs)
+            let s = crate::prof::span("scene: overlay items, tooltip");
             let mut items = self.overlay_items.clone();
             if self.screen == Screen::Map {
                 items.extend(crate::tooltip::items(self));
             }
+            drop(s);
             let overlay = scene::Overlay { selected: self.selected, items: items, labels: self.overlay_labels.clone() };
             let scene = match self.screen {
                 Screen::Map if self.view == MapView::Model => {
@@ -1489,8 +1537,12 @@ impl App {
                     let map = self.map.as_mut().ok_or("no map")?;
                     map.button_states = states;
                     match (self.view, &self.system_camera) {
-                        (MapView::System(i), Some(cam)) => system::build(map, i, cam, w, h, &overlay)?,
+                        (MapView::System(i), Some(cam)) => {
+                            let _s = crate::prof::span("scene: system build");
+                            system::build(map, i, cam, w, h, &overlay)?
+                        }
                         _ => {
+                            let _s = crate::prof::span("scene: galaxy frame");
                             let cam = if self.mode3d { self.camera.as_ref() } else { None };
                             map.frame(w, h, cam, &overlay)?.scene
                         }
@@ -1503,6 +1555,7 @@ impl App {
             };
             // the designer's 3D views (designer.rs)
             let mut scene = scene;
+            let s = crate::prof::span("scene: insets, trackers");
             if let (Screen::Map, Some(map)) = (self.screen, self.map.as_mut()) {
                 let cache = map.cache.clone();
                 crate::designer::fill_insets(&mut scene, &self.designer_models, &mut map.models, &map.runtime, &self.game_dir, &mut map.textures, &mut cache.borrow_mut());
@@ -1517,6 +1570,7 @@ impl App {
             if let (Screen::Map, Some(map)) = (self.screen, self.map.as_mut()) {
                 crate::events::draw_trackers(&mut scene, &self.runtime, map, self.view, self.camera.as_ref(), &self.game_dir);
             }
+            drop(s);
             self.scene = Some(std::sync::Arc::new(scene));
             // a new scene, whoever asked for it (a hit test builds it too)
             self.generation += 1;
@@ -2250,6 +2304,7 @@ impl App {
     /// Physical input (controls.rs): the bindings' effects carried out. `now_ms`: the input's
     /// time (a double click's). Whether something changed.
     pub fn input(&mut self, input: &Input, now_ms: f64) -> Result<bool, String> {
+        let _s = crate::prof::span("input");
         // the empire creator's text fields (render.newgame_creator): with one focused, a key
         // typed goes to it (the game's CEditBox takes the keyboard), Shift giving capitals
         if self.screen == Screen::Creator {

@@ -266,7 +266,7 @@ impl App {
         if let Some((fid, name)) = &self.fleet.armed {
             calls.push(format!("armed = {{ {fid}, {name:?} }},"));
         }
-        let source = if calls.is_empty() { "return {}".to_string() } else { self.fleet_world_query(&format!("return fd.serialize({{ {} }})", calls.join(" ")))? };
+        let source = if calls.is_empty() { "return {}".to_string() } else { self.fleet_view_query(&format!("return fd.serialize({{ {} }})", calls.join(" ")))? };
         let menu = self.fleet.menu.clone();
         let popup = self.fleet.popup.clone();
         let lua = &self.runtime.lua;
@@ -385,6 +385,19 @@ pub(crate) fn derived_textures(m: &mut crate::Map, items: &[GuiItem]) {
 }
 
 impl App {
+    /// [`App::fleet_world_query`] for what the windows' layout reads (read-only): while the clock
+    /// runs, the last answer until the new one comes (Clock::query_view: a layout does not wait
+    /// for the day in progress).
+    fn fleet_view_query(&mut self, code: &str) -> Result<String, String> {
+        let m = self.map.as_mut().ok_or("no map loaded")?;
+        if let (false, Some(clock)) = (m.has_world(), m.clock.as_ref()) {
+            let code = format!("local fd = require('render.windows.fleet_data') {code}");
+            let generation = m.snapshot.as_ref().map_or(0, |s| s.generation);
+            return clock.query_view(&code, generation).map_err(|e| format!("render.windows.fleet_data (simulation): {e}"));
+        }
+        self.fleet_world_query(code)
+    }
+
     /// Runs `code` (with `fd` = render.windows.fleet_data) where the world is: the map's runtime
     /// while it has the save's world. Returns the string the code returns.
     fn fleet_world_query(&mut self, code: &str) -> Result<String, String> {

@@ -559,7 +559,8 @@ command file takes the same shots of both, and makes the same input in both.
 | `frame PATH.png now` | the frame as it is (no frame run): the game's shows its camera as the input left it |
 | `frame -` | `ok frame - W H MS BYTES`, then the PNG's bytes |
 | `state` | JSON: screen, view, camera, date, the clock (paused, speed, loading, days run, a day's and a snapshot's ms), the selection, the input (pointer, buttons and keys held, the held actions going on, timestep, frames run), systems, fleets by movement state, FTL trails, size |
-| `bench SECONDS [FPS]` | frames at FPS (120) drawn as a window draws them, on the commands' one thread: what they took against the frame's time (section 12; `--bench SECONDS` measures the window's own way, the app on its UI thread) |
+| `bench SECONDS [FPS] [hover X0 Y0 X1 Y1 \| wheel X Y \| drag X0 Y0 X1 Y1]` | frames at FPS (120) drawn as a window draws them, on the commands' one thread, with that input made each frame: what they took against the frame's time, split into input, update, scene, upload and the GPU's frame (section 12, docs/profiling.md; `--bench SECONDS` measures the window's own way, the app on its UI thread) |
+| `prof on\|off`, `prof reset`, `prof report [PATH]` | the frame profiler (STELLAR_PROF=1 turns it on at the start): its spans' table and the GUI Lua's samples to PATH or stderr, then forgotten (docs/profiling.md) |
 | `quit` | ends the server |
 
 The game's headless serves `pause` and `step` the same way, and the input and frame commands
