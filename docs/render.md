@@ -403,9 +403,10 @@ The tree, with the number of files and occurrences in 4.5.2:
   planet (playback_rate -1) moves right in the game's frames and here, 20 s apart]**. The render
   thread writes each turning part's rotation into its draw constants every frame
   (`Renderer::set_time`). Not played: translations and scales, several joints, ships' skeletons,
-  the states' `time_offset` (a random start, 0 .. 100 s for the gas giants) **[I]**. Seen: the
-  binary system 401's T-class companion shows its pole to the camera here and horizontal bands in
-  the game, with or without the animation (its orientation, not its turn) **[I]**.
+  the states' `time_offset` (a random start, 0 .. 100 s for the gas giants) **[I]**. Checked: the
+  binary system 401's T-class companion (a brown dwarf on planet_clouded.mesh, oriented as the
+  game's `state planet 1` gives: a half turn about y) shows the same tilted bands here and in the
+  game's frames at the same zoom.
 - **Time**: the view constants carry the time in seconds (`time`, the game's `Time`; one clock
   for the process, `render::clock_seconds`), written before each frame's draw (the window, the
   offscreen `frame`): the stars' lava noise (PixelPdxMeshStar: sin((noise + Time x 0.08) x 10)),
