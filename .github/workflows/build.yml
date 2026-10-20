@@ -1,7 +1,8 @@
 # Every job runs on the self-hosted runners on hippo (runner-hive), never on GitHub's: the Windows
 # binaries are cross-compiled on Linux with the toolchains of the runner image (/opt/llvm-mingw,
 # /opt/xwin, ninja, the Windows Rust targets). Each job uploads an artifact laid out as it goes into
-# a release; `bundle` makes the release archives. See docs/ci.md.
+# a release. For a release only (a published GitHub release, or a run by hand with its tag),
+# `bundle` makes the release archives from them and attaches them to the release. See docs/ci.md.
 #
 # This repository is public: every job's `if` keeps pull requests from forks off the self-hosted
 # runners.
@@ -12,7 +13,16 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
+  # a release published: its tag built, the archives attached to it
+  release:
+    types: [ published ]
+  # by hand: a branch's build, or with a tag, that release's (its archives attached again)
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "a release's tag: build it and attach the archives to that release (empty: a plain build)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -39,6 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.ref }}
           submodules: recursive
       - name: Toolchains
         run: bash tools/ci/check-toolchains.sh msvc
@@ -66,6 +77,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.ref }}
           submodules: recursive
       - name: Toolchains
         run: bash tools/ci/check-toolchains.sh msvc
@@ -91,6 +103,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.ref }}
           submodules: recursive
       - name: Build
         working-directory: sim/render
@@ -124,6 +137,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.ref }}
           submodules: recursive
       - name: Toolchains
         run: bash tools/ci/check-toolchains.sh gnullvm
@@ -141,15 +155,22 @@ jobs:
           path: dist/stellar-render/
           if-no-files-found: error
 
+  # a release's archives, attached to it: only for a published release or a run by hand with a tag
+  # (pushes and pull requests keep the four artifacts above, nothing more)
   bundle:
     name: release archives
     needs: [hook, proxy, renderer-linux, renderer-windows]
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
     runs-on: [self-hosted, hippo]
     timeout-minutes: 15
+    permissions:
+      contents: write # the release's assets
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0 # the tags, for git describe
       - uses: actions/download-artifact@v4
         with:
@@ -169,8 +190,13 @@ jobs:
           version="$(git describe --tags --always)"
           echo "version $version"
           bash tools/ci/package.sh archive dist/release "$version" dist/mod dist/render-linux dist/render-windows
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release
-          path: dist/release/
-          if-no-files-found: error
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # (the script from the workflow's own commit: a tag built by hand may predate it)
+          git show "$GITHUB_SHA:tools/ci/release-upload.sh" > "$RUNNER_TEMP/release-upload.sh"
+          shopt -s nullglob
+          files=(dist/release/*)
+          [ ${#files[@]} -gt 0 ] || { echo "no archives" >&2; exit 1; }
+          bash "$RUNNER_TEMP/release-upload.sh" "$TAG" "${files[@]}" 

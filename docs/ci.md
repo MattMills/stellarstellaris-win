@@ -2,10 +2,22 @@
 
 `.github/workflows/build.yml` builds the mod and the renderer on the self-hosted runners on hippo
 (runner-hive, labels `[self-hosted, hippo]`), never on GitHub's runners. It runs on pushes to and
-pull requests into master, and by hand (workflow_dispatch). The Windows binaries are
-cross-compiled on Linux. Each job uploads an artifact laid out as it goes into a release, and
-`bundle` turns them into the release archives. Nothing is published: a release takes the
-`release` artifact's files as they are.
+pull requests into master, when a GitHub release is published, and by hand (workflow_dispatch). The
+Windows binaries are cross-compiled on Linux. Each job uploads an artifact laid out as it goes into
+a release. Only for a release, `bundle` turns them into the release archives and attaches them to
+that release; pushes and pull requests stop at the four artifacts.
+
+## Releases
+
+- **Publishing a release** on GitHub (with its tag) runs the workflow on that tag, and `bundle`
+  attaches the archives (below) to the release.
+- **An existing release** (one published before this, or to attach the archives again): run the
+  workflow by hand with the release's tag, for example
+  `gh workflow run build.yml --ref master -f tag=v1.0.0-lua-alpha`. The jobs build the tag's code,
+  and the archives replace any of the same name.
+- The upload is `tools/ci/release-upload.sh` (taken from the workflow's own commit, so a tag that
+  predates it still works). It uses `gh` when the runner has it, else the REST API with curl.
+  `bundle` alone has `contents: write`.
 
 The repository is public, and a self-hosted runner would run whatever a fork's pull request
 contains: every job has `if: github.event_name != 'pull_request' ||
@@ -19,7 +31,7 @@ github.event.pull_request.head.repo.full_name == github.repository`, so such pul
 | proxy | `proxy/version.dll` (+ `.pdb`) | `stellarstellaris-proxy-windows-x64` |
 | renderer-linux | `stellar-render` (`cargo build --release --locked` in `sim/render`) and its Lua tree | `stellar-render-linux-x64` |
 | renderer-windows | `stellar-render.exe` (x86_64-pc-windows-gnullvm) and its Lua tree | `stellar-render-windows-x64` |
-| bundle | the release archives, after the four above | `release` |
+| bundle | the release archives, after the four above (releases only) | attached to the release |
 
 The hook and proxy artifacts together are the mod package's files (`proxy/version.dll` next to
 the DLL, as `install.ps1` expects). Rough timings: see the end.
