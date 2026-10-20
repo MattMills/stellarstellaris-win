@@ -163,7 +163,7 @@ started at seed 0, tick 0: its saves could not continue the save's stream).
 
 | step | autosave_2210.01.01 | rich_2212 |
 |---|---|---|
-| 1. the game's N days from its save, and from our rewrite of it (read, written, 0 days) | **identical** (0 lines; 564 before the intel fix) | 1,250 lines differ: the game's own byte sensitivity, below |
+| 1. the game's N days from its save, and from our rewrite of it (read, written, 0 days) | **identical** (0 lines; 564 before the intel fix) | 1,250 lines differ: the game's own run-to-run noise there (below); 4 of 5 runs from our rewrite equal a run from the original |
 | 2. the game loads our N-day save | yes; 0 ticks writes back 16,467 changed lines (its own save: 15,519) | yes |
 | 2. the game runs M days from it and saves with its own save path (view.sh `save`) | yes, `autosave_2210.03.01.sav` | yes, `autosave_2212.09.03.sav` |
 | 2. we load the game's save of our game | yes (and the renderer: run, saved again) | yes |
@@ -175,23 +175,42 @@ from the game's own save (the step 3 runs are a month later, after our first mon
 fields are the simulation's (ship positions and headings, pop growth, AI choices): the coverage
 sessions' work, not this one's.
 
-### The game's own sensitivity to a save's bytes [V]
+### rich_2212: the game is not repeatable there, the save's bytes play no part [V]
 
-On `rich_2212` the game does not continue the same way from two texts that parse to the same tree.
-Measured with the game alone, `-loadrandomseed -threads=1`, 30 days:
+On `rich_2212` the game's 30 days from our rewrite differed from its 30 days from its own save
+(1,250 lines). That first looked like a dependence on the save's exact bytes: three runs of the
+original agreed, while a trailing newline or one tab made a space changed the result. It is not:
+**the original itself is not repeatable** (`-loadrandomseed -threads=1`), and three agreeing runs
+were luck. Runs of 40 ticks (4 days) on `/root/saves/bis` (10.5.0.24):
 
-| the game's own gamestate, re-zipped | lines that differ after 30 days |
-|---|---|
-| unchanged | 0 (and two runs of the original: 0) |
-| one newline added at the end | 844 |
-| one tab of indentation made a space (same length) | 1,233 |
-| our layout's changes, by kind (starbase modules / map keys / key-value lines / tech indents / separators) | 1,265 / 1,508 / 1,270 / 842 / 842 |
+| file | runs | AI country 16777225 proposes an embassy to |
+|---|---|---|
+| the game's own gamestate, re-zipped | 7 | 16777217 in 5, 16777219 in 2 |
+| the same, one tab made a space | 8 | 16777217 in 6, 16777219 in 2 |
+| the same, one newline added | 2 | 16777219, 49 |
+| the same, `HEADLESS_NO_TASK_THREADS=1` (parallel-fors inline) | 6 | 49 in 5, 16777218 in 1 |
+| **our rewrite** (`ours_0.sav`: read, written back) | 5 (a 6th aborted at start-up) | 16777217 in 3, 16777219, 16777218; **4 of the 5 identical to a run of the original** (0 lines) |
 
-The generator is the same after the load (position 9,870,935 in both); the runs part on pops' monthly
-growth (a planet's pop group 95 against 94 on the first month). Something in the game depends on
-the save's exact bytes; on `autosave_2210.01.01` it does not show (step 1: identical). No writer
-short of the game's own byte layout can match it there, so this is documented, not fixed. Where the
-bytes enter is an open question (a hash of the file in the load path [I]).
+The runs are identical up to day 3; the 36 lines on day 4 are this one proposal (and what follows from
+it), and they grow to ~1,000 lines in 30 days. What the game does there [V]:
+
+- `CAIForeignMinister::DailyUpdate` (0x2819620), in the AI's per-country pass `UpdateAIParallel`
+  (0x28086c0), calls `MakeAIDiplomaticAction` (0x27f6670);
+- that runs a parallel-for over the other countries whose body calls `BuildProposalList` (0x27f2b60),
+  which appends each candidate to one shared array under a `CPdxMutex` (`InsertAtEmplace`): the
+  array's order is the tasks' completion order, and nothing sorts it;
+- the country AI's own generator (`CNoiseRandom::GetInteger`, the country's `random_seed` /
+  `random_count`) then draws the index of the proposal to make.
+
+With the default task threads (`-threads=1` still leaves 4) the order changes from run to run. With the
+task threads off one run in six still differed: there country 16777225's own generator had drawn
+once more (`random_count` 16,790,944 against 16,790,943, a line `gsdiff.sh` masks) before the pick.
+Where that extra draw comes from is not found [open]. `UpdateAIParallel`'s clock reads
+(`CProfile::GetCPUTime`) only pace frames (`RenderFrameInParallelFor`), not state.
+
+So the writer is not at fault on `rich_2212`: a game run from our rewrite is indistinguishable from
+one from the game's file. `save_roundtrip.sh` now runs the game twice from the original and prints that
+noise next to the writer's difference. On `autosave_2210.01.01` the noise was 0 in every run so far.
 
 ## 7. Tests
 
