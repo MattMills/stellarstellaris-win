@@ -1348,6 +1348,30 @@ impl App {
         Ok(items)
     }
 
+    /// The window whose textures a scene built now notes for the next load (prepare.rs): the ship
+    /// designer, the left bar's view, diplomacy, the selection's window; none for the map alone.
+    fn prepare_window(&self) -> Option<String> {
+        if self.screen != Screen::Map {
+            return None;
+        }
+        if self.designer.open {
+            return Some("designer".into());
+        }
+        if let Some(v) = &self.open_view {
+            return Some(v.clone());
+        }
+        if self.diplomacy.open.is_some() {
+            return Some("diplomacy".into());
+        }
+        let station = |id: u32| self.map.as_ref().is_some_and(|m| m.galaxy.fleets.iter().any(|f| f.id == id && f.station));
+        match self.selected {
+            Some(Pickable::Body(_)) => Some("planet".into()),
+            Some(Pickable::Fleet(id)) if station(id) => Some("starbase".into()),
+            Some(Pickable::Fleet(_)) | Some(Pickable::Ship(_)) => Some("fleet".into()),
+            _ => None,
+        }
+    }
+
     /// The Lua runtimes the frame profiler's report asks for samples (prof.rs): the front end's,
     /// the map's.
     pub fn prof_runtimes(&self) -> Vec<&stellar_sim::Runtime> {
@@ -1491,6 +1515,8 @@ impl App {
     pub fn scene(&mut self) -> Result<&Scene, String> {
         if self.scene.is_none() {
             let _s = crate::prof::span("scene");
+            // the textures decoded in it noted under the window open (prepare.rs)
+            crate::prepare::set_window(self.prepare_window());
             let (w, h) = self.size;
             let states = self.states();
             if self.screen == Screen::Map {
@@ -1577,6 +1603,8 @@ impl App {
                 crate::events::draw_trackers(&mut scene, &self.runtime, map, self.view, self.camera.as_ref(), &self.game_dir);
             }
             drop(s);
+            crate::prepare::set_window(None);
+            crate::prepare::save();
             self.scene = Some(std::sync::Arc::new(scene));
             // a new scene, whoever asked for it (a hit test builds it too)
             self.generation += 1;
@@ -2093,6 +2121,8 @@ impl App {
 
     pub fn load_as(&mut self, path: &str, sim: bool) -> Result<(), String> {
         let t0 = std::time::Instant::now();
+        // the windows' textures prepared on workers while it loads (prepare.rs)
+        crate::prepare::start(&self.game_dir);
         let map = if sim { Map::load_sim(&self.game_dir, path)? } else { Map::load(&self.game_dir, path)? };
         self.pending = None;
         self.show_map(map, path, t0)?;
@@ -2155,6 +2185,8 @@ impl App {
     /// async PATH`): the simulation's thread loads it, then the map is shown as after a new game.
     pub fn start_load_save(&mut self, path: &str) -> Result<(), String> {
         self.log.push(format!("loading {path}"));
+        // the windows' textures prepared on workers while it loads (prepare.rs)
+        crate::prepare::start(&self.game_dir);
         self.map = None;
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
         let seed = std::env::var("STELLAR_LOADSCREEN").ok().and_then(|v| v.parse().ok()).unwrap_or(seed);

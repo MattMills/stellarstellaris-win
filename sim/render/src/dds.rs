@@ -120,7 +120,16 @@ impl Cache {
             let path = find_case_insensitive(game_dir, &key)
                 .or_else(|| dds.as_ref().and_then(|d| find_case_insensitive(game_dir, d)))
                 .unwrap_or_else(|| format!("{game_dir}/{key}"));
-            self.images.insert(key.clone(), load(&path).map(std::sync::Arc::new));
+            // (prepared ahead on a worker: prepare.rs; else decoded here, and noted for the window built)
+            let r = match crate::prepare::take(&key) {
+                Some(r) => r,
+                None => {
+                    let _s = crate::prof::span("texture: dds read, decode");
+                    crate::prepare::record(&key);
+                    load(&path).map(std::sync::Arc::new)
+                }
+            };
+            self.images.insert(key.clone(), r);
         }
         self.images[&key].as_ref().map_err(|e| e.clone())
     }
@@ -208,7 +217,15 @@ impl Cache {
         let key = format!("cube{levels}:{rel}");
         if !self.images.contains_key(&key) {
             let path = find_case_insensitive(game_dir, &rel).unwrap_or_else(|| format!("{game_dir}/{rel}"));
-            self.images.insert(key.clone(), load_cube(&path, levels).map(std::sync::Arc::new));
+            let r = match crate::prepare::take(&key) {
+                Some(r) => r,
+                None => {
+                    let _s = crate::prof::span("texture: cube map read, decode");
+                    crate::prepare::record(&key);
+                    load_cube(&path, levels).map(std::sync::Arc::new)
+                }
+            };
+            self.images.insert(key.clone(), r);
         }
         self.images[&key].as_ref().map_err(|e| e.clone())
     }

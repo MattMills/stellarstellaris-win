@@ -1,7 +1,7 @@
 -- render/warm.lua : the windows' definitions read with the load, not by their first opening
 -- (docs/profiling.md section 8). Each window module keeps what it reads of the game's files in
 -- a cache of its own the first time it needs it (100 to 150 ms each on 10.5.0.24: the fleet
--- windows' leader traits, the species view's rules, the leaders' portraits, the technologies);
+-- windows' leader traits, the species view's rules, the leaders' portraits, the technologies, the ship designer's components);
 -- warm.run fills those caches in the UI thread's runtime, each step guarded: one that fails is
 -- named in the result and left to its window, as before.
 --
@@ -31,6 +31,7 @@ local function steps(game_dir)
         { "scripted_loc.defaults", function() require("render.scripted_loc").defaults(game_dir) end },
         { "technology.definitions", function() require("render.windows.technology").definitions(game_dir) end },
         { "fleet.traits", function() require("render.windows.fleet").traits(game_dir) end },
+        { "designer.files", function() require("render.windows.designer").files(game_dir) end },
     }
 end
 

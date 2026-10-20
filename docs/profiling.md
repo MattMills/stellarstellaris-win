@@ -35,9 +35,11 @@ left.
 - **First openings** (section 8): the first window with a portrait or a ship's view (the council,
   technology, leaders, the empire, the designer) took 0.7 to 1 s, 550 to 610 ms of it the models'
   index (531 files of gfx/models parsed in the map's runtime), and the fleet windows and species
-  130 to 175 ms of their own definitions. Both are read with the load now (Fixes 5 and 6): those
-  first openings take 16 to 65 ms (the designer 340 ms and its 200 ms upload), the load 1.1 s
-  longer, behind the load screen.
+  130 to 175 ms of their own definitions. Both are read with the load now (Fixes 5 and 6), and the
+  textures each window used before are decoded on worker threads while the save loads (Fix 7,
+  section 10): every first opening takes 7 to 29 ms (the designer 14 ms and 110 ms of copies to the
+  GPU, from 921 + 196), the load 1.2 s longer, behind the load screen, the process up to 241 MB
+  larger.
 - **The GPU of 10.5.0.24.** The baselines and fixes of sections 4 to 6 were measured on lavapipe
   (Vulkan on the CPU, forced in /etc/environment from 2026-10-16 to 2026-10-20): its frames are 35
   to 65 ms at 1280x720 whatever the CPU's part is, and its 24 `llvmpipe` threads hold about 99% of
@@ -352,9 +354,10 @@ in sim/render (with a test of the lazy `tips` and one of the spans).
   runs still waits for the simulation's day once (1.7 s in `running_fleet`'s opening frame). A
   window could open with its frame and fill in when the answer comes, as it does while the
   simulation loads.
-- **First openings** after Fixes 5 and 6 (section 8): the designer, 340 ms (its ships' meshes and
-  textures, which depend on the designs shown) and 196 ms of upload; the portrait views 50 to 65
-  ms; the rest 8 to 30 ms. And the load is 1.1 s longer for them.
+- **First openings** after Fixes 5 to 7 (sections 8 and 10): every window's first frame 7 to 29 ms
+  of scene, the designer's 14 ms and 110 ms of copies to the GPU; a window opened for the first
+  time ever (not in the manifest yet) still decodes its textures. The load is 1.2 s longer and the
+  process up to 241 MB larger for them.
 - **A relayout is still 5 to 10 ms** of windows' Lua (the planet view about 5 ms, the labels 3, the
   top bar 2.7) at every snapshot and window change, and the technology view's own layout 16 ms on
   average and up to 56 (the window's run): within a frame or two, not within 8.3 ms with the
@@ -461,3 +464,53 @@ part mean / p99 and the GPU's p50:
 | running: planet view | 0.18 / 8.0 | 18.9 (65) |
 
 The GPU's frames at the card's boot clocks are over 8.33 ms at 1280x720; the CPU's part fits.
+
+## 10. Windows prepared in Rust, ahead (the designer)
+
+The ship designer's first opening after Fixes 5 and 6, broken down (`tools/profile/first_open.sh`,
+spans in designer.rs, models.rs and dds.rs), ms:
+
+| part | ms |
+|---|---:|
+| the designer's world's environment map (`cubemap_filtered_ldr.dds`, 16 levels: `texture: cube map read, decode`) | 184 |
+| the upload: the mip chains made on the CPU (24 ms for each 2048x2048 texture) and the copies | 196 to 209 |
+| the designer's layout (Lua): 65% of its samples the parse of its components' files (`designer.lua` `files`), 8% render.gui | 69 |
+| the ships' meshes: textures decoded (28, 41 ms), the index of gfx/models' texture names (32) | 69 |
+| the rest (its data from the simulation 4, the relayout's other parts) | 20 |
+
+Nearly all of it is Rust work that needs no Lua state: textures and cube maps read and decoded,
+mip chains made, a directory walked. **Fix 7: the windows' assets prepared on worker threads
+while the save loads** (`src/prepare.rs`):
+
+- **What each window uses is recorded as it is built**: the textures and cube maps decoded while
+  `App::scene` builds a scene with a window open are noted under it (`designer`, the left bar
+  view's name, `diplomacy`, `planet`, `fleet`, `starbase`: `App::prepare_window`) in a manifest
+  kept between runs (STELLAR_PREPARE_FILE, else `stellar-render/prepare.txt` in XDG_CACHE_HOME,
+  ~/.cache or LOCALAPPDATA; written only when something new is noted). A seed from the game's files
+  (the designer's world: its environment map, background and colour correction) is prepared before
+  any run noted anything. The 18 windows of section 8 noted 413 assets, 11 to 44 each.
+- **At a load** (`App::load_as`, `App::start_load_save`) `prepare::start` decodes them on three
+  worker threads (STELLAR_PREPARE_THREADS; 0 turns it off), the designer's first, into a shared
+  store, makes their mip chains (`render::premip`) and walks gfx/models' texture names; at most
+  STELLAR_PREPARE_MB (256) of images a load, what no window took forgotten at the next load.
+  `dds::Cache::get`/`get_cube` take an asset from the store instead of decoding it; the upload finds
+  its mip chain made.
+- And the designer's components (`designer.files`) read with the load by render.warm (Fix 6).
+
+The designer's first frame, ms (scene + upload): 341 + 216 before; 145 + 196 on a first run with
+the seed alone; 72 + 110 with the manifest; 14 + 110 with its components read with the load too.
+The upload left is the copies to the GPU (on the window's render thread, within its 4 MB a frame;
+offscreen `bench` counts it on its one thread). All windows with the manifest, the first frame's
+scene in ms (after Fix 6 -> with Fix 7): council 61 -> 26, technology 51 -> 19, leaders 64 -> 29,
+empire 55 -> 22, starbase 35 -> 9 (one run), the others 7 to 26 as before. The load's length is
+unchanged (7.19 s, 7.18 s: the workers run beside the simulation's load) and 0.1 s more with the
+designer's components. The cost is memory: the process's peak 2,765 MB without, 3,006 MB with every
+window's assets prepared (+241 MB, within the 256 MB budget); the assets of a window not opened stay
+until the next load. The pictures are the same PNGs as master's (the designer, the council, the
+empire, a starbase, with the prepared assets).
+
+**Constructing the windows in Rust** (their layout) would take the windows' Lua out of a first
+opening, but after Fixes 5 to 7 little of a first opening is layout: the designer's 14 ms, the
+portrait views' 19 to 29 ms, of which render.gui's share is small (8% of the designer's samples).
+The rest of the Lua's first-opening cost was the parse of the game's files, which the warm-up
+takes; what is left is listed in section 7.
