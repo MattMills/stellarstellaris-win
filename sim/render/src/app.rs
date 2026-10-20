@@ -121,9 +121,9 @@ pub fn list_saves() -> Vec<SaveInfo> {
         }
     }
     let mut roots: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(r) = std::env::var("STELLAR_SAVE_GAMES") {
-        roots.push(r.into());
-    }
+    // the game's folder (STELLAR_SAVE_GAMES, else Documents on Windows, ~/.local/share on Linux):
+    // where the save window writes (save::save_games_dir)
+    roots.extend(save::save_games_dir());
     if let Ok(home) = std::env::var("USERPROFILE") {
         roots.push(std::path::Path::new(&home).join(r"Documents\Paradox Interactive\Stellaris\save games"));
     }
