@@ -562,8 +562,6 @@ fn save_items(runtime: &stellar_sim::Runtime, w: u32, h: u32, s: &SaveWindow) ->
     m.actions.push((format!("{p}/save"), "menu:save_do".into()));
     m.hide = vec!["cloud_save".into(), "cloud_save_label".into(), "cloud_icon".into()];
     m.text.push((format!("{p}/game_name"), s.game.clone()));
-    // (the box's cursor: a bar after the text [I])
-    m.text.push((format!("{p}/filename"), format!("{}|", s.name)));
     // the window's size from its list (CSaveGameView::Update @0x3141c67 [V]): the .gui's height
     // (6, "padding at the bottom") plus the list's top (150) and its entries (58 high, spacing
     // -4), at most SaveGameScreenMaxSize's 550; the list shrunk by what is over. Centred on the
@@ -579,6 +577,24 @@ fn save_items(runtime: &stellar_sim::Runtime, w: u32, h: u32, s: &SaveWindow) ->
     m.positions.push((p.into(), (-ww / 2.0, -wh / 2.0)));
     let main = crate::gui::layout_specs(runtime, w, h, &[m])?;
     let mut items = main.items;
+    // the file name box (editBoxType `filename`: its text is the caller's to draw, render.gui),
+    // the .gui's font, white, a bar after the text for the cursor (it has the focus) [I]
+    if let Some(r) = main.rects.get(&format!("{p}/filename")).copied() {
+        let text = format!("{}|", s.name);
+        items.push(crate::gui::GuiItem::Text {
+            path: format!("{p}/filename/text"),
+            font: "cg_16b".into(),
+            spans: vec![(text.clone(), [1.0, 1.0, 1.0])],
+            text,
+            x: r[0],
+            y: r[1],
+            w: r[2],
+            h: 20.0,
+            format: "left".into(),
+            valign: "top".into(),
+            fixed: true,
+        });
+    }
     let Some(list) = main.rects.get(&format!("{p}/list")).copied() else { return Ok(items) };
     let mut entries = Vec::new();
     for (i, save) in s.saves.iter().enumerate() {
