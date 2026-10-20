@@ -82,6 +82,9 @@ fn open_save(app: &mut App) -> Result<(), String> {
     let root = stellar_sim::save::save_games_dir().ok_or("no folder for save games (HOME, USERPROFILE or STELLAR_SAVE_GAMES)")?;
     let folder = root.join(stellar_sim::save::save_folder_name(&game));
     let saves = folder_saves(&folder);
+    // CMainMenuView::Save (@0x2f54580 [V]): the menu hidden, then ShowSaveGameScreen with the
+    // date (CGameDate::GetGameString) as the file name
+    app.bars.menu = false;
     app.bars.save = Some(SaveWindow { game, name: date, folder, saves });
     Ok(())
 }
@@ -561,10 +564,22 @@ fn save_items(runtime: &stellar_sim::Runtime, w: u32, h: u32, s: &SaveWindow) ->
     m.text.push((format!("{p}/game_name"), s.game.clone()));
     // (the box's cursor: a bar after the text [I])
     m.text.push((format!("{p}/filename"), format!("{}|", s.name)));
+    // the window's size from its list (CSaveGameView::Update @0x3141c67 [V]): the .gui's height
+    // (6, "padding at the bottom") plus the list's top (150) and its entries (58 high, spacing
+    // -4), at most SaveGameScreenMaxSize's 550; the list shrunk by what is over. Centred on the
+    // screen [I].
+    let (ew, eh) = (560.0f32, 58.0f32);
+    let n = s.saves.len() as f32;
+    let content = if n > 0.0 { n * (eh - 4.0) + 4.0 } else { 0.0 };
+    let (top, pad, max) = (150.0f32, 6.0f32, 550.0f32);
+    let wh = (pad + top + content).min(max);
+    let ww = 572.0f32;
+    m.sizes.push((p.into(), (ww, wh)));
+    m.sizes.push((format!("{p}/list"), (554.0, (wh - top - pad).max(0.0))));
+    m.positions.push((p.into(), (-ww / 2.0, -wh / 2.0)));
     let main = crate::gui::layout_specs(runtime, w, h, &[m])?;
     let mut items = main.items;
     let Some(list) = main.rects.get(&format!("{p}/list")).copied() else { return Ok(items) };
-    let (ew, eh) = (560.0, 58.0);
     let mut entries = Vec::new();
     for (i, save) in s.saves.iter().enumerate() {
         let y = list[1] + i as f32 * (eh - 4.0);
