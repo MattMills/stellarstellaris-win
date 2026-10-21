@@ -679,7 +679,8 @@ impl Worker {
             let wait = if self.paused { Duration::from_millis(500) } else { next.saturating_duration_since(Instant::now()) };
             match rx.recv_timeout(wait) {
                 Ok(Cmd::Run(days, reply)) => {
-                    let r = self.days(days);
+                    // waited for (the protocol's `step`, --days): whole days, not slices
+                    let r = self.days(days, true);
                     let _ = reply.send(r);
                     next = Instant::now() + day_length(self.speed);
                 }
@@ -741,7 +742,7 @@ impl Worker {
                 }
                 Ok(Cmd::NextDay) => {
                     if self.paused {
-                        if let Err(e) = self.days(1) {
+                        if let Err(e) = self.days(1, false) {
                             eprintln!("simulation: {e}");
                         }
                     }
@@ -751,7 +752,7 @@ impl Worker {
                     if self.paused {
                         continue;
                     }
-                    if let Err(e) = self.days(1) {
+                    if let Err(e) = self.days(1, false) {
                         eprintln!("simulation: {e}");
                         self.paused = true;
                     }
@@ -787,10 +788,23 @@ impl Worker {
     }
 
     /// Runs days, in slices (or whole), then publishes the world.
-    fn days(&mut self, days: u64) -> Result<String, String> {
+    /// `days` days, then the snapshot. In slices when the clock has a cadence and the days are the
+    /// clock's own (`whole` false: the window's running clock, its next day); days someone waits
+    /// for (`whole`: the protocol's `step`, --days) run whole, the VM's preemption off meanwhile:
+    /// in slices half of each millisecond is left unused by design, and a `step 30` took 34 s
+    /// where its phases took 15 (12 s whole; stellar-headless tools/qa.py, docs/frame_timing.md).
+    /// STELLAR_RENDER_STEP=sliced keeps those in slices too (the window's pace, measured).
+    fn days(&mut self, days: u64, whole: bool) -> Result<String, String> {
         let t0 = Instant::now();
+        let whole = whole && std::env::var("STELLAR_RENDER_STEP").as_deref() != Ok("sliced");
         match self.cadence {
-            Some(c) => self.run_sliced(days, c),
+            Some(c) if !whole => self.run_sliced(days, c),
+            Some(_) => {
+                self.sim.runtime.set_frame_end(f64::INFINITY);
+                self.rt().set_preempt(false).map_err(|e| e.to_string())?;
+                self.sim.run_days(days);
+                self.rt().set_preempt(true).map_err(|e| e.to_string())?;
+            }
             None => self.sim.run_days(days),
         }
         let ran = t0.elapsed().as_secs_f64();

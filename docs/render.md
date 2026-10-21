@@ -567,7 +567,7 @@ command file takes the same shots of both, and makes the same input in both.
 | command | reply / effect |
 |---|---|
 | `load PATH`, `load-sim PATH` | the save's world (fast), or with the simulation loaded on its thread too (waited for); either way the home system is shown, as the game does after a load (section 12) |
-| `step DAYS` | runs the simulation DAYS days and waits for them (its thread is started and loaded first if needed) |
+| `step DAYS` | runs the simulation DAYS days and waits for them (its thread is started and loaded first if needed), whole: not in the window's 1 ms slices, half of each millisecond of which is left unused (a month from `autosave_2210.01.01`: 12 s whole, 34 s in slices, the same world; `STELLAR_RENDER_STEP=sliced` keeps the slices) |
 | `pause`, `pause off` | the game's clock stopped (as the game's headless `pause`), or running in real time at its speed (section 12) |
 | `speed 1..5` | the clock's speed (Slowest .. Fastest) |
 | `wait SECONDS` | real time passes (the clock runs meanwhile); replies with the date |
