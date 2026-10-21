@@ -101,6 +101,7 @@ add_library		( stellar-injected SHARED
 					"src/dll/modifier_index.cpp"
 					"src/dll/modifier_stats.cpp"
 					"src/dll/modifier_shadow.cpp"
+					"src/dll/profiler.cpp"
 					"src/hooking/error.cpp" 
 					"src/hooking/shared.cpp"
 					"src/hooking/windows.cpp"  
@@ -125,9 +126,19 @@ target_link_libraries(stellar-loader git_version)
 target_link_libraries(stellar-injected git_version)
 # lua_fnmatch_engine: fnmatch_engine.h (fnme_decode, for code_hook.cpp)
 target_link_libraries(stellar-injected lua_fnmatch::static lua_fnmatch_engine lua_sigmatch::static "${luajit_library}")
+# ws2_32: the profiler's web server (src/dll/profiler.cpp)
+target_link_libraries(stellar-injected ws2_32)
 add_dependencies(stellar-injected stellar_luajit)
 
 target_compile_features(stellar-injected PRIVATE cxx_std_14)
+
+# tests/profiler_test.cpp: the profiler's hooks and web server in a program of their own, run on
+# Windows (not built by default)
+add_executable(stellar-profiler-test EXCLUDE_FROM_ALL "tests/profiler_test.cpp" "src/dll/profiler.cpp" "src/dll/code_hook.cpp")
+target_include_directories(stellar-profiler-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/include/" "${luajit_include_dir}")
+target_link_libraries(stellar-profiler-test lua_fnmatch_engine "${luajit_library}" ws2_32)
+add_dependencies(stellar-profiler-test stellar_luajit)
+target_compile_features(stellar-profiler-test PRIVATE cxx_std_14)
 target_compile_features(stellar-loader PRIVATE cxx_std_14)
 
 # version.dll for the game's folder: the loader that runs before the game (src/proxy). In its own

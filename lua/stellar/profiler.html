@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stellaris Profiler</title>
+<!-- the page of the profiler's hook mode (lua/stellar/profiler.lua, src/dll/profiler.cpp): served by
+     stellar-injected.dll on 127.0.0.1, read from this file at each request -->
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #667085; --line: #e3e6eb;
+  --accent: #3b6fd8; --bar: #c9d8f7; --bar-strong: #3b6fd8; --warn: #b54708; --ok: #067647;
+  --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #11141a; --panel: #181c24; --text: #e6e9ef; --muted: #8a93a6; --line: #262c38;
+    --accent: #7aa2ff; --bar: #24345a; --bar-strong: #7aa2ff; --warn: #f79009; --ok: #32d583;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 14px 20px;
+  background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; }
+h1 { font-size: 17px; margin: 0; font-weight: 650; }
+.stat { color: var(--muted); font-variant-numeric: tabular-nums; }
+.stat b { color: var(--text); font-weight: 600; }
+.spacer { flex: 1; }
+button, select, input, textarea { font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; }
+button { cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+main { padding: 16px 20px; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) 320px; }
+@media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+  margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line); font-weight: 600; }
+.tools { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); align-items: center; }
+.tools input[type=search] { flex: 1; min-width: 160px; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 5px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+th { position: sticky; top: 0; background: var(--panel); font-weight: 600; font-size: 12px; color: var(--muted);
+  cursor: pointer; user-select: none; }
+th.sorted { color: var(--accent); }
+th:first-child, td:first-child { text-align: left; }
+td.name { font-family: var(--mono); font-size: 12.5px; max-width: 560px; overflow: hidden; text-overflow: ellipsis; }
+td.name small { color: var(--muted); margin-left: 8px; }
+td.bar { position: relative; }
+td.bar span { position: relative; z-index: 1; }
+td.bar::before { content: ""; position: absolute; left: 0; top: 3px; bottom: 3px; width: var(--w, 0%);
+  background: var(--bar); border-radius: 3px; }
+tr:hover td { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.more { padding: 10px 14px; color: var(--muted); }
+textarea { width: 100%; min-height: 84px; font-family: var(--mono); font-size: 12.5px; resize: vertical; }
+.pad { padding: 12px 14px; display: grid; gap: 8px; }
+.hint { color: var(--muted); font-size: 12.5px; }
+.hint code { font-family: var(--mono); }
+#notes { font-family: var(--mono); font-size: 12px; padding: 10px 14px; max-height: 420px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word; display: grid; gap: 6px; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.badge.on { color: var(--ok); border: 1px solid var(--ok); }
+.badge.off { color: var(--warn); border: 1px solid var(--warn); }
+.badge.err { color: var(--warn); }
+aside { display: grid; gap: 16px; align-content: start; min-width: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Stellaris Profiler</h1>
+  <span id="state" class="badge on">recording</span>
+  <span class="stat"><b id="hooks">0</b> functions hooked</span>
+  <span class="stat"><b id="active">0</b> called</span>
+  <span class="stat"><b id="seconds">0</b> s since reset</span>
+  <span class="spacer"></span>
+  <label class="stat">refresh
+    <select id="interval">
+      <option value="1000" selected>1 s</option><option value="2000">2 s</option>
+      <option value="5000">5 s</option><option value="0">paused</option>
+    </select>
+  </label>
+  <button id="toggle">Pause recording</button>
+  <button id="reset">Reset</button>
+</header>
+<main>
+  <section>
+    <h2>Functions</h2>
+    <div class="tools">
+      <input id="filter" type="search" placeholder="Filter by name (text, or a glob such as CShip::*)">
+      <label class="stat"><input id="window" type="checkbox"> last interval only</label>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th data-key="name">Function</th>
+          <th data-key="calls">Calls</th>
+          <th data-key="rate">Calls/s</th>
+          <th data-key="self">Self ms</th>
+          <th data-key="share" title="self time per second of wall time: 100% is one core">Self %</th>
+          <th data-key="inclusive">Total ms</th>
+          <th data-key="avg">Avg µs</th>
+          <th data-key="longest">Max µs</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="more" id="more"></div>
+  </section>
+  <aside>
+    <section>
+      <h2>Hook more</h2>
+      <div class="pad">
+        <textarea id="patterns" spellcheck="false" placeholder="CShip::*&#10;CFleet::*Update*&#10;!*::~*"></textarea>
+        <div class="hint">One fnmatch glob a line (<code>*</code> <code>?</code> <code>[abc]</code>), <code>!glob</code> excludes.
+          Matched against the game's symbols (functions.lua, the PDB, <code>labels\</code>, <code>sigs\</code>);
+          each search takes a few seconds in the game.</div>
+        <div><button id="hook" class="primary">Hook</button> <span id="hookstate" class="hint"></span></div>
+      </div>
+    </section>
+    <section>
+      <h2>Log</h2>
+      <div id="notes"></div>
+    </section>
+  </aside>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const LIMIT = 500;
+let sortKey = "self", sortDown = true, timer = null, last = null, previous = new Map(), rows = [];
+let enabled = true;
+
+function post(path) {
+  return fetch(path, { method: "POST", headers: { "X-Stellar": "1" } }).then((r) => {
+    if (!r.ok) throw new Error(r.status + " " + r.statusText);
+    return r.json();
+  });
+}
+
+// an fnmatch glob as a RegExp, or null for plain text
+function globRegExp(text) {
+  if (!/[*?[]/.test(text)) return null;
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "*") out += ".*";
+    else if (c === "?") out += ".";
+    else if (c === "[") {
+      const close = text.indexOf("]", i + 2);
+      if (close < 0) { out += "\\["; continue; }
+      let set = text.slice(i + 1, close);
+      if (set[0] === "!") set = "^" + set.slice(1);
+      out += "[" + set.replace(/\\/g, "\\\\") + "]";
+      i = close;
+    } else out += c.replace(/[.+^${}()|\\\]]/g, "\\$&");
+  }
+  try { return new RegExp("^" + out + "$"); } catch (e) { return null; }
+}
+
+const fmt = (n, d = 0) => n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+const hex = (n) => "0x" + n.toString(16);
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function update(stats) {
+  const now = performance.now();
+  const dt = last ? (now - last.at) / 1000 : 0;
+  const windowOnly = $("window").checked;
+  const seen = new Map();
+  rows = stats.functions.map(([id, name, rva, calls, inclusive, self, longest]) => {
+    const p = previous.get(id);
+    const dCalls = p && calls >= p.calls ? calls - p.calls : calls;
+    const dSelf = p && self >= p.self ? self - p.self : self;
+    const dIncl = p && inclusive >= p.inclusive ? inclusive - p.inclusive : inclusive;
+    seen.set(id, { calls, self, inclusive });
+    const span = windowOnly ? dt : stats.seconds;
+    const c = windowOnly ? dCalls : calls, s = windowOnly ? dSelf : self, t = windowOnly ? dIncl : inclusive;
+    return {
+      id, name, rva, calls: c, self: s / 1000, inclusive: t / 1000, longest,
+      rate: dt > 0 ? dCalls / dt : 0,
+      share: span > 0 ? (s / 1e6) / span * 100 : 0,
+      avg: c > 0 ? t / c : 0,
+    };
+  });
+  previous = seen;
+  last = { at: now };
+  $("hooks").textContent = fmt(stats.hooks);
+  $("active").textContent = fmt(stats.functions.length);
+  $("seconds").textContent = fmt(stats.seconds, 1);
+  enabled = stats.enabled;
+  $("state").textContent = enabled ? "recording" : "paused";
+  $("state").className = "badge " + (enabled ? "on" : "off");
+  $("toggle").textContent = enabled ? "Pause recording" : "Resume recording";
+  $("hookstate").textContent = stats.pending > 0 ? stats.pending + " search(es) waiting for the game" : "";
+  const notes = $("notes");
+  const atBottom = notes.scrollTop + notes.clientHeight >= notes.scrollHeight - 4;
+  notes.innerHTML = stats.notes.map((n) => "<div>" + esc(n) + "</div>").join("") ||
+    '<div class="hint">Nothing yet.</div>';
+  if (atBottom) notes.scrollTop = notes.scrollHeight;
+  render();
+}
+
+function render() {
+  const text = $("filter").value.trim();
+  const re = globRegExp(text);
+  const lower = text.toLowerCase();
+  let list = text ? rows.filter((r) => re ? re.test(r.name) : r.name.toLowerCase().includes(lower)) : rows.slice();
+  const k = sortKey, sign = sortDown ? -1 : 1;
+  list.sort((a, b) => k === "name" ? sign * (a.name < b.name ? 1 : a.name > b.name ? -1 : 0) : sign * (a[k] - b[k]));
+  const top = list.slice(0, LIMIT);
+  const maxSelf = top.reduce((m, r) => Math.max(m, r.self), 0) || 1;
+  $("rows").innerHTML = top.map((r) =>
+    "<tr><td class=\"name\" title=\"" + esc(r.name) + "\">" + esc(r.name) + "<small>" + hex(r.rva) + "</small></td>" +
+    "<td>" + fmt(r.calls) + "</td><td>" + fmt(r.rate) + "</td>" +
+    "<td class=\"bar\" style=\"--w:" + (r.self / maxSelf * 100).toFixed(1) + "%\"><span>" + fmt(r.self, 2) + "</span></td>" +
+    "<td>" + fmt(r.share, 2) + "</td><td>" + fmt(r.inclusive, 2) + "</td>" +
+    "<td>" + fmt(r.avg, 2) + "</td><td>" + fmt(r.longest, 1) + "</td></tr>").join("") ||
+    '<tr><td colspan="8" class="hint">' + (rows.length ? "No function matches the filter." :
+      "No hooked function has been called since the reset.") + "</td></tr>";
+  $("more").textContent = list.length > LIMIT ? "Showing " + LIMIT + " of " + fmt(list.length) + " functions." : "";
+  for (const th of document.querySelectorAll("th")) th.classList.toggle("sorted", th.dataset.key === sortKey);
+}
+
+function poll() {
+  fetch("/stats").then((r) => r.json()).then(update).catch((e) => {
+    $("state").textContent = "no connection";
+    $("state").className = "badge err";
+  });
+}
+
+function schedule() {
+  clearInterval(timer);
+  const ms = Number($("interval").value);
+  if (ms > 0) timer = setInterval(poll, ms);
+}
+
+for (const th of document.querySelectorAll("th")) {
+  th.addEventListener("click", () => {
+    if (sortKey === th.dataset.key) sortDown = !sortDown;
+    else { sortKey = th.dataset.key; sortDown = sortKey !== "name"; }
+    render();
+  });
+}
+$("filter").addEventListener("input", render);
+$("window").addEventListener("change", () => { last = null; poll(); });
+$("interval").addEventListener("change", schedule);
+$("toggle").addEventListener("click", () => post("/enable?on=" + (enabled ? "0" : "1")).then(poll));
+$("reset").addEventListener("click", () => post("/reset").then(() => { previous = new Map(); last = null; poll(); }));
+$("hook").addEventListener("click", () => {
+  const text = $("patterns").value.trim();
+  if (!text) return;
+  post("/hook?pattern=" + encodeURIComponent(text)).then(() => {
+    $("hookstate").textContent = "sent: the game searches at its next heartbeat";
+    poll();
+  }).catch((e) => { $("hookstate").textContent = "failed: " + e.message; });
+});
+poll();
+schedule();
+</script>
+</body>
+</html>

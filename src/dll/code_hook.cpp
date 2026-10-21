@@ -9,6 +9,11 @@
 // middle of the jmp, so the moved instructions should be one instruction of 5 bytes or more (a
 // function prologue like `mov [rsp+0x10], rbx`). Otherwise the hook still works, but only if no
 // thread is there at that moment.
+//
+// Relays and trampolines share memory: each hook takes a slot of 128 bytes in a 64 KB block within
+// reach of a rel32 jmp from its target, so that thousands of hooks (the profiler's) take a few
+// blocks. Installing makes no heap allocation: the profiler installs its hooks while every other
+// thread is suspended, and one of them may hold the heap's lock.
 
 #include "dll/code_hook.h"
 #include "hooking/windows.h"
@@ -17,8 +22,63 @@
 
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 
 namespace {
+
+const size_t kSlotSize = 128;         // the relay (16 bytes), then the trampoline (at most 110)
+const size_t kBlockSize = 64 * 1024;  // the allocation granularity of Windows
+const size_t kMaxBlocks = 1024;
+
+struct Block {
+	uint8_t* base;
+	size_t used;
+};
+Block blocks[kMaxBlocks];
+size_t block_count = 0;
+
+std::mutex& slot_lock() {
+	static std::mutex lock;
+	return lock;
+}
+
+// whether a rel32 jmp at `from` (its end) reaches all of [to, to + size)
+bool in_reach(const uint8_t* from, const uint8_t* to, size_t size) {
+	const int64_t low = reinterpret_cast<int64_t>(to) - reinterpret_cast<int64_t>(from);
+	const int64_t high = low + static_cast<int64_t>(size);
+	return low >= INT32_MIN && high <= INT32_MAX;
+}
+
+// A block with a free slot within reach of the jmp at `target` (a new one if none), or null. The
+// slot is block->base + block->used; the caller adds kSlotSize to `used` once the hook is in.
+// Holds slot_lock().
+Block* block_near(uint8_t* target) {
+	for (size_t i = 0; i < block_count; ++i) {
+		if (blocks[i].used + kSlotSize <= kBlockSize && in_reach(target + 5, blocks[i].base, kBlockSize)) {
+			return &blocks[i];
+		}
+	}
+	if (block_count == kMaxBlocks) {
+		return nullptr;
+	}
+	// the nearest free 64 KB, above or below the target
+	const uintptr_t start = reinterpret_cast<uintptr_t>(target) & ~uintptr_t(kBlockSize - 1);
+	for (uintptr_t step = kBlockSize; step < 0x7FFF0000u; step += kBlockSize) {
+		const uintptr_t candidates[] = {start + step, start > step ? start - step : 0};
+		for (uintptr_t candidate : candidates) {
+			if (candidate == 0 || !in_reach(target + 5, reinterpret_cast<uint8_t*>(candidate), kBlockSize)) {
+				continue;
+			}
+			void* base = VirtualAlloc(reinterpret_cast<void*>(candidate), kBlockSize, MEM_RESERVE | MEM_COMMIT,
+				PAGE_EXECUTE_READ);
+			if (base != nullptr) {
+				blocks[block_count] = Block{static_cast<uint8_t*>(base), 0};
+				return &blocks[block_count++];
+			}
+		}
+	}
+	return nullptr;
+}
 
 // An instruction moved to the trampoline
 struct Relocation {
@@ -135,16 +195,19 @@ bool install_code_hook(void* target_pointer, void* replacement, void** original,
 		return false;
 	}
 
-	// relay at +0, trampoline at +16, in a page within reach of a rel32 jmp
-	uint8_t* page = static_cast<uint8_t*>(AllocatePageNearAddress(target));
-	if (page == nullptr) {
-		*error = "no free page near the target";
+	// relay at +0, trampoline at +16, in a slot within reach of a rel32 jmp; the slot is taken (its
+	// block's `used` advanced) only once the hook is in
+	std::lock_guard<std::mutex> guard(slot_lock());
+	Block* block = block_near(target);
+	if (block == nullptr) {
+		*error = "no free memory near the target";
 		return false;
 	}
+	uint8_t* page = block->base + block->used;
 	const int64_t distance = reinterpret_cast<int64_t>(page) - reinterpret_cast<int64_t>(target + 5);
-	if (distance < INT32_MIN || distance > INT32_MAX) {
-		VirtualFree(page, 0, MEM_RELEASE);
-		*error = "the page near the target is out of reach";
+	DWORD protect = 0;
+	if (!VirtualProtect(page, kSlotSize, PAGE_EXECUTE_READWRITE, &protect)) {
+		*error = "VirtualProtect failed on the hook's slot";
 		return false;
 	}
 	write_absolute_jump(page, replacement);
@@ -162,20 +225,18 @@ bool install_code_hook(void* target_pointer, void* replacement, void** original,
 		}
 		std::memcpy(p, code + r.offset, r.length);
 		if (r.rip_relative && !relocate(p, reinterpret_cast<uint64_t>(target) + r.offset, r, error)) {
-			VirtualFree(page, 0, MEM_RELEASE);
+			VirtualProtect(page, kSlotSize, PAGE_EXECUTE_READ, &protect);
 			return false;
 		}
 		p += r.length;
 	}
 	write_absolute_jump(p, target + moved);
-	DWORD protect = 0;
-	VirtualProtect(page, 4096, PAGE_EXECUTE_READ, &protect);
-	FlushInstructionCache(GetCurrentProcess(), page, 4096);
+	VirtualProtect(page, kSlotSize, PAGE_EXECUTE_READ, &protect);
+	FlushInstructionCache(GetCurrentProcess(), page, kSlotSize);
 
 	// the jmp; the replacement can run as soon as it is written
 	*original = trampoline;
 	if (!VirtualProtect(word, 8, PAGE_EXECUTE_READWRITE, &protect)) {
-		VirtualFree(page, 0, MEM_RELEASE);
 		*original = nullptr;
 		*error = "VirtualProtect failed on the target";
 		return false;
@@ -184,7 +245,6 @@ bool install_code_hook(void* target_pointer, void* replacement, void** original,
 	if (std::memcmp(reinterpret_cast<const uint8_t*>(&before) + offset, code, 8 - offset) != 0) {
 		DWORD ignored = 0;
 		VirtualProtect(word, 8, protect, &ignored);
-		VirtualFree(page, 0, MEM_RELEASE);
 		*original = nullptr;
 		*error = "the target changed while the hook was prepared";
 		return false;
@@ -199,10 +259,10 @@ bool install_code_hook(void* target_pointer, void* replacement, void** original,
 	VirtualProtect(word, 8, protect, &ignored);
 	FlushInstructionCache(GetCurrentProcess(), word, 8);
 	if (!written) {
-		VirtualFree(page, 0, MEM_RELEASE);
 		*original = nullptr;
 		*error = "the target changed while the hook was installed";
 		return false;
 	}
+	block->used += kSlotSize;
 	return true;
 }
