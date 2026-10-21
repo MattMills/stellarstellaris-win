@@ -175,6 +175,9 @@ enum Cmd {
     Query(String, Sender<Result<String, String>>),
     /// the world written as a save to the path (between days: the reply its date)
     Save(String, Sender<Result<String, String>>),
+    /// the simulation's time and draws by phase since the last reset (`Simulation::phase_report`,
+    /// as a table), and then reset if asked
+    Phases(bool, Sender<String>),
     Quit,
 }
 
@@ -521,6 +524,15 @@ impl Clock {
         rx.recv_timeout(Duration::from_secs(120)).map_err(|_| "the simulation did not answer".to_string())?
     }
 
+    /// The simulation's phases since the last reset (time, calls, draws: a tab-separated table),
+    /// then reset if asked.
+    pub fn phases(&self, reset: bool) -> Result<String, String> {
+        self.wait_ready()?;
+        let (tx, rx) = mpsc::channel();
+        self.tx.send(Cmd::Phases(reset, tx)).map_err(|_| "the simulation's thread has ended")?;
+        rx.recv_timeout(Duration::from_secs(120)).map_err(|_| "the simulation did not answer".to_string())
+    }
+
     /// The same, without waiting: the result goes to the status (`last_save`).
     pub fn save_async(&self, path: &str) {
         let (tx, _rx) = mpsc::channel();
@@ -683,6 +695,19 @@ impl Worker {
                     }
                     self.shared.status.lock().unwrap().last_save = Some(r.clone().map(|d| (path.clone(), d)));
                     let _ = reply.send(r);
+                }
+                Ok(Cmd::Phases(reset, reply)) => {
+                    // phase, calls, seconds, ms a call, draws: a tab-separated table (tools/qa.py)
+                    let mut out = String::from("phase\tcalls\tseconds\tms_per_call\tdraws\n");
+                    for (name, (calls, secs)) in &self.sim.phase_times {
+                        let draws = self.sim.phase_draws.get(name).copied().unwrap_or(0);
+                        out += &format!("{name}\t{calls}\t{secs:.6}\t{:.4}\t{draws}\n", secs * 1000.0 / (*calls).max(1) as f64);
+                    }
+                    if reset {
+                        self.sim.phase_times.clear();
+                        self.sim.phase_draws.clear();
+                    }
+                    let _ = reply.send(out);
                 }
                 Ok(Cmd::Pause(p)) => {
                     if self.paused && !p {
