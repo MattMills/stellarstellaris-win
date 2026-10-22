@@ -567,7 +567,7 @@ command file takes the same shots of both, and makes the same input in both.
 | command | reply / effect |
 |---|---|
 | `load PATH`, `load-sim PATH` | the save's world (fast), or with the simulation loaded on its thread too (waited for); either way the home system is shown, as the game does after a load (section 12) |
-| `step DAYS` | runs the simulation DAYS days and waits for them (its thread is started and loaded first if needed) |
+| `step DAYS` | runs the simulation DAYS days and waits for them (its thread is started and loaded first if needed), whole: not in the window's 1 ms slices, half of each millisecond of which is left unused (a month from `autosave_2210.01.01`: 12 s whole, 34 s in slices, the same world; `STELLAR_RENDER_STEP=sliced` keeps the slices) |
 | `pause`, `pause off` | the game's clock stopped (as the game's headless `pause`), or running in real time at its speed (section 12) |
 | `speed 1..5` | the clock's speed (Slowest .. Fastest) |
 | `wait SECONDS` | real time passes (the clock runs meanwhile); replies with the date |
@@ -595,6 +595,8 @@ command file takes the same shots of both, and makes the same input in both.
 | `state` | JSON: screen, view, camera, date, the clock (paused, speed, loading, days run, a day's and a snapshot's ms), the selection, the input (pointer, buttons and keys held, the held actions going on, timestep, frames run), systems, fleets by movement state, FTL trails, size |
 | `bench SECONDS [FPS] [hover X0 Y0 X1 Y1 \| wheel X Y \| drag X0 Y0 X1 Y1]` | frames at FPS (120) drawn as a window draws them, on the commands' one thread, with that input made each frame: what they took against the frame's time, split into input, update, scene, upload and the GPU's frame (section 12, docs/profiling.md; `--bench SECONDS` measures the window's own way, the app on its UI thread) |
 | `prof on\|off`, `prof reset`, `prof report [PATH]` | the frame profiler (STELLAR_PROF=1 turns it on at the start): its spans' table and the GUI Lua's samples to PATH or stderr, then forgotten (docs/profiling.md) |
+| `simprof report PATH`, `simprof reset` | the simulation's time and draws by phase unit (`micro.update`, `daily.colonies_serial`, `ai.process` ...: calls, seconds, ms a call, draws; a tab-separated table) since the last reset, then reset: the counterpart of the game's headless `prof report` (its tick's call sites). stellar-headless `tools/qa.py` puts the two side by side |
+| `effect WORDS...`, `trigger WORDS...` | the console's `effect` and `test_trigger` in the simulation, in the player's country's scope (`render/windows/console_effect.lua`): `ok effect MS ms: Executing effect script.`, `ok trigger MS ms: yes\|no`, MS the evaluator's own time. The game's headless `effect` and `trigger` run the game's console handlers, so a script runs the same way on both |
 | `quit` | ends the server |
 
 The game's headless serves `pause` and `step` the same way, and the input and frame commands

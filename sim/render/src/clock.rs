@@ -175,6 +175,9 @@ enum Cmd {
     Query(String, Sender<Result<String, String>>),
     /// the world written as a save to the path (between days: the reply its date)
     Save(String, Sender<Result<String, String>>),
+    /// the simulation's time and draws by phase since the last reset (`Simulation::phase_report`,
+    /// as a table), and then reset if asked
+    Phases(bool, Sender<String>),
     Quit,
 }
 
@@ -521,6 +524,15 @@ impl Clock {
         rx.recv_timeout(Duration::from_secs(120)).map_err(|_| "the simulation did not answer".to_string())?
     }
 
+    /// The simulation's phases since the last reset (time, calls, draws: a tab-separated table),
+    /// then reset if asked.
+    pub fn phases(&self, reset: bool) -> Result<String, String> {
+        self.wait_ready()?;
+        let (tx, rx) = mpsc::channel();
+        self.tx.send(Cmd::Phases(reset, tx)).map_err(|_| "the simulation's thread has ended")?;
+        rx.recv_timeout(Duration::from_secs(120)).map_err(|_| "the simulation did not answer".to_string())
+    }
+
     /// The same, without waiting: the result goes to the status (`last_save`).
     pub fn save_async(&self, path: &str) {
         let (tx, _rx) = mpsc::channel();
@@ -667,7 +679,8 @@ impl Worker {
             let wait = if self.paused { Duration::from_millis(500) } else { next.saturating_duration_since(Instant::now()) };
             match rx.recv_timeout(wait) {
                 Ok(Cmd::Run(days, reply)) => {
-                    let r = self.days(days);
+                    // waited for (the protocol's `step`, --days): whole days, not slices
+                    let r = self.days(days, true);
                     let _ = reply.send(r);
                     next = Instant::now() + day_length(self.speed);
                 }
@@ -683,6 +696,19 @@ impl Worker {
                     }
                     self.shared.status.lock().unwrap().last_save = Some(r.clone().map(|d| (path.clone(), d)));
                     let _ = reply.send(r);
+                }
+                Ok(Cmd::Phases(reset, reply)) => {
+                    // phase, calls, seconds, ms a call, draws: a tab-separated table (tools/qa.py)
+                    let mut out = String::from("phase\tcalls\tseconds\tms_per_call\tdraws\n");
+                    for (name, (calls, secs)) in &self.sim.phase_times {
+                        let draws = self.sim.phase_draws.get(name).copied().unwrap_or(0);
+                        out += &format!("{name}\t{calls}\t{secs:.6}\t{:.4}\t{draws}\n", secs * 1000.0 / (*calls).max(1) as f64);
+                    }
+                    if reset {
+                        self.sim.phase_times.clear();
+                        self.sim.phase_draws.clear();
+                    }
+                    let _ = reply.send(out);
                 }
                 Ok(Cmd::Pause(p)) => {
                     if self.paused && !p {
@@ -716,7 +742,7 @@ impl Worker {
                 }
                 Ok(Cmd::NextDay) => {
                     if self.paused {
-                        if let Err(e) = self.days(1) {
+                        if let Err(e) = self.days(1, false) {
                             eprintln!("simulation: {e}");
                         }
                     }
@@ -726,7 +752,7 @@ impl Worker {
                     if self.paused {
                         continue;
                     }
-                    if let Err(e) = self.days(1) {
+                    if let Err(e) = self.days(1, false) {
                         eprintln!("simulation: {e}");
                         self.paused = true;
                     }
@@ -762,10 +788,23 @@ impl Worker {
     }
 
     /// Runs days, in slices (or whole), then publishes the world.
-    fn days(&mut self, days: u64) -> Result<String, String> {
+    /// `days` days, then the snapshot. In slices when the clock has a cadence and the days are the
+    /// clock's own (`whole` false: the window's running clock, its next day); days someone waits
+    /// for (`whole`: the protocol's `step`, --days) run whole, the VM's preemption off meanwhile:
+    /// in slices half of each millisecond is left unused by design, and a `step 30` took 34 s
+    /// where its phases took 15 (12 s whole; stellar-headless tools/qa.py, docs/frame_timing.md).
+    /// STELLAR_RENDER_STEP=sliced keeps those in slices too (the window's pace, measured).
+    fn days(&mut self, days: u64, whole: bool) -> Result<String, String> {
         let t0 = Instant::now();
+        let whole = whole && std::env::var("STELLAR_RENDER_STEP").as_deref() != Ok("sliced");
         match self.cadence {
-            Some(c) => self.run_sliced(days, c),
+            Some(c) if !whole => self.run_sliced(days, c),
+            Some(_) => {
+                self.sim.runtime.set_frame_end(f64::INFINITY);
+                self.rt().set_preempt(false).map_err(|e| e.to_string())?;
+                self.sim.run_days(days);
+                self.rt().set_preempt(true).map_err(|e| e.to_string())?;
+            }
             None => self.sim.run_days(days),
         }
         let ran = t0.elapsed().as_secs_f64();

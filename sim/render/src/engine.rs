@@ -540,6 +540,25 @@ impl Engine {
                 let date = clock.save(&path)?;
                 Ok(Reply::ok(format!("save {date} {path} {:.1} s", t0.elapsed().as_secs_f64())))
             }
+            "simprof" => {
+                // `simprof report PATH`, `simprof reset`: the simulation's time and draws by phase
+                // (micro, ai, daily, monthly, yearly units) since the last reset, as the game's
+                // headless `prof report` gives its tick's phases (stellar-headless tools/qa.py)
+                let clock = self.app.map.as_ref().and_then(|m| m.clock.as_ref()).ok_or("simprof: no simulation runs (load-sim first)")?;
+                match (a.first().copied(), a.get(1)) {
+                    (Some("report"), Some(path)) => {
+                        let text = clock.phases(true)?;
+                        std::fs::write(path, &text).map_err(|e| format!("{path}: {e}"))?;
+                        let secs: f64 = text.lines().skip(1).filter_map(|l| l.split('\t').nth(2)?.parse::<f64>().ok()).sum();
+                        Ok(Reply::ok(format!("simprof report {path} {} phases {:.1} s", text.lines().count() - 1, secs)))
+                    }
+                    (Some("reset"), _) => {
+                        clock.phases(true)?;
+                        Ok(Reply::ok("simprof reset"))
+                    }
+                    _ => Err("simprof report PATH, or simprof reset".into()),
+                }
+            }
             "load-sim" if a.first().copied() == Some("async") => {
                 // a save loaded behind the load screen, as the window's Load does; `loaded` waits
                 let path = rest["async".len()..].trim();
@@ -1111,9 +1130,17 @@ impl Engine {
             "state" => Ok(Reply::ok(self.state())),
             // `effect WORDS...`: the console's effect in the simulation (render.windows.console_effect),
             // as the headless game's `effect`: a test's setup made the same way on both sides
-            "effect" => {
-                let code = format!("return require('render.windows.console_effect').run({rest:?})");
-                self.app.fleet_run(&code).map(Reply::ok)
+            // `trigger WORDS...`: the console's test_trigger in the simulation, as the headless
+            // game's `trigger`: the result (yes/no) and the evaluator's time. Both reply as the
+            // Lua says: "ok ..." or "error ..."
+            "effect" | "trigger" => {
+                let f = if verb == "effect" { "run" } else { "trigger" };
+                let code = format!("return require('render.windows.console_effect').{f}({rest:?})");
+                let r = self.app.fleet_run(&code)?;
+                match r.strip_prefix("ok ") {
+                    Some(s) => Ok(Reply::ok(s.to_string())),
+                    None => Err(r.strip_prefix("error ").unwrap_or(&r).to_string()),
+                }
             }
             // `fleet_cmd CALL`: a render.windows.fleet_commands call in the simulation (fleetwin.rs:
             // `fleet_cmd .debug(1)`, `fleet_cmd ["stop"](3)`), its reply
