@@ -25,6 +25,7 @@
 #include "dll/modifier_index.h"
 #include "dll/modifier_stats.h"
 #include "dll/modifier_shadow.h"
+#include "dll/profiler.h"
 #include "util/logging.h"
 #include "git_version.h"
 
@@ -334,6 +335,8 @@ int luaopen_stellar(lua_State* L) {
 	stellar_modifier_stats_open(L);
 	// modifier_shadow_hook, modifier_shadow_stats (src/dll/modifier_shadow.cpp)
 	stellar_modifier_shadow_open(L);
+	// profile_hook, profile_serve, profile_requests, profile_note (src/dll/profiler.cpp)
+	stellar_profiler_open(L);
 
 	// the game
 	push_address(L, hModule);

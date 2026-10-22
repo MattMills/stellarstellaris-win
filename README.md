@@ -75,6 +75,19 @@ progress of the load screen.
 | `tools/make_signatures.lua` | `luajit tools/make_signatures.lua lua/stellar/signatures.lua gog-4.5.2.sig gog-4.5.1.sig ...` (newest first, `.sig` files from stellar-fnmatch) |
 | `tools/dry_run.lua` | `luajit tools/dry_run.lua stellaris.exe`: the lookups of game.lua and of the script catalog, on a file, outside the game |
 | `docs/main_loop.md` | the main loop, how the game guards its state, and where to hook to use it |
+| `lua/stellar/profiler.lua`, `src/dll/profiler.cpp`, `lua/stellar/profiler.html` | the profiler's hook mode: the functions whose names match fnmatch globs, timed on entry and exit, on a web page on 127.0.0.1 ([docs/profiler.md](docs/profiler.md)) |
+| `tools/profiler_dry_run.lua` | `luajit tools/profiler_dry_run.lua stellaris.exe --pdb stellaris.pdb 'CShip::*'`: what the profiler's globs would hook, on a file, outside the game |
+| `tests/profiler_test.cpp` | the profiler's hooks and server in a program of their own (`stellar-profiler-test`, run on Windows) |
+
+### The profiler's hook mode
+
+`profiler.txt` next to the DLL with `hook` (and optionally a port: `hook 8710`) hooks the game
+functions whose names match the fnmatch globs of `profiler_symbols.txt` (`CShip::*`, `!*::~*`, one a
+line), and serves **http://127.0.0.1:8710/**: calls, self and total time and the longest call of
+each function, live, with more globs hooked from the page. The names come from the game's PDB
+(GOG), stellar-fnmatch's labels of Steam builds (`labels\*.csv`) or its `.sig` files of other
+builds (`sigs\*.sig`), found in the running build with lua_fnmatch. A hooked call costs about 90 ns.
+See [docs/profiler.md](docs/profiler.md).
 
 The tools need the `fnmatch` module (`fnmatch.dll` / `fnmatch.so` from lua_fnmatch) on `LUA_CPATH`.
 
@@ -91,6 +104,7 @@ The tools need the `fnmatch` module (`fnmatch.dll` / `fnmatch.so` from lua_fnmat
 | `hook_turn_tick(handle_turn_tick, gate)`, `turn_tick`, `skipped_ticks()` | used by `stellar.game` |
 | `hook_lexer(get_tok, layout, mode)`, `lexer_tokens`, `lexer_stats()`, `lexer_mismatches()` | used by `stellar.script.loader` |
 | `hook_loading(push, pop, render, step)`, `loading_events()` | used by `stellar.loading` |
+| `profile_hook(list)`, `profile_serve(port, page)`, `profile_requests()`, `profile_note(text)` | used by `stellar.profiler` |
 | `module_base`, `module_path` | stellaris.exe |
 | `dll_path`, `lua_dir`, `git_hash`, `process_id` | |
 

@@ -644,6 +644,22 @@ local ok, err = pcall(game.start, image)
 if not ok then
     stellar.log("game.start failed: " .. tostring(err))
 end
+
+-- the profiler's hook mode (profiler.txt "hook [port]", default port 8710): the game functions
+-- whose names match the fnmatch globs of profiler_symbols.txt timed on entry and exit, shown on
+-- http://127.0.0.1:<port>/, where more can be hooked (stellar.profiler, docs/profiler.md). After
+-- every other hook: a function the profiler hooked first cannot be hooked again.
+local profiler_mode, profiler_port = setting("profiler.txt", "off")
+local profiler = nil
+if profiler_mode == "hook" then
+    profiler = require("stellar.profiler")
+    local done, result = pcall(profiler.start, image, found, tonumber(profiler_port))
+    if not done then
+        stellar.log("profiler: failed: " .. tostring(result))
+    end
+elseif profiler_mode ~= "off" then
+    stellar.log("profiler: profiler.txt says \"" .. profiler_mode .. "\": \"hook\" or \"off\"")
+end
 image:close()
 
 -- the heartbeat reaches Lua: log the first one; read the catalog when the game has loaded; run
@@ -667,6 +683,13 @@ stellar.heartbeat = function()
         stellar.log("heartbeat from Lua" .. (dev.enabled and ", dev enabled" or ""))
     end
     loading.poll(stellar.read)
+    -- the patterns asked for on the profiler's page
+    if profiler then
+        local done, result = pcall(profiler.poll)
+        if not done then
+            stellar.log("profiler: " .. tostring(result))
+        end
+    end
     -- the lexer hook's counts, every 10 seconds while they change
     if heartbeats % 10 == 0 then
         loader.report()
